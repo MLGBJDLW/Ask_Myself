@@ -25,6 +25,12 @@
 - Preserve speaker notes, comments, slide masters, custom layouts, and relationships unless the task requires changes.
 - Use OOXML unpack/pack for master edits, media swaps, relationship fixes, or notes that `python-pptx` cannot express directly.
 
+### Existing Chart Data
+- Inspect the slide's stable id, chart shape id/name, chart relationship, and `chartPart` before changing data. All four identify the target; a mismatch must fail instead of editing a similarly numbered chart.
+- Use `set_chart_data` only for a chart with exactly one internal embedded XLSX package and local cell-backed series formulas. Supply equal-length categories and finite numeric values; optional range overrides may resize the series only when their cell counts match.
+- Treat embedded workbook cells, chart formulas, and string/numeric caches as one atomic boundary. The final audit must reconcile every verifiable cache point with the embedded workbook and keep unrelated masters, layouts, notes, comments, media, diagrams, OLE objects, and animations byte-identical.
+- Do not use this operation for linked/external workbooks, multi-level category references, inline-only series, charts without an embedded workbook, or overlapping title/category/value ranges; use native PowerPoint/Excel with explicit evidence when those semantics are required.
+
 ### Rewrite And Beautify
 - Start with audit, then create a rewrite plan for existing decks that are too long, too dense, or visually inconsistent.
 - For narrative changes, use the semantic rewriter instead of only reshuffling original slides. It should classify source content into context, problem, evidence, options, recommendation, plan, risk, and appendix, then rebuild the deck as a decision story.

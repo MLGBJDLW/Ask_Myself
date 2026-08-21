@@ -418,7 +418,7 @@ def _native_operations(
     }
     pptx_typed = {
         "set_text", "clone_slide", "insert_slide", "reorder_slides", "set_transition",
-        "set_alt_text", "set_speaker_notes", "add_comment",
+        "set_alt_text", "set_speaker_notes", "set_chart_data", "add_comment",
     }
     docx_review = {
         "add_comment", "reply_comment", "resolve_comment", "strip_comments",
@@ -1019,6 +1019,8 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
             return ("ppt/slides/*.xml",)
         if operation == "set_speaker_notes":
             return ("ppt/notesSlides/*.xml",)
+        if operation == "set_chart_data":
+            return ("ppt/charts/*.xml", "ppt/embeddings/*.xlsx")
         if operation == "add_comment":
             return (
                 "ppt/commentAuthors.xml", "ppt/comments/*.xml",
@@ -1168,6 +1170,15 @@ def _exact_operation_parts(
         with zipfile.ZipFile(path) as archive:
             slide = _target_slide(payload, presentation_order(archive))
         return {slide["part"]}
+    if artifact_format == "pptx" and operation == "set_chart_data":
+        scripts = skills_root / "pptx-presentation-design" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from pptx_structured_editor import _pptx_chart_targets  # type: ignore
+
+        with zipfile.ZipFile(path) as archive:
+            targets = _pptx_chart_targets(archive, {}, payload)
+        return {targets["chartPart"], targets["workbookPart"]}
     if artifact_format == "pptx" and operation in {"clone_slide", "insert_slide"}:
         scripts = skills_root / "pptx-presentation-design" / "scripts"
         if str(scripts) not in sys.path:
@@ -1627,6 +1638,23 @@ def _verify_exact_semantic_scope(
                     for name in archive.namelist()
                 ):
                     raise RuntimeError("strict PPTX comment operation did not create its target")
+            return
+        if operation == "set_chart_data":
+            scripts = Path(__file__).resolve().parents[2] / "pptx-presentation-design" / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from pptx_audit import audit  # type: ignore
+
+            chart_part = str(payload.get("chartPart", ""))
+            errors = [
+                error
+                for error in audit(after_path).get("chart_validation_errors", [])
+                if chart_part in error
+            ]
+            if errors:
+                raise RuntimeError(
+                    "strict PPTX chart-data consistency failed: " + "; ".join(errors)
+                )
             return
         if operation in {"clone_slide", "insert_slide"}:
             # The exact copy-on-write closure is computed from the pre-edit

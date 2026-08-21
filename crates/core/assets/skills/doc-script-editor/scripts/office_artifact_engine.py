@@ -122,6 +122,11 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "set_transition": {"slideId", "slideIndex", "transition", "speed", "direction"},
         "set_alt_text": {"slideId", "slideIndex", "shapeId", "shapeName", "altText", "title"},
         "set_speaker_notes": {"slideId", "slideIndex", "text"},
+        "set_chart_data": {
+            "slideId", "slideIndex", "shapeId", "shapeName", "chartPart",
+            "seriesIndex", "seriesName", "categoryRange", "valueRange",
+            "categories", "values",
+        },
         "add_comment": {"slideId", "slideIndex", "comment", "author", "initials", "date", "x", "y"},
         "validate": set(),
         "render": set(),
@@ -220,7 +225,7 @@ FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
     "pptx": LocalOpenXmlFormatAdapter("pptx", frozenset({
         "create", "replace", "redact", "insert_slide", "validate", "render",
         "set_text", "clone_slide", "reorder_slides", "set_transition",
-        "set_alt_text", "set_speaker_notes", "add_comment",
+        "set_alt_text", "set_speaker_notes", "set_chart_data", "add_comment",
     })),
 }
 
@@ -2745,10 +2750,10 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             )
     if artifact_format == "pptx" and name in {
         "set_text", "clone_slide", "set_transition", "set_alt_text",
-        "set_speaker_notes", "add_comment",
+        "set_speaker_notes", "set_chart_data", "add_comment",
     } and not any(key in operation for key in ("slideId", "slideIndex")):
         missing.append("slideId/slideIndex")
-    if artifact_format == "pptx" and name in {"set_text", "set_alt_text"} and not any(
+    if artifact_format == "pptx" and name in {"set_text", "set_alt_text", "set_chart_data"} and not any(
         key in operation for key in ("shapeId", "shapeName")
     ):
         missing.append("shapeId/shapeName")

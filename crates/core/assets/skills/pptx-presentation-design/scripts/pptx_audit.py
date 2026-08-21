@@ -320,6 +320,44 @@ def shape_inventory(root) -> list[dict[str, object]]:
     )
 
 
+def semantic_frame_map(
+    shapes: list[dict[str, object]],
+    slide_size: dict[str, int] | None,
+) -> dict[str, list[str]]:
+    roles: dict[str, list[str]] = {}
+    slide_height = int((slide_size or {}).get("cy", 0) or 0)
+    for shape in shapes:
+        placeholder = str(shape.get("placeholderType") or "")
+        kind = str(shape.get("kind") or "")
+        text = str(shape.get("text") or "").strip()
+        bounds = shape.get("bounds") if isinstance(shape.get("bounds"), dict) else {}
+        top = int(bounds.get("y") or 0) if isinstance(bounds, dict) else 0
+        if shape.get("isTitle"):
+            role = "title"
+        elif placeholder in {"subTitle"}:
+            role = "subtitle"
+        elif placeholder in {"body", "obj"} and text:
+            role = "body"
+        elif placeholder in {"dt", "ftr", "sldNum"}:
+            role = "footer"
+        elif kind == "picture":
+            role = "visual"
+        elif kind == "graphicFrame":
+            role = "dataVisual"
+        elif kind in {"connector", "group"}:
+            role = "diagram"
+        elif text and slide_height and top <= slide_height * 0.24:
+            role = "titleCandidate"
+        elif text:
+            role = "body"
+        else:
+            role = "decorative"
+        shape["semanticRole"] = role
+        frame_id = f"{kind}:{shape.get('shapeId', '')}"
+        roles.setdefault(role, []).append(frame_id)
+    return {role: frames for role, frames in sorted(roles.items())}
+
+
 def nonempty_text_paragraphs(root) -> int:
     if root is None:
         return 0
@@ -460,6 +498,8 @@ def audit(path: Path) -> dict:
                 warnings.append(f"slide {index} has {empty_placeholders} empty placeholder(s)")
             if full_slide_pictures and len(text) < 40:
                 warnings.append(f"slide {index} may be a low-editability full-slide image")
+            shape_details = shape_inventory(root)
+            frame_map = semantic_frame_map(shape_details, slide_size)
             slides.append(
                 {
                     "index": index,
@@ -480,7 +520,8 @@ def audit(path: Path) -> dict:
                     "text_paragraphs": paragraph_count,
                     "has_visual_anchor": has_visual_anchor,
                     "full_slide_pictures": full_slide_pictures,
-                    "shape_details": shape_inventory(root),
+                    "shape_details": shape_details,
+                    "frame_map": frame_map,
                 }
             )
 
@@ -520,8 +561,8 @@ def main() -> int:
     if not path.exists():
         print(f"File not found: {path}", file=sys.stderr)
         return 3
-    if path.suffix.lower() != ".pptx":
-        print(f"Expected .pptx file: {path}", file=sys.stderr)
+    if path.suffix.lower() not in {".pptx", ".pptm", ".potx", ".potm"}:
+        print(f"Expected .pptx/.pptm/.potx/.potm file: {path}", file=sys.stderr)
         return 3
     if not zipfile.is_zipfile(path):
         print(f"Not a valid OOXML zip package: {path}", file=sys.stderr)

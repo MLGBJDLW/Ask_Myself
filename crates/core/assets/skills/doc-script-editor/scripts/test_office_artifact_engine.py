@@ -1448,8 +1448,60 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 name: hashlib.sha256(archive.read(name)).hexdigest()
                 for name in source_hashes
             }
-            self.assertEqual(source_hashes, candidate_hashes)
             self.assertIn("ppt/slides/slide2.xml", archive.namelist())
+        self.assertEqual(source_hashes, candidate_hashes)
+
+    def test_pptx_chart_data_is_atomic_across_embedded_workbook_and_cache(self) -> None:
+        from pptx import Presentation
+        from pptx.chart.data import ChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.util import Inches
+
+        source = self.root / "chart-deck.pptx"
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        data = ChartData()
+        data.categories = ["North", "South"]
+        data.add_series("Amount", (100, 80))
+        chart_shape = slide.shapes.add_chart(
+            XL_CHART_TYPE.COLUMN_CLUSTERED,
+            Inches(1), Inches(1), Inches(6), Inches(4), data,
+        )
+        shape_id = chart_shape.shape_id
+        presentation.save(source)
+        with zipfile.ZipFile(source) as archive:
+            scripts = Path(__file__).resolve().parents[2] / "pptx-presentation-design" / "scripts"
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from pptx_structured_editor import presentation_order
+
+            slide_id = presentation_order(archive)[0]["slideId"]
+        destination = self.root / "chart-deck-result.pptx"
+
+        outcome = self.engine.execute({
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "modify",
+            "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "destination": str(destination),
+            "operations": [{
+                "op": "set_chart_data",
+                "slideId": slide_id,
+                "shapeId": shape_id,
+                "chartPart": "ppt/charts/chart1.xml",
+                "seriesIndex": 1,
+                "seriesName": "Updated amount",
+                "categories": ["East", "West"],
+                "values": [125, 95],
+            }],
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+        })
+
+        self.assertFalse(destination.exists())
+        self.assertTrue(outcome["preservationEvidence"]["verified"])
+        inspection = self.engine.inspect(outcome["candidatePath"], "pptx")
+        self.assertEqual([], inspection["profile"]["chart_validation_errors"])
 
     def test_pptx_notes_comments_and_alt_text_use_strict_typed_operations(self) -> None:
         from pptx import Presentation

@@ -32,6 +32,8 @@ class OfficeArtifactGoldenTests(unittest.TestCase):
         ]
         self.assertTrue(all(shape["shapeId"] for shape in text_shapes))
         self.assertTrue(all(shape["shapeName"] for shape in text_shapes))
+        self.assertTrue(all(slide["frame_map"] for slide in slides))
+        self.assertTrue(all(shape["semanticRole"] for shape in text_shapes))
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

@@ -7,6 +7,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pptx_structured_editor
+import pptx_audit
 
 
 class PptxStructuredEditorTests(unittest.TestCase):
@@ -220,6 +221,70 @@ class PptxStructuredEditorTests(unittest.TestCase):
                     additions["ppt/diagrams/data1.xml"],
                     archive.read("ppt/diagrams/data1.xml"),
                 )
+
+    def test_chart_data_updates_embedded_workbook_and_caches_atomically(self) -> None:
+        import io
+        import openpyxl
+        from pptx import Presentation
+        from pptx.chart.data import ChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.util import Inches
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "chart-source.pptx"
+            output = root / "chart-output.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = ["North", "South"]
+            data.add_series("Amount", (100, 80))
+            chart_shape = slide.shapes.add_chart(
+                XL_CHART_TYPE.COLUMN_CLUSTERED,
+                Inches(1), Inches(1), Inches(6), Inches(4), data,
+            )
+            shape_id = chart_shape.shape_id
+            presentation.save(source)
+            with zipfile.ZipFile(source) as archive:
+                slide_id = pptx_structured_editor.presentation_order(archive)[0]["slideId"]
+
+            result = pptx_structured_editor.patch_pptx(source, output, [{
+                "op": "set_chart_data",
+                "slideId": slide_id,
+                "shapeId": shape_id,
+                "chartPart": "ppt/charts/chart1.xml",
+                "seriesIndex": 1,
+                "seriesName": "Updated amount",
+                "categoryRange": "Sheet1!$A$2:$A$4",
+                "valueRange": "Sheet1!$B$2:$B$4",
+                "categories": ["East", "West", "Central"],
+                "values": [125, 95.5, 60],
+            }])
+
+            changed = set(result["changedParts"])
+            workbook_part = result["operations"][0]["detail"]["workbookPart"]
+            self.assertIn("ppt/charts/chart1.xml", changed)
+            self.assertIn(workbook_part, changed)
+            audit = pptx_audit.audit(output)
+            self.assertEqual([], audit["chart_validation_errors"])
+            self.assertIn("dataVisual", audit["slide_details"][0]["frame_map"])
+            chart_frame = next(
+                item
+                for item in audit["slide_details"][0]["shape_details"]
+                if str(item["shapeId"]) == str(shape_id)
+            )
+            self.assertEqual("dataVisual", chart_frame["semanticRole"])
+            with zipfile.ZipFile(output) as archive:
+                embedded = archive.read(workbook_part)
+                chart = archive.read("ppt/charts/chart1.xml")
+            workbook = openpyxl.load_workbook(io.BytesIO(embedded), data_only=False)
+            sheet = workbook["Sheet1"]
+            self.assertEqual(["East", "West", "Central"], [sheet[f"A{row}"].value for row in range(2, 5)])
+            self.assertEqual([125, 95.5, 60], [sheet[f"B{row}"].value for row in range(2, 5)])
+            self.assertEqual("Updated amount", sheet["B1"].value)
+            workbook.close()
+            self.assertIn(b"Sheet1!$A$2:$A$4", chart)
+            self.assertIn(b"Sheet1!$B$2:$B$4", chart)
 
 
 if __name__ == "__main__":

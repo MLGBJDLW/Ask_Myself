@@ -436,6 +436,14 @@ struct ChartDataOperation {
     chart_part: String,
     series_index: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    slide_id: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    slide_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shape_id: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shape_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     series_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     category_range: Option<String>,

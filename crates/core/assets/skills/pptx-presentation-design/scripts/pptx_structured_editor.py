@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import posixpath
 import re
@@ -18,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -27,7 +29,7 @@ COMMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentati
 COMMENT_AUTHORS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"
 SUPPORTED_OPERATIONS = {
     "set_text", "clone_slide", "insert_slide", "reorder_slides", "set_transition",
-    "set_alt_text", "set_speaker_notes", "add_comment",
+    "set_alt_text", "set_speaker_notes", "set_chart_data", "add_comment",
 }
 DUPLICATE_RELATION_TYPES = {
     "chart", "chartUserShapes", "chartStyle", "chartColorStyle", "package", "oleObject",
@@ -447,6 +449,223 @@ def _find_shape(root: ET.Element, operation: dict[str, Any]) -> ET.Element:
     return matches[0]
 
 
+def _pptx_chart_targets(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, str]:
+    order = presentation_order_from_bytes(archive, replacements)
+    slide = _target_slide(operation, order)
+    slide_root = ET.fromstring(
+        replacements.get(slide["part"], archive.read(slide["part"]))
+    )
+    shape = _find_shape(slide_root, operation)
+    chart_nodes = [item for item in shape.iter() if _local(item.tag) == "chart"]
+    if len(chart_nodes) != 1:
+        raise PptxEditError(
+            f"target shape must contain exactly one chart reference; found {len(chart_nodes)}"
+        )
+    relationship_id = chart_nodes[0].attrib.get(f"{{{R_NS}}}id", "")
+    relationship = _relationship_map(archive, slide["part"]).get(relationship_id)
+    if (
+        relationship is None
+        or relationship["mode"] == "External"
+        or relationship["type"].rsplit("/", 1)[-1] != "chart"
+    ):
+        raise PptxEditError("target chart relationship is missing, external, or invalid")
+    chart_part = _resolve_target(slide["part"], relationship["target"])
+    if chart_part not in archive.namelist():
+        raise PptxEditError(f"target chart part is missing: {chart_part}")
+    requested_chart_part = str(operation.get("chartPart", ""))
+    if requested_chart_part and requested_chart_part != chart_part:
+        raise PptxEditError(
+            f"chartPart does not match the targeted shape: {requested_chart_part} != {chart_part}"
+        )
+    embedded = [
+        _resolve_target(chart_part, item["target"])
+        for item in _relationship_map(archive, chart_part).values()
+        if item["mode"] != "External"
+        and item["type"].rsplit("/", 1)[-1] == "package"
+        and item["target"].lower().endswith(".xlsx")
+    ]
+    if len(embedded) != 1 or embedded[0] not in archive.namelist():
+        raise PptxEditError(
+            f"chart must have exactly one existing embedded XLSX package; found {len(embedded)}"
+        )
+    return {
+        "slideId": slide["slideId"],
+        "slidePart": slide["part"],
+        "chartPart": chart_part,
+        "workbookPart": embedded[0],
+    }
+
+
+def _set_chart_data(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    categories = operation.get("categories")
+    values = operation.get("values")
+    if not isinstance(categories, list) or not categories:
+        raise PptxEditError("set_chart_data categories must be a non-empty array")
+    if not isinstance(values, list) or not values:
+        raise PptxEditError("set_chart_data values must be a non-empty array")
+    if len(categories) != len(values):
+        raise PptxEditError("set_chart_data categories and values must have the same length")
+    xlsx_scripts = Path(__file__).resolve().parents[2] / "xlsx-workbook-design" / "scripts"
+    if str(xlsx_scripts) not in sys.path:
+        sys.path.insert(0, str(xlsx_scripts))
+    from xlsx_structured_editor import (  # type: ignore
+        XlsxEditError,
+        _cache_text,
+        _chart_series,
+        _parse_chart_range,
+        _reference_formula,
+        _replace_chart_reference,
+        _series_container,
+        _workbook_sheet_parts,
+        _write_chart_source_values,
+    )
+
+    try:
+        for value in values:
+            _cache_text(value, numeric=True)
+        for category in categories:
+            _cache_text(category, numeric=False)
+        targets = _pptx_chart_targets(archive, replacements, operation)
+        chart_root = ET.fromstring(
+            replacements.get(targets["chartPart"], archive.read(targets["chartPart"]))
+        )
+        series = _chart_series(chart_root, int(operation.get("seriesIndex", 0)))
+        workbook_data = replacements.get(
+            targets["workbookPart"], archive.read(targets["workbookPart"])
+        )
+        workbook_input = io.BytesIO(workbook_data)
+        with zipfile.ZipFile(workbook_input) as workbook_archive:
+            sheet_parts = _workbook_sheet_parts(workbook_archive)
+            category_container = _series_container(series, {"cat", "xVal"})
+            value_container = _series_container(series, {"val", "yVal"})
+            chart_targets = {
+                "categories": _parse_chart_range(
+                    str(operation.get("categoryRange") or _reference_formula(category_container)),
+                    sheet_parts,
+                ),
+                "values": _parse_chart_range(
+                    str(operation.get("valueRange") or _reference_formula(value_container)),
+                    sheet_parts,
+                ),
+            }
+            title = next(
+                (item for item in list(series) if _local(item.tag) == "tx"),
+                None,
+            )
+            if operation.get("seriesName") is not None and title is not None:
+                try:
+                    title_target = _parse_chart_range(
+                        _reference_formula(title), sheet_parts
+                    )
+                except XlsxEditError as error:
+                    if "inline or unsupported" not in str(error):
+                        raise
+                else:
+                    if len(title_target["cells"]) != 1:
+                        raise PptxEditError(
+                            "chart series title reference must contain one cell"
+                        )
+                    chart_targets["seriesName"] = title_target
+            occupied: dict[tuple[str, str], str] = {}
+            for role, target in chart_targets.items():
+                for cell in target["cells"]:
+                    key = (str(target["part"]), cell)
+                    if key in occupied:
+                        raise PptxEditError(
+                            f"chart source targets overlap at {target['sheet']}!{cell} "
+                            f"({occupied[key]} and {role})"
+                        )
+                    occupied[key] = role
+            workbook_replacements: dict[str, bytes] = {}
+            changed_cells = _write_chart_source_values(
+                workbook_archive,
+                workbook_replacements,
+                chart_targets["categories"],
+                categories,
+            )
+            changed_cells.extend(
+                _write_chart_source_values(
+                    workbook_archive,
+                    workbook_replacements,
+                    chart_targets["values"],
+                    values,
+                )
+            )
+            _replace_chart_reference(
+                category_container,
+                str(chart_targets["categories"]["formula"]),
+                categories,
+                numeric=all(type(item) in {int, float} for item in categories),
+            )
+            _replace_chart_reference(
+                value_container,
+                str(chart_targets["values"]["formula"]),
+                values,
+                numeric=True,
+            )
+            if operation.get("seriesName") is not None:
+                series_name = str(operation["seriesName"])
+                if title is None:
+                    title = ET.Element(f"{{{C_NS}}}tx")
+                    insert_at = next(
+                        (
+                            index
+                            for index, child in enumerate(list(series))
+                            if _local(child.tag) not in {"idx", "order"}
+                        ),
+                        len(list(series)),
+                    )
+                    series.insert(insert_at, title)
+                if "seriesName" in chart_targets:
+                    changed_cells.extend(
+                        _write_chart_source_values(
+                            workbook_archive,
+                            workbook_replacements,
+                            chart_targets["seriesName"],
+                            [series_name],
+                        )
+                    )
+                    _replace_chart_reference(
+                        title,
+                        str(chart_targets["seriesName"]["formula"]),
+                        [series_name],
+                        numeric=False,
+                    )
+                else:
+                    for child in list(title):
+                        title.remove(child)
+                    ET.SubElement(title, f"{{{C_NS}}}v").text = series_name
+            workbook_output = io.BytesIO()
+            with zipfile.ZipFile(workbook_output, "w") as output_archive:
+                for info in workbook_archive.infolist():
+                    output_archive.writestr(
+                        info,
+                        workbook_replacements.get(
+                            info.filename, workbook_archive.read(info.filename)
+                        ),
+                    )
+        replacements[targets["workbookPart"]] = workbook_output.getvalue()
+        replacements[targets["chartPart"]] = ET.tostring(
+            chart_root, encoding="utf-8", xml_declaration=True
+        )
+    except XlsxEditError as error:
+        raise PptxEditError(str(error)) from error
+    return {
+        **targets,
+        "seriesIndex": int(operation["seriesIndex"]),
+        "points": len(values),
+        "changedCells": changed_cells,
+    }
+
+
 def _set_text(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
@@ -741,6 +960,8 @@ def patch_pptx(source: Path, output: Path, operations: list[dict[str, Any]]) -> 
                 detail = _set_alt_text(archive, replacements, operation)
             elif name == "set_speaker_notes":
                 detail = _set_speaker_notes(archive, replacements, operation)
+            elif name == "set_chart_data":
+                detail = _set_chart_data(archive, replacements, operation)
             elif name == "add_comment":
                 detail = _add_comment(archive, replacements, additions, operation)
             elif name == "reorder_slides":
