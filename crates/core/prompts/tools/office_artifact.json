@@ -7,7 +7,7 @@
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["capabilities", "inspect", "assess", "execute", "decide", "restore"],
+        "enum": ["capabilities", "inspect", "assess", "execute", "decide", "restore", "live_status", "live_pairing", "live_execute"],
         "description": "Lifecycle action. Use assess before guarantees that require optional native/render backends."
       },
       "workspace_root": {
@@ -74,6 +74,24 @@
       "receipt_id": {
         "type": "string",
         "description": "Publication receipt id; required for restore."
+      },
+      "live_session_id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "description": "Connected Office.js host session id returned by live_status; required for live_execute."
+      },
+      "live_operation": {
+        "description": "Capability-checked operation for the currently open Word, Excel, or PowerPoint document.",
+        "oneOf": [
+          {"type": "object", "additionalProperties": false, "required": ["op", "search", "replacement"], "properties": {"op": {"const": "word_replace_text"}, "search": {"type": "string"}, "replacement": {"type": "string"}, "matchCase": {"type": "boolean"}, "matchWholeWord": {"type": "boolean"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "location", "text"], "properties": {"op": {"const": "word_insert_text"}, "location": {"enum": ["selection", "start", "end"]}, "text": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "search", "comment"], "properties": {"op": {"const": "word_add_comment"}, "search": {"type": "string"}, "comment": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "values"], "properties": {"op": {"const": "excel_set_range"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "values": {"type": "array", "items": {"type": "array"}}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "formulas"], "properties": {"op": {"const": "excel_set_formula"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "formulas": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "address", "format"], "properties": {"op": {"const": "excel_format_range"}, "sheet": {"type": "string"}, "address": {"type": "string"}, "format": {"type": "object"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op", "text"], "allOf": [{"oneOf": [{"required": ["slideId"]}, {"required": ["slideIndex"]}]}, {"oneOf": [{"required": ["shapeId"]}, {"required": ["shapeName"]}]}], "properties": {"op": {"const": "powerpoint_set_text"}, "slideId": {"type": "string"}, "slideIndex": {"type": "integer", "minimum": 1}, "shapeId": {"type": "string"}, "shapeName": {"type": "string"}, "text": {"type": "string"}}},
+          {"type": "object", "additionalProperties": false, "required": ["op"], "properties": {"op": {"const": "powerpoint_add_slide"}, "layoutId": {"type": "string"}, "title": {"type": "string"}}}
+        ]
       }
     }
   }

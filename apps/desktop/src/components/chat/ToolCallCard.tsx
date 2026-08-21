@@ -78,6 +78,10 @@ import {
   type DiffStatsArtifact,
 } from './FileDiffPreview';
 import { DiffStatsTicker } from './DiffStatsTicker';
+import {
+  OfficeArtifactEvidencePanel,
+  extractOfficeArtifactEvidence,
+} from './OfficeArtifactEvidence';
 import { isFileChangeToolRender } from './toolRenderers';
 import {
   extractGraphAgentUsage,
@@ -1685,6 +1689,7 @@ export function ToolCallCard({
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
   const generatedAudio = useMemo(() => extractGeneratedAudioArtifact(artifacts), [artifacts]);
   const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
+  const officeArtifact = useMemo(() => extractOfficeArtifactEvidence(artifacts), [artifacts]);
   const questionRequest = useMemo(
     () => safeToolName === 'request_user_input'
       ? extractQuestionRequest(callId ?? '', args, artifacts)
@@ -1828,7 +1833,8 @@ export function ToolCallCard({
     diffStats ||
     generatedImage ||
     generatedAudio ||
-    graphUsage,
+    graphUsage ||
+    officeArtifact,
   );
   const visibleResultContent = visibleToolResult(content, hasStructuredResult, failedStatus);
   const hideCompletedArgs = !isPending && !failedStatus && Boolean(
@@ -1854,6 +1860,7 @@ export function ToolCallCard({
     diffStats ||
     generatedImage ||
     graphUsage ||
+    officeArtifact ||
     showImagePendingPreview,
   );
   const toolTone = getToolTone(safeToolName);
@@ -2006,6 +2013,8 @@ export function ToolCallCard({
                   </>
                 ) : graphUsage ? (
                   <KnowledgeGraphUsagePanel usage={graphUsage} compact />
+                ) : officeArtifact ? (
+                  <OfficeArtifactEvidencePanel evidence={officeArtifact} />
                 ) : planArtifact ? (
                   <PlanPanel plan={planArtifact} />
                 ) : verificationArtifact ? (
@@ -2139,6 +2148,8 @@ export function ToolCallCard({
                   </>
                 ) : graphUsage ? (
                   <KnowledgeGraphUsagePanel usage={graphUsage} compact />
+                ) : officeArtifact ? (
+                  <OfficeArtifactEvidencePanel evidence={officeArtifact} />
                 ) : planArtifact ? (
                   <PlanPanel plan={planArtifact} />
                 ) : verificationArtifact ? (
@@ -2482,6 +2493,8 @@ export function ToolCallCard({
                   prompt={imageArgs.prompt}
                   size={imageArgs.size}
                 />
+              ) : officeArtifact ? (
+                <OfficeArtifactEvidencePanel evidence={officeArtifact} />
               ) : planArtifact ? (
                 <PlanPanel plan={planArtifact} />
               ) : verificationArtifact ? (

@@ -429,6 +429,56 @@ fn main() {
                     bin_dir.display()
                 );
             }
+            match app.path().resource_dir() {
+                Ok(resource_dir) => match nexa_core::office_runtime::configure_bundled_openxml_validator(
+                    &data_dir,
+                    &resource_dir,
+                ) {
+                    Ok(Some(path)) => log::info!(
+                        "Configured bundled Open XML SDK validator at {}",
+                        path.display()
+                    ),
+                    Ok(None) => log::info!("Bundled Open XML SDK validator is not present"),
+                    Err(error) => log::warn!("Failed to configure Open XML SDK validator: {error}"),
+                },
+                Err(error) => log::warn!("Failed to resolve app resource directory: {error}"),
+            }
+            match app.path().resource_dir() {
+                Ok(resource_dir) => match nexa_core::office_runtime::configure_bundled_office_addin(
+                    &data_dir,
+                    &resource_dir,
+                ) {
+                    Ok(Some(path)) => log::info!(
+                        "Configured bundled Office.js add-in manifest at {}",
+                        path.display()
+                    ),
+                    Ok(None) => log::info!("Bundled Office.js add-in is not present"),
+                    Err(error) => log::warn!("Failed to configure Office.js add-in: {error}"),
+                },
+                Err(error) => log::warn!("Failed to resolve Office.js resource directory: {error}"),
+            }
+            match app.path().resource_dir() {
+                Ok(resource_dir) => match nexa_core::office_runtime::configure_bundled_pptxgenjs_runtime(
+                    &data_dir,
+                    &resource_dir,
+                ) {
+                    Ok(Some((node, modules))) => log::info!(
+                        "Configured bundled PptxGenJS runtime: node={}, modules={}",
+                        node.display(),
+                        modules.display()
+                    ),
+                    Ok(None) => log::info!("Bundled PptxGenJS runtime is not present"),
+                    Err(error) => log::warn!("Failed to configure PptxGenJS runtime: {error}"),
+                },
+                Err(error) => log::warn!("Failed to resolve PptxGenJS resource directory: {error}"),
+            }
+            match nexa_core::office_live_bridge::ensure_office_live_bridge() {
+                Ok(bridge) => log::info!(
+                    "Office.js live bridge listening on {}",
+                    bridge.status(false).endpoint
+                ),
+                Err(error) => log::warn!("Failed to start Office.js live bridge: {error}"),
+            }
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");

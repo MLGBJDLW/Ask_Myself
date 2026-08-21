@@ -384,6 +384,65 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertEqual(["Detail"], edit_doc._xlsx_render_surfaces(path, "active"))
         self.assertEqual(["Summary"], edit_doc._xlsx_render_surfaces(path, "Summary"))
 
+    def test_native_xlsx_surface_inventory_includes_visible_chart_sheets(self) -> None:
+        import openpyxl
+        from openpyxl.chart import BarChart, Reference
+
+        path = self.root / "chart-surface.xlsx"
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Data"
+        worksheet.append(["Quarter", "Value"])
+        worksheet.append(["Q1", 10])
+        worksheet.append(["Q2", 20])
+        chart = BarChart()
+        chart.add_data(Reference(worksheet, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+        chart.set_categories(Reference(worksheet, min_col=1, min_row=2, max_row=3))
+        chart_sheet = workbook.create_chartsheet("Decision chart")
+        chart_sheet.add_chart(chart)
+        workbook.save(path)
+        workbook.close()
+
+        inventory = office_artifact_service._xlsx_visible_surface_inventory(path)
+        self.assertEqual(
+            [("Data", "worksheet"), ("Decision chart", "chartsheet")],
+            [(item["name"], item["type"]) for item in inventory],
+        )
+
+    @unittest.skipUnless(
+        os.name == "nt" and os.environ.get("NEXA_RUN_OFFICE_NATIVE_SMOKE") == "1",
+        "requires explicit Windows Microsoft Office native smoke opt-in",
+    )
+    def test_windows_native_xlsx_render_exports_worksheet_and_chart_sheet(self) -> None:
+        import openpyxl
+        from openpyxl.chart import BarChart, Reference
+
+        path = self.root / "native-chart-surface.xlsx"
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Data"
+        worksheet.append(["Quarter", "Value"])
+        worksheet.append(["Q1", 10])
+        worksheet.append(["Q2", 20])
+        chart = BarChart()
+        chart.add_data(Reference(worksheet, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+        chart.set_categories(Reference(worksheet, min_col=1, min_row=2, max_row=3))
+        workbook.create_chartsheet("Decision chart").add_chart(chart)
+        workbook.save(path)
+        workbook.close()
+
+        outdir = self.root / "native-chart-render"
+        actions: list[dict] = []
+        outputs = office_artifact_service._windows_com_render_xlsx(path, outdir, actions)
+        self.assertEqual(2, len(outputs))
+        manifest = json.loads((outdir / "render-manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["complete"])
+        self.assertEqual(2, manifest["expectedSurfaces"])
+        self.assertEqual(
+            ["worksheet", "chartsheet"],
+            [item["type"] for item in manifest["sheets"]],
+        )
+
     def test_validator_rejects_missing_relationship_target(self) -> None:
         import docx
 

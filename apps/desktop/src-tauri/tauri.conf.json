@@ -38,6 +38,11 @@
   },
   "bundle": {
     "active": true,
+    "resources": [
+      "resources/openxml-validator/**/*",
+      "resources/office-addin/**/*",
+      "resources/pptxgenjs-runtime/**/*"
+    ],
     "targets": [
       "nsis",
       "dmg",
