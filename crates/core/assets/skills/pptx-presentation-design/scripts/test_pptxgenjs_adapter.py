@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -92,6 +93,36 @@ class PptxGenJsAdapterTests(unittest.TestCase):
             )
             self.assertNotEqual(0, run.returncode)
             self.assertIn("URLs", run.stderr)
+            self.assertFalse(output.exists())
+
+    def test_blocks_workspace_symlink_assets_that_resolve_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(workspace_tmp)
+            outside = Path(outside_tmp) / "outside.png"
+            outside.write_bytes(b"not-read-because-link-is-blocked")
+            linked = root / "linked.png"
+            try:
+                os.symlink(outside, linked)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"file symlinks unavailable: {error}")
+            spec = root / "symlink.json"
+            output = root / "symlink.pptx"
+            spec.write_text(json.dumps({
+                "schemaVersion": 1,
+                "slides": [{"elements": [{
+                    "type": "image", "path": linked.name, "altText": "blocked",
+                    "x": 0, "y": 0, "w": 1, "h": 1,
+                }]}],
+            }), encoding="utf-8")
+            run = subprocess.run(
+                [self.node, str(self.adapter), "--spec", str(spec), "--out", str(output), "--workspace", str(root)],
+                cwd=Path(__file__).resolve().parents[6],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, run.returncode)
+            self.assertIn("symbolic link", run.stderr)
             self.assertFalse(output.exists())
 
 

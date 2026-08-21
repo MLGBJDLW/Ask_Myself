@@ -18,11 +18,12 @@ const SESSION_TTL_SECONDS: u64 = 30 * 60;
 const CLIENT_TTL_SECONDS: u64 = 35 * 60;
 const MAX_PAIRING_FAILURES: u8 = 5;
 const PAIRING_BACKOFF_SECONDS: u64 = 30;
+const OPERATION_TTL_SECONDS: u64 = 5 * 60;
 
 static LIVE_BRIDGE: OnceLock<Arc<OfficeLiveBridge>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OfficeHostSession {
     pub session_id: String,
     pub host: String,
@@ -44,7 +45,7 @@ pub struct OfficeLiveBridgeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OfficeLiveOperationResult {
     pub operation_id: String,
     pub session_id: String,
@@ -62,6 +63,23 @@ struct QueuedOperation {
     request_version: u8,
     operation: Value,
     created_at: u64,
+    deadline_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationStatus {
+    Queued,
+    Leased,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficeLiveCancelOutcome {
+    CancelledBeforeLease,
+    Completed,
+    IndeterminateLeased,
+    Missing,
 }
 
 #[derive(Debug)]
@@ -79,6 +97,8 @@ struct BridgeState {
     session_owners: HashMap<String, String>,
     queues: HashMap<String, VecDeque<QueuedOperation>>,
     operation_owners: HashMap<String, String>,
+    operation_deadlines: HashMap<String, u64>,
+    operation_statuses: HashMap<String, OperationStatus>,
     results: HashMap<String, OfficeLiveOperationResult>,
 }
 
@@ -135,6 +155,8 @@ impl OfficeLiveBridge {
                 session_owners: HashMap::new(),
                 queues: HashMap::new(),
                 operation_owners: HashMap::new(),
+                operation_deadlines: HashMap::new(),
+                operation_statuses: HashMap::new(),
                 results: HashMap::new(),
             }),
         });
@@ -187,6 +209,8 @@ impl OfficeLiveBridge {
             .state
             .lock()
             .expect("Office live bridge state poisoned");
+        let now = now_seconds();
+        prune_expired(&mut state, now);
         if !state.sessions.contains_key(session_id) {
             return Err(CoreError::InvalidInput(format!(
                 "Office.js host session is not connected: {session_id}"
@@ -197,6 +221,12 @@ impl OfficeLiveBridge {
             .operation_owners
             .insert(operation_id.clone(), session_id.to_string());
         state
+            .operation_deadlines
+            .insert(operation_id.clone(), now + OPERATION_TTL_SECONDS);
+        state
+            .operation_statuses
+            .insert(operation_id.clone(), OperationStatus::Queued);
+        state
             .queues
             .entry(session_id.to_string())
             .or_default()
@@ -204,9 +234,37 @@ impl OfficeLiveBridge {
                 operation_id: operation_id.clone(),
                 request_version: 1,
                 operation,
-                created_at: now_seconds(),
+                created_at: now,
+                deadline_at: now + OPERATION_TTL_SECONDS,
             });
         Ok(operation_id)
+    }
+
+    pub fn cancel(&self, operation_id: &str) -> OfficeLiveCancelOutcome {
+        let mut state = self
+            .state
+            .lock()
+            .expect("Office live bridge state poisoned");
+        prune_expired(&mut state, now_seconds());
+        if state.results.contains_key(operation_id)
+            || state.operation_statuses.get(operation_id) == Some(&OperationStatus::Completed)
+        {
+            return OfficeLiveCancelOutcome::Completed;
+        }
+        let Some(status) = state.operation_statuses.get_mut(operation_id) else {
+            return OfficeLiveCancelOutcome::Missing;
+        };
+        if *status == OperationStatus::Leased {
+            return OfficeLiveCancelOutcome::IndeterminateLeased;
+        }
+        if *status == OperationStatus::Cancelled {
+            return OfficeLiveCancelOutcome::CancelledBeforeLease;
+        }
+        *status = OperationStatus::Cancelled;
+        for queue in state.queues.values_mut() {
+            queue.retain(|operation| operation.operation_id != operation_id);
+        }
+        OfficeLiveCancelOutcome::CancelledBeforeLease
     }
 
     pub fn take_result(&self, operation_id: &str) -> Option<OfficeLiveOperationResult> {
@@ -217,6 +275,8 @@ impl OfficeLiveBridge {
         let result = state.results.remove(operation_id);
         if result.is_some() {
             state.operation_owners.remove(operation_id);
+            state.operation_deadlines.remove(operation_id);
+            state.operation_statuses.remove(operation_id);
         }
         result
     }
@@ -397,11 +457,30 @@ impl OfficeLiveBridge {
             return (404, json!({"error": "session_not_found"}));
         };
         session.last_seen_at = now_seconds();
-        let operation = state
-            .queues
-            .entry(session_id.to_string())
-            .or_default()
-            .pop_front();
+        let now = now_seconds();
+        prune_expired(&mut state, now);
+        let mut operation = None;
+        loop {
+            let candidate = state
+                .queues
+                .entry(session_id.to_string())
+                .or_default()
+                .pop_front();
+            let Some(candidate) = candidate else {
+                break;
+            };
+            if candidate.deadline_at <= now
+                || state.operation_statuses.get(&candidate.operation_id)
+                    != Some(&OperationStatus::Queued)
+            {
+                continue;
+            }
+            state
+                .operation_statuses
+                .insert(candidate.operation_id.clone(), OperationStatus::Leased);
+            operation = Some(candidate);
+            break;
+        }
         (
             200,
             json!({"kind": "officeLivePoll", "operation": operation}),
@@ -417,6 +496,8 @@ impl OfficeLiveBridge {
             .state
             .lock()
             .expect("Office live bridge state poisoned");
+        let now = now_seconds();
+        prune_expired(&mut state, now);
         if !state.sessions.contains_key(&result.session_id) {
             return (404, json!({"error": "session_not_found"}));
         }
@@ -426,9 +507,22 @@ impl OfficeLiveBridge {
         if state.operation_owners.get(&result.operation_id) != Some(&result.session_id) {
             return (409, json!({"error": "operation_session_mismatch"}));
         }
+        match state.operation_statuses.get(&result.operation_id) {
+            Some(OperationStatus::Cancelled) => {
+                return (409, json!({"error": "operation_expired_or_cancelled"}));
+            }
+            Some(OperationStatus::Leased) => {}
+            Some(OperationStatus::Completed) => {
+                return (409, json!({"error": "duplicate_result"}));
+            }
+            _ => return (409, json!({"error": "operation_not_leased"})),
+        }
         if state.results.contains_key(&result.operation_id) {
             return (409, json!({"error": "duplicate_result"}));
         }
+        state
+            .operation_statuses
+            .insert(result.operation_id.clone(), OperationStatus::Completed);
         state.results.insert(result.operation_id.clone(), result);
         (202, json!({"kind": "officeLiveResultAccepted"}))
     }
@@ -467,7 +561,28 @@ fn prune_expired(state: &mut BridgeState, now: u64) {
             .collect::<Vec<_>>();
         for operation_id in operation_ids {
             state.operation_owners.remove(&operation_id);
+            state.operation_deadlines.remove(&operation_id);
+            state.operation_statuses.remove(&operation_id);
             state.results.remove(&operation_id);
+        }
+    }
+    let expired_operations = state
+        .operation_deadlines
+        .iter()
+        .filter_map(|(operation_id, deadline)| {
+            (*deadline <= now
+                && state.operation_statuses.get(operation_id) == Some(&OperationStatus::Queued))
+            .then(|| operation_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for operation_id in &expired_operations {
+        state
+            .operation_statuses
+            .insert(operation_id.clone(), OperationStatus::Cancelled);
+    }
+    if !expired_operations.is_empty() {
+        for queue in state.queues.values_mut() {
+            queue.retain(|operation| !expired_operations.contains(&operation.operation_id));
         }
     }
 }
@@ -762,6 +877,86 @@ mod tests {
                 .0,
             409
         );
+    }
+
+    #[test]
+    fn cancelled_or_expired_operations_cannot_be_polled_or_completed() {
+        let bridge = OfficeLiveBridge::start().unwrap();
+        let pairing = bridge.status(true).pairing_code.unwrap();
+        let (_, paired) = bridge.pair(&json!({"pairingCode": pairing}));
+        let token = paired["bridgeToken"].as_str().unwrap();
+        let (_, registered) = bridge.register(
+            token,
+            &json!({
+                "host": "Excel",
+                "documentId": "Book1",
+                "capabilities": ["set-range"]
+            }),
+        );
+        let session_id = registered["session"]["sessionId"].as_str().unwrap();
+
+        let queued = bridge
+            .enqueue(session_id, json!({"op": "excel_set_range"}))
+            .unwrap();
+        assert_eq!(
+            bridge.cancel(&queued),
+            OfficeLiveCancelOutcome::CancelledBeforeLease
+        );
+        let (_, poll) = bridge.poll(token, &json!({"sessionId": session_id}));
+        assert!(poll["operation"].is_null());
+        let (status, rejected) = bridge.result(
+            token,
+            &json!({
+                "operationId": queued,
+                "sessionId": session_id,
+                "status": "ok"
+            }),
+        );
+        assert_eq!(status, 409);
+        assert_eq!(rejected["error"], "operation_expired_or_cancelled");
+
+        let leased = bridge
+            .enqueue(session_id, json!({"op": "excel_set_range"}))
+            .unwrap();
+        let (_, poll) = bridge.poll(token, &json!({"sessionId": session_id}));
+        assert_eq!(poll["operation"]["operationId"], leased);
+        assert!(poll["operation"]["deadlineAt"].as_u64().is_some());
+        assert_eq!(
+            bridge.cancel(&leased),
+            OfficeLiveCancelOutcome::IndeterminateLeased
+        );
+        assert_eq!(
+            bridge
+                .result(
+                    token,
+                    &json!({
+                        "operationId": leased,
+                        "sessionId": session_id,
+                        "status": "ok"
+                    })
+                )
+                .0,
+            202
+        );
+
+        let expired = bridge
+            .enqueue(session_id, json!({"op": "excel_set_range"}))
+            .unwrap();
+        {
+            let mut state = bridge.state.lock().unwrap();
+            state
+                .operation_deadlines
+                .insert(expired.clone(), now_seconds());
+            if let Some(operation) = state
+                .queues
+                .get_mut(session_id)
+                .and_then(|queue| queue.iter_mut().find(|item| item.operation_id == expired))
+            {
+                operation.deadline_at = now_seconds();
+            }
+        }
+        let (_, poll) = bridge.poll(token, &json!({"sessionId": session_id}));
+        assert!(poll["operation"].is_null());
     }
 
     #[test]

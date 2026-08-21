@@ -187,6 +187,9 @@ async function poll() {
     if (queued) {
       let result;
       try {
+        if (!Number.isFinite(queued.deadlineAt) || Math.floor(Date.now() / 1000) >= queued.deadlineAt) {
+          throw new Error('Operation lease expired before Office mutation');
+        }
         result = { status: 'ok', result: await executeOperation(queued.operation), error: null };
       } catch (error) {
         result = { status: 'error', result: {}, error: error instanceof Error ? error.message : String(error) };

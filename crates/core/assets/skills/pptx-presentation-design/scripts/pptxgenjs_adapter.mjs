@@ -32,18 +32,39 @@ function argumentsFrom(argv) {
   return out;
 }
 
+function contained(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function rejectSymlinkSegments(workspace, candidate, allowMissingTail = false) {
+  const relative = path.relative(workspace, candidate);
+  if (!contained(workspace, candidate)) fail("path escapes workspace");
+  let current = workspace;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (!fs.existsSync(current)) {
+      if (allowMissingTail) return;
+      fail(`workspace path is missing: ${current}`);
+    }
+    if (fs.lstatSync(current).isSymbolicLink()) fail(`workspace path contains a symbolic link: ${current}`);
+  }
+}
+
 function localAsset(raw, workspace, extensions) {
   if (typeof raw !== "string" || /^(?:https?|file|data):/i.test(raw) || raw.startsWith("\\\\")) {
     fail("assets must be reviewed local workspace files; URLs, data URIs, and UNC paths are blocked");
   }
   const resolved = path.resolve(workspace, raw);
-  const relative = path.relative(workspace, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) fail("asset escapes workspace");
+  if (!contained(workspace, resolved)) fail("asset escapes workspace");
+  rejectSymlinkSegments(workspace, resolved);
+  const real = fs.realpathSync.native(resolved);
+  if (!contained(workspace, real)) fail("asset real path escapes workspace");
   const extension = path.extname(resolved).toLowerCase();
   if (!extensions.has(extension)) fail(`unsupported asset extension: ${extension}`);
-  const stat = fs.statSync(resolved);
+  const stat = fs.lstatSync(real);
   if (!stat.isFile() || stat.size > MAX_ASSET_BYTES) fail("asset is missing, not a file, or exceeds 50 MiB");
-  return resolved;
+  return real;
 }
 
 function geometry(element) {
@@ -159,7 +180,9 @@ function addElement(pptx, slide, element, workspace) {
 async function main() {
   const args = argumentsFrom(process.argv.slice(2));
   if (!args.spec || !args.out || !args.workspace) fail("--spec, --out, and --workspace are required");
-  const workspace = path.resolve(args.workspace);
+  const workspaceArgument = path.resolve(args.workspace);
+  const workspace = fs.realpathSync.native(workspaceArgument);
+  if (!fs.lstatSync(workspace).isDirectory()) fail("workspace must be a real directory");
   const specPath = localAsset(args.spec, workspace, new Set([".json"]));
   if (fs.statSync(specPath).size > MAX_SPEC_BYTES) fail("spec exceeds 5 MiB");
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
@@ -167,10 +190,14 @@ async function main() {
     fail("PptxGenJS spec requires schemaVersion=1 and non-empty slides");
   }
   const output = path.resolve(args.out);
-  const outputRelative = path.relative(workspace, output);
-  if (outputRelative.startsWith("..") || path.isAbsolute(outputRelative) || path.extname(output).toLowerCase() !== ".pptx") {
+  if (!contained(workspace, output) || path.extname(output).toLowerCase() !== ".pptx") {
     fail("output must be a .pptx inside workspace");
   }
+  rejectSymlinkSegments(workspace, output, true);
+  let existingParent = path.dirname(output);
+  while (!fs.existsSync(existingParent)) existingParent = path.dirname(existingParent);
+  const realParent = fs.realpathSync.native(existingParent);
+  if (!contained(workspace, realParent)) fail("output parent real path escapes workspace");
 
   const pptx = new PptxGenJS();
   pptx.layout = spec.layout ?? "LAYOUT_WIDE";

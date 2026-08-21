@@ -362,6 +362,69 @@ fn file_sha256(path: &Path) -> Result<String, CoreError> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+const PPTXGENJS_RUNTIME_MODULES: &[&str] = &[
+    "pptxgenjs",
+    "image-size",
+    "jszip",
+    "lie",
+    "immediate",
+    "pako",
+    "readable-stream",
+    "core-util-is",
+    "inherits",
+    "isarray",
+    "process-nextick-args",
+    "safe-buffer",
+    "string_decoder",
+    "util-deprecate",
+    "setimmediate",
+    "https",
+];
+
+fn runtime_files_on_disk(root: &Path) -> Result<std::collections::HashSet<PathBuf>, CoreError> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        files: &mut std::collections::HashSet<PathBuf>,
+    ) -> Result<(), CoreError> {
+        for entry in std::fs::read_dir(directory).map_err(CoreError::Io)? {
+            let entry = entry.map_err(CoreError::Io)?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path).map_err(CoreError::Io)?;
+            if metadata.file_type().is_symlink() {
+                return Err(CoreError::InvalidInput(format!(
+                    "PptxGenJS runtime contains a symbolic link: {}",
+                    path.display()
+                )));
+            }
+            if metadata.is_dir() {
+                visit(root, &path, files)?;
+            } else if metadata.is_file() {
+                let relative = path.strip_prefix(root).map_err(|_| {
+                    CoreError::InvalidInput("PptxGenJS runtime escaped its root".to_string())
+                })?;
+                files.insert(relative.to_path_buf());
+            } else {
+                return Err(CoreError::InvalidInput(format!(
+                    "PptxGenJS runtime contains an unsupported filesystem entry: {}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    let metadata = std::fs::symlink_metadata(root).map_err(CoreError::Io)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime root must be a real directory".to_string(),
+        ));
+    }
+    let mut files = std::collections::HashSet::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
 fn verify_pptxgenjs_runtime(
     root: &Path,
     manifest: &PptxGenRuntimeManifest,
@@ -372,7 +435,11 @@ fn verify_pptxgenjs_runtime(
         || !manifest.node_version.starts_with('v')
         || manifest.files.is_empty()
         || manifest.files.len() > 2_048
-        || manifest.modules.is_empty()
+        || manifest.modules
+            != PPTXGENJS_RUNTIME_MODULES
+                .iter()
+                .map(|module| (*module).to_string())
+                .collect::<Vec<_>>()
     {
         return Err(CoreError::InvalidInput(
             "PptxGenJS runtime manifest identity or bounds are invalid".to_string(),
@@ -413,9 +480,21 @@ fn verify_pptxgenjs_runtime(
     }
     let node = checked_runtime_relative_path(&manifest.node_file)?;
     let modules = checked_runtime_relative_path(&manifest.module_root)?;
-    if !seen.contains(&node) || !root.join(modules).is_dir() {
+    if !seen.contains(&node)
+        || !root.join(&modules).is_dir()
+        || PPTXGENJS_RUNTIME_MODULES
+            .iter()
+            .any(|module| !root.join(&modules).join(module).is_dir())
+    {
         return Err(CoreError::InvalidInput(
             "PptxGenJS runtime node or module root is not manifest-bound".to_string(),
+        ));
+    }
+    let mut actual_files = runtime_files_on_disk(root)?;
+    actual_files.remove(&PathBuf::from("runtime-manifest.json"));
+    if actual_files != seen {
+        return Err(CoreError::InvalidInput(
+            "PptxGenJS runtime contains missing or unmanifested files".to_string(),
         ));
     }
     Ok(())
@@ -430,22 +509,30 @@ pub fn configure_bundled_pptxgenjs_runtime(
     if !manifest_path.is_file() {
         return Ok(None);
     }
-    let manifest: PptxGenRuntimeManifest =
-        serde_json::from_slice(&std::fs::read(&manifest_path).map_err(CoreError::Io)?).map_err(
-            |error| CoreError::InvalidInput(format!("Invalid PptxGenJS runtime manifest: {error}")),
-        )?;
+    let bundled_manifest_bytes = std::fs::read(&manifest_path).map_err(CoreError::Io)?;
+    let manifest: PptxGenRuntimeManifest = serde_json::from_slice(&bundled_manifest_bytes)
+        .map_err(|error| {
+            CoreError::InvalidInput(format!("Invalid PptxGenJS runtime manifest: {error}"))
+        })?;
     verify_pptxgenjs_runtime(&source, &manifest)?;
 
     let parent = app_data_dir.join("runtimes/pptxgenjs");
     std::fs::create_dir_all(&parent).map_err(CoreError::Io)?;
     let destination = parent.join(&manifest.runtime_version);
     if destination.exists() {
-        let installed_manifest: PptxGenRuntimeManifest = serde_json::from_slice(
-            &std::fs::read(destination.join("runtime-manifest.json")).map_err(CoreError::Io)?,
-        )
-        .map_err(|error| {
-            CoreError::InvalidInput(format!("Invalid installed PptxGenJS manifest: {error}"))
-        })?;
+        let installed_manifest_path = destination.join("runtime-manifest.json");
+        let installed_manifest_bytes =
+            std::fs::read(&installed_manifest_path).map_err(CoreError::Io)?;
+        if installed_manifest_bytes != bundled_manifest_bytes {
+            return Err(CoreError::InvalidInput(
+                "Installed PptxGenJS manifest does not match the trusted bundled manifest"
+                    .to_string(),
+            ));
+        }
+        let installed_manifest: PptxGenRuntimeManifest =
+            serde_json::from_slice(&installed_manifest_bytes).map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid installed PptxGenJS manifest: {error}"))
+            })?;
         verify_pptxgenjs_runtime(&destination, &installed_manifest)?;
     } else {
         let staging = parent.join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
@@ -738,28 +825,28 @@ pub fn check_office_runtime(app_data_dir: &Path) -> OfficeRuntimeReadiness {
         python.as_ref(),
         "python-docx",
         "docx",
-        true,
+        false,
         "1.2.0",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "openpyxl",
         "openpyxl",
-        true,
+        false,
         "3.1.5",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "python-pptx",
         "pptx",
-        true,
+        false,
         "1.0.2",
     ));
     dependencies.push(check_python_module(
         python.as_ref(),
         "pypdf",
         "pypdf",
-        true,
+        false,
         "6.10.0",
     ));
     let (status, summary) = derive_status(python.is_some(), &dependencies);
@@ -1048,13 +1135,16 @@ mod tests {
         let source = resources.path().join("pptxgenjs-runtime");
         std::fs::create_dir_all(source.join("node_modules/pptxgenjs")).unwrap();
         let node_name = if cfg!(windows) { "node.exe" } else { "node" };
-        let fixtures = [
-            (node_name, b"node-binary".as_slice()),
-            ("node_modules/pptxgenjs/package.json", b"{}".as_slice()),
-        ];
         let mut files = Vec::new();
+        let mut fixtures = vec![(node_name.to_string(), b"node-binary".as_slice())];
+        fixtures.extend(PPTXGENJS_RUNTIME_MODULES.iter().map(|module| {
+            (
+                format!("node_modules/{module}/package.json"),
+                b"{}".as_slice(),
+            )
+        }));
         for (relative, content) in fixtures {
-            let path = source.join(relative);
+            let path = source.join(&relative);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
@@ -1072,7 +1162,7 @@ mod tests {
             "nodeVersion": "v24.0.0",
             "nodeFile": node_name,
             "moduleRoot": "node_modules",
-            "modules": ["pptxgenjs"],
+            "modules": PPTXGENJS_RUNTIME_MODULES,
             "files": files,
         });
         std::fs::write(
@@ -1093,6 +1183,25 @@ mod tests {
         );
 
         std::fs::write(modules.join("pptxgenjs/package.json"), b"tampered").unwrap();
+        assert!(configure_bundled_pptxgenjs_runtime(app_data.path(), resources.path()).is_err());
+
+        let installed_manifest_path = modules.parent().unwrap().join("runtime-manifest.json");
+        let mut installed_manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&installed_manifest_path).unwrap()).unwrap();
+        let tampered_path = modules.join("pptxgenjs/package.json");
+        let file = installed_manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == "node_modules/pptxgenjs/package.json")
+            .unwrap();
+        file["size"] = serde_json::json!(std::fs::metadata(&tampered_path).unwrap().len());
+        file["sha256"] = serde_json::json!(file_sha256(&tampered_path).unwrap());
+        std::fs::write(
+            &installed_manifest_path,
+            serde_json::to_vec_pretty(&installed_manifest).unwrap(),
+        )
+        .unwrap();
         assert!(configure_bundled_pptxgenjs_runtime(app_data.path(), resources.path()).is_err());
     }
 }

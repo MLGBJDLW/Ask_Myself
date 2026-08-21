@@ -111,7 +111,7 @@ enum OfficeRender {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OfficeGuarantees {
     #[serde(skip_serializing_if = "Option::is_none")]
     quality: Option<OfficeQuality>,
@@ -124,14 +124,14 @@ struct OfficeGuarantees {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OfficePreconditions {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OfficeDelivery {
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
@@ -208,7 +208,7 @@ struct OfficeValidationContract {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum OfficeOperation {
     Create {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,7 +294,7 @@ enum OfficeOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReplaceOperation {
     find: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -312,7 +312,7 @@ struct ReplaceOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SecureRedactOperation {
     find: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,7 +326,7 @@ struct SecureRedactOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CommentOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     find: Option<String>,
@@ -350,7 +350,7 @@ struct CommentOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TrackedReplaceOperation {
     find: String,
     replace: String,
@@ -363,7 +363,7 @@ struct TrackedReplaceOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BookmarkOperation {
     find: String,
     bookmark_name: String,
@@ -372,7 +372,7 @@ struct BookmarkOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FieldOperation {
     find: String,
     instruction: String,
@@ -383,7 +383,7 @@ struct FieldOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ContentControlOperation {
     find: String,
     tag: String,
@@ -396,6 +396,7 @@ struct ContentControlOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct CellValueOperation {
     sheet: String,
     cell: String,
@@ -403,7 +404,7 @@ struct CellValueOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FormulaOperation {
     sheet: String,
     cell: String,
@@ -413,6 +414,7 @@ struct FormulaOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RangeValueOperation {
     sheet: String,
     range: String,
@@ -420,13 +422,14 @@ struct RangeValueOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RangeOperation {
     sheet: String,
     range: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StyleOperation {
     sheet: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -437,7 +440,7 @@ struct StyleOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DefinedNameOperation {
     name: String,
     formula: String,
@@ -446,7 +449,7 @@ struct DefinedNameOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DataValidationOperation {
     sheet: String,
     range: String,
@@ -468,7 +471,7 @@ struct DataValidationOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TableOperation {
     sheet: String,
     range: String,
@@ -480,7 +483,7 @@ struct TableOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct NumberFormatOperation {
     sheet: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,6 +496,7 @@ struct NumberFormatOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct InsertSlideOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     after: Option<u64>,
@@ -503,7 +507,7 @@ struct InsertSlideOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SetTextOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide_id: Option<Value>,
@@ -517,7 +521,7 @@ struct SetTextOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SlideTargetOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide_id: Option<Value>,
@@ -528,7 +532,7 @@ struct SlideTargetOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TransitionOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide_id: Option<Value>,
@@ -542,7 +546,7 @@ struct TransitionOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AltTextOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide_id: Option<Value>,
@@ -558,7 +562,7 @@ struct AltTextOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SpeakerNotesOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slide_id: Option<Value>,
@@ -568,7 +572,7 @@ struct SpeakerNotesOperation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OfficeArtifactRequest {
     request_version: u8,
     format: OfficeFormat,
@@ -596,7 +600,7 @@ enum OfficeDecision {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum OfficeLiveOperation {
     WordReplaceText {
         search: String,
@@ -753,6 +757,7 @@ enum OfficeEngineResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OfficeArtifactArgs {
     action: OfficeArtifactAction,
     workspace_root: String,
@@ -927,8 +932,52 @@ async fn execute_live_action(
                     break Ok(value);
                 }
                 if tokio::time::Instant::now() >= deadline {
+                    use crate::office_live_bridge::OfficeLiveCancelOutcome;
+                    match bridge.cancel(&operation_id) {
+                        OfficeLiveCancelOutcome::Completed => {
+                            if let Some(result) = bridge.take_result(&operation_id) {
+                                let mut value = serde_json::to_value(result).map_err(|error| {
+                                    CoreError::Internal(format!(
+                                        "Office live result serialization failed: {error}"
+                                    ))
+                                })?;
+                                if let Some(object) = value.as_object_mut() {
+                                    object.insert(
+                                        "kind".to_string(),
+                                        Value::String("officeLiveOperationResult".to_string()),
+                                    );
+                                }
+                                break Ok(value);
+                            }
+                        }
+                        OfficeLiveCancelOutcome::IndeterminateLeased => {
+                            return Err(CoreError::Internal(format!(
+                                "Office.js operation timed out after the host leased it; Office state is indeterminate and must be inspected before retry: {operation_id}"
+                            )));
+                        }
+                        OfficeLiveCancelOutcome::CancelledBeforeLease => {
+                            return Err(CoreError::Internal(format!(
+                                "Office.js operation timed out and was cancelled before the host leased it: {operation_id}"
+                            )));
+                        }
+                        OfficeLiveCancelOutcome::Missing => {}
+                    }
+                    if let Some(result) = bridge.take_result(&operation_id) {
+                            let mut value = serde_json::to_value(result).map_err(|error| {
+                                CoreError::Internal(format!(
+                                    "Office live result serialization failed: {error}"
+                                ))
+                            })?;
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert(
+                                    "kind".to_string(),
+                                    Value::String("officeLiveOperationResult".to_string()),
+                                );
+                            }
+                            break Ok(value);
+                    }
                     return Err(CoreError::Internal(format!(
-                        "Office.js operation timed out waiting for the authorized host: {operation_id}"
+                        "Office.js operation timed out without a recoverable lease record: {operation_id}"
                     )));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -1185,6 +1234,46 @@ mod tests {
             }
         }));
         assert!(invalid_boolean.is_err());
+    }
+
+    #[test]
+    fn rust_boundary_rejects_unknown_top_level_nested_and_live_fields() {
+        let top_level_typo = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "capabilities",
+            "workspace_root": ".",
+            "workspace_rooot": "."
+        }));
+        assert!(top_level_typo.is_err());
+
+        let precondition_typo = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "execute",
+            "workspace_root": ".",
+            "request": {
+                "requestVersion": 2,
+                "format": "docx",
+                "intent": "modify",
+                "operations": [{
+                    "op": "replace",
+                    "find": "A",
+                    "replace": "B",
+                    "expectedMaches": 1
+                }]
+            }
+        }));
+        assert!(precondition_typo.is_err());
+
+        let live_typo = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "live_execute",
+            "workspace_root": ".",
+            "live_session_id": "session",
+            "live_operation": {
+                "op": "excel_set_range",
+                "address": "A1",
+                "values": [[1]],
+                "valuez": [[2]]
+            }
+        }));
+        assert!(live_typo.is_err());
     }
 
     #[test]

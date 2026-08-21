@@ -33,6 +33,8 @@ test('taskpane implements the exact Rust live-operation union without eval escap
   assert.match(taskpane, /parsed\.hostname !== '127\.0\.0\.1'/);
   assert.match(taskpane, /Office\.context\.requirements\.isSetSupported/);
   assert.match(taskpane, /authorization: `Bearer \$\{token\}`/);
+  assert.match(taskpane, /queued\.deadlineAt/);
+  assert.match(taskpane, /Operation lease expired before Office mutation/);
 });
 
 test('Excel formatting is field-allowlisted and PowerPoint gates requirement sets', () => {
