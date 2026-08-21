@@ -5692,9 +5692,9 @@ data: [DONE]
             super::super::native_search::SearchExecutionMode::ProviderNative,
             ProviderType::DeepSeek,
             Some("https://api.deepseek.com"),
-            "deepseek-v4-pro",
+            "deepseek-v4-flash",
         );
-        let mut request = endpoint_reasoning_request("deepseek-v4-pro");
+        let mut request = endpoint_reasoning_request("deepseek-v4-flash");
         request.tools = Some(vec![
             ToolDefinition {
                 name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
