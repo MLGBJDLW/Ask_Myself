@@ -280,6 +280,10 @@ fn disconnect_after_mcp_test(server: &McpServer) -> bool {
     !server.enabled
 }
 
+fn may_list_mcp_tools(server: &McpServer) -> bool {
+    server.enabled
+}
+
 fn user_mcp_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let data_dir = app_data_dir_for_skills(app_handle)?;
     Ok(nexa_core::mcp::config_file::user_mcp_config_path(&data_dir))
@@ -450,18 +454,25 @@ pub async fn list_mcp_tools_cmd(
     mcp_state: tauri::State<'_, McpManagerState>,
     server_id: String,
 ) -> Result<Vec<McpToolInfo>, String> {
+    let servers = state.db.list_mcp_servers().map_err(|e| e.to_string())?;
+    let server = servers
+        .into_iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| format!("MCP server {server_id} not found"))?;
     let mut manager = mcp_state.manager.lock().await;
+    // Tool enumeration is a runtime action, not a diagnostic test. Re-read
+    // durable activation before consulting the client cache so a stale UI
+    // snapshot cannot resurrect a connector disabled by a JSON reload.
+    if !may_list_mcp_tools(&server) {
+        let _ = manager.disconnect_server(&server_id).await;
+        return Err(format!("MCP server {server_id} is disabled"));
+    }
     // If already connected, list tools from existing client.
     if let Some(client) = manager.get_client(&server_id) {
         let mut guard = client.lock().await;
         return guard.list_tools().await.map_err(|e| e.to_string());
     }
     // Otherwise, connect first.
-    let servers = state.db.list_mcp_servers().map_err(|e| e.to_string())?;
-    let server = servers
-        .into_iter()
-        .find(|s| s.id == server_id)
-        .ok_or_else(|| format!("MCP server {server_id} not found"))?;
     manager
         .connect_server(&server, Some(DEFAULT_MCP_CALL_TIMEOUT_SECS))
         .await
@@ -494,5 +505,12 @@ mod mcp_command_tests {
         assert!(disconnect_after_mcp_test(&test_server(false, false)));
         assert!(disconnect_after_mcp_test(&test_server(false, true)));
         assert!(!disconnect_after_mcp_test(&test_server(true, false)));
+    }
+
+    #[test]
+    fn tool_enumeration_requires_durable_connector_activation() {
+        assert!(!may_list_mcp_tools(&test_server(false, false)));
+        assert!(!may_list_mcp_tools(&test_server(false, true)));
+        assert!(may_list_mcp_tools(&test_server(true, false)));
     }
 }

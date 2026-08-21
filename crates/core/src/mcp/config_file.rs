@@ -279,12 +279,6 @@ pub fn reload_user_mcp_config(
         desired.push(declaration_to_input(key, declaration)?);
     }
 
-    let existing: HashMap<String, McpServer> = db
-        .list_mcp_servers()?
-        .into_iter()
-        .filter(|server| server.id.starts_with(USER_JSON_ID_PREFIX))
-        .map(|server| (server.id.clone(), server))
-        .collect();
     let desired_ids: HashSet<String> = desired
         .iter()
         .filter_map(|input| input.id.clone())
@@ -293,6 +287,40 @@ pub fn reload_user_mcp_config(
 
     let mut conn = db.conn();
     let tx = conn.transaction()?;
+    // Activation is user-owned mutable state. Read it under the same database
+    // lock and transaction as the projection write so a concurrent toggle is
+    // ordered entirely before or after this reload, never overwritten from a
+    // stale pre-transaction snapshot.
+    let existing: HashMap<String, McpServer> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, name, transport, command, args, url, env_json, headers_json,
+                    enabled, created_at, updated_at, builtin_id
+             FROM mcp_servers
+             WHERE id LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![format!("{USER_JSON_ID_PREFIX}%")], |row| {
+            Ok(McpServer {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                transport: row.get(2)?,
+                command: row.get(3)?,
+                args: row.get(4)?,
+                url: row.get(5)?,
+                env_json: row.get(6)?,
+                headers_json: row.get(7)?,
+                enabled: row.get::<_, i32>(8)? != 0,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                builtin_id: row.get(11)?,
+            })
+        })?;
+        let mut existing = HashMap::new();
+        for server in rows {
+            let server = server?;
+            existing.insert(server.id.clone(), server);
+        }
+        existing
+    };
     for input in &desired {
         let id = input.id.as_deref().expect("file connector id is assigned");
         let enabled = existing

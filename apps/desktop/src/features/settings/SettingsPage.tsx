@@ -1233,10 +1233,15 @@ export function SettingsPage() {
       });
   }, []);
 
-  const loadMcpServers = useCallback(() => {
-    api.listMcpServers().then(setMcpServers).catch(() => {
+  const loadMcpServers = useCallback(async () => {
+    try {
+      const servers = await api.listMcpServers();
+      setMcpServers(servers);
+      return servers;
+    } catch {
       toast.error(t('common.error'));
-    });
+      return null;
+    }
   }, []);
 
   const loadMcpConfigPath = useCallback(() => {
@@ -1250,7 +1255,7 @@ export function SettingsPage() {
       loadPersonas();
       loadSkills();
       loadSkillProposals();
-      loadMcpServers();
+      void loadMcpServers();
       loadMcpConfigPath();
     }
   }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpConfigPath, loadMcpServers]);
@@ -1405,7 +1410,7 @@ export function SettingsPage() {
         delete next[saved.id];
         return next;
       });
-      loadMcpServers();
+      void loadMcpServers();
       if (saved.enabled) {
         void fetchMcpTools(saved.id);
       }
@@ -1429,7 +1434,7 @@ export function SettingsPage() {
     try {
       const report = await api.reloadMcpConfigFile();
       setMcpConfigPath(report.path);
-      loadMcpServers();
+      await loadMcpServers();
       setMcpToolCounts({});
       setMcpToolsExpanded({});
       toast.success(t('common.success'));
@@ -1456,7 +1461,7 @@ export function SettingsPage() {
         return next;
       });
       setDeleteMcpTarget(null);
-      loadMcpServers();
+      void loadMcpServers();
     } catch {
       toast.error(t('common.error'));
     }

@@ -389,9 +389,34 @@ test.beforeEach(async ({ page }) => {
         case "list_agent_procedural_memories_cmd":
         case "list_personas_cmd":
         case "list_skills_cmd":
-        case "list_mcp_servers_cmd":
         case "get_web_search_status_cmd":
           return [];
+        case "list_mcp_servers_cmd": {
+          if (localStorage.getItem("e2e-mcp-reload-race") !== "1") return [];
+          const reloaded = localStorage.getItem("e2e-mcp-config-reloaded") === "1";
+          if (reloaded) {
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
+          return [{
+            id: "user-json:docs",
+            name: "Docs",
+            transport: "streamable_http",
+            command: null,
+            args: null,
+            url: "https://example.com/mcp",
+            envJson: null,
+            headersJson: null,
+            enabled: !reloaded,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            builtinId: null,
+          }];
+        }
+        case "list_mcp_tools_cmd": {
+          const calls = Number(localStorage.getItem("e2e-mcp-list-tools-calls") ?? "0");
+          localStorage.setItem("e2e-mcp-list-tools-calls", String(calls + 1));
+          return [];
+        }
         case "prepare_mcp_config_file_cmd":
           return "C:\\Users\\Test\\AppData\\Roaming\\Nexa\\mcp-connectors.json";
         case "reload_mcp_config_file_cmd":
@@ -1760,6 +1785,7 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
 });
 
 test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("e2e-mcp-reload-race", "1"));
   await page.goto("/settings");
   await page.getByRole("button", { name: "Extensions", exact: true }).click();
 
@@ -1771,12 +1797,17 @@ test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
   await expect(mcpSection.getByRole("button", { name: "Open JSON", exact: true })).toBeVisible();
   await expect(mcpSection.getByRole("button", { name: "Reload JSON", exact: true })).toBeVisible();
 
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-mcp-list-tools-calls")))
+    .toBe("1");
+
   await mcpSection.getByRole("button", { name: "Open JSON", exact: true }).click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-opened-mcp-config")))
     .toContain("mcp-connectors.json");
   await mcpSection.getByRole("button", { name: "Reload JSON", exact: true }).click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-mcp-config-reloaded")))
     .toBe("1");
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => localStorage.getItem("e2e-mcp-list-tools-calls"))).toBe("1");
 });
 
 test("custom appearances without a visual background keep the ordinary opaque shell", async ({ page }) => {
