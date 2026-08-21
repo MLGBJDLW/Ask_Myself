@@ -231,7 +231,7 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
         url: null,
         envJson: parsedEnv.normalized,
         headersJson: null,
-        enabled: server?.enabled ?? true,
+        enabled: server?.enabled ?? false,
       };
     }
 
@@ -244,7 +244,7 @@ export function McpServerForm({ server, onSave, onCancel, onDirtyChange }: McpSe
       url: normalizedRemoteUrl,
       envJson: null,
       headersJson: parsedHeaders.normalized,
-      enabled: server?.enabled ?? true,
+      enabled: server?.enabled ?? false,
     };
   };
 

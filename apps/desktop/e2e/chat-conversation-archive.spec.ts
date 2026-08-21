@@ -15,7 +15,7 @@ test.beforeEach(async ({ page }) => {
       systemPrompt: 'Legacy copied project prompt',
       collectionContext: null,
       projectId: 'project-legacy',
-      personaId: null,
+      personaId: 'programmer',
       titleIsAuto: false,
       archivedAt: null,
       createdAt: nowIso,
@@ -113,12 +113,20 @@ test.beforeEach(async ({ page }) => {
           return clone(active);
         case 'create_conversation_cmd': {
           createConversationArgs.push(clone(args));
+          if (localStorage.getItem('e2e-fail-next-conversation-create') === '1') {
+            localStorage.removeItem('e2e-fail-next-conversation-create');
+            throw new Error('Injected conversation create failure');
+          }
+          if (localStorage.getItem('e2e-delay-conversation-create') === '1') {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
           const conversation = {
             ...activeConversation,
             id: 'conv-new',
             title: '',
             systemPrompt: String(args.systemPrompt ?? ''),
             projectId: args.projectId == null ? null : String(args.projectId),
+            personaId: args.personaId == null ? null : String(args.personaId),
           };
           active = [conversation, ...active];
           return clone(conversation);
@@ -149,6 +157,16 @@ test.beforeEach(async ({ page }) => {
           archived = archived.filter((item) => item.id !== id);
           return null;
         }
+        case 'agent_chat_cmd':
+          if (localStorage.getItem('e2e-fail-next-agent-launch') === '1') {
+            localStorage.removeItem('e2e-fail-next-agent-launch');
+            throw new Error('Injected agent launch failure');
+          }
+          if (localStorage.getItem('e2e-delay-next-agent-launch') === '1') {
+            localStorage.removeItem('e2e-delay-next-agent-launch');
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
+          return null;
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           const conversation = [...active, ...archived].find((item) => item.id === id);
@@ -164,9 +182,33 @@ test.beforeEach(async ({ page }) => {
         case 'list_user_memories_cmd':
         case 'list_skills_cmd':
         case 'list_mcp_servers_cmd':
-        case 'list_personas_cmd':
         case 'list_checkpoints_cmd':
           return [];
+        case 'list_personas_cmd':
+          return [
+            {
+              id: 'default',
+              name: 'Default',
+              description: 'Balanced assistant',
+              instructions: '',
+              enabled: true,
+              builtin: true,
+              defaultSkillIds: [],
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+            {
+              id: 'programmer',
+              name: 'Programmer',
+              description: 'Software engineering assistant',
+              instructions: 'Act as a programmer.',
+              enabled: true,
+              builtin: true,
+              defaultSkillIds: [],
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            },
+          ];
         case 'list_projects_cmd':
           return [{
             id: 'project-legacy',
@@ -242,19 +284,157 @@ test('conversation actions offer archive and delete with reversible archive', as
   await expect(page.getByTestId('conversation-item-conv-active')).toBeHidden();
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
+});
+
+test('archive feedback remains an overlay and never participates in the app layout', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+
+  const appMain = page.locator('main');
+  const before = await appMain.boundingBox();
+  if (!before) throw new Error('app main layout is not measurable');
+
+  const removedSonnerStyles = await page.evaluate(() => {
+    const styles = Array.from(document.querySelectorAll('style'));
+    const sonnerStyles = styles.filter((style) => style.textContent?.includes('[data-sonner-toaster]'));
+    sonnerStyles.forEach((style) => style.remove());
+    return sonnerStyles.length;
+  });
+  expect(removedSonnerStyles).toBeGreaterThan(0);
+
+  await page.getByTestId('conversation-item-conv-active').hover();
+  await page.getByTestId('conversation-actions-trigger-conv-active').click();
+  await page.getByTestId('conversation-actions-conv-active').getByRole('button', { name: 'Archive' }).click();
+  await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
+
+  const notificationLayout = await page.locator('[data-sonner-toaster]').evaluate((toaster) => {
+    const rect = toaster.getBoundingClientRect();
+    const style = getComputedStyle(toaster);
+    return {
+      position: style.position,
+      right: window.innerWidth - rect.right,
+      bottom: window.innerHeight - rect.bottom,
+      portaledToBody: toaster.closest('section')?.parentElement === document.body,
+    };
+  });
+  const after = await appMain.boundingBox();
+  if (!after) throw new Error('app main layout disappeared after archive feedback');
+
+  expect(notificationLayout).toMatchObject({ position: 'fixed', portaledToBody: true });
+  expect(notificationLayout.right).toBeGreaterThanOrEqual(0);
+  expect(notificationLayout.bottom).toBeGreaterThanOrEqual(0);
+  expect(after).toEqual(before);
+});
+
+test('new chat stays an unpersisted draft until the first send', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(0);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(0);
+});
+
+test('new chat resets the previous conversation persona before first persistence', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await expect(page.getByRole('button', { name: 'Personas' })).toHaveAttribute('title', /Programmer/);
 
   await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByRole('button', { name: 'Personas' })).toHaveAttribute('title', /Default/);
+  await page.getByPlaceholder('Type a message...').fill('Hello from a fresh draft.');
+  await page.getByPlaceholder('Type a message...').press('Enter');
+
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
       .__CREATE_CONVERSATION_ARGS__[0],
-  )).toMatchObject({
-    provider: 'open_ai',
-    model: 'gpt-4.1',
-  });
+  )).toMatchObject({ personaId: 'default' });
+});
+
+test('failed first persistence keeps the local draft available for retry', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-fail-next-conversation-create', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Keep this draft when persistence fails.');
+
+  await input.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await expect(input).toHaveValue('Keep this draft when persistence fails.');
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+});
+
+test('rejected first turn rolls back its empty conversation and keeps the draft', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-fail-next-agent-launch', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Keep this draft when the agent launch is rejected.');
+
+  await input.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __ARCHIVE_COMMANDS__: string[] })
+      .__ARCHIVE_COMMANDS__.filter((command) => command === 'delete_conversation_cmd').length,
+  )).toBe(1);
+  await expect(input).toHaveValue('Keep this draft when the agent launch is rejected.');
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+});
+
+test('a deferred first send never redirects after the user selects another conversation', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  const sidebar = page.getByTestId('chat-history-sidebar');
+  await sidebar.getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-delay-next-agent-launch', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Start this conversation without stealing later navigation.');
+
+  await input.press('Enter');
+  await sidebar.getByTestId('conversation-item-conv-active').click();
+  await expect(page).toHaveURL(/\/chat\/conv-active$/);
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await page.waitForTimeout(400);
+  await expect(page).toHaveURL(/\/chat\/conv-active$/);
+  await expect(sidebar.getByTestId('conversation-item-conv-new')).toHaveCount(1);
+});
+
+test('first persistence is single-flight when Enter is pressed repeatedly', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-history-sidebar').getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-delay-conversation-create', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Create exactly one conversation.');
+
+  await input.press('Enter');
+  await input.press('Enter');
+  await page.waitForTimeout(500);
+
   expect(await page.evaluate(() =>
     (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
-      .__CREATE_CONVERSATION_ARGS__[0]?.systemPrompt ?? null,
-  )).toBeNull();
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
 });
 
 test('archived conversations can be restored from the sidebar manager', async ({ page }) => {

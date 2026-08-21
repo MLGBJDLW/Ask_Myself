@@ -115,6 +115,12 @@ pub struct MessageValidationReport {
     pub dropped: Vec<MessageValidationDiagnostic>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MessageRepairReport {
+    pub messages: Vec<Message>,
+    pub repairs: Vec<MessageValidationDiagnostic>,
+}
+
 fn role_name(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
@@ -132,7 +138,7 @@ fn has_visible_content(message: &Message) -> bool {
     })
 }
 
-fn complete_tool_call(call: &ToolCallRequest) -> bool {
+pub fn is_complete_tool_call(call: &ToolCallRequest) -> bool {
     !call.id.trim().is_empty()
         && !call.name.trim().is_empty()
         && serde_json::from_str::<serde_json::Value>(&call.arguments)
@@ -176,7 +182,7 @@ pub fn normalize_assistant_message(
         .map(|calls| {
             calls
                 .iter()
-                .filter(|call| !complete_tool_call(call))
+                .filter(|call| !is_complete_tool_call(call))
                 .count()
         })
         .unwrap_or_default();
@@ -194,7 +200,7 @@ pub fn normalize_assistant_message(
     }
 
     if let Some(calls) = message.tool_calls.as_mut() {
-        calls.retain(complete_tool_call);
+        calls.retain(is_complete_tool_call);
         if calls.is_empty() {
             message.tool_calls = None;
         }
@@ -256,12 +262,158 @@ pub fn validate_message_sequence(
     })
 }
 
+/// Repair legacy persisted history into provider-safe assistant/tool replay
+/// units. A tool round is atomic: every call must be complete and uniquely
+/// identified, and it must be followed immediately by exactly one non-empty
+/// result. Invalid units lose their tool envelope as a whole; genuine visible
+/// assistant text is preserved, while tool-only fragments are quarantined.
+pub fn repair_persisted_message_history(
+    messages: Vec<Message>,
+    conversation_id: Option<&str>,
+) -> MessageRepairReport {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut repairs = Vec::new();
+    let mut index = 0usize;
+
+    while index < messages.len() {
+        let message = &messages[index];
+        if message.role == Role::Tool {
+            let context = MessageNormalizationContext {
+                provider: None,
+                model: None,
+                conversation_id,
+                turn_id: None,
+                message_index: index,
+                source: MessageSource::Persisted,
+                invalid_assistant: InvalidAssistantHandling::Drop,
+            };
+            repairs.push(diagnostic(
+                &context,
+                message,
+                has_visible_content(message),
+                0,
+                "orphan persisted tool result removed",
+            ));
+            index += 1;
+            continue;
+        }
+
+        if message.role != Role::Assistant {
+            repaired.push(message.clone());
+            index += 1;
+            continue;
+        }
+
+        let calls = message.tool_calls.as_deref().unwrap_or_default();
+        if calls.is_empty() {
+            let mut normalized = message.clone();
+            normalized.tool_calls = None;
+            if has_visible_content(&normalized) {
+                repaired.push(normalized);
+            } else {
+                let context = MessageNormalizationContext {
+                    provider: None,
+                    model: None,
+                    conversation_id,
+                    turn_id: None,
+                    message_index: index,
+                    source: MessageSource::Persisted,
+                    invalid_assistant: InvalidAssistantHandling::Drop,
+                };
+                repairs.push(diagnostic(
+                    &context,
+                    message,
+                    false,
+                    0,
+                    "empty persisted assistant message removed",
+                ));
+            }
+            index += 1;
+            continue;
+        }
+
+        let mut result_end = index + 1;
+        while result_end < messages.len() && messages[result_end].role == Role::Tool {
+            result_end += 1;
+        }
+        let results = &messages[index + 1..result_end];
+
+        let mut call_ids = HashSet::new();
+        let calls_are_complete = calls
+            .iter()
+            .all(|call| is_complete_tool_call(call) && call_ids.insert(call.id.clone()));
+        let mut result_ids = HashSet::new();
+        let results_are_complete = results.len() == calls.len()
+            && results.iter().all(|result| {
+                let call_id = result.name.as_deref().map(str::trim).unwrap_or_default();
+                !call_id.is_empty()
+                    && has_visible_content(result)
+                    && result_ids.insert(call_id.to_string())
+                    && call_ids.contains(call_id)
+            });
+        let unit_is_complete = calls_are_complete
+            && results_are_complete
+            && call_ids.len() == result_ids.len()
+            && call_ids == result_ids;
+
+        if unit_is_complete {
+            repaired.push(message.clone());
+            repaired.extend(results.iter().cloned());
+        } else {
+            let context = MessageNormalizationContext {
+                provider: None,
+                model: None,
+                conversation_id,
+                turn_id: None,
+                message_index: index,
+                source: MessageSource::Persisted,
+                invalid_assistant: InvalidAssistantHandling::Drop,
+            };
+            repairs.push(diagnostic(
+                &context,
+                message,
+                has_visible_content(message),
+                calls.len(),
+                format!(
+                    "invalid persisted assistant/tool replay unit repaired (calls={}, results={})",
+                    calls.len(),
+                    results.len()
+                ),
+            ));
+            if has_visible_content(message) {
+                let mut visible_assistant = message.clone();
+                visible_assistant.tool_calls = None;
+                visible_assistant.clear_provider_turn();
+                repaired.push(visible_assistant);
+            }
+        }
+        index = result_end;
+    }
+
+    MessageRepairReport {
+        messages: repaired,
+        repairs,
+    }
+}
+
 pub fn validate_provider_request(
     messages: &[Message],
     provider: &str,
     model: &str,
 ) -> Result<(), CoreError> {
-    let context = MessageNormalizationContext::provider_boundary(provider, model, 0);
+    validate_provider_request_with_context(messages, provider, model, None, None)
+}
+
+pub fn validate_provider_request_with_context(
+    messages: &[Message],
+    provider: &str,
+    model: &str,
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Result<(), CoreError> {
+    let mut context = MessageNormalizationContext::provider_boundary(provider, model, 0);
+    context.conversation_id = conversation_id;
+    context.turn_id = turn_id;
     let report = validate_message_sequence(messages, context.clone())
         .map_err(|error| CoreError::Llm(format!("message validation failed: {error}")))?;
     validate_tool_call_sequence(&report.messages, context)
@@ -273,29 +425,32 @@ fn validate_tool_call_sequence(
     mut context: MessageNormalizationContext<'_>,
 ) -> Result<(), MessageValidationError> {
     let mut pending: HashMap<String, usize> = HashMap::new();
-    let mut resolved: HashSet<String> = HashSet::new();
+    let mut resolved_in_round: HashSet<String> = HashSet::new();
 
     for (index, message) in messages.iter().enumerate() {
         context.message_index = index;
-        if message.role != Role::Tool && !pending.is_empty() {
-            return Err(MessageValidationError {
-                diagnostic: Box::new(diagnostic(
-                    &context,
-                    message,
-                    has_visible_content(message),
-                    message.tool_calls.as_ref().map_or(0, Vec::len),
-                    format!(
-                        "{} tool call(s) have no result before the next non-tool message",
-                        pending.len()
-                    ),
-                )),
-            });
+        if message.role != Role::Tool {
+            if !pending.is_empty() {
+                return Err(MessageValidationError {
+                    diagnostic: Box::new(diagnostic(
+                        &context,
+                        message,
+                        has_visible_content(message),
+                        message.tool_calls.as_ref().map_or(0, Vec::len),
+                        format!(
+                            "{} tool call(s) have no result before the next non-tool message",
+                            pending.len()
+                        ),
+                    )),
+                });
+            }
+            resolved_in_round.clear();
         }
 
         match message.role {
             Role::Assistant => {
                 for call in message.tool_calls.as_deref().unwrap_or_default() {
-                    if pending.contains_key(&call.id) || resolved.contains(&call.id) {
+                    if pending.contains_key(&call.id) {
                         return Err(MessageValidationError {
                             diagnostic: Box::new(diagnostic(
                                 &context,
@@ -322,7 +477,7 @@ fn validate_tool_call_sequence(
                         )),
                     });
                 }
-                if resolved.contains(call_id) {
+                if resolved_in_round.contains(call_id) {
                     return Err(MessageValidationError {
                         diagnostic: Box::new(diagnostic(
                             &context,
@@ -355,7 +510,7 @@ fn validate_tool_call_sequence(
                         )),
                     });
                 }
-                resolved.insert(call_id.to_string());
+                resolved_in_round.insert(call_id.to_string());
             }
             Role::System | Role::User => {}
         }
@@ -460,6 +615,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_boundary_diagnostics_include_privacy_safe_request_context() {
+        let incomplete = assistant_with_calls(Some(vec![ToolCallRequest {
+            id: "call-1".to_string(),
+            name: "search".to_string(),
+            arguments: "{".to_string(),
+            thought_signature: None,
+        }]));
+
+        let error = validate_provider_request_with_context(
+            &[incomplete],
+            "openai",
+            "deepseek-v4-pro",
+            Some("nexa-private-routing-key"),
+            Some("turn-1"),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("conversation_id=nexa-private-routing-key"));
+        assert!(error.contains("turn_id=turn-1"));
+    }
+
+    #[test]
     fn provider_boundary_accepts_complete_tool_call_and_result_sequence() {
         let call = ToolCallRequest {
             id: "call-1".to_string(),
@@ -506,5 +684,75 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("duplicate"));
+    }
+
+    #[test]
+    fn persisted_history_repair_quarantines_incomplete_tool_unit_and_keeps_text() {
+        let mut assistant = Message::text(Role::Assistant, "Visible progress remains useful.");
+        assistant.tool_calls = Some(vec![ToolCallRequest {
+            id: "call-broken".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"unfinished""#.to_string(),
+            thought_signature: None,
+        }]);
+        let tool = Message::text_with_name(Role::Tool, "not executed", "call-broken");
+
+        let report = repair_persisted_message_history(
+            vec![assistant, tool, Message::text(Role::User, "Continue")],
+            Some("conversation-1"),
+        );
+
+        assert_eq!(report.repairs.len(), 1);
+        assert_eq!(report.messages.len(), 2);
+        assert_eq!(
+            report.messages[0].text_content(),
+            "Visible progress remains useful."
+        );
+        assert!(report.messages[0].tool_calls.is_none());
+        assert!(report
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool));
+        validate_provider_request(&report.messages, "openai", "deepseek-v4-pro").unwrap();
+    }
+
+    #[test]
+    fn persisted_history_repair_preserves_complete_atomic_tool_unit() {
+        let call = ToolCallRequest {
+            id: "call-complete".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"rust"}"#.to_string(),
+            thought_signature: None,
+        };
+        let assistant = assistant_with_calls(Some(vec![call]));
+        let tool = Message::text_with_name(Role::Tool, "result", "call-complete");
+
+        let report =
+            repair_persisted_message_history(vec![assistant, tool], Some("conversation-1"));
+
+        assert!(report.repairs.is_empty());
+        assert_eq!(report.messages.len(), 2);
+        validate_provider_request(&report.messages, "openai", "deepseek-v4-pro").unwrap();
+    }
+
+    #[test]
+    fn completed_tool_rounds_may_reuse_provider_call_ids() {
+        let call = || ToolCallRequest {
+            id: "call_0".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"rust"}"#.to_string(),
+            thought_signature: None,
+        };
+        let messages = vec![
+            assistant_with_calls(Some(vec![call()])),
+            Message::text_with_name(Role::Tool, "first result", "call_0"),
+            assistant_with_calls(Some(vec![call()])),
+            Message::text_with_name(Role::Tool, "second result", "call_0"),
+        ];
+
+        validate_provider_request(&messages, "openai", "local-compatible").unwrap();
+        let report = repair_persisted_message_history(messages, Some("conversation-1"));
+        assert!(report.repairs.is_empty());
+        assert_eq!(report.messages.len(), 4);
     }
 }

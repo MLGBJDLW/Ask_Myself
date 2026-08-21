@@ -66,7 +66,11 @@ export interface ChatInputSendOptions {
 }
 
 interface ChatInputProps {
-  onSend: (message: string, attachments?: ImageAttachment[], options?: ChatInputSendOptions) => void;
+  onSend: (
+    message: string,
+    attachments?: ImageAttachment[],
+    options?: ChatInputSendOptions,
+  ) => Promise<boolean>;
   onStop: () => void;
   isStreaming: boolean;
   disabled: boolean;
@@ -403,6 +407,7 @@ export function ChatInput({
   const [nexusActivationVisible, setNexusActivationVisible] = useState(false);
   const [visionPolicyMode, setVisionPolicyMode] = useState<'off' | 'ask' | 'auto' | 'always_auxiliary'>('auto');
   const [visionTurnOverride, setVisionTurnOverride] = useState<VisionTurnOverride | null>(null);
+  const [sendPending, setSendPending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -413,13 +418,15 @@ export function ChatInput({
   );
   const historyDraftRef = useRef<{ value: string; cursor: number } | null>(null);
   const previousPowerModeKeyRef = useRef(draftKey);
+  const previousDraftKeyRef = useRef(draftKey);
+  const sendInFlightRef = useRef(false);
   // Compaction only locks actions that mutate conversation history. The draft
   // remains fully editable so the user can keep typing while the checkpoint is
   // being built, then send as soon as compaction completes.
   const hasImageAttachments = attachments.some((attachment) => attachment.mediaType.startsWith('image/'));
   const visionDecisionRequired = hasImageAttachments && visionPolicyMode === 'ask' && visionTurnOverride === null;
   const inputLocked = disabled;
-  const sendLocked = inputLocked || isCompacting || visionDecisionRequired;
+  const sendLocked = inputLocked || isCompacting || visionDecisionRequired || sendPending;
   const attachmentLocked = inputLocked || isCompacting || isStreaming;
   const effectivePlanModeEnabled = planModeEnabled ?? localPlanModeEnabled;
   const inputHistoryEntries = useMemo(
@@ -543,6 +550,23 @@ export function ChatInput({
   }, [activeSlashCommandId, attachments, draftKey]);
 
   useEffect(() => {
+    const previousKey = previousDraftKeyRef.current;
+    if (
+      sendInFlightRef.current
+      && previousKey === NEW_CONVERSATION_DRAFT_KEY
+      && draftKey !== NEW_CONVERSATION_DRAFT_KEY
+    ) {
+      // First-send persistence changes the route before the async launch has
+      // settled. Carry the draft to the durable conversation key so a later
+      // launch failure can restore it instead of loading an empty draft.
+      const draft = draftsRef.current[previousKey] ?? readChatInputDraft(previousKey);
+      draftsRef.current[draftKey] = cloneDraftState(draft);
+      persistChatInputDraft(draftKey, draft);
+      resetInputHistoryNavigation();
+      setLoadedDraftKey(draftKey);
+      previousDraftKeyRef.current = draftKey;
+      return;
+    }
     const draft = draftsRef.current[draftKey] ?? readChatInputDraft(draftKey);
     draftsRef.current[draftKey] = cloneDraftState(draft);
     resetInputHistoryNavigation();
@@ -551,6 +575,7 @@ export function ChatInput({
     setAttachments(draft.attachments);
     setActiveSlashCommandId(draft.activeSlashCommandId);
     setPreviewAttachment(null);
+    previousDraftKeyRef.current = draftKey;
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -869,8 +894,8 @@ export function ChatInput({
     }, 0);
   }, [draftKey, resetInputHistoryNavigation]);
 
-  const handleSend = useCallback(() => {
-    if (sendLocked) return;
+  const handleSend = useCallback(async () => {
+    if (sendLocked || sendInFlightRef.current) return;
     const trimmed = value.trim();
     if (!trimmed && attachments.length === 0 && !activeSlashCommand) return;
     if (isStreaming && (!trimmed || attachments.length > 0)) {
@@ -962,12 +987,23 @@ export function ChatInput({
     if (executionMode === "plan") {
       setPlanMode(true);
     }
-    onSend(
-      outgoingMessage,
-      attachments.length > 0 ? attachments : undefined,
-      sendOptions,
-    );
-    clearDraft();
+    sendInFlightRef.current = true;
+    setSendPending(true);
+    try {
+      const accepted = await onSend(
+        outgoingMessage,
+        attachments.length > 0 ? attachments : undefined,
+        sendOptions,
+      );
+      if (accepted) {
+        clearDraft();
+      }
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      sendInFlightRef.current = false;
+      setSendPending(false);
+    }
   }, [activeGoalContext, activeSlashCommand, attachments, clearDraft, collaborationMode, customOrchestration, effectivePlanModeEnabled, isStreaming, moaPreset, onCompact, onSend, orchestrationProfile, persistDraft, powerMode, sendLocked, setPlanMode, slashOptions, t, value, visionTurnOverride]);
 
   const handleKeyDown = useCallback(
@@ -1199,6 +1235,107 @@ export function ChatInput({
     { Icon: Users, key: "chat.nexusParallelRisk" },
     { Icon: ShieldCheck, key: "chat.nexusQualityRisk" },
   ];
+
+  const workflowCatalogControl = (
+    <NexaPopover
+      open={workflowCatalogOpen && !slashMenuOpen}
+      onOpenChange={setWorkflowCatalogOpen}
+    >
+      <NexaPopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="workflow-catalog-trigger"
+          disabled={attachmentLocked}
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+          aria-label={t("chat.workflows")}
+          aria-expanded={workflowCatalogOpen}
+        >
+          <Workflow className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{t("chat.workflows")}</span>
+          <ChevronDown className={`h-3 w-3 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
+        </button>
+      </NexaPopoverTrigger>
+      {workflowCatalogOpen && !slashMenuOpen && (
+        <NexaPopoverContent
+          data-testid="workflow-catalog-panel"
+          side="top"
+          align="start"
+          collisionPadding={16}
+          className="w-[min(64rem,calc(100vw-2rem))] overflow-hidden p-0"
+        >
+          <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+            <Workflow className="h-4 w-4 text-accent" />
+            <span className="text-sm font-medium text-text-primary">{t("chat.workflows")}</span>
+            <span className="text-xs tabular-nums text-text-tertiary">
+              {workflowCatalogLoading
+                ? t("common.loading")
+                : t("chat.workflowTemplateCount", { count: String(workflowTemplates.length) })}
+            </span>
+            <button
+              type="button"
+              onClick={() => setWorkflowCatalogOpen(false)}
+              className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
+              aria-label={t("common.close")}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid max-h-72 gap-2 overflow-y-auto p-2 sm:grid-cols-2 lg:grid-cols-3">
+            {workflowTemplates.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => applyWorkflowTemplate(template)}
+                className="min-h-[112px] rounded-lg border border-border/70 bg-surface-1/70 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/40 focus:outline-none focus:ring-2 focus:ring-accent/30"
+                aria-label={`${template.label} workflow`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-sm font-medium leading-5 text-text-primary">
+                    {template.label}
+                  </span>
+                  <span className="shrink-0 rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
+                    {t("chat.workflowTasks", { count: String(template.tasks.length) })}
+                  </span>
+                </div>
+                <div className="mt-1.5 line-clamp-2 text-xs leading-5 text-text-secondary">
+                  {template.description}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {template.tasks.slice(0, 3).map((task) => (
+                    <span
+                      key={task.id}
+                      className="rounded-md bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary"
+                    >
+                      {task.roleLabel}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            ))}
+            {!workflowCatalogLoading && workflowTemplates.length === 0 && (
+              <div className="col-span-full px-3 py-6 text-center text-sm text-text-tertiary">
+                {t("chat.workflowUnavailable")}
+              </div>
+            )}
+          </div>
+        </NexaPopoverContent>
+      )}
+    </NexaPopover>
+  );
+
+  const attachmentControl = (
+    <button
+      type="button"
+      data-testid="chat-attachment-trigger"
+      onClick={() => fileInputRef.current?.click()}
+      disabled={attachmentLocked}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
+      aria-label={t("chat.attachImage")}
+    >
+      <Paperclip className="h-3.5 w-3.5" />
+    </button>
+  );
 
   const modeIndicatorStyle = {
     width: "calc(50% + 0.25rem)",
@@ -1582,8 +1719,15 @@ export function ChatInput({
       )}
 
       <div className="space-y-2">
-        <div className="flex min-h-8 items-center justify-between gap-2">
-          {modeSegment}
+        <div className="flex min-h-8 items-start justify-between gap-2">
+          <div
+            data-testid="chat-composer-primary-controls"
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+          >
+            {modeSegment}
+            {workflowCatalogControl}
+            {attachmentControl}
+          </div>
           {contextIndicator}
         </div>
         {planModeBanner}
@@ -1725,92 +1869,6 @@ export function ChatInput({
 
         <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t border-border/35 px-2.5 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
-            <NexaPopover
-              open={workflowCatalogOpen && !slashMenuOpen}
-              onOpenChange={setWorkflowCatalogOpen}
-            >
-            <NexaPopoverTrigger asChild>
-            <button
-              type="button"
-              data-testid="workflow-catalog-trigger"
-              disabled={attachmentLocked}
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-2 hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
-              aria-label={t("chat.workflows")}
-              aria-expanded={workflowCatalogOpen}
-            >
-              <Workflow className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{t("chat.workflows")}</span>
-              <ChevronDown className={`h-3 w-3 transition-transform ${workflowCatalogOpen ? "rotate-180" : ""}`} />
-            </button>
-            </NexaPopoverTrigger>
-            {workflowCatalogOpen && !slashMenuOpen && (
-              <NexaPopoverContent
-                data-testid="workflow-catalog-panel"
-                side="top"
-                align="start"
-                collisionPadding={16}
-                className="w-[min(64rem,calc(100vw-2rem))] overflow-hidden p-0"
-              >
-                <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
-                  <Workflow className="h-4 w-4 text-accent" />
-                  <span className="text-sm font-medium text-text-primary">{t("chat.workflows")}</span>
-                  <span className="text-xs tabular-nums text-text-tertiary">
-                    {workflowCatalogLoading
-                      ? t("common.loading")
-                      : t("chat.workflowTemplateCount", { count: String(workflowTemplates.length) })}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setWorkflowCatalogOpen(false)}
-                    className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                    aria-label={t("common.close")}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="grid max-h-72 gap-2 overflow-y-auto p-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {workflowTemplates.map((template) => (
-                    <button
-                      key={template.id}
-                      type="button"
-                      onClick={() => applyWorkflowTemplate(template)}
-                      className="min-h-[112px] rounded-lg border border-border/70 bg-surface-1/70 p-3 text-left transition-colors hover:border-accent/60 hover:bg-accent-subtle/40 focus:outline-none focus:ring-2 focus:ring-accent/30"
-                      aria-label={`${template.label} workflow`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="text-sm font-medium leading-5 text-text-primary">
-                          {template.label}
-                        </span>
-                        <span className="shrink-0 rounded-md border border-border/60 bg-surface-0 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
-                          {t("chat.workflowTasks", { count: String(template.tasks.length) })}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 line-clamp-2 text-xs leading-5 text-text-secondary">
-                        {template.description}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {template.tasks.slice(0, 3).map((task) => (
-                          <span
-                            key={task.id}
-                            className="rounded-md bg-surface-0 px-1.5 py-0.5 text-[10px] text-text-tertiary"
-                          >
-                            {task.roleLabel}
-                          </span>
-                        ))}
-                      </div>
-                    </button>
-                  ))}
-                  {!workflowCatalogLoading && workflowTemplates.length === 0 && (
-                    <div className="col-span-full px-3 py-6 text-center text-sm text-text-tertiary">
-                      {t("chat.workflowUnavailable")}
-                    </div>
-                  )}
-                </div>
-              </NexaPopoverContent>
-            )}
-            </NexaPopover>
-
             {sessionControls}
 
             <label
@@ -1899,14 +1957,6 @@ export function ChatInput({
               <span className="hidden sm:inline">Nexus</span>
             </button>
 
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={attachmentLocked}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors duration-fast ease-out cursor-pointer hover:bg-surface-2 hover:text-text-secondary disabled:pointer-events-none disabled:opacity-40"
-              aria-label={t("chat.attachImage")}
-            >
-              <Paperclip className="h-3.5 w-3.5" />
-            </button>
             {conversationId && onCompact && (
               <button
                 type="button"

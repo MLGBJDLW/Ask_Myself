@@ -6,7 +6,14 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
     history.replaceState(
-      { usr: { initialMessage: 'What should we change for retries?' }, key: 'e2e-initial-message', idx: 0 },
+      {
+        usr: {
+          initialMessage: 'What should we change for retries?',
+          projectId: 'project-live',
+        },
+        key: 'e2e-initial-message',
+        idx: 0,
+      },
       '',
       '/chat',
     );
@@ -43,6 +50,7 @@ test.beforeEach(async ({ page }) => {
 
     const conversations: Record<string, Conversation> = {};
     const messagesByConversation: Record<string, Message[]> = {};
+    const createConversationArgs: Array<Record<string, unknown>> = [];
     const frontendPaintCalls: Array<Record<string, unknown>> = [];
 
     const callbackMap = new Map<number, (event: unknown) => void>();
@@ -119,6 +127,7 @@ test.beforeEach(async ({ page }) => {
         case 'list_conversations_cmd':
           return Object.values(conversations).map(clone);
         case 'create_conversation_cmd': {
+          createConversationArgs.push(clone(args));
           const id = 'conv-created-live';
           const conversation: Conversation = {
             id,
@@ -376,6 +385,8 @@ test.beforeEach(async ({ page }) => {
     };
     (window as unknown as { __frontendPaintCalls__: Array<Record<string, unknown>> })
       .__frontendPaintCalls__ = frontendPaintCalls;
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__ = createConversationArgs;
 
     (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
       unregisterListener: (_event: string, eventId: number) => {
@@ -410,4 +421,12 @@ test('keeps the first live thinking and tool call visible when a new conversatio
     (window as unknown as { __frontendPaintCalls__: Array<Record<string, unknown>> })
       .__frontendPaintCalls__[0]?.elapsedMs ?? 0,
   ))).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__[0],
+  )).toMatchObject({
+    provider: 'open_ai',
+    model: 'gpt-4.1',
+    projectId: 'project-live',
+  });
 });

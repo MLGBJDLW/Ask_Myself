@@ -54,6 +54,7 @@ interface CompactionUiState {
 interface ChatRouteState {
   initialMessage?: string;
   systemPrompt?: string;
+  projectId?: string | null;
   taskOrchestratorRunId?: string | null;
   resumeCheckpointId?: string | null;
 }
@@ -538,6 +539,9 @@ export function ChatPage() {
   const initialCollectionContext = (
     (location.state as { collectionContext?: Conversation['collectionContext'] } | null)?.collectionContext
   ) ?? null;
+  const initialProjectId = typeof (location.state as ChatRouteState | null)?.projectId === 'string'
+    ? (location.state as ChatRouteState).projectId?.trim() || null
+    : null;
 
   // Source scope forwarded from route state, applied when the first send
   // auto-creates a conversation.
@@ -567,6 +571,7 @@ export function ChatPage() {
     initialSourceIds,
     getCurrentSourceScope,
     initialCollectionContext,
+    initialProjectId,
     activePersonaId,
   });
   const interactionState = useSyncExternalStore(
@@ -765,7 +770,7 @@ export function ChatPage() {
                 graphContext,
               }
             : inputOptions?.userArtifacts;
-      await chat.send(
+      const accepted = await chat.send(
         content,
         attachments,
         personaForSend,
@@ -791,10 +796,11 @@ export function ChatPage() {
             }
           : undefined,
       );
-      if (graphContext) {
+      if (accepted && graphContext) {
         clearGraphAgentContext();
         setPendingGraphContext(null);
       }
+      return accepted;
     },
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
@@ -818,8 +824,7 @@ export function ChatPage() {
     inputOptions?: ChatInputSendOptions,
   ) => {
     if (!activeInteraction) {
-      await handleChatSend(content, attachments, inputOptions);
-      return;
+      return handleChatSend(content, attachments, inputOptions);
     }
     if (attachments?.length) {
       throw new Error(t('chat.decisionTraySupplementTextOnly'));
@@ -827,6 +832,7 @@ export function ChatPage() {
     await api.appendInteractionSupplement(activeInteraction.interactionId, content);
     await chat.reloadMessages();
     toast.success(t('chat.decisionTraySupplementSaved'));
+    return true;
   }, [activeInteraction, chat.reloadMessages, handleChatSend, t]);
 
   const handleApprovePlan = useCallback(
@@ -1077,11 +1083,14 @@ export function ChatPage() {
   /* ── Handlers (navigation-aware wrappers) ───────────────────────── */
 
   const handleSelectConversation = useCallback(
-    (id: string) => navigate(`/chat/${id}`),
-    [navigate],
+    (id: string) => {
+      chat.setActiveConversation(id);
+      navigate(`/chat/${id}`);
+    },
+    [chat.setActiveConversation, navigate],
   );
 
-  const handleNewConversation = useCallback(async (projectId?: string | null) => {
+  const handleNewConversation = useCallback((projectId?: string | null) => {
     // Defensive guard: if a React SyntheticEvent / DOM node leaks in as projectId
     // (e.g. onClick={handler} passes MouseEvent), drop it to avoid circular JSON.
     if (projectId != null && typeof projectId !== 'string') {
@@ -1091,36 +1100,17 @@ export function ChatPage() {
       }
       projectId = null;
     }
-    if (!chat.agentConfig) {
-      navigate('/chat');
-      chat.createNewConversation();
-      return;
-    }
-
-    try {
-      const conv = await api.createConversation(
-        chat.agentConfig.provider,
-        chat.agentConfig.model,
-        // A new conversation owns a fresh prompt. Reusing the active
-        // conversation's prompt can resurrect legacy project snapshots that
-        // the backend deliberately suppresses.
-        undefined,
-        projectId ?? undefined,
-        'default',
-      );
-      chat.setConversations((prev) => [conv, ...prev.filter((c) => c.id !== conv.id)]);
-      navigate(`/chat/${conv.id}`);
-    } catch (e) {
-      toast.error(formatUserError(t('chat.createError'), e));
-      navigate('/chat');
-      chat.createNewConversation();
-    }
+    // Keep an untouched New Chat as a local draft. useChatSession persists it
+    // atomically on the first send, which prevents empty history entries while
+    // retaining the project selected in the sidebar.
+    setActivePersonaId('default');
+    chat.createNewConversation();
+    navigate('/chat', {
+      state: projectId ? { projectId } satisfies ChatRouteState : null,
+    });
   }, [
-    chat.agentConfig,
-    chat.setConversations,
     chat.createNewConversation,
     navigate,
-    t,
   ]);
 
   const handleCheckpointBranch = useCallback((conversation: Conversation) => {

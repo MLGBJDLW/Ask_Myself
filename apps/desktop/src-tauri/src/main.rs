@@ -432,6 +432,22 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
+            let mcp_config_path =
+                nexa_core::mcp::config_file::user_mcp_config_path(&data_dir);
+            match nexa_core::mcp::config_file::reload_user_mcp_config(
+                &db,
+                &mcp_config_path,
+            ) {
+                Ok(report) => log::info!(
+                    "Loaded {} MCP connector(s) from {}",
+                    report.imported,
+                    mcp_config_path.display()
+                ),
+                Err(error) => log::warn!(
+                    "Failed to reload MCP connector config at {}; retaining the last valid projection: {error}",
+                    mcp_config_path.display()
+                ),
+            }
             match db
                 .list_skills()
                 .and_then(|skills| nexa_core::skills::materialize_user_skills_to_disk(&data_dir, &skills))
@@ -904,6 +920,8 @@ fn main() {
             commands::import_skills_from_directory_cmd,
             // MCP
             commands::list_mcp_servers_cmd,
+            commands::prepare_mcp_config_file_cmd,
+            commands::reload_mcp_config_file_cmd,
             commands::save_mcp_server_cmd,
             commands::delete_mcp_server_cmd,
             commands::toggle_mcp_server_cmd,

@@ -101,6 +101,8 @@ pub(super) enum ModelStepOutcome {
 pub(super) struct ModelStepOutput {
     pub(super) full_content: String,
     pub(super) tool_calls: Vec<ToolCallRequest>,
+    pub(super) tool_call_assembly_rejected: bool,
+    pub(super) provider_replay: Option<crate::llm::provider_turn::ProviderReplayPayload>,
     pub(super) chunk_usage: Option<Usage>,
     pub(super) iteration_thinking: String,
     pub(super) answer_delta_seen: bool,
@@ -122,6 +124,8 @@ fn reset_iteration_capture_for_new_sample(
     accumulated_len_before_iteration: usize,
     full_content: &mut String,
     tool_calls: &mut Vec<ToolCallRequest>,
+    tool_call_assembly_rejected: &mut bool,
+    provider_replay: &mut Option<crate::llm::provider_turn::ProviderReplayPayload>,
     chunk_usage: &mut Option<Usage>,
     iteration_thinking: &mut String,
     answer_delta_seen: &mut bool,
@@ -135,6 +139,8 @@ fn reset_iteration_capture_for_new_sample(
     accumulated_content.truncate(accumulated_len_before_iteration);
     full_content.clear();
     tool_calls.clear();
+    *tool_call_assembly_rejected = false;
+    *provider_replay = None;
     *chunk_usage = None;
     iteration_thinking.clear();
     *answer_delta_seen = false;
@@ -268,6 +274,8 @@ impl AgentExecutor {
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+        let mut tool_call_assembly_rejected = false;
+        let mut provider_replay = None;
         let mut chunk_usage: Option<Usage> = None;
         let mut iteration_thinking = String::new();
         let mut answer_delta_seen = false;
@@ -300,6 +308,8 @@ impl AgentExecutor {
                         accumulated_len_before_iteration,
                         &mut full_content,
                         &mut tool_calls,
+                        &mut tool_call_assembly_rejected,
+                        &mut provider_replay,
                         &mut chunk_usage,
                         &mut iteration_thinking,
                         &mut answer_delta_seen,
@@ -387,7 +397,9 @@ impl AgentExecutor {
                     }
                     // Accumulate tool-call deltas.
                     if let Some(ref tc_delta) = chunk.tool_call_delta {
-                        accumulate_tool_call(&mut tool_calls, tc_delta);
+                        if !accumulate_tool_call(&mut tool_calls, tc_delta) {
+                            tool_call_assembly_rejected = true;
+                        }
 
                         // Emit a stable preparing signal while arguments are
                         // still being assembled. Do not stream partial
@@ -498,6 +510,24 @@ impl AgentExecutor {
                         }
                     }
                 }
+                model_attempt::ModelAttemptProgress::Provider(
+                    model_attempt::ModelAttemptProviderEvent {
+                        event: model_attempt::AcceptedProviderEvent::ReplayState(replay),
+                        accepted,
+                        first_for_sample,
+                    },
+                ) => {
+                    bind_accepted_attempt!(accepted, first_for_sample);
+                    *context_recovery_attempts = 0;
+                    if provider_replay
+                        .as_ref()
+                        .is_some_and(|existing| existing != replay.as_ref())
+                    {
+                        tool_call_assembly_rejected = true;
+                    } else {
+                        provider_replay = Some(*replay);
+                    }
+                }
                 model_attempt::ModelAttemptProgress::StreamComplete { accepted, timing } => {
                     bind_accepted_attempt!(accepted, false);
                     info!(
@@ -520,6 +550,7 @@ impl AgentExecutor {
                     *force_non_streaming_llm |= switched_to_non_streaming;
 
                     accumulated_content.truncate(accumulated_len_before_iteration);
+                    provider_replay = response.provider_replay;
                     full_content = response.content;
                     answer_delta_seen = !full_content.is_empty();
                     accumulated_content.push_str(&full_content);
@@ -696,6 +727,8 @@ impl AgentExecutor {
                                     accumulated_len_before_iteration,
                                     &mut full_content,
                                     &mut tool_calls,
+                                    &mut tool_call_assembly_rejected,
+                                    &mut provider_replay,
                                     &mut chunk_usage,
                                     &mut iteration_thinking,
                                     &mut answer_delta_seen,
@@ -925,11 +958,15 @@ impl AgentExecutor {
         let mut accepted_sample_id = accepted_attempt.sample_id;
         let mut accepted_route_snapshot = accepted_attempt.route_snapshot;
 
-        let output_payload = crate::llm::provider_turn::ProviderReplayPayload::capture(
+        let captured_output_payload = crate::llm::provider_turn::ProviderReplayPayload::capture(
             &accepted_route_snapshot,
             Some(&iteration_thinking),
             &tool_calls,
         );
+        let output_payload = provider_replay
+            .clone()
+            .filter(crate::llm::provider_turn::ProviderReplayPayload::is_present)
+            .unwrap_or(captured_output_payload);
         let effective_replay_policy = effective_sample_replay_policy(
             accepted_route_snapshot.replay_policy,
             &iteration_thinking,
@@ -1204,16 +1241,18 @@ impl AgentExecutor {
             } = safe_completion;
             let safe_route = safe_accepted.route_snapshot.clone();
             if !required_route.same_route_identity(&safe_route) {
-                let route_changed_sample = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
-                    Uuid::new_v4().to_string(),
-                    safe_accepted.sample_id.clone(),
-                    safe_route.clone(),
-                    response.content.clone(),
-                    response.thinking.as_deref(),
-                    response.thinking.as_deref(),
-                    response.tool_calls.clone().unwrap_or_default(),
-                    false,
-                );
+                let route_changed_sample =
+                    crate::llm::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                        Uuid::new_v4().to_string(),
+                        safe_accepted.sample_id.clone(),
+                        safe_route.clone(),
+                        response.content.clone(),
+                        response.thinking.as_deref(),
+                        response.thinking.as_deref(),
+                        response.tool_calls.clone().unwrap_or_default(),
+                        false,
+                        response.provider_replay.clone(),
+                    );
                 self.persist_provider_sample_without_message(
                     db,
                     conversation_id,
@@ -1243,11 +1282,17 @@ impl AgentExecutor {
                 return Err(CoreError::Agent(trace_message));
             }
             let safe_tool_calls = response.tool_calls.as_deref().unwrap_or_default();
-            let safe_payload = crate::llm::provider_turn::ProviderReplayPayload::capture(
-                &safe_route,
-                response.thinking.as_deref(),
-                safe_tool_calls,
-            );
+            let safe_payload = response
+                .provider_replay
+                .clone()
+                .filter(crate::llm::provider_turn::ProviderReplayPayload::is_present)
+                .unwrap_or_else(|| {
+                    crate::llm::provider_turn::ProviderReplayPayload::capture(
+                        &safe_route,
+                        response.thinking.as_deref(),
+                        safe_tool_calls,
+                    )
+                });
             if !safe_tool_calls.is_empty()
                 && !safe_route
                     .replay_policy
@@ -1312,6 +1357,7 @@ impl AgentExecutor {
             *reasoning_disabled_for_tool_loop = true;
             let reset_reason = "The provider omitted required replay state, so Nexa safely restarted the same route with reasoning disabled before any tool ran.".to_string();
 
+            provider_replay = response.provider_replay;
             let recovered_tool_calls = response.tool_calls.unwrap_or_default();
             let recovered_thinking =
                 crate::llm::reasoning_replay::sanitize_reasoning_text(response.thinking.as_deref());
@@ -1354,6 +1400,8 @@ impl AgentExecutor {
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,
             tool_calls,
+            tool_call_assembly_rejected,
+            provider_replay,
             chunk_usage,
             iteration_thinking,
             answer_delta_seen,

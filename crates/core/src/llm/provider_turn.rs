@@ -137,7 +137,6 @@ impl ResponsesReplayPayload {
             return false;
         }
         let mut saw_reasoning = false;
-        let mut saw_function_call = false;
         for item in &self.items {
             match item.get("type").and_then(serde_json::Value::as_str) {
                 Some("reasoning") => {
@@ -194,12 +193,11 @@ impl ResponsesReplayPayload {
                     {
                         return false;
                     }
-                    saw_function_call = true;
                 }
                 _ => return false,
             }
         }
-        saw_reasoning && saw_function_call
+        saw_reasoning
     }
 
     fn authorizes_tool_calls(
@@ -540,8 +538,36 @@ impl ProviderTurnEnvelope {
         tool_calls: Vec<ToolCallRequest>,
         reasoning_was_requested: bool,
     ) -> Self {
+        Self::capture_with_replay_payload(
+            turn_item_id,
+            sample_id,
+            route,
+            visible_content,
+            display_reasoning,
+            replay_reasoning,
+            tool_calls,
+            reasoning_was_requested,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_with_replay_payload(
+        turn_item_id: impl Into<String>,
+        sample_id: impl Into<String>,
+        route: RouteSnapshot,
+        visible_content: impl Into<String>,
+        display_reasoning: Option<&str>,
+        replay_reasoning: Option<&str>,
+        tool_calls: Vec<ToolCallRequest>,
+        reasoning_was_requested: bool,
+        provider_replay: Option<ProviderReplayPayload>,
+    ) -> Self {
         let visible_content = visible_content.into();
-        let replay_payload = ProviderReplayPayload::capture(&route, replay_reasoning, &tool_calls);
+        let captured_replay = ProviderReplayPayload::capture(&route, replay_reasoning, &tool_calls);
+        let replay_payload = provider_replay
+            .filter(ProviderReplayPayload::is_present)
+            .unwrap_or(captured_replay);
         let required_for_replay =
             !tool_calls.is_empty() && route.replay_policy.requires_tool_call_payload();
         let capture_status = if replay_payload.is_present() {
@@ -782,6 +808,51 @@ mod tests {
             ),
             ProviderReplayPayload::GeminiThoughtSignatures(_)
         ));
+    }
+
+    #[test]
+    fn responses_replay_without_client_tools_is_turn_level_state() {
+        let payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-1",
+                    "status": "completed",
+                    "content": [{"type": "reasoning_text", "text": "search first"}]
+                }),
+                serde_json::json!({
+                    "type": "web_search_call",
+                    "id": "ws-1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "Nexa"}
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "id": "msg-1",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "answer"}]
+                }),
+            ],
+        };
+        let replay = ProviderReplayPayload::DeepSeekResponseItems(payload.clone());
+        assert!(replay.is_present());
+
+        let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+            "item",
+            "sample",
+            route(ReasoningApiStyle::OpenAiResponses, "deepseek"),
+            "answer",
+            Some("search first"),
+            None,
+            Vec::new(),
+            true,
+            Some(replay.clone()),
+        );
+
+        assert_eq!(envelope.replay_payload, replay);
+        assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Captured);
+        assert_eq!(envelope.provider_items.len(), payload.items.len());
     }
 
     #[test]

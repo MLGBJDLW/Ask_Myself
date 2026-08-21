@@ -1969,6 +1969,7 @@ impl LlmProvider for AnthropicProvider {
             } else {
                 Some(thinking_parts.join(""))
             },
+            provider_replay: None,
         })
     }
 

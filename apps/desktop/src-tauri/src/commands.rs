@@ -675,103 +675,27 @@ fn conv_message_to_llm(msg: &ConversationMessage) -> Message {
     m
 }
 
-/// Sanitize conversation history to ensure every assistant message with
-/// `tool_calls` is followed by matching tool response messages.
-///
-/// If an assistant message has orphaned tool_calls (no matching tool responses),
-/// the tool_calls field is stripped to prevent API errors like:
-/// "An assistant message with 'tool_calls' must be followed by tool messages
-/// responding to each 'tool_call_id'."
-fn sanitize_tool_call_history(mut messages: Vec<Message>) -> Vec<Message> {
-    let mut indices_to_remove: HashSet<usize> = HashSet::new();
-
-    let mut i = 0;
-    while i < messages.len() {
-        if messages[i].role == Role::Assistant {
-            if let Some(ref tool_calls) = messages[i].tool_calls {
-                if !tool_calls.is_empty() {
-                    // Collect expected tool_call_ids
-                    let expected_ids: HashSet<&str> =
-                        tool_calls.iter().map(|tc| tc.id.as_str()).collect();
-
-                    // Check following messages for matching tool responses
-                    let mut found_ids = HashSet::new();
-                    let mut j = i + 1;
-                    while j < messages.len() && messages[j].role == Role::Tool {
-                        if let Some(ref name) = messages[j].name {
-                            found_ids.insert(name.as_str());
-                        }
-                        j += 1;
-                    }
-
-                    // If any tool_call_id is missing a response, strip everything
-                    if !expected_ids.is_subset(&found_ids) {
-                        warn!(
-                            "Sanitizing orphaned tool_calls in conversation history: \
-                             expected {:?}, found {:?}",
-                            expected_ids, found_ids
-                        );
-                        messages[i].tool_calls = None;
-
-                        // Preserve real assistant text, but never invent user-visible
-                        // assistant content merely to make an invalid record serializable.
-                        if messages[i].text_content().trim().is_empty() {
-                            indices_to_remove.insert(i);
-                        }
-
-                        // Mark ALL following Tool messages for removal
-                        // (they're orphaned since we stripped the tool_calls)
-                        let mut k = i + 1;
-                        while k < messages.len() && messages[k].role == Role::Tool {
-                            indices_to_remove.insert(k);
-                            k += 1;
-                        }
-                    }
-                }
-            }
-        }
-        i += 1;
+/// Repair persisted assistant/tool replay units before they enter a live agent
+/// request. The core integrity policy owns completeness, uniqueness, adjacency,
+/// and atomic removal; this desktop seam only records privacy-safe diagnostics.
+fn sanitize_tool_call_history(
+    messages: Vec<Message>,
+    conversation_id: Option<&str>,
+) -> Vec<Message> {
+    let report = nexa_core::llm::message_validation::repair_persisted_message_history(
+        messages,
+        conversation_id,
+    );
+    for diagnostic in &report.repairs {
+        warn!(
+            "Repaired legacy-invalid conversation history before agent dispatch: conversation_id={}, message_index={}, role={}, reason={}",
+            diagnostic.conversation_id.as_deref().unwrap_or("unknown"),
+            diagnostic.message_index,
+            diagnostic.role,
+            diagnostic.reason,
+        );
     }
-
-    // Additional pass: find any Tool messages whose tool_call_id doesn't
-    // match any preceding assistant's tool_calls
-    for i in 0..messages.len() {
-        if messages[i].role == Role::Tool && !indices_to_remove.contains(&i) {
-            let tool_id = messages[i].name.as_deref().unwrap_or("");
-            let has_match = messages[..i].iter().any(|m| {
-                m.role == Role::Assistant
-                    && m.tool_calls
-                        .as_ref()
-                        .is_some_and(|tcs| tcs.iter().any(|tc| tc.id == tool_id))
-            });
-            if !has_match {
-                indices_to_remove.insert(i);
-            }
-        }
-    }
-
-    // Remove orphaned tool messages
-    if !indices_to_remove.is_empty() {
-        messages = messages
-            .into_iter()
-            .enumerate()
-            .filter(|(idx, _)| !indices_to_remove.contains(idx))
-            .map(|(_, msg)| msg)
-            .collect();
-    }
-
-    // Final pass: quarantine legacy-invalid empty assistant records. Reasoning
-    // is intentionally not promoted into visible content.
-    messages.retain(|message| {
-        message.role != Role::Assistant
-            || !message.text_content().trim().is_empty()
-            || message
-                .tool_calls
-                .as_ref()
-                .is_some_and(|tool_calls| !tool_calls.is_empty())
-    });
-
-    messages
+    report.messages
 }
 
 #[cfg(test)]
@@ -839,17 +763,60 @@ mod tests {
             prompt_cache_hint: None,
         };
 
-        let sanitized = sanitize_tool_call_history(vec![
-            Message::text(Role::User, "question"),
-            interrupted,
-            reasoning_only,
-        ]);
+        let sanitized = sanitize_tool_call_history(
+            vec![
+                Message::text(Role::User, "question"),
+                interrupted,
+                reasoning_only,
+            ],
+            None,
+        );
 
         assert_eq!(sanitized.len(), 1);
         assert_eq!(sanitized[0].role, Role::User);
         assert!(!sanitized
             .iter()
             .any(|message| message.text_content().contains("Empty assistant")));
+    }
+
+    #[test]
+    fn history_sanitization_preserves_text_but_quarantines_incomplete_tool_units() {
+        let mut assistant = Message::text(Role::Assistant, "I started checking the repository.");
+        assistant.tool_calls = Some(vec![nexa_core::llm::ToolCallRequest {
+            id: "call-incomplete".to_string(),
+            name: "search".to_string(),
+            arguments: r#"{"query":"unterminated""#.to_string(),
+            thought_signature: None,
+        }]);
+        let tool_result = Message::text_with_name(
+            Role::Tool,
+            "The call was rejected before execution.",
+            "call-incomplete",
+        );
+
+        let sanitized = sanitize_tool_call_history(
+            vec![
+                Message::text(Role::User, "Inspect this repository"),
+                assistant,
+                tool_result,
+                Message::text(Role::User, "Continue"),
+            ],
+            Some("conversation-incomplete-tool"),
+        );
+
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(
+            sanitized[1].text_content(),
+            "I started checking the repository."
+        );
+        assert!(sanitized[1].tool_calls.is_none());
+        assert!(sanitized.iter().all(|message| message.role != Role::Tool));
+        nexa_core::llm::message_validation::validate_provider_request(
+            &sanitized,
+            "openai",
+            "deepseek-v4-pro",
+        )
+        .expect("repaired persisted history must cross the provider boundary");
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

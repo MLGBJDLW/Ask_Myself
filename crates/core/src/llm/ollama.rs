@@ -608,6 +608,7 @@ impl LlmProvider for OllamaProvider {
             finish_reason,
             usage,
             thinking,
+            provider_replay: None,
         })
     }
 

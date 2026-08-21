@@ -374,6 +374,24 @@ impl LlmProvider for AutomaticFallbackProvider {
                         state.emitted_output = true;
                         return Some((ProviderStreamEvent::HostedTool { tool }, Some(state)));
                     }
+                    Some(ProviderStreamEvent::ReplayState { replay }) => {
+                        if !state.emitted_output {
+                            if let Err(error) = state
+                                .owner
+                                .select_route(state.selected_position, state.current_position)
+                            {
+                                return Some((
+                                    ProviderStreamEvent::TerminalError {
+                                        failure: error.into(),
+                                    },
+                                    None,
+                                ));
+                            }
+                            state.selected_position = state.current_position;
+                        }
+                        state.emitted_output = true;
+                        return Some((ProviderStreamEvent::ReplayState { replay }, Some(state)));
+                    }
                     Some(ProviderStreamEvent::RecoverableError { message })
                         if !state.emitted_output
                             && state.current_position + 1 < state.end_position =>
@@ -532,6 +550,7 @@ mod tests {
                     finish_reason: FinishReason::Stop,
                     usage: Usage::default(),
                     thinking: None,
+                    provider_replay: None,
                 }),
                 Behavior::Stream(_) | Behavior::StreamRateLimited | Behavior::StreamCancelled => {
                     unreachable!("stream fixture used for completion")

@@ -1749,6 +1749,7 @@ impl LlmProvider for GeminiProvider {
             finish_reason,
             usage,
             thinking,
+            provider_replay: None,
         })
     }
 

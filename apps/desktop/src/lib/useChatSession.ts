@@ -256,6 +256,8 @@ export interface UseChatSessionOptions {
   getCurrentSourceScope?: () => string[] | null | undefined;
   /** Optional collection context to persist on the conversation */
   initialCollectionContext?: Conversation['collectionContext'];
+  /** Optional project to assign when the first send persists a new draft */
+  initialProjectId?: string | null;
   /** UI-selected persona to inject for the next agent turn */
   activePersonaId?: string | null;
 }
@@ -336,7 +338,7 @@ export interface UseChatSessionReturn {
     images?: ImageAttachment[],
     personaOverrideId?: string | null,
     options?: ChatSendOptions,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   stop: () => void;
   deleteConversation: (id: string) => Promise<void>;
   deleteConversationsBatch: (ids: string[]) => Promise<void>;
@@ -374,6 +376,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     initialSourceIds = [],
     getCurrentSourceScope,
     initialCollectionContext = null,
+    initialProjectId = null,
     activePersonaId = null,
   } = options;
 
@@ -409,6 +412,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeId = externalConversationId ?? internalConversationId;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const navigationGenerationRef = useRef(0);
+  const lastObservedActiveIdRef = useRef(activeId);
+  if (lastObservedActiveIdRef.current !== activeId) {
+    lastObservedActiveIdRef.current = activeId;
+    navigationGenerationRef.current += 1;
+  }
 
   // Track last user message for retry
   const lastUserMessageRef = useRef<{
@@ -417,6 +426,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     personaId?: string | null;
     options?: ChatSendOptions;
   } | null>(null);
+  const conversationCreationInFlightRef = useRef(false);
   const knownStreamConversationsRef = useRef<Set<string>>(new Set());
   const conversationHydrationGenerationRef = useRef(0);
   const completionHydrationGenerationRef = useRef(0);
@@ -871,10 +881,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const setActiveConversation = useCallback((id: string) => {
     // When route-controlled, the caller handles navigation.
     // In uncontrolled mode, we keep the active id locally.
+    navigationGenerationRef.current += 1;
     setInternalConversationId(id);
   }, []);
 
   const createNewConversation = useCallback(() => {
+    navigationGenerationRef.current += 1;
     setInternalConversationId(null);
     setCustomSystemPrompt('');
     setUsageSnapshot(null);
@@ -1021,7 +1033,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const configForSend = activeAgentConfigRef.current;
       if (!configForSend) {
         toast.error(t('chat.noConfigError'));
-        return;
+        return false;
       }
       const conversationForSend = activeId
         ? conversationsRef.current.find((conversation) => conversation.id === activeId)
@@ -1029,7 +1041,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         : null;
       if (conversationForSend?.archivedAt) {
         toast.error(t('chat.archivedReadOnlyError'));
-        return;
+        return false;
       }
       const personaForSend = personaOverrideId ?? activePersonaId;
       const sourceIdsForSend = options?.sourceIds?.filter((id) => id.trim().length > 0) ?? [];
@@ -1050,6 +1062,8 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       };
 
       let convId = activeId;
+      let createdConversationForSend: Conversation | null = null;
+      const activationGeneration = navigationGenerationRef.current;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
       if (
@@ -1061,7 +1075,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         const steeringConversationId = convId;
         if (attachments && attachments.length > 0) {
           toast.error(t('chat.attachmentWhileRunning'));
-          return;
+          return false;
         }
 
         const currentMessages = messageCache[steeringConversationId] ?? [];
@@ -1092,6 +1106,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
                 : m,
             ),
           );
+          return true;
         } catch (e) {
           setMessagesForConversation(steeringConversationId, (prev) =>
             prev.filter((m) => m.id !== optimisticId),
@@ -1100,18 +1115,22 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             streamStore.clearStream(steeringConversationId);
             knownStreamConversationsRef.current.delete(steeringConversationId);
             setChatError(null);
-            await send(content, attachments, personaOverrideId, options);
-            return;
+            return send(content, attachments, personaOverrideId, options);
           }
           const message = String(e);
           setChatError(message);
           toast.error(message);
+          return false;
         }
-        return;
       }
 
       // Auto-create conversation if none active
+      const ownsConversationCreation = !convId;
       if (!convId) {
+        if (conversationCreationInFlightRef.current) {
+          return false;
+        }
+        conversationCreationInFlightRef.current = true;
         try {
           const conv = collectionContextForSend
             ? await api.createConversationWithContext(
@@ -1119,14 +1138,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               configForSend.model,
               customSystemPrompt || undefined,
               collectionContextForSend,
-              undefined,
+              initialProjectId ?? undefined,
               personaForSend,
             )
             : await api.createConversation(
             configForSend.provider,
             configForSend.model,
             customSystemPrompt || undefined,
-            undefined,
+            initialProjectId ?? undefined,
             personaForSend,
           );
           convId = conv.id;
@@ -1145,12 +1164,17 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           const nextConversation = collectionContextForSend
             ? { ...conv, collectionContext: collectionContextForSend }
             : conv;
-          setConversations((prev) => [nextConversation, ...prev]);
-          setInternalConversationId(convId);
-          onConversationCreated?.(convId);
+          // Keep the newly allocated row private until the agent command
+          // accepts the first turn. This lets a rejected launch roll back to
+          // the local draft without flashing or retaining an empty history row.
+          createdConversationForSend = nextConversation;
         } catch (e) {
+          if (convId) {
+            await api.deleteConversation(convId).catch(() => undefined);
+          }
+          conversationCreationInFlightRef.current = false;
           toast.error(formatUserError(t('chat.createError'), e));
-          return;
+          return false;
         }
       } else {
         if (sourceIdsForSend.length > 0) {
@@ -1172,8 +1196,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const currentMessages = messageCache[convId] ?? [];
 
       // Add optimistic user message
+      const optimisticMessageId = `temp-${Date.now()}`;
       const optimisticMsg: ConversationMessage = {
-        id: `temp-${Date.now()}`,
+        id: optimisticMessageId,
         conversationId: convId,
         role: 'user',
         content,
@@ -1191,27 +1216,57 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       suppressedLiveUsageRef.current.delete(convId);
       compactionUsageRef.current.delete(convId);
 
-      await streamSend(
-        convId,
-        content,
-        attachments,
-        configForSend.id,
-        personaForSend,
-        options?.skillIds,
-        options?.executionMode,
-        options?.powerMode,
-        options?.collaborationMode,
-        options?.moaPreset,
-        options?.orchestrationProfile,
-        options?.customOrchestration,
-        options?.visionTurnOverride,
-        options?.userArtifacts,
-        options?.taskOrchestratorRunId,
-        options?.resumeCheckpointId,
-        options?.interactionContinuation === true,
-      );
+      try {
+        await streamSend(
+          convId,
+          content,
+          attachments,
+          configForSend.id,
+          personaForSend,
+          options?.skillIds,
+          options?.executionMode,
+          options?.powerMode,
+          options?.collaborationMode,
+          options?.moaPreset,
+          options?.orchestrationProfile,
+          options?.customOrchestration,
+          options?.visionTurnOverride,
+          options?.userArtifacts,
+          options?.taskOrchestratorRunId,
+          options?.resumeCheckpointId,
+          true,
+        );
+        if (createdConversationForSend) {
+          const committedConversation = createdConversationForSend as Conversation;
+          setConversations((prev) => [committedConversation, ...prev]);
+          if (navigationGenerationRef.current === activationGeneration) {
+            setInternalConversationId(convId);
+            onConversationCreated?.(convId);
+          }
+        }
+        return true;
+      } catch (e) {
+        setMessagesForConversation(convId, (prev) =>
+          prev.filter((message) => message.id !== optimisticMessageId),
+        );
+        knownStreamConversationsRef.current.delete(convId);
+        suppressedLiveUsageRef.current.delete(convId);
+        compactionUsageRef.current.delete(convId);
+        setChatError(String(e));
+        if (ownsConversationCreation) {
+          await api.deleteConversation(convId).catch((cleanupError) => {
+            toast.error(formatUserError(t('chat.deleteError'), cleanupError));
+          });
+          streamStore.clearStream(convId);
+        }
+        throw e;
+      } finally {
+        if (ownsConversationCreation) {
+          conversationCreationInFlightRef.current = false;
+        }
+      }
     },
-    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
+    [activeId, activePersonaId, customSystemPrompt, initialCollectionContext, initialProjectId, initialSourceIds, messageCache, streamSend, onConversationCreated, setMessagesForConversation, t],
   );
 
   const stop = useCallback(() => {

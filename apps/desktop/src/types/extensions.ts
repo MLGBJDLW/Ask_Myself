@@ -33,6 +33,13 @@ export interface McpToolInfo {
   inputSchema: Record<string, unknown>;
 }
 
+export interface McpConfigReloadReport {
+  path: string;
+  imported: number;
+  removed: number;
+  disabledAfterChange: number;
+}
+
 // Skill types
 
 export interface Skill {

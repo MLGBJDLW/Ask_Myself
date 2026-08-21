@@ -191,16 +191,15 @@ impl Message {
     }
 
     pub fn set_provider_turn(&mut self, envelope: provider_turn::ProviderTurnEnvelope) {
-        self.parts
-            .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
+        self.clear_provider_turn();
         self.parts.push(ContentPart::ProviderTurn {
             envelope: Box::new(envelope),
         });
     }
 
-    /// Remove secret-adjacent provider replay state before serializing a
-    /// message to the desktop UI or another display-only consumer.
-    pub fn without_provider_turn(mut self) -> Self {
+    /// Remove provider-native replay state when a history repair changes the
+    /// assistant/tool envelope it authenticated.
+    pub fn clear_provider_turn(&mut self) {
         self.parts
             .retain(|part| !matches!(part, ContentPart::ProviderTurn { .. }));
         if let Some(tool_calls) = self.tool_calls.as_mut() {
@@ -208,6 +207,12 @@ impl Message {
                 tool_call.thought_signature = None;
             }
         }
+    }
+
+    /// Remove secret-adjacent provider replay state before serializing a
+    /// message to the desktop UI or another display-only consumer.
+    pub fn without_provider_turn(mut self) -> Self {
+        self.clear_provider_turn();
         self
     }
 }
@@ -341,6 +346,10 @@ pub struct CompletionResponse {
     /// Thinking / chain-of-thought text (if the model supports it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Exact provider-native replay state for this assistant turn. This is an
+    /// internal protocol sidecar and must never be rendered as visible text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_replay: Option<provider_turn::ProviderReplayPayload>,
 }
 
 /// Token usage statistics.
@@ -501,11 +510,26 @@ impl From<CoreError> for ProviderStreamFailure {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
-    Chunk { chunk: Box<StreamChunk> },
-    HostedTool { tool: Box<ProviderHostedToolEvent> },
-    RecoverableError { message: String },
-    Cancelled { message: String },
-    TerminalError { failure: ProviderStreamFailure },
+    Chunk {
+        chunk: Box<StreamChunk>,
+    },
+    HostedTool {
+        tool: Box<ProviderHostedToolEvent>,
+    },
+    /// Terminal provider-native replay state for the accepted sample. Unlike
+    /// tool deltas, it authorizes no execution and is never user-visible.
+    ReplayState {
+        replay: Box<provider_turn::ProviderReplayPayload>,
+    },
+    RecoverableError {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
+    TerminalError {
+        failure: ProviderStreamFailure,
+    },
 }
 
 /// Normalize a chunk-only provider wire stream into canonical provider events.
@@ -797,10 +821,12 @@ impl MessageValidatingProvider {
     }
 
     fn validate(&self, request: &CompletionRequest) -> Result<(), CoreError> {
-        message_validation::validate_provider_request(
+        message_validation::validate_provider_request_with_context(
             &request.messages,
             self.inner.name(),
             &request.model,
+            request.routing_session_id.as_deref(),
+            None,
         )
     }
 }

@@ -173,7 +173,22 @@ test.beforeEach(async ({ page }) => {
 test('workflow catalog can prefill the chat composer', async ({ page }) => {
   await page.goto('/chat/conv-workflows');
 
-  await page.getByTestId('workflow-catalog-trigger').click();
+  const primaryControls = page.getByTestId('chat-composer-primary-controls');
+  const modeSegment = page.getByTestId('chat-mode-segment');
+  const workflowTrigger = page.getByTestId('workflow-catalog-trigger');
+  const attachmentTrigger = page.getByTestId('chat-attachment-trigger');
+  await expect(primaryControls).toBeVisible();
+  await expect(primaryControls.locator('[data-testid="chat-mode-segment"]')).toHaveCount(1);
+  await expect(primaryControls.locator('[data-testid="workflow-catalog-trigger"]')).toHaveCount(1);
+  await expect(primaryControls.locator('[data-testid="chat-attachment-trigger"]')).toHaveCount(1);
+  const controlRows = await Promise.all([modeSegment, workflowTrigger, attachmentTrigger].map(async (control) => {
+    const box = await control.boundingBox();
+    if (!box) throw new Error('composer primary control is not measurable');
+    return box.y + box.height / 2;
+  }));
+  expect(Math.max(...controlRows) - Math.min(...controlRows)).toBeLessThanOrEqual(2);
+
+  await workflowTrigger.click();
   const catalog = page.getByTestId('workflow-catalog-panel');
 
   await expect(catalog).toBeVisible();
@@ -201,4 +216,26 @@ test('workflow catalog can prefill the chat composer', async ({ page }) => {
   await expect(composer).toHaveValue(/batch_goal:/);
   await expect(composer).toHaveValue(/Run the Meeting Summary workflow/);
   await expect(catalog).toHaveCount(0);
+});
+
+test('composer primary controls stay compact at narrow widths', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto('/chat/conv-workflows');
+
+  const controls = page.getByTestId('chat-composer-primary-controls');
+  await expect(page.getByTestId('workflow-catalog-trigger')).toBeVisible();
+  await expect(page.getByTestId('chat-attachment-trigger')).toBeVisible();
+  const geometry = await controls.evaluate((element) => {
+    const children = Array.from(element.children).map((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.y + rect.height / 2;
+    });
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      rowSpread: Math.max(...children) - Math.min(...children),
+    };
+  });
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+  expect(geometry.rowSpread).toBeLessThanOrEqual(2);
 });

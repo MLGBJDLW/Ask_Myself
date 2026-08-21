@@ -66,6 +66,53 @@ The current runtime stores MCP endpoint configuration as `McpServer` records and
 wraps discovered server tools with `mcp_tool` or `mcp__...` tool names. That
 internal naming can remain while the product language moves to connectors.
 
+Advanced users can also maintain the versioned `mcp-connectors.json` file in
+Nexa's app-data directory. Settings -> Extensions -> MCP Connectors exposes the
+resolved path plus explicit Open and Reload actions. The file is a declarative
+configuration source; startup and explicit Reload validate the whole document
+before materializing its connectors into the existing runtime store.
+
+```json
+{
+  "version": 1,
+  "connectors": {
+    "local-docs": {
+      "name": "Local Docs",
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@example/docs-mcp"],
+        "env": {
+          "DOCS_TOKEN": "${env:DOCS_TOKEN}"
+        }
+      }
+    },
+    "remote-docs": {
+      "name": "Remote Docs",
+      "transport": {
+        "type": "streamable_http",
+        "url": "https://example.com/mcp",
+        "headers": {
+          "Authorization": "Bearer ${env:DOCS_TOKEN}"
+        }
+      }
+    }
+  }
+}
+```
+
+Connector ids use letters, numbers, `.`, `-`, or `_`. Secret-shaped environment
+variables and headers must use `${env:VARIABLE}` references; resolved values are
+never written to the JSON or SQLite projection. A new file connector is disabled
+until the user explicitly enables it. Reload preserves activation only when the
+normalized trust-relevant configuration is unchanged; name, command, arguments,
+URL, environment, or headers changing resets it to disabled. Invalid JSON
+retains the last valid runtime projection and reports the parser line and column.
+
+The JSON file does not carry trust receipts, tool approvals, health state, or
+native code. Those remain host-owned state. File-backed connectors are edited in
+the JSON rather than through the managed form.
+
 Nexa's generic capability package loader can already read connector manifests
 from `.nexa/capabilities/*/capability.yaml`. The next runtime step is to attach
 that connector package metadata to saved server configs:

@@ -95,6 +95,7 @@ import type {
   McpServer,
   SaveMcpServerInput,
   McpToolInfo,
+  McpConfigReloadReport,
   DiscoveredSkillBundle,
   Skill,
   SaveSkillInput,
@@ -2280,6 +2281,12 @@ export const importSkillsFromDirectory = (directory: string) =>
 
 export const listMcpServers = () =>
   invoke<McpServer[]>('list_mcp_servers_cmd');
+
+export const prepareMcpConfigFile = () =>
+  invoke<string>('prepare_mcp_config_file_cmd');
+
+export const reloadMcpConfigFile = () =>
+  invoke<McpConfigReloadReport>('reload_mcp_config_file_cmd');
 
 export const saveMcpServer = (input: SaveMcpServerInput) =>
   invoke<McpServer>('save_mcp_server_cmd', { input });
