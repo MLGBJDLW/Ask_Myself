@@ -697,6 +697,36 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(OfficeArtifactError, "source SHA-256"):
             self.engine.assess(request)
 
+        request["preconditions"] = {
+            "sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()
+        }
+        request["delivery"] = {"mode": "publish"}
+        with self.assertRaisesRegex(OfficeArtifactError, "verify is read-only"):
+            self.engine.assess(request)
+
+        request.pop("delivery")
+        source_doc = self.root / "read-only-source.docx"
+        import docx
+
+        document = docx.Document()
+        document.add_paragraph("Read-only evidence")
+        document.save(source_doc)
+        request.update({
+            "source": str(source_doc),
+            "destination": str(self.root / "must-never-publish.docx"),
+            "preconditions": {
+                "sourceSha256": hashlib.sha256(source_doc.read_bytes()).hexdigest()
+            },
+            "validation": {
+                "contractVersion": 2,
+                "required_text": ["Read-only evidence"],
+            },
+        })
+        verified = self.engine.execute(request)
+        with self.assertRaisesRegex(OfficeArtifactError, "evidence-only"):
+            self.engine.decide(verified["candidateId"], "publish")
+        self.assertFalse(Path(request["destination"]).exists())
+
     def test_docx_replace_verifier_rejects_unrelated_header_drift(self) -> None:
         import docx
 
@@ -789,6 +819,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         inspection = self.engine.inspect(candidate["candidatePath"], "docx")
         self.assertIn("Controlled insight", inspection["profile"]["textPreview"])
         self.assertEqual("direct-openxml", inspection["profile"]["profileEngine"])
+        self.assertEqual("decision-insight", inspection["profile"]["contentControls"][0]["tag"])
 
         dotm = self.root / "content-control.dotm"
         with zipfile.ZipFile(candidate["candidatePath"]) as archive, zipfile.ZipFile(dotm, "w") as output:
@@ -844,6 +875,13 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         }
         inspection = self.engine.inspect(str(source), "xlsx")
         self.assertEqual("pass", inspection["structural"]["status"])
+        self.assertEqual(
+            [("Data", "worksheet"), ("Decision chart", "chartsheet")],
+            [
+                (sheet["name"], sheet["type"])
+                for sheet in inspection["profile"]["sheet_details"]
+            ],
+        )
         candidate = self.engine.execute(request)
         self.assertEqual("pass", candidate["validation"]["backend"]["contract"]["status"])
 
@@ -1400,6 +1438,14 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertIn(b"Updated evidence notes", archive.read("ppt/notesSlides/notesSlide1.xml"))
             self.assertIn(b"Decision title", archive.read("ppt/slides/slide1.xml"))
             self.assertTrue(any(name.startswith("ppt/comments/comment") for name in archive.namelist()))
+        inspection = self.engine.inspect(outcome["candidatePath"], "pptx")
+        self.assertEqual("Confirm owner", inspection["profile"]["comments"][0]["text"])
+        title_shape = next(
+            shape
+            for shape in inspection["profile"]["slide_details"][0]["shape_details"]
+            if str(shape["shapeId"]) == str(shape_id)
+        )
+        self.assertEqual("Decision title", title_shape["altText"])
 
     def test_pptxgenjs_author_is_capability_solved_and_candidate_gated(self) -> None:
         import shutil
@@ -1501,6 +1547,13 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 {"op": "add_bookmark", "find": "Decision", "bookmarkName": "DecisionAnchor"},
                 {"op": "insert_field", "find": "placeholder", "instruction": "REF DecisionAnchor", "displayText": "Decision"},
                 {"op": "wrap_content_control", "find": "Controlled", "tag": "decision", "lock": "content"},
+                {
+                    "op": "bind_template",
+                    "bindings": {
+                        "DecisionAnchor": "Bound decision",
+                        "decision": "Bound controlled",
+                    },
+                },
                 {"op": "set_protection", "mode": "trackedChanges"},
             ],
             "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
@@ -1513,6 +1566,12 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertIn(b"fldSimple", document_xml)
             self.assertIn(b"sdtContent", document_xml)
             self.assertIn(b"documentProtection", settings_xml)
+        inspection = self.engine.inspect(outcome["candidatePath"], "docx")["profile"]
+        self.assertEqual("DecisionAnchor", inspection["bookmarks"][0]["name"])
+        self.assertEqual("REF DecisionAnchor", inspection["fields"][0]["instruction"])
+        self.assertEqual("decision", inspection["contentControls"][0]["tag"])
+        self.assertEqual("Bound controlled", inspection["contentControls"][0]["text"])
+        self.assertEqual("trackedChanges", inspection["protection"]["edit"])
 
 
 if __name__ == "__main__":

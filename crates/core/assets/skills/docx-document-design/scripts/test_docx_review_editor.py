@@ -120,6 +120,46 @@ class DocxReviewEditorTests(unittest.TestCase):
             self.assertIn(b"documentProtection", settings_xml)
             self.assertIn(b"trackedChanges", settings_xml)
 
+    def test_template_binding_targets_content_control_tags_and_bookmark_names(self) -> None:
+        import docx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "template.docx"
+            structured = root / "structured.docx"
+            bound = root / "bound.docx"
+            document = docx.Document()
+            document.add_paragraph("Customer placeholder")
+            document.add_paragraph("Period placeholder")
+            document.save(source)
+            docx_review_editor.patch_docx_reviews(source, structured, [
+                {
+                    "op": "wrap_content_control",
+                    "find": "Customer placeholder",
+                    "tag": "customer_name",
+                },
+                {
+                    "op": "add_bookmark",
+                    "find": "Period placeholder",
+                    "bookmarkName": "ReportPeriod",
+                },
+            ])
+            result = docx_review_editor.patch_docx_reviews(structured, bound, [{
+                "op": "bind_template",
+                "bindings": {
+                    "customer_name": "Nexa Labs",
+                    "ReportPeriod": "2026 H2",
+                },
+            }])
+            details = result["operations"][0]["detail"]["bindings"]
+            self.assertEqual({"content_control", "bookmark"}, {item["target"] for item in details})
+            with zipfile.ZipFile(bound) as archive:
+                document_xml = archive.read("word/document.xml")
+                self.assertIn(b"Nexa Labs", document_xml)
+                self.assertIn(b"2026 H2", document_xml)
+                self.assertNotIn(b"Customer placeholder", document_xml)
+                self.assertNotIn(b"Period placeholder", document_xml)
+
     def test_field_allowlist_rejects_external_or_executable_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

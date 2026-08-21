@@ -62,7 +62,10 @@ class XlsxStructuredEditorTests(unittest.TestCase):
             self.assertIn("TotalRef", {item.name for item in workbook.defined_names.values()})
             workbook.close()
             with zipfile.ZipFile(output) as archive:
-                self.assertIn(b"Updated metrics", archive.read("xl/charts/chart1.xml"))
+                chart_xml = archive.read("xl/charts/chart1.xml")
+                self.assertIn(b"Updated metrics", chart_xml)
+                self.assertIn(b"Data!", chart_xml)
+                self.assertNotIn(b"Summary!", chart_xml)
 
     def test_defined_names_and_sheet_names_reject_external_or_ambiguous_identifiers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +79,20 @@ class XlsxStructuredEditorTests(unittest.TestCase):
                 xlsx_structured_editor.patch_xlsx(source, root / "invalid.xlsx", [{
                     "op": "rename_sheet", "sheet": "Summary", "newName": "bad/name",
                 }])
+
+    def test_rename_sheet_rewrites_chart_series_categories_and_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            output = root / "chart-renamed.xlsx"
+            result = xlsx_structured_editor.patch_xlsx(source, output, [{
+                "op": "rename_sheet", "sheet": "Summary", "newName": "Source Data",
+            }])
+            self.assertIn("xl/charts/chart1.xml", result["changedParts"])
+            with zipfile.ZipFile(output) as archive:
+                chart_xml = archive.read("xl/charts/chart1.xml")
+                self.assertIn(b"'Source Data'!", chart_xml)
+                self.assertNotIn(b"Summary!", chart_xml)
 
 
 if __name__ == "__main__":

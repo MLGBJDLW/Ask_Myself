@@ -79,6 +79,7 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "insert_field": {"find", "instruction", "displayText", "occurrence"},
         "wrap_content_control": {"find", "tag", "title", "lock", "occurrence"},
         "set_protection": {"mode"},
+        "bind_template": {"bindings", "target", "allowMultiple"},
         "accept_changes": set(),
         "reject_changes": set(),
         "validate": set(),
@@ -132,6 +133,7 @@ REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
     "insert_field": {"find", "instruction"},
     "wrap_content_control": {"find", "tag"},
     "set_protection": {"mode"},
+    "bind_template": {"bindings"},
     "rename_sheet": {"sheet", "newName"},
     "set_defined_name": {"name", "formula"},
     "set_data_validation": {"sheet", "range", "validationType"},
@@ -196,6 +198,7 @@ FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
         "create", "replace", "redact", "secure_redact", "validate", "render",
         "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
         "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
+        "bind_template",
     })),
     "xlsx": LocalOpenXmlFormatAdapter("xlsx", frozenset({
         "create", "replace", "redact", "validate", "render", "recalculate",
@@ -361,6 +364,11 @@ class ArtifactRequest:
         delivery_mode = str(delivery.get("mode", "candidate")).lower()
         if delivery_mode not in DELIVERY_MODES:
             raise OfficeArtifactError("request.invalid_delivery_mode", "delivery.mode must be candidate or publish")
+        if intent == "verify" and delivery_mode != "candidate":
+            raise OfficeArtifactError(
+                "verify.read_only",
+                "verify is read-only and cannot request publication",
+            )
         raw_manifest = delivery.get("manifest") or destination.with_suffix(f"{destination.suffix}.manifest.json")
         manifest = workspace_path(Path(str(raw_manifest)), workspace_root)
         if manifest in {destination, source}:
@@ -745,6 +753,64 @@ class OfficeArtifactEngine:
                 text = "".join(item.text or "" for item in root.iter(f"{{{word_ns}}}t"))
                 if text.strip():
                     preview_lines.append(text)
+            bookmarks = [
+                {
+                    "id": element.attrib.get(f"{{{word_ns}}}id", ""),
+                    "name": element.attrib.get(f"{{{word_ns}}}name", ""),
+                }
+                for element in document.iter(f"{{{word_ns}}}bookmarkStart")
+                if element.attrib.get(f"{{{word_ns}}}name") not in {None, "_GoBack"}
+            ]
+            fields = [
+                {
+                    "kind": "simple",
+                    "instruction": " ".join(
+                        element.attrib.get(f"{{{word_ns}}}instr", "").split()
+                    ),
+                    "displayText": "".join(
+                        item.text or "" for item in element.iter(f"{{{word_ns}}}t")
+                    ),
+                }
+                for element in document.iter(f"{{{word_ns}}}fldSimple")
+            ]
+            fields.extend(
+                {
+                    "kind": "complex",
+                    "instruction": " ".join((element.text or "").split()),
+                    "displayText": "",
+                }
+                for element in document.iter(f"{{{word_ns}}}instrText")
+                if (element.text or "").strip()
+            )
+            content_controls = []
+            for control in document.iter(f"{{{word_ns}}}sdt"):
+                properties = control.find(f"{{{word_ns}}}sdtPr")
+                content = control.find(f"{{{word_ns}}}sdtContent")
+                values: dict[str, str] = {}
+                if properties is not None:
+                    for child in properties:
+                        local = child.tag.rsplit("}", 1)[-1]
+                        if local in {"tag", "alias", "lock", "id"}:
+                            values[local] = child.attrib.get(f"{{{word_ns}}}val", "")
+                content_controls.append({
+                    "tag": values.get("tag", ""),
+                    "title": values.get("alias", ""),
+                    "lock": values.get("lock", ""),
+                    "id": values.get("id", ""),
+                    "text": "".join(
+                        item.text or ""
+                        for item in content.iter(f"{{{word_ns}}}t")
+                    ) if content is not None else "",
+                })
+            protection = None
+            if "word/settings.xml" in names:
+                settings = ET.fromstring(archive.read("word/settings.xml"))
+                protected = settings.find(f"{{{word_ns}}}documentProtection")
+                if protected is not None:
+                    protection = {
+                        key.rsplit("}", 1)[-1]: value
+                        for key, value in protected.attrib.items()
+                    }
         return {
             "paragraphs": len(document_paragraphs),
             "tables": sum(1 for _ in document.iter(f"{{{word_ns}}}tbl")),
@@ -752,6 +818,10 @@ class OfficeArtifactEngine:
             "headings": headings,
             "textPreview": "\n".join(preview_lines)[:4000],
             "profileEngine": "direct-openxml",
+            "bookmarks": bookmarks,
+            "fields": fields,
+            "contentControls": content_controls,
+            "protection": protection,
         }
 
     def assess(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1080,6 +1150,11 @@ class OfficeArtifactEngine:
             }
         if decision != "publish":
             raise OfficeArtifactError("decision.invalid", "decision must be publish or discard")
+        if state.get("requestSummary", {}).get("intent") == "verify":
+            raise OfficeArtifactError(
+                "verify.read_only",
+                "verify candidates are evidence-only and cannot be published",
+            )
 
         candidate = workspace_path(Path(state["candidatePath"]), self.workspace_root, must_exist=True)
         destination = workspace_path(Path(state["destination"]), self.workspace_root)
@@ -2116,12 +2191,26 @@ class OfficeArtifactEngine:
             formula_type = str(formula.get("type", "normal"))
             if formula_type in {"array", "dataTable"}:
                 native_features.add(f"formula-type:{formula_type}")
+        if inventory.get("circularReferences"):
+            native_features.add("circular-reference")
+        calculation_settings = inventory.get("calculationSettings", {})
+        if str(calculation_settings.get("iterate", "")).casefold() in {"1", "true"}:
+            native_features.add("iterative-calculation")
+        if inventory.get("unresolvedReferences"):
+            native_features.add("unresolved-formula-reference")
         return {
             "formulaCells": inventory["formulaCells"],
             "formulaKinds": inventory["formulaKinds"],
             "fingerprint": inventory["fingerprint"],
             "requiresExcelNative": bool(native_features),
             "nativeFeatures": sorted(native_features),
+            "circularReferences": inventory.get("circularReferences", []),
+            "unresolvedReferences": inventory.get("unresolvedReferences", []),
+            "dynamicArrayAnchors": inventory.get("dynamicArrayAnchors", []),
+            "arrayFormulaAnchors": inventory.get("arrayFormulaAnchors", []),
+            "dataTableAnchors": inventory.get("dataTableAnchors", []),
+            "calculationSettings": calculation_settings,
+            "tokenizer": inventory.get("tokenizer"),
         }
 
     def _execution_plan_payload(
@@ -2627,7 +2716,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             "schema.missing_field",
             f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
         )
-    boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst"}
+    boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst", "allowMultiple"}
     integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId", "baseStyleId", "x", "y"}
     string_fields = {
         "elementId", "spec", "title", "subtitle", "body", "font", "footer", "author",
@@ -2639,6 +2728,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         "errorTitle", "error", "styleName", "formatCode", "chartPart",
         "altText",
         "authorEngine",
+        "target",
     }
     boolean_fields.update({"allowBlank", "showErrorMessage"})
     for field in boolean_fields & set(operation):
@@ -2685,6 +2775,18 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         raise OfficeArtifactError(
             "schema.operation_type",
             f"operations[{index}].values must be a two-dimensional array",
+        )
+    if "bindings" in operation and (
+        not isinstance(operation["bindings"], dict)
+        or not operation["bindings"]
+        or not all(
+            isinstance(key, str) and key and isinstance(value, str)
+            for key, value in operation["bindings"].items()
+        )
+    ):
+        raise OfficeArtifactError(
+            "schema.operation_type",
+            f"operations[{index}].bindings must be a non-empty string-to-string object",
         )
     if "columns" in operation and (
         not isinstance(operation["columns"], list)

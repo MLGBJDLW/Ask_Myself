@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from datetime import date
 from xml.etree import ElementTree as ET
 from pathlib import Path
 
@@ -187,6 +188,72 @@ class PptxUpgradePipelineTests(unittest.TestCase):
 
             report = pptx_audit.audit(broken)
             self.assertTrue(any("dimension mismatch" in error for error in report["chart_validation_errors"]))
+
+    def test_audit_rejects_chart_cache_values_that_disagree_with_embedded_workbook(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.chart.data import ChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "chart-values.pptx"
+            broken = root / "chart-values-broken.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = ["A", "B"]
+            data.add_series("Value", (10, 20))
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.COLUMN_CLUSTERED,
+                Inches(1), Inches(1), Inches(5), Inches(3), data,
+            )
+            presentation.save(source)
+            with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(broken, "w") as output_archive:
+                for info in input_archive.infolist():
+                    payload = input_archive.read(info.filename)
+                    if info.filename == "ppt/charts/chart1.xml":
+                        chart = ET.fromstring(payload)
+                        value = chart.find(
+                            f".//{{{pptx_audit.NS['c']}}}val//{{{pptx_audit.NS['c']}}}pt"
+                            f"/{{{pptx_audit.NS['c']}}}v"
+                        )
+                        self.assertIsNotNone(value)
+                        value.text = "999"
+                        payload = ET.tostring(chart, encoding="utf-8", xml_declaration=True)
+                    output_archive.writestr(info, payload)
+
+            report = pptx_audit.audit(broken)
+            self.assertTrue(
+                any("cache/workbook value mismatch" in error for error in report["chart_validation_errors"]),
+                report["chart_validation_errors"],
+            )
+
+    def test_audit_compares_date_category_caches_using_excel_serials(self) -> None:
+        try:
+            from pptx import Presentation
+            from pptx.chart.data import ChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            from pptx.util import Inches
+        except ImportError:
+            self.skipTest("python-pptx is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "chart-dates.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+            data = ChartData()
+            data.categories = [date(2026, 1, 1), date(2026, 2, 1)]
+            data.add_series("Value", (10, 20))
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.LINE,
+                Inches(1), Inches(1), Inches(5), Inches(3), data,
+            )
+            presentation.save(source)
+
+            report = pptx_audit.audit(source)
+            self.assertEqual([], report["chart_validation_errors"])
 
     def test_visual_qa_detects_overlap_and_repairs_dense_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

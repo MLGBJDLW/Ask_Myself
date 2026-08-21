@@ -139,7 +139,9 @@ jobs:
         timeout-minutes: 12
         with:
           packages: |
+            libreoffice-writer
             libreoffice-calc
+            libreoffice-impress
             poppler-utils
 
       - name: Office artifact runtime smoke

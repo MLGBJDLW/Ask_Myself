@@ -358,10 +358,19 @@ def _rename_sheet(
             element.text = _replace_sheet_reference(element.text, old, new)
     replacements["xl/workbook.xml"] = ET.tostring(workbook, encoding="utf-8", xml_declaration=True)
     changed = ["xl/workbook.xml"]
-    for part in sheet_parts.values():
+    formula_tags = {"f", "formula", "formula1", "formula2", "calculatedColumnFormula", "totalsRowFormula"}
+    for part in archive.namelist():
+        if (
+            not part.startswith("xl/")
+            or not part.endswith(".xml")
+            or part == "xl/workbook.xml"
+        ):
+            continue
         root = ET.fromstring(replacements.get(part, archive.read(part)))
         touched = False
-        for formula in root.iter(_q("f")):
+        for formula in root.iter():
+            if _local(formula.tag) not in formula_tags:
+                continue
             updated = _replace_sheet_reference(formula.text or "", old, new)
             if updated != (formula.text or ""):
                 formula.text = updated

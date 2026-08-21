@@ -32,7 +32,7 @@
       {"$ref": "#/$defs/docxSecureRedact"}, {"$ref": "#/$defs/docxAddComment"},
       {"$ref": "#/$defs/docxTrackedReplace"}, {"$ref": "#/$defs/docxAddBookmark"},
       {"$ref": "#/$defs/docxInsertField"}, {"$ref": "#/$defs/docxContentControl"},
-      {"$ref": "#/$defs/docxProtection"}, {"$ref": "#/$defs/docxNoArg"}
+      {"$ref": "#/$defs/docxProtection"}, {"$ref": "#/$defs/docxTemplateBinding"}, {"$ref": "#/$defs/docxNoArg"}
     ]}}}}},
     {"if": {"properties": {"format": {"const": "xlsx"}}, "required": ["format"]}, "then": {"properties": {"operations": {"items": {"oneOf": [
       {"$ref": "#/$defs/xlsxCreate"}, {"$ref": "#/$defs/xlsxReplace"}, {"$ref": "#/$defs/xlsxSetValue"},
@@ -83,6 +83,7 @@
     "docxInsertField": {"type": "object", "additionalProperties": false, "required": ["op", "find", "instruction"], "properties": {"op": {"const": "insert_field"}, "elementId": {"type": "string"}, "find": {"type": "string", "minLength": 1}, "instruction": {"type": "string", "pattern": "^(?:PAGE|NUMPAGES|SECTIONPAGES|TOC(?:\\s+\\\\[A-Za-z]+(?:\\s+[^\\\\]+)?)|REF\\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\\s+\\\\[A-Za-z]+)*|SEQ\\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\\s+\\\\[A-Za-z]+(?:\\s+\\S+)?)*)$", "description": "Safe Word field allowlist: PAGE, NUMPAGES, SECTIONPAGES, TOC switches, REF bookmark switches, or SEQ identifier switches."}, "displayText": {"type": "string"}, "occurrence": {"type": "integer", "minimum": 1}}},
     "docxContentControl": {"type": "object", "additionalProperties": false, "required": ["op", "find", "tag"], "properties": {"op": {"const": "wrap_content_control"}, "elementId": {"type": "string"}, "find": {"type": "string", "minLength": 1}, "tag": {"type": "string", "minLength": 1}, "title": {"type": "string"}, "lock": {"type": "string", "enum": ["none", "content", "control"]}, "occurrence": {"type": "integer", "minimum": 1}}},
     "docxProtection": {"type": "object", "additionalProperties": false, "required": ["op", "mode"], "properties": {"op": {"const": "set_protection"}, "elementId": {"type": "string"}, "mode": {"type": "string", "enum": ["none", "readOnly", "comments", "trackedChanges", "forms"]}}},
+    "docxTemplateBinding": {"type": "object", "additionalProperties": false, "required": ["op", "bindings"], "properties": {"op": {"const": "bind_template"}, "elementId": {"type": "string"}, "bindings": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}, "target": {"type": "string", "enum": ["auto", "content_control", "bookmark"]}, "allowMultiple": {"type": "boolean"}}},
     "docxNoArg": {"type": "object", "additionalProperties": false, "required": ["op"], "properties": {"op": {"enum": ["strip_comments", "accept_changes", "reject_changes", "validate", "render"]}, "elementId": {"type": "string"}}},
     "xlsxCreate": {"type": "object", "additionalProperties": false, "required": ["op", "spec"], "properties": {"op": {"const": "create"}, "elementId": {"type": "string"}, "spec": {"type": "string", "minLength": 1}}},
     "xlsxReplace": {"type": "object", "additionalProperties": false, "required": ["op", "find"], "properties": {"op": {"enum": ["replace", "redact"]}, "elementId": {"type": "string"}, "find": {"type": "string", "minLength": 1}, "replace": {"type": "string"}, "expectedSha256": {"$ref": "#/$defs/sha256"}, "expectedMatches": {"type": "integer", "minimum": 0}}},

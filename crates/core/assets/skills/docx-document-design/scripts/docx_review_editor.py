@@ -24,6 +24,7 @@ COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordproce
 SUPPORTED_OPERATIONS = {
     "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
     "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
+    "bind_template",
 }
 
 
@@ -387,6 +388,89 @@ def _set_protection(
     return {"mode": mode, "enforced": mode != "none", "passwordProtected": False}
 
 
+def _bind_template(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    bindings = operation.get("bindings")
+    if (
+        not isinstance(bindings, dict)
+        or not bindings
+        or not all(isinstance(key, str) and key and isinstance(value, str) for key, value in bindings.items())
+    ):
+        raise DocxReviewError("bind_template requires a non-empty string-to-string bindings object")
+    target_kind = str(operation.get("target", "auto"))
+    if target_kind not in {"auto", "content_control", "bookmark"}:
+        raise DocxReviewError("bind_template target must be auto, content_control, or bookmark")
+    allow_multiple = bool(operation.get("allowMultiple", False))
+    document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
+    bound: list[dict[str, Any]] = []
+    for key, value in bindings.items():
+        matches: list[tuple[str, list[ET.Element]]] = []
+        if target_kind in {"auto", "content_control"}:
+            for control in document.iter(_q("sdt")):
+                properties = control.find(_q("sdtPr"))
+                content = control.find(_q("sdtContent"))
+                if properties is None or content is None:
+                    continue
+                tag = next(
+                    (
+                        child.attrib.get(_q("val"), "")
+                        for child in properties
+                        if _local(child.tag) == "tag"
+                    ),
+                    "",
+                )
+                if tag.casefold() == key.casefold():
+                    nodes = list(content.iter(_q("t")))
+                    if not nodes:
+                        raise DocxReviewError(f"content control has no text nodes: {key}")
+                    matches.append(("content_control", nodes))
+        if target_kind in {"auto", "bookmark"}:
+            parents = _parent_map(document)
+            for start in document.iter(_q("bookmarkStart")):
+                if start.attrib.get(_q("name"), "").casefold() != key.casefold():
+                    continue
+                parent = parents.get(start)
+                if parent is None or _local(parent.tag) != "p":
+                    raise DocxReviewError(f"bookmark spans an unsupported container: {key}")
+                bookmark_id = start.attrib.get(_q("id"), "")
+                children = list(parent)
+                start_index = children.index(start)
+                end_index = next(
+                    (
+                        index
+                        for index, child in enumerate(children[start_index + 1 :], start=start_index + 1)
+                        if _local(child.tag) == "bookmarkEnd" and child.attrib.get(_q("id"), "") == bookmark_id
+                    ),
+                    None,
+                )
+                if end_index is None:
+                    raise DocxReviewError(f"bookmark end is missing or crosses paragraphs: {key}")
+                nodes = [
+                    text
+                    for child in children[start_index + 1 : end_index]
+                    for text in child.iter(_q("t"))
+                ]
+                if not nodes:
+                    raise DocxReviewError(f"bookmark has no bindable text nodes: {key}")
+                matches.append(("bookmark", nodes))
+        if not matches:
+            raise DocxReviewError(f"template binding target not found: {key}")
+        if len(matches) > 1 and not allow_multiple:
+            raise DocxReviewError(f"template binding target is ambiguous: {key} ({len(matches)} matches)")
+        for kind, nodes in matches:
+            nodes[0].text = value
+            for node in nodes[1:]:
+                node.text = ""
+            bound.append({"key": key, "target": kind, "valueLength": len(value)})
+    replacements["word/document.xml"] = ET.tostring(
+        document, encoding="utf-8", xml_declaration=True
+    )
+    return {"bindings": bound}
+
+
 def _resolve_revisions(data: bytes, accept: bool) -> tuple[bytes, int]:
     root = ET.fromstring(data)
     count = 0
@@ -482,6 +566,8 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
                 detail = _wrap_content_control(archive, replacements, operation)
             elif name == "set_protection":
                 detail = _set_protection(archive, replacements, operation)
+            elif name == "bind_template":
+                detail = _bind_template(archive, replacements, operation)
             else:
                 accept = name == "accept_changes"
                 changed_parts = []

@@ -126,6 +126,7 @@ def worksheet_summary(zf: zipfile.ZipFile, sheet_part: str, name: str, state: st
     return {
         "name": name,
         "part": sheet_part,
+        "type": "worksheet",
         "state": state,
         "dimension": dimension.attrib.get("ref", "") if dimension is not None else "",
         "rows": len(rows),
@@ -137,6 +138,20 @@ def worksheet_summary(zf: zipfile.ZipFile, sheet_part: str, name: str, state: st
         "has_autofilter": root.find(".//main:autoFilter", NS) is not None,
         "has_frozen_pane": any(pane.attrib.get("state") == "frozen" for pane in panes),
         "external_relationships": external_rels,
+    }
+
+
+def chartsheet_summary(zf: zipfile.ZipFile, sheet_part: str, name: str, state: str) -> dict:
+    root = parse_xml(read_text(zf, sheet_part))
+    rels = worksheet_rels(zf, sheet_part)
+    return {
+        "name": name,
+        "part": sheet_part,
+        "type": "chartsheet",
+        "state": state,
+        "parse_error": root is None,
+        "drawings": sum(1 for rel in rels if "/drawing" in rel["type"]),
+        "external_relationships": sum(1 for rel in rels if rel["mode"] == "External"),
     }
 
 
@@ -159,11 +174,20 @@ def audit(path: Path) -> dict:
                 )
                 continue
             referenced_parts.add(sheet_part)
-            summary = worksheet_summary(
-                zf,
-                sheet_part,
-                sheet_meta.get("name", f"Sheet{index + 1}"),
-                sheet_meta.get("state", "visible"),
+            summary = (
+                chartsheet_summary(
+                    zf,
+                    sheet_part,
+                    sheet_meta.get("name", f"Sheet{index + 1}"),
+                    sheet_meta.get("state", "visible"),
+                )
+                if sheet_part.startswith("xl/chartsheets/")
+                else worksheet_summary(
+                    zf,
+                    sheet_part,
+                    sheet_meta.get("name", f"Sheet{index + 1}"),
+                    sheet_meta.get("state", "visible"),
+                )
             )
             if summary.get("formula_errors"):
                 warnings.append(f"{summary['name']} has formula errors")

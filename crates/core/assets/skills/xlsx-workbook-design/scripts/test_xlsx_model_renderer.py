@@ -232,6 +232,37 @@ class XlsxModelRendererTests(unittest.TestCase):
             self.assertTrue(by_cell["B1"]["known"])
             self.assertFalse(by_cell["B2"]["known"])
 
+    def test_formula_inventory_tokenizes_local_ranges_and_reports_circular_models(self) -> None:
+        try:
+            import openpyxl  # type: ignore
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "circular.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "Model"
+            sheet["A1"] = "=SUM(B1:B2)"
+            sheet["B1"] = "=A1+1"
+            sheet["B2"] = "=_xlfn.FILTER(C1:C2,C1:C2>0)"
+            workbook.calculation.iterate = True
+            workbook.calculation.iterateCount = 50
+            workbook.save(path)
+            workbook.close()
+
+            inventory = xlsx_model_renderer.inspect_formula_inventory(path)
+            self.assertEqual("openpyxl.formula.Tokenizer", inventory["tokenizer"])
+            self.assertIn(
+                {"from": "Model!A1", "to": "Model!B1"},
+                inventory["dependencyEdges"],
+            )
+            self.assertTrue(
+                any({"Model!A1", "Model!B1"} <= set(cycle) for cycle in inventory["circularReferences"]),
+                inventory["circularReferences"],
+            )
+            self.assertIn("Model!B2", inventory["dynamicArrayAnchors"])
+            self.assertEqual("1", inventory["calculationSettings"]["iterate"])
+
 
 if __name__ == "__main__":
     unittest.main()

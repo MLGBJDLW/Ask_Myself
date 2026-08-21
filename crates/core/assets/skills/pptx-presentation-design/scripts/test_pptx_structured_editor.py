@@ -75,6 +75,59 @@ class PptxStructuredEditorTests(unittest.TestCase):
                     "op": "set_speaker_notes", "slideId": slide_id, "text": "Notes",
                 }])
 
+    def test_insert_slide_is_lossless_with_notes_comments_and_macro_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, slide_id, _ = self._source(root)
+            reviewed = root / "reviewed.pptx"
+            pptx_structured_editor.patch_pptx(source, reviewed, [{
+                "op": "add_comment",
+                "slideId": slide_id,
+                "comment": "Keep this review thread",
+                "author": "Reviewer",
+            }])
+            with zipfile.ZipFile(reviewed) as archive:
+                original_slide_rels = archive.read("ppt/slides/_rels/slide1.xml.rels")
+                original_comment = next(
+                    archive.read(name)
+                    for name in archive.namelist()
+                    if name.startswith("ppt/comments/comment")
+                )
+            inserted = root / "inserted.pptx"
+            result = pptx_structured_editor.patch_pptx(reviewed, inserted, [{
+                "op": "insert_slide", "after": 1, "title": "Inserted", "body": "Evidence",
+            }])
+            self.assertIn("ppt/slides/slide2.xml", result["changedParts"])
+            with zipfile.ZipFile(inserted) as archive:
+                self.assertEqual(original_slide_rels, archive.read("ppt/slides/_rels/slide1.xml.rels"))
+                self.assertEqual(
+                    original_comment,
+                    next(
+                        archive.read(name)
+                        for name in archive.namelist()
+                        if name.startswith("ppt/comments/comment")
+                    ),
+                )
+                self.assertIn(b"Inserted", archive.read("ppt/slides/slide2.xml"))
+                self.assertIn(b"Evidence", archive.read("ppt/slides/slide2.xml"))
+
+            potm = root / "reviewed.potm"
+            with zipfile.ZipFile(reviewed) as archive, zipfile.ZipFile(potm, "w") as output:
+                for info in archive.infolist():
+                    data = archive.read(info.filename)
+                    if info.filename == "[Content_Types].xml":
+                        data = data.replace(
+                            b"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+                            b"application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+                        )
+                    output.writestr(info, data)
+            potm_inserted = root / "inserted.potm"
+            pptx_structured_editor.patch_pptx(potm, potm_inserted, [{
+                "op": "insert_slide", "after": 0, "title": "Macro-safe insert",
+            }])
+            with zipfile.ZipFile(potm_inserted) as archive:
+                self.assertIn(b"Macro-safe insert", archive.read("ppt/slides/slide2.xml"))
+
     def test_clone_preserves_animation_and_copy_on_write_smartart_ole_closure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

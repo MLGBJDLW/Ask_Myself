@@ -254,6 +254,7 @@ enum OfficeOperation {
     AddBookmark(BookmarkOperation),
     InsertField(FieldOperation),
     WrapContentControl(ContentControlOperation),
+    BindTemplate(TemplateBindingOperation),
     SetProtection {
         mode: String,
     },
@@ -393,6 +394,16 @@ struct ContentControlOperation {
     lock: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     occurrence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TemplateBindingOperation {
+    bindings: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allow_multiple: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

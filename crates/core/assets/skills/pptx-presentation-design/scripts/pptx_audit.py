@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import io
 import json
 import posixpath
@@ -114,14 +115,91 @@ def validate_charts(
         if root is None:
             errors.append(f"chart XML is invalid: {chart_part}")
             continue
-        for series_index, series in enumerate(root.findall(".//c:ser", NS), start=1):
-            category_points = series.findall(".//c:cat//c:pt", NS)
-            value_points = series.findall(".//c:val//c:pt", NS)
-            if category_points and value_points and len(category_points) != len(value_points):
-                errors.append(
-                    f"chart cache dimension mismatch: {chart_part} series {series_index} "
-                    f"categories={len(category_points)} values={len(value_points)}"
+        embedded_workbooks = [
+            relationship["target"]
+            for relationship in rel_targets(zf, chart_part)
+            if relationship.get("target_mode") != "External"
+            and relationship["target"].startswith("ppt/embeddings/")
+            and relationship["target"].lower().endswith(".xlsx")
+        ]
+        workbook = None
+        if embedded_workbooks:
+            try:
+                import openpyxl  # type: ignore
+
+                workbook = openpyxl.load_workbook(
+                    io.BytesIO(zf.read(embedded_workbooks[0])),
+                    data_only=True,
+                    read_only=True,
                 )
+            except (ImportError, OSError, KeyError, ValueError, zipfile.BadZipFile) as error:
+                errors.append(
+                    f"chart embedded workbook cannot be inspected: {chart_part} -> "
+                    f"{embedded_workbooks[0]} ({type(error).__name__})"
+                )
+        try:
+            for series_index, series in enumerate(root.findall(".//c:ser", NS), start=1):
+                category_points = series.findall(".//c:cat//c:pt", NS)
+                value_points = series.findall(".//c:val//c:pt", NS)
+                if category_points and value_points and len(category_points) != len(value_points):
+                    errors.append(
+                        f"chart cache dimension mismatch: {chart_part} series {series_index} "
+                        f"categories={len(category_points)} values={len(value_points)}"
+                    )
+                if workbook is not None:
+                    for role, container in (
+                        ("title", series.find("c:tx", NS)),
+                        ("categories", series.find("c:cat", NS)),
+                        ("values", series.find("c:val", NS)),
+                    ):
+                        if container is None:
+                            continue
+                        reference = container.find(".//c:f", NS)
+                        cache = next(
+                            (
+                                item
+                                for tag in ("strCache", "numCache")
+                                if (item := container.find(f".//c:{tag}", NS)) is not None
+                            ),
+                            None,
+                        )
+                        if reference is None or not (reference.text or "").strip() or cache is None:
+                            continue
+                        try:
+                            expected = _chart_formula_values(workbook, reference.text or "")
+                        except ValueError as error:
+                            errors.append(
+                                f"chart source formula is unsupported: {chart_part} series "
+                                f"{series_index} {role} ({error})"
+                            )
+                            continue
+                        cached = {
+                            int(point.attrib.get("idx", "-1")): (
+                                point.find("c:v", NS).text
+                                if point.find("c:v", NS) is not None
+                                else ""
+                            )
+                            for point in cache.findall("c:pt", NS)
+                        }
+                        point_count = cache.find("c:ptCount", NS)
+                        declared_count = int(point_count.attrib.get("val", "0")) if point_count is not None else len(cached)
+                        if declared_count != len(expected):
+                            errors.append(
+                                f"chart cache/workbook count mismatch: {chart_part} series "
+                                f"{series_index} {role} cache={declared_count} workbook={len(expected)}"
+                            )
+                            continue
+                        for point_index, expected_value in enumerate(expected):
+                            actual_value = cached.get(point_index, "")
+                            if not _chart_values_equal(actual_value, expected_value):
+                                errors.append(
+                                    f"chart cache/workbook value mismatch: {chart_part} series "
+                                    f"{series_index} {role} point={point_index} "
+                                    f"cache={actual_value!r} workbook={expected_value!r}"
+                                )
+        finally:
+            if workbook is not None:
+                workbook.close()
         for relationship in rel_targets(zf, chart_part):
             if relationship.get("target_mode") == "External":
                 continue
@@ -133,6 +211,54 @@ def validate_charts(
                 if not zipfile.is_zipfile(io.BytesIO(zf.read(target))):
                     errors.append(f"chart embedded workbook is invalid: {target}")
     return errors
+
+
+def _chart_formula_values(workbook, formula: str) -> list[object]:
+    from openpyxl.utils.cell import range_boundaries  # type: ignore
+    from openpyxl.utils.datetime import to_excel  # type: ignore
+
+    normalized = formula.strip().lstrip("=")
+    if "[" in normalized or "]" in normalized:
+        raise ValueError("external workbook references are not cache-verifiable")
+    match = re.fullmatch(
+        r"(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^!]+))!(?P<range>\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)",
+        normalized,
+    )
+    if match is None:
+        raise ValueError(formula)
+    sheet_name = (match.group("quoted") or match.group("plain") or "").replace("''", "'")
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"worksheet is missing: {sheet_name}")
+    sheet = workbook[sheet_name]
+    if not hasattr(sheet, "iter_rows"):
+        raise ValueError(f"chart source is not a worksheet: {sheet_name}")
+    min_col, min_row, max_col, max_row = range_boundaries(match.group("range").replace("$", ""))
+    return [
+        to_excel(cell.value, workbook.epoch)
+        if isinstance(cell.value, (dt.datetime, dt.date, dt.time))
+        else cell.value
+        for row in sheet.iter_rows(
+            min_row=min_row,
+            max_row=max_row,
+            min_col=min_col,
+            max_col=max_col,
+        )
+        for cell in row
+    ]
+
+
+def _chart_values_equal(cached: str | None, expected: object) -> bool:
+    cached_text = "" if cached is None else str(cached)
+    if expected is None:
+        return cached_text == ""
+    if isinstance(expected, bool):
+        return cached_text.casefold() in ({"true", "1"} if expected else {"false", "0"})
+    if isinstance(expected, (int, float)):
+        try:
+            return abs(float(cached_text) - float(expected)) <= 1e-9
+        except ValueError:
+            return False
+    return cached_text == str(expected)
 
 
 def slide_text(root) -> str:
@@ -170,10 +296,13 @@ def shape_inventory(root) -> list[dict[str, object]]:
                 "kind": kind,
                 "text": text,
                 "placeholderType": placeholder.attrib.get("type") if placeholder is not None else None,
+                "placeholderIndex": placeholder.attrib.get("idx") if placeholder is not None else None,
                 "isTitle": (
                     placeholder is not None
                     and placeholder.attrib.get("type") in {"title", "ctrTitle"}
                 ),
+                "altText": properties.attrib.get("descr", ""),
+                "title": properties.attrib.get("title", ""),
                 "bounds": {
                     "x": int(offset.attrib.get("x", "0")) if offset is not None else None,
                     "y": int(offset.attrib.get("y", "0")) if offset is not None else None,
@@ -275,6 +404,7 @@ def audit(path: Path) -> dict:
 
         slides = []
         chart_parts: list[str] = []
+        comment_details: list[dict[str, object]] = []
         for index, slide_name in enumerate(slide_names, start=1):
             root = parse_xml(read_text(zf, slide_name))
             rels = rel_targets(zf, slide_name)
@@ -283,6 +413,32 @@ def audit(path: Path) -> dict:
             chart_parts.extend(rel["target"] for rel in rels if "/charts/" in rel["target"])
             image_count = sum(1 for rel in rels if "/media/" in rel["target"])
             notes_count = sum(1 for rel in rels if "notesSlide" in rel["type"])
+            comment_parts = [
+                rel["target"]
+                for rel in rels
+                if rel["type"].rsplit("/", 1)[-1] == "comments"
+                and rel.get("target_mode") != "External"
+            ]
+            for comment_part in comment_parts:
+                comments = parse_xml(read_text(zf, comment_part))
+                if comments is None:
+                    continue
+                for comment in comments:
+                    if comment.tag.rsplit("}", 1)[-1] != "cm":
+                        continue
+                    text_element = next(
+                        (item for item in comment if item.tag.rsplit("}", 1)[-1] == "text"),
+                        None,
+                    )
+                    comment_details.append({
+                        "slideIndex": index,
+                        "slideId": slide_order[index - 1]["id"] if slide_order else None,
+                        "part": comment_part,
+                        "authorId": comment.attrib.get("authorId", ""),
+                        "index": comment.attrib.get("idx", ""),
+                        "date": comment.attrib.get("dt", ""),
+                        "text": (text_element.text or "") if text_element is not None else "",
+                    })
             external_count = sum(1 for rel in rels if rel.get("target_mode") == "External")
             hyperlink_count = sum(1 for rel in rels if "hyperlink" in rel["type"])
             graphic_frames = len(root.findall(".//p:graphicFrame", NS)) if root is not None else 0
@@ -317,6 +473,7 @@ def audit(path: Path) -> dict:
                     "image_relationships": image_count,
                     "chart_relationships": chart_count,
                     "notes_relationships": notes_count,
+                    "comment_relationships": len(comment_parts),
                     "external_relationships": external_count,
                     "hyperlink_relationships": hyperlink_count,
                     "empty_placeholders": empty_placeholders,
@@ -345,6 +502,7 @@ def audit(path: Path) -> dict:
             "slide_order": slide_order,
             "validation_errors": validation_errors,
             "chart_validation_errors": chart_errors,
+            "comments": comment_details,
             "orphan_slide_parts": orphan_parts,
             "external_links": sum(slide["external_relationships"] for slide in slides),
             "hyperlinks": sum(slide["hyperlink_relationships"] for slide in slides),

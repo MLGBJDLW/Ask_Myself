@@ -802,14 +802,98 @@ def _workbook_sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
 def inspect_formula_inventory(path: str | Path) -> dict[str, Any]:
     """Inventory formula kinds, references, caches, and a cache-independent fingerprint."""
     dependency_edges: list[dict[str, str]] = []
+    unresolved_references: list[dict[str, str]] = []
+    calculation_settings: dict[str, Any] = {}
     with zipfile.ZipFile(Path(path).expanduser().resolve()) as archive:
         formula_items = inventory_xlsx_formulas(archive)
+        workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+        calc_pr = next(
+            (item for item in workbook_root.iter() if item.tag.rsplit("}", 1)[-1] == "calcPr"),
+            None,
+        )
+        if calc_pr is not None:
+            calculation_settings = {
+                key.rsplit("}", 1)[-1]: value
+                for key, value in calc_pr.attrib.items()
+            }
+    try:
+        from openpyxl.formula import Tokenizer  # type: ignore
+        from openpyxl.utils.cell import range_boundaries  # type: ignore
+    except ImportError:
+        Tokenizer = None  # type: ignore[assignment,misc]
+        range_boundaries = None  # type: ignore[assignment]
+
+    edge_budget = 100_000
+    defined_formulas = {
+        str(item.get("name", "")).casefold(): str(item.get("formula", ""))
+        for item in formula_items
+        if item.get("kind") == "defined_name" and item.get("name")
+    }
     for item in formula_items:
-        for match in SHEET_REF_RE.finditer(str(item.get("formula", ""))):
-            dependency_edges.append({
-                "from": str(item.get("location", "")),
-                "to": f"{match.group('sheet')}!{match.group('ref')}",
-            })
+        formula_text = str(item.get("formula", ""))
+        source = str(item.get("location", ""))
+        source_sheet = str(item.get("sheet", ""))
+        if Tokenizer is None or item.get("kind") != "cell":
+            references = [match.group(0) for match in SHEET_REF_RE.finditer(formula_text)]
+        else:
+            try:
+                references = [
+                    token.value
+                    for token in Tokenizer("=" + formula_text.lstrip("=")).items
+                    if token.type == "OPERAND" and token.subtype == "RANGE"
+                ]
+            except (IndexError, TypeError, ValueError):
+                references = [match.group(0) for match in SHEET_REF_RE.finditer(formula_text)]
+        for reference in references:
+            raw_reference = str(reference).strip()
+            if "!" not in raw_reference and raw_reference.casefold() in defined_formulas:
+                raw_reference = defined_formulas[raw_reference.casefold()].strip().lstrip("=")
+            if "[" in raw_reference or "]" in raw_reference:
+                unresolved_references.append({
+                    "from": source,
+                    "reference": raw_reference,
+                    "reason": "external-workbook",
+                })
+                continue
+            if "!" in raw_reference:
+                raw_sheet, raw_range = raw_reference.rsplit("!", 1)
+                target_sheet = raw_sheet.strip("'").replace("''", "'")
+            else:
+                target_sheet = source_sheet
+                raw_range = raw_reference
+            normalized_range = raw_range.replace("$", "")
+            if not re.fullmatch(r"[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?", normalized_range, re.IGNORECASE):
+                unresolved_references.append({
+                    "from": source,
+                    "reference": raw_reference,
+                    "reason": "named-or-structured-reference",
+                })
+                continue
+            try:
+                min_col, min_row, max_col, max_row = range_boundaries(normalized_range)
+            except (TypeError, ValueError):
+                unresolved_references.append({
+                    "from": source,
+                    "reference": raw_reference,
+                    "reason": "invalid-range",
+                })
+                continue
+            cells = (max_col - min_col + 1) * (max_row - min_row + 1)
+            if cells > edge_budget - len(dependency_edges):
+                unresolved_references.append({
+                    "from": source,
+                    "reference": raw_reference,
+                    "reason": "dependency-edge-budget",
+                })
+                continue
+            from openpyxl.utils.cell import get_column_letter  # type: ignore
+
+            for row in range(min_row, max_row + 1):
+                for column in range(min_col, max_col + 1):
+                    dependency_edges.append({
+                        "from": source,
+                        "to": f"{target_sheet}!{get_column_letter(column)}{row}",
+                    })
     fingerprint_payload = json.dumps(
         sorted(
             formula_items,
@@ -827,6 +911,49 @@ def inspect_formula_inventory(path: str | Path) -> dict[str, Any]:
     cell_formulas = [item for item in formula_items if item.get("kind") == "cell"]
     for item in cell_formulas:
         kinds[item["type"]] = kinds.get(item["type"], 0) + 1
+    formula_nodes = {str(item["location"]) for item in cell_formulas}
+    adjacency = {
+        node: {
+            edge["to"]
+            for edge in dependency_edges
+            if edge["from"] == node and edge["to"] in formula_nodes
+        }
+        for node in formula_nodes
+    }
+    circular: set[tuple[str, ...]] = set()
+
+    def visit(node: str, stack: list[str], active: set[str], complete: set[str]) -> None:
+        if node in active:
+            start = stack.index(node)
+            cycle = stack[start:] + [node]
+            rotations = [tuple(cycle[index:-1] + cycle[:index] + [cycle[index]]) for index in range(len(cycle) - 1)]
+            circular.add(min(rotations))
+            return
+        if node in complete:
+            return
+        active.add(node)
+        stack.append(node)
+        for target in sorted(adjacency.get(node, set())):
+            visit(target, stack, active, complete)
+        stack.pop()
+        active.remove(node)
+        complete.add(node)
+
+    complete: set[str] = set()
+    for node in sorted(formula_nodes):
+        visit(node, [], set(), complete)
+    dynamic_functions = {
+        "FILTER", "SORT", "SORTBY", "UNIQUE", "SEQUENCE", "RANDARRAY",
+        "XLOOKUP", "XMATCH", "LET", "LAMBDA", "TAKE", "DROP",
+    }
+    dynamic_anchors = [
+        item["location"]
+        for item in cell_formulas
+        if any(
+            re.search(rf"(?:_XLFN\.)?{function}\s*\(", str(item["formula"]), re.IGNORECASE)
+            for function in dynamic_functions
+        )
+    ]
     return {
         "formulaCells": len(cell_formulas),
         "formulaDefinitions": len(formula_items) - len(cell_formulas),
@@ -834,6 +961,13 @@ def inspect_formula_inventory(path: str | Path) -> dict[str, Any]:
         "formulaKinds": kinds,
         "formulas": formula_items,
         "dependencyEdges": dependency_edges,
+        "unresolvedReferences": unresolved_references,
+        "circularReferences": [list(cycle) for cycle in sorted(circular)],
+        "dynamicArrayAnchors": dynamic_anchors,
+        "arrayFormulaAnchors": [item["location"] for item in cell_formulas if item.get("type") == "array"],
+        "dataTableAnchors": [item["location"] for item in cell_formulas if item.get("type") == "dataTable"],
+        "calculationSettings": calculation_settings,
+        "tokenizer": "openpyxl.formula.Tokenizer" if Tokenizer is not None else "sheet-reference-regex-fallback",
         "fingerprint": hashlib.sha256(fingerprint_payload).hexdigest(),
     }
 

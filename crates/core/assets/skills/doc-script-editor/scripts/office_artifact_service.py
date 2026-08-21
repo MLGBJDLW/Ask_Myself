@@ -417,12 +417,13 @@ def _native_operations(
         "set_number_format", "set_chart_title",
     }
     pptx_typed = {
-        "set_text", "clone_slide", "reorder_slides", "set_transition",
+        "set_text", "clone_slide", "insert_slide", "reorder_slides", "set_transition",
         "set_alt_text", "set_speaker_notes", "add_comment",
     }
     docx_review = {
         "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
         "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
+        "bind_template",
     }
     for index, operation in enumerate(job.operations):
         name = str(operation.get("op", "")).lower()
@@ -538,16 +539,6 @@ def _native_operations(
                 arguments.append("--allow-style-merge")
             if name == "secure_redact" and operation.get("privacyScrub"):
                 arguments.append("--privacy-scrub")
-            _run_editor(working, name, arguments, actions, workspace_root)
-            changed.append(element_id)
-        elif name == "insert_slide":
-            if job.format != "pptx":
-                raise ValueError("insert_slide only supports PPTX")
-            arguments = [
-                "--after", str(operation.get("after", 0)),
-                "--title", str(operation.get("title", "")),
-                "--body", str(operation.get("body", "")),
-            ]
             _run_editor(working, name, arguments, actions, workspace_root)
             changed.append(element_id)
         else:
@@ -1014,7 +1005,7 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
                 "word/document.xml", "word/comments*.xml", "word/_rels/*.rels",
                 "[Content_Types].xml",
             )
-        if operation in {"add_bookmark", "insert_field", "wrap_content_control"}:
+        if operation in {"add_bookmark", "insert_field", "wrap_content_control", "bind_template"}:
             return ("word/document.xml",)
         if operation == "set_protection":
             return ("word/settings.xml",)
@@ -1122,20 +1113,28 @@ def _exact_operation_parts(
     if artifact_format == "xlsx" and operation == "rename_sheet":
         old = str(payload.get("sheet", ""))
         exact = {"xl/workbook.xml"}
+        formula_tags = {
+            "f", "formula", "formula1", "formula2",
+            "calculatedColumnFormula", "totalsRowFormula",
+        }
         with zipfile.ZipFile(path) as archive:
             for name in archive.namelist():
-                if not name.startswith("xl/worksheets/") or not name.endswith(".xml"):
+                if (
+                    not name.startswith("xl/")
+                    or not name.endswith(".xml")
+                    or name == "xl/workbook.xml"
+                ):
                     continue
                 root = ET.fromstring(archive.read(name))
                 if any(
                     re.search(rf"(?i)(?:'{re.escape(old)}'|{re.escape(old)})!", formula.text or "")
                     for formula in root.iter()
-                    if formula.tag.rsplit("}", 1)[-1] == "f"
+                    if formula.tag.rsplit("}", 1)[-1] in formula_tags
                 ):
                     exact.add(name)
         return exact
     if artifact_format == "docx" and operation in {
-        "add_bookmark", "insert_field", "wrap_content_control",
+        "add_bookmark", "insert_field", "wrap_content_control", "bind_template",
     }:
         return {"word/document.xml"}
     if artifact_format == "docx" and operation == "set_protection":
@@ -1476,6 +1475,38 @@ def _verify_exact_semantic_scope(
             "rename_sheet", "set_defined_name", "set_data_validation", "create_table",
             "set_number_format", "set_chart_title",
         }:
+            if operation == "rename_sheet":
+                scripts = Path(__file__).resolve().parents[2] / "xlsx-workbook-design" / "scripts"
+                if str(scripts) not in sys.path:
+                    sys.path.insert(0, str(scripts))
+                from xlsx_structured_editor import _replace_sheet_reference  # type: ignore
+
+                old = str(payload.get("sheet", ""))
+                new = str(payload.get("newName", ""))
+                formula_tags = {
+                    "f", "formula", "formula1", "formula2",
+                    "calculatedColumnFormula", "totalsRowFormula",
+                }
+                for name, data in before.items():
+                    expected_root = ET.fromstring(data)
+                    if name == "xl/workbook.xml":
+                        for element in expected_root.iter():
+                            local = element.tag.rsplit("}", 1)[-1]
+                            if (
+                                local == "sheet"
+                                and element.attrib.get("name", "").casefold() == old.casefold()
+                            ):
+                                element.set("name", new)
+                            elif local == "definedName" and element.text:
+                                element.text = _replace_sheet_reference(element.text, old, new)
+                    else:
+                        for element in expected_root.iter():
+                            if element.tag.rsplit("}", 1)[-1] in formula_tags and element.text:
+                                element.text = _replace_sheet_reference(element.text, old, new)
+                    if _canonical_xml(expected_root) != _canonical_xml(ET.fromstring(after[name])):
+                        raise RuntimeError(
+                            f"strict XLSX rename changed semantics beyond sheet references in {name}"
+                        )
             with zipfile.ZipFile(after_path) as archive:
                 if operation == "set_defined_name":
                     workbook = ET.fromstring(archive.read("xl/workbook.xml"))

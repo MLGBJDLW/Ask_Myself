@@ -26,7 +26,7 @@ COMMENT_AUTHORS_REL = f"{R_NS}/commentAuthors"
 COMMENT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.comments+xml"
 COMMENT_AUTHORS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"
 SUPPORTED_OPERATIONS = {
-    "set_text", "clone_slide", "reorder_slides", "set_transition",
+    "set_text", "clone_slide", "insert_slide", "reorder_slides", "set_transition",
     "set_alt_text", "set_speaker_notes", "add_comment",
 }
 DUPLICATE_RELATION_TYPES = {
@@ -276,6 +276,155 @@ def _clone_slide(
         "part": clone_part,
         "clonedParts": mapping,
     }
+
+
+def _append_text_shape(
+    shape_tree: ET.Element,
+    shape_id: int,
+    name: str,
+    text: str,
+    *,
+    x: int,
+    y: int,
+    cx: int,
+    cy: int,
+    font_size: int,
+    bold: bool = False,
+) -> None:
+    shape = ET.SubElement(shape_tree, f"{{{P_NS}}}sp")
+    non_visual = ET.SubElement(shape, f"{{{P_NS}}}nvSpPr")
+    ET.SubElement(non_visual, f"{{{P_NS}}}cNvPr", {"id": str(shape_id), "name": name})
+    ET.SubElement(non_visual, f"{{{P_NS}}}cNvSpPr", {"txBox": "1"})
+    ET.SubElement(non_visual, f"{{{P_NS}}}nvPr")
+    properties = ET.SubElement(shape, f"{{{P_NS}}}spPr")
+    transform = ET.SubElement(properties, f"{{{A_NS}}}xfrm")
+    ET.SubElement(transform, f"{{{A_NS}}}off", {"x": str(x), "y": str(y)})
+    ET.SubElement(transform, f"{{{A_NS}}}ext", {"cx": str(cx), "cy": str(cy)})
+    geometry = ET.SubElement(properties, f"{{{A_NS}}}prstGeom", {"prst": "rect"})
+    ET.SubElement(geometry, f"{{{A_NS}}}avLst")
+    ET.SubElement(properties, f"{{{A_NS}}}noFill")
+    text_body = ET.SubElement(shape, f"{{{P_NS}}}txBody")
+    ET.SubElement(text_body, f"{{{A_NS}}}bodyPr", {"wrap": "square"})
+    ET.SubElement(text_body, f"{{{A_NS}}}lstStyle")
+    paragraph = ET.SubElement(text_body, f"{{{A_NS}}}p")
+    run = ET.SubElement(paragraph, f"{{{A_NS}}}r")
+    run_properties = ET.SubElement(
+        run,
+        f"{{{A_NS}}}rPr",
+        {"lang": "zh-CN", "sz": str(font_size), **({"b": "1"} if bold else {})},
+    )
+    run_properties.set("dirty", "0")
+    ET.SubElement(run, f"{{{A_NS}}}t").text = text
+    ET.SubElement(paragraph, f"{{{A_NS}}}endParaRPr", {"lang": "zh-CN", "sz": str(font_size)})
+
+
+def _new_slide_xml(title: str, body: str) -> bytes:
+    slide = ET.Element(f"{{{P_NS}}}sld")
+    common = ET.SubElement(slide, f"{{{P_NS}}}cSld")
+    shape_tree = ET.SubElement(common, f"{{{P_NS}}}spTree")
+    non_visual = ET.SubElement(shape_tree, f"{{{P_NS}}}nvGrpSpPr")
+    ET.SubElement(non_visual, f"{{{P_NS}}}cNvPr", {"id": "1", "name": ""})
+    ET.SubElement(non_visual, f"{{{P_NS}}}cNvGrpSpPr")
+    ET.SubElement(non_visual, f"{{{P_NS}}}nvPr")
+    group_properties = ET.SubElement(shape_tree, f"{{{P_NS}}}grpSpPr")
+    transform = ET.SubElement(group_properties, f"{{{A_NS}}}xfrm")
+    for tag in ("off", "chOff"):
+        ET.SubElement(transform, f"{{{A_NS}}}{tag}", {"x": "0", "y": "0"})
+    for tag in ("ext", "chExt"):
+        ET.SubElement(transform, f"{{{A_NS}}}{tag}", {"cx": "0", "cy": "0"})
+    if title:
+        _append_text_shape(
+            shape_tree, 2, "Nexa title", title,
+            x=640_000, y=350_000, cx=10_900_000, cy=800_000,
+            font_size=2_800, bold=True,
+        )
+    if body:
+        _append_text_shape(
+            shape_tree, 3, "Nexa body", body,
+            x=800_000, y=1_450_000, cx=10_500_000, cy=4_500_000,
+            font_size=1_800,
+        )
+    color_map = ET.SubElement(slide, f"{{{P_NS}}}clrMapOvr")
+    ET.SubElement(color_map, f"{{{A_NS}}}masterClrMapping")
+    return ET.tostring(slide, encoding="utf-8", xml_declaration=True)
+
+
+def _insert_slide(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    order = presentation_order_from_bytes(archive, replacements)
+    after = int(operation.get("after", 0))
+    if after < 0 or after > len(order):
+        raise PptxEditError(f"after out of range: {after}")
+    reference = order[max(0, min(len(order) - 1, after - 1))]
+    layout_relationship = next(
+        (
+            relationship
+            for relationship in _relationship_map(archive, reference["part"]).values()
+            if relationship["type"].rsplit("/", 1)[-1] == "slideLayout"
+            and relationship["mode"] != "External"
+        ),
+        None,
+    )
+    if layout_relationship is None:
+        raise PptxEditError("insert_slide requires an existing internal slide layout relationship")
+    layout_part = _resolve_target(reference["part"], layout_relationship["target"])
+    if layout_part not in archive.namelist():
+        raise PptxEditError(f"insert_slide layout is missing: {layout_part}")
+
+    occupied = set(archive.namelist()) | set(additions)
+    slide_part = _allocate_part(order[0]["part"], occupied)
+    additions[slide_part] = _new_slide_xml(
+        str(operation.get("title", "")),
+        str(operation.get("body", "")),
+    )
+    slide_relationships = ET.Element(f"{{{REL_NS}}}Relationships")
+    ET.SubElement(slide_relationships, f"{{{REL_NS}}}Relationship", {
+        "Id": "rId1",
+        "Type": f"{R_NS}/slideLayout",
+        "Target": _relative_target(slide_part, layout_part),
+    })
+    additions[_rels_path(slide_part)] = ET.tostring(
+        slide_relationships, encoding="utf-8", xml_declaration=True
+    )
+
+    presentation = ET.fromstring(
+        replacements.get("ppt/presentation.xml", archive.read("ppt/presentation.xml"))
+    )
+    presentation_rels = ET.fromstring(
+        replacements.get(
+            "ppt/_rels/presentation.xml.rels",
+            archive.read("ppt/_rels/presentation.xml.rels"),
+        )
+    )
+    relationship_id = _next_relationship_id(presentation_rels)
+    ET.SubElement(presentation_rels, f"{{{REL_NS}}}Relationship", {
+        "Id": relationship_id,
+        "Type": f"{R_NS}/slide",
+        "Target": _relative_target("ppt/presentation.xml", slide_part),
+    })
+    slide_list = next(element for element in presentation.iter() if _local(element.tag) == "sldIdLst")
+    slide_elements = [element for element in slide_list if _local(element.tag) == "sldId"]
+    slide_id = str(max(int(element.attrib.get("id", "255") or 255) for element in slide_elements) + 1)
+    new_slide = ET.Element(
+        f"{{{P_NS}}}sldId",
+        {"id": slide_id, f"{{{R_NS}}}id": relationship_id},
+    )
+    slide_list.insert(after, new_slide)
+    replacements["ppt/presentation.xml"] = ET.tostring(
+        presentation, encoding="utf-8", xml_declaration=True
+    )
+    replacements["ppt/_rels/presentation.xml.rels"] = ET.tostring(
+        presentation_rels, encoding="utf-8", xml_declaration=True
+    )
+    replacements["[Content_Types].xml"] = _clone_content_types(
+        replacements.get("[Content_Types].xml", archive.read("[Content_Types].xml")),
+        {order[0]["part"]: slide_part},
+    )
+    return {"slideId": slide_id, "part": slide_part, "insertedAfter": after}
 
 
 def _find_shape(root: ET.Element, operation: dict[str, Any]) -> ET.Element:
@@ -584,6 +733,8 @@ def patch_pptx(source: Path, output: Path, operations: list[dict[str, Any]]) -> 
                 raise PptxEditError(f"unsupported PPTX operation at index {index}: {name or '<missing>'}")
             if name == "clone_slide":
                 detail = _clone_slide(archive, replacements, additions, operation)
+            elif name == "insert_slide":
+                detail = _insert_slide(archive, replacements, additions, operation)
             elif name == "set_text":
                 detail = _set_text(archive, replacements, operation)
             elif name == "set_alt_text":
