@@ -458,11 +458,10 @@ pub fn vector_to_blob(vec: &[f32]) -> Vec<u8> {
 
 /// Deserialize a little-endian byte blob back into an f32 vector.
 pub fn blob_to_vector(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|chunk| {
-            let arr: [u8; 4] = chunk.try_into().expect("chunk is exactly 4 bytes");
-            f32::from_le_bytes(arr)
-        })
+    blob.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 

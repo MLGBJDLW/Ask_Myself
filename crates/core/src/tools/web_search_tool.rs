@@ -644,7 +644,7 @@ fn provider_failure_cooldown(
 
 async fn prepare_provider_call(
     key: ProviderRuntimeKey,
-) -> Result<SearchProviderHealthState, (SearchProviderFailure, SearchProviderRunInfo)> {
+) -> Result<SearchProviderHealthState, Box<(SearchProviderFailure, SearchProviderRunInfo)>> {
     let engine = key.engine;
     loop {
         let wait = {
@@ -664,7 +664,7 @@ async fn prepare_provider_call(
                     error_code: Some(failure.code.clone()),
                     next_retry_seconds: None,
                 };
-                (failure, run)
+                Box::new((failure, run))
             })?;
             let state = health.entry(key.clone()).or_default();
             let now = Instant::now();
@@ -686,7 +686,7 @@ async fn prepare_provider_call(
                         error_code: Some(failure.code.clone()),
                         next_retry_seconds: retry_after_secs,
                     };
-                    return Err((failure, run));
+                    return Err(Box::new((failure, run)));
                 }
                 state.next_retry_at = None;
                 if state.health == SearchProviderHealthState::Blocked {
@@ -1451,7 +1451,8 @@ async fn execute_provider_attempt(
 
     match prepare_provider_call(entry.runtime_key.clone()).await {
         Ok(_) => {}
-        Err((failure, run_info)) => {
+        Err(failure_and_run) => {
+            let (failure, run_info) = *failure_and_run;
             return ProviderAttemptResult {
                 entry,
                 time_range_applied,
@@ -2234,9 +2235,10 @@ mod tests {
         assert_eq!(health, SearchProviderHealthState::Blocked);
         assert!(retry_after.is_some_and(|seconds| seconds <= 7));
 
-        let Err((failure, run_info)) = prepare_provider_call(key).await else {
+        let Err(failure_and_run) = prepare_provider_call(key).await else {
             panic!("open circuit should skip provider call");
         };
+        let (failure, run_info) = *failure_and_run;
         assert_eq!(failure.code, "circuit_open");
         assert!(run_info.skipped);
         assert_eq!(run_info.health, SearchProviderHealthState::Blocked);
