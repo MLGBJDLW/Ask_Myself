@@ -594,6 +594,7 @@ impl LlmProvider for UnknownReplayThinkingProvider {
             finish_reason: FinishReason::ToolCalls,
             usage: Usage::default(),
             thinking: None,
+            provider_replay: None,
         })
     }
 
@@ -884,6 +885,7 @@ impl LlmProvider for MissingRequiredReasoningProvider {
             finish_reason: FinishReason::ToolCalls,
             usage: Usage::default(),
             thinking: None,
+            provider_replay: None,
         })
     }
 
@@ -1055,6 +1057,7 @@ impl LlmProvider for EmptyMetadataContextOverflowProvider {
             finish_reason: FinishReason::Stop,
             usage: Usage::default(),
             thinking: None,
+            provider_replay: None,
         })
     }
 
@@ -1124,6 +1127,7 @@ impl LlmProvider for RecoveringStreamProvider {
                 provider_raw: None,
             },
             thinking: None,
+            provider_replay: None,
         })
     }
 
@@ -1267,6 +1271,35 @@ impl LlmProvider for ProviderHostedToolProvider {
         Ok(Box::pin(stream::iter(vec![
             hosted(ProviderHostedToolStatus::Running),
             hosted(ProviderHostedToolStatus::Completed),
+            ProviderStreamEvent::ReplayState {
+                replay: Box::new(
+                    crate::llm::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(
+                        crate::llm::provider_turn::ResponsesReplayPayload {
+                            response_status: "completed".to_string(),
+                            items: vec![
+                                serde_json::json!({
+                                    "type": "reasoning",
+                                    "id": "rs-1",
+                                    "status": "completed",
+                                    "content": [{"type": "reasoning_text", "text": "search"}]
+                                }),
+                                serde_json::json!({
+                                    "type": "web_search_call",
+                                    "id": "ws-1",
+                                    "status": "completed",
+                                    "action": {"type": "search", "query": "Nexa"}
+                                }),
+                                serde_json::json!({
+                                    "type": "message",
+                                    "id": "msg-1",
+                                    "status": "completed",
+                                    "content": [{"type": "output_text", "text": "provider answer"}]
+                                }),
+                            ],
+                        },
+                    ),
+                ),
+            },
             ProviderStreamEvent::Chunk {
                 chunk: Box::new(StreamChunk {
                     delta: "provider answer".to_string(),
@@ -6691,6 +6724,11 @@ async fn test_provider_hosted_tool_is_rendered_without_local_dispatch_or_extra_r
     }
     assert_eq!(started, 1);
     assert_eq!(completed, 1);
+    assert_eq!(
+        db.count_provider_turns().expect("provider turns"),
+        1,
+        "a hosted-search-only answer must persist its turn-level replay sidecar"
+    );
 }
 
 #[tokio::test]

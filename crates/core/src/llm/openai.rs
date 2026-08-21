@@ -22,11 +22,11 @@ use super::{
     serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
     CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
     ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus, ProviderStreamEvent,
-    ProviderType, Role, StreamChunk, ToolCallRequest, ToolDefinition, Usage,
-    DEFAULT_STREAM_IDLE_TIMEOUT,
+    ProviderType, ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk, ToolCallRequest,
+    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 #[cfg(test)]
-use super::{CacheBoundaryHint, PromptStability, ReasoningEffort};
+use super::{CacheBoundaryHint, PromptStability};
 use crate::error::CoreError;
 use crate::provider_catalog::model_supports_reasoning_from_catalog;
 use std::sync::Arc;
@@ -521,6 +521,29 @@ fn completion_response_to_stream_chunks(
     }));
 
     chunks
+}
+
+fn completion_response_to_provider_events(
+    mut response: CompletionResponse,
+) -> Vec<ProviderStreamEvent> {
+    let replay = response.provider_replay.take();
+    let mut events = replay
+        .map(|replay| ProviderStreamEvent::ReplayState {
+            replay: Box::new(replay),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    events.extend(
+        completion_response_to_stream_chunks(response)
+            .into_iter()
+            .map(|chunk| match chunk {
+                Ok(chunk) => ProviderStreamEvent::Chunk {
+                    chunk: Box::new(chunk),
+                },
+                Err(error) => super::provider_stream_event_from_error(error),
+            }),
+    );
+    events
 }
 
 fn is_alibaba_hosted_qwen(model: &str, provider_type: Option<&ProviderType>) -> bool {
@@ -1271,6 +1294,19 @@ fn build_responses_request(
         } else if let Some(temperature) = request.temperature {
             body["temperature"] = serde_json::json!(temperature);
         }
+    } else if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+        if request.reasoning_enabled == Some(false)
+            || request.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else if request.reasoning_enabled == Some(true) || request.reasoning_effort.is_some() {
+            body["thinking"] = serde_json::json!({ "type": "enabled" });
+            if let Some(effort) = request.reasoning_effort.as_ref() {
+                if effort != &ReasoningEffort::None {
+                    body["reasoning_effort"] = serde_json::json!(effort.to_string());
+                }
+            }
+        }
     }
     Ok(body)
 }
@@ -1291,6 +1327,21 @@ fn contextualize_hosted_search_error(
         CoreError::Llm(message) => CoreError::Llm(context(message)),
         CoreError::RateLimited { retry_after_secs } => CoreError::RateLimited { retry_after_secs },
         error => error,
+    }
+}
+
+fn is_deepseek_missing_reasoning_replay(error: &CoreError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    (message.contains("reasoning_text") || message.contains("reasoning_content"))
+        && message.contains("must be passed back")
+}
+
+fn without_reasoning(request: &CompletionRequest) -> CompletionRequest {
+    CompletionRequest {
+        reasoning_enabled: Some(false),
+        reasoning_effort: None,
+        thinking_budget: None,
+        ..request.clone()
     }
 }
 
@@ -1511,14 +1562,21 @@ fn parse_responses_completion(
     }
 
     replay_sequence_valid &= !saw_unknown_output_item;
-    if replay_sequence_valid && has_replay_reasoning && !tool_calls.is_empty() {
-        tool_calls[0].thought_signature = super::provider_turn::encode_responses_reasoning_items(
-            &super::provider_turn::ResponsesReplayPayload {
-                response_status: response_status.clone(),
-                items: reasoning_replay,
-            },
-        );
-    }
+    let provider_replay = (replay_sequence_valid && has_replay_reasoning).then(|| {
+        let payload = super::provider_turn::ResponsesReplayPayload {
+            response_status: response_status.clone(),
+            items: reasoning_replay,
+        };
+        if let Some(first_tool_call) = tool_calls.first_mut() {
+            first_tool_call.thought_signature =
+                super::provider_turn::encode_responses_reasoning_items(&payload);
+        }
+        if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+            super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload)
+        } else {
+            super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(payload)
+        }
+    });
 
     if capability.supports_citations && !citations.is_empty() {
         content.push_str(&super::native_search::render_citation_appendix(
@@ -1550,6 +1608,7 @@ fn parse_responses_completion(
         finish_reason,
         usage,
         thinking: (!thinking.is_empty()).then(|| thinking.join("\n")),
+        provider_replay,
     })
 }
 
@@ -2239,6 +2298,11 @@ fn project_responses_stream_event(
             }
             .filter(|thinking| !thinking.is_empty());
             projection.terminal_seen = true;
+            if let Some(replay) = completed.provider_replay.take() {
+                events.push(ProviderStreamEvent::ReplayState {
+                    replay: Box::new(replay),
+                });
+            }
             let terminal_chunks = completion_response_to_stream_chunks(completed)
                 .into_iter()
                 .map(|chunk| {
@@ -2611,6 +2675,16 @@ impl LlmProvider for OpenAiProvider {
         .replay_policy
     }
 
+    fn replay_history_projection(&self, request: &CompletionRequest) -> ReplayHistoryProjection {
+        if request.reasoning_enabled == Some(false)
+            || request.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            ReplayHistoryProjection::Caller(ReasoningReplayPolicy::NotRequired)
+        } else {
+            ReplayHistoryProjection::Caller(self.route_snapshot(request).replay_policy)
+        }
+    }
+
     fn route_snapshot(&self, request: &CompletionRequest) -> super::provider_turn::RouteSnapshot {
         let api_style = match hosted_search_context(request) {
             Some((_dialect, mode, capability))
@@ -2677,10 +2751,26 @@ impl LlmProvider for OpenAiProvider {
                 fallback_request = without_native_search_marker(request);
                 &fallback_request
             } else {
-                match self
+                let result = match self
                     .complete_hosted_search(request, dialect, mode, capability)
                     .await
                 {
+                    Err(error)
+                        if dialect
+                            == super::native_search::NativeSearchDialect::DeepSeekResponses
+                            && request.reasoning_enabled != Some(false)
+                            && is_deepseek_missing_reasoning_replay(&error) =>
+                    {
+                        warn!(
+                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with thinking disabled"
+                        );
+                        let safe_request = without_reasoning(request);
+                        self.complete_hosted_search(&safe_request, dialect, mode, capability)
+                            .await
+                    }
+                    result => result,
+                };
+                match result {
                     Ok(response) => return Ok(response),
                     Err(error)
                         if matches!(
@@ -2805,6 +2895,7 @@ impl LlmProvider for OpenAiProvider {
             finish_reason,
             usage,
             thinking,
+            provider_replay: None,
         })
     }
 
@@ -2823,6 +2914,30 @@ impl LlmProvider for OpenAiProvider {
                 {
                     Ok(stream) => Ok(stream),
                     Err(error)
+                        if dialect
+                            == super::native_search::NativeSearchDialect::DeepSeekResponses
+                            && request.reasoning_enabled != Some(false)
+                            && is_deepseek_missing_reasoning_replay(&error) =>
+                    {
+                        warn!(
+                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with thinking disabled"
+                        );
+                        let safe_request = without_reasoning(request);
+                        self.stream_hosted_search_events(&safe_request, dialect, mode, capability)
+                            .await
+                            .map_err(|error| {
+                                if matches!(
+                                    mode,
+                                    super::native_search::SearchExecutionMode::Auto
+                                        | super::native_search::SearchExecutionMode::Hybrid
+                                ) {
+                                    contextualize_hosted_search_error(dialect, error)
+                                } else {
+                                    error
+                                }
+                            })
+                    }
+                    Err(error)
                         if matches!(
                             mode,
                             super::native_search::SearchExecutionMode::Auto
@@ -2835,8 +2950,8 @@ impl LlmProvider for OpenAiProvider {
                 };
             }
             let response = self.complete(request).await?;
-            return Ok(super::stream_chunks_to_provider_events(Box::pin(
-                futures::stream::iter(completion_response_to_stream_chunks(response)),
+            return Ok(Box::pin(futures::stream::iter(
+                completion_response_to_provider_events(response),
             )));
         }
         if requires_non_streaming_fallback(&request.model) {
@@ -2908,7 +3023,7 @@ impl LlmProvider for OpenAiProvider {
 mod tests {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     };
 
     use super::*;
@@ -3041,6 +3156,89 @@ data: [DONE]
         {
             attempts.fetch_add(1, Ordering::SeqCst);
             let _ = unexpected.shutdown().await;
+        }
+        Ok(())
+    }
+
+    async fn read_json_request(
+        socket: &mut tokio::net::TcpStream,
+    ) -> std::io::Result<serde_json::Value> {
+        let mut request = Vec::new();
+        let mut headers_end = None;
+        while headers_end.is_none() {
+            let mut buf = [0u8; 1024];
+            let read = socket.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+            headers_end = request.windows(4).position(|window| window == b"\r\n\r\n");
+        }
+        let headers_end = headers_end
+            .ok_or_else(|| std::io::Error::other("request omitted header terminator"))?
+            + 4;
+        let content_length = String::from_utf8_lossy(&request[..headers_end])
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or_default();
+        while request.len() < headers_end + content_length {
+            let mut buf = [0u8; 1024];
+            let read = socket.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..read]);
+        }
+        serde_json::from_slice(
+            request
+                .get(headers_end..headers_end + content_length)
+                .unwrap_or_default(),
+        )
+        .map_err(std::io::Error::other)
+    }
+
+    async fn serve_deepseek_reasoning_recovery(
+        listener: tokio::net::TcpListener,
+        bodies: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> std::io::Result<()> {
+        for attempt in 0..2 {
+            let (mut socket, _) = listener.accept().await?;
+            let body = read_json_request(&mut socket).await?;
+            bodies.lock().expect("request bodies").push(body);
+            if attempt == 0 {
+                let error = br#"{"error":{"message":"The `reasoning_text` in the thinking mode must be passed back to the API.","type":"invalid_request_error"}}"#;
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            error.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                socket.write_all(error).await?;
+            } else {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
+                socket
+                    .write_all(
+                        br#"data: {"type":"response.completed","response":{"id":"resp-safe","status":"completed","output":[{"id":"msg-safe","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"recovered"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}
+
+data: [DONE]
+
+"#,
+                    )
+                    .await?;
+            }
+            socket.shutdown().await?;
         }
         Ok(())
     }
@@ -3577,6 +3775,7 @@ data: [DONE]
         let mut finish_reason = None;
         let mut trailing_thinking = String::new();
         let mut hosted_completed = false;
+        let mut replay_captured = false;
         while let Some(event) = stream.next().await {
             match event {
                 ProviderStreamEvent::Chunk { chunk } => {
@@ -3587,6 +3786,14 @@ data: [DONE]
                 ProviderStreamEvent::HostedTool { tool } => {
                     hosted_completed |= tool.call_id == "ws_1"
                         && tool.status == ProviderHostedToolStatus::Completed;
+                }
+                ProviderStreamEvent::ReplayState { replay } => {
+                    replay_captured |= matches!(
+                        replay.as_ref(),
+                        super::super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(
+                            payload
+                        ) if payload.items.len() == 3
+                    );
                 }
                 event => panic!("unexpected Responses stream event: {event:?}"),
             }
@@ -3603,6 +3810,78 @@ data: [DONE]
             hosted_completed,
             "terminal payload must close the hosted tool card"
         );
+        assert!(
+            replay_captured,
+            "terminal hosted-search replay must survive without a client tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_responses_retries_missing_reasoning_on_same_route_with_thinking_disabled() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let server = tokio::spawn(serve_deepseek_reasoning_recovery(
+            listener,
+            Arc::clone(&bodies),
+        ));
+        let provider = OpenAiProvider::new(ProviderConfig {
+            provider_type: ProviderType::DeepSeek,
+            base_url: Some(format!("http://{addr}/v1")),
+            api_key: Some("test-key".to_string()),
+            org_id: None,
+            timeout_secs: Some(2),
+        })
+        .expect("provider");
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let plan = super::super::native_search::NativeSearchPlan {
+            mode: super::super::native_search::SearchExecutionMode::Auto,
+            dialect: Some(super::super::native_search::NativeSearchDialect::DeepSeekResponses),
+            capability: Some(capability),
+            trusted_endpoint: true,
+        };
+        let mut request = endpoint_reasoning_request("deepseek-v4-pro");
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "search".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("DeepSeek Responses marker"),
+        ]);
+
+        let mut stream = provider
+            .stream_events(&request)
+            .await
+            .expect("same-route recovery should reopen Responses");
+        let mut answer = String::new();
+        while let Some(event) = stream.next().await {
+            if let ProviderStreamEvent::Chunk { chunk } = event {
+                answer.push_str(&chunk.delta);
+            }
+        }
+        server.await.expect("server task").expect("server result");
+
+        assert_eq!(answer, "recovered");
+        let bodies = bodies.lock().expect("request bodies");
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["thinking"]["type"], "enabled");
+        assert_eq!(bodies[0]["reasoning_effort"], "high");
+        assert_eq!(bodies[1]["thinking"]["type"], "disabled");
+        assert!(bodies[1].get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -5294,6 +5573,7 @@ data: [DONE]
                 provider_raw: None,
             },
             thinking: Some("thinking".to_string()),
+            provider_replay: None,
         });
 
         assert_eq!(chunks.len(), 4);
@@ -5399,6 +5679,35 @@ data: [DONE]
         assert_eq!(tools[1]["type"], "function");
         assert_eq!(tools[1]["name"], "read_file");
         assert!(body.get("include").is_none());
+    }
+
+    #[test]
+    fn deepseek_hosted_search_projects_history_with_the_responses_replay_policy() {
+        let provider = OpenAiProvider::new(endpoint_config(
+            ProviderType::DeepSeek,
+            "https://api.deepseek.com",
+        ))
+        .expect("provider");
+        let plan = super::super::native_search::NativeSearchPlan::resolve(
+            super::super::native_search::SearchExecutionMode::ProviderNative,
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com"),
+            "deepseek-v4-pro",
+        );
+        let mut request = endpoint_reasoning_request("deepseek-v4-pro");
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "search".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("trusted marker"),
+        ]);
+
+        assert_eq!(
+            provider.replay_history_projection(&request),
+            ReplayHistoryProjection::Caller(ReasoningReplayPolicy::OpaqueSignature)
+        );
     }
 
     #[test]
@@ -5634,6 +5943,86 @@ data: [DONE]
         assert_eq!(replay[1], hosted_search);
         assert_eq!(replay[2]["type"], "function_call");
         assert_eq!(replay[3]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn deepseek_hosted_search_only_round_replays_the_exact_provider_turn() {
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect: super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let reasoning = serde_json::json!({
+            "type": "reasoning",
+            "id": "rs-hosted",
+            "status": "completed",
+            "content": [{ "type": "reasoning_text", "text": "Need current evidence" }]
+        });
+        let hosted_search = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-hosted",
+            "status": "completed",
+            "action": { "type": "search", "query": "Nexa" }
+        });
+        let provider_message = serde_json::json!({
+            "type": "message",
+            "id": "msg-hosted",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "Current answer" }]
+        });
+        let response = parse_responses_completion(
+            serde_json::json!({
+                "status": "completed",
+                "output": [reasoning.clone(), hosted_search.clone(), provider_message.clone()]
+            }),
+            super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+            capability,
+        )
+        .expect("valid hosted-search-only response");
+        assert!(response.tool_calls.is_none());
+        let provider_replay = response
+            .provider_replay
+            .clone()
+            .expect("turn-level provider replay");
+        let mut assistant = Message::text(Role::Assistant, response.content);
+        assistant.set_provider_turn(
+            super::super::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                "turn-item",
+                "sample",
+                super::super::provider_turn::RouteSnapshot {
+                    provider_endpoint_id: "deepseek-public".to_string(),
+                    provider_family: "deepseek".to_string(),
+                    api_style: ReasoningApiStyle::OpenAiResponses,
+                    model_id: "deepseek-v4-pro".to_string(),
+                    reasoning_profile_id: "deepseek-responses-replay-v1".to_string(),
+                    reasoning_profile_version: 1,
+                    replay_policy: ReasoningReplayPolicy::OpaqueSignature,
+                },
+                "Current answer",
+                response.thinking.as_deref(),
+                None,
+                Vec::new(),
+                true,
+                Some(provider_replay),
+            ),
+        );
+
+        let replay = responses_input_items(&[
+            assistant,
+            Message::text(Role::User, "What changed since then?"),
+        ])
+        .expect("exact provider turn replay");
+        assert_eq!(replay[0], reasoning);
+        assert_eq!(replay[1], hosted_search);
+        assert_eq!(replay[2], provider_message);
+        assert_eq!(replay[3]["type"], "message");
+        assert_eq!(replay[3]["role"], "user");
     }
 
     #[test]

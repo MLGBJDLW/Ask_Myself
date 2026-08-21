@@ -963,6 +963,7 @@ impl AgentExecutor {
                 mut full_content,
                 mut tool_calls,
                 tool_call_assembly_rejected,
+                provider_replay,
                 chunk_usage,
                 iteration_thinking,
                 answer_delta_seen,
@@ -1264,17 +1265,21 @@ impl AgentExecutor {
                 reasoning_content: assistant_reasoning_content.clone(),
                 prompt_cache_hint: None,
             };
-            let provider_turn_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
-                Uuid::new_v4().to_string(),
-                sample_id,
-                route_snapshot,
-                assistant_msg.text_content(),
-                crate::llm::reasoning_replay::sanitize_reasoning_text(Some(&iteration_thinking))
+            let provider_turn_envelope =
+                crate::llm::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                    Uuid::new_v4().to_string(),
+                    sample_id,
+                    route_snapshot,
+                    assistant_msg.text_content(),
+                    crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
+                        &iteration_thinking,
+                    ))
                     .as_deref(),
-                assistant_reasoning_content.as_deref(),
-                tool_calls.clone(),
-                reasoning_was_requested,
-            );
+                    assistant_reasoning_content.as_deref(),
+                    tool_calls.clone(),
+                    reasoning_was_requested,
+                    provider_replay,
+                );
             assistant_msg.set_provider_turn(provider_turn_envelope);
             messages.push(assistant_msg.clone());
             let loop_guard_intervention =

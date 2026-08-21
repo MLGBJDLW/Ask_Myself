@@ -346,6 +346,10 @@ pub struct CompletionResponse {
     /// Thinking / chain-of-thought text (if the model supports it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Exact provider-native replay state for this assistant turn. This is an
+    /// internal protocol sidecar and must never be rendered as visible text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_replay: Option<provider_turn::ProviderReplayPayload>,
 }
 
 /// Token usage statistics.
@@ -506,11 +510,26 @@ impl From<CoreError> for ProviderStreamFailure {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProviderStreamEvent {
-    Chunk { chunk: Box<StreamChunk> },
-    HostedTool { tool: Box<ProviderHostedToolEvent> },
-    RecoverableError { message: String },
-    Cancelled { message: String },
-    TerminalError { failure: ProviderStreamFailure },
+    Chunk {
+        chunk: Box<StreamChunk>,
+    },
+    HostedTool {
+        tool: Box<ProviderHostedToolEvent>,
+    },
+    /// Terminal provider-native replay state for the accepted sample. Unlike
+    /// tool deltas, it authorizes no execution and is never user-visible.
+    ReplayState {
+        replay: Box<provider_turn::ProviderReplayPayload>,
+    },
+    RecoverableError {
+        message: String,
+    },
+    Cancelled {
+        message: String,
+    },
+    TerminalError {
+        failure: ProviderStreamFailure,
+    },
 }
 
 /// Normalize a chunk-only provider wire stream into canonical provider events.

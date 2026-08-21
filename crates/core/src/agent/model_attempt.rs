@@ -23,7 +23,7 @@ use super::stream_recovery::{
     StreamConnectRetryDecision, StreamRecoveryDecision, StreamRecoveryPolicy,
 };
 use crate::error::CoreError;
-use crate::llm::provider_turn::RouteSnapshot;
+use crate::llm::provider_turn::{ProviderReplayPayload, RouteSnapshot};
 use crate::llm::{
     CompletionRequest, CompletionResponse, LlmProvider, ProviderHostedToolEvent,
     ProviderStreamEvent, ReplayHistoryProjection, StreamChunk,
@@ -57,6 +57,7 @@ pub(super) struct ModelAttemptProviderEvent {
 pub(super) enum AcceptedProviderEvent {
     Chunk(Box<StreamChunk>),
     HostedTool(Box<ProviderHostedToolEvent>),
+    ReplayState(Box<ProviderReplayPayload>),
 }
 
 #[derive(Debug)]
@@ -362,6 +363,12 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                         Some(ProviderStreamEvent::HostedTool { tool }) => {
                             self.accept_provider_event(
                                 AcceptedProviderEvent::HostedTool(tool),
+                                true,
+                            );
+                        }
+                        Some(ProviderStreamEvent::ReplayState { replay }) => {
+                            self.accept_provider_event(
+                                AcceptedProviderEvent::ReplayState(replay),
                                 true,
                             );
                         }
@@ -1200,6 +1207,7 @@ mod tests {
             finish_reason: FinishReason::Stop,
             usage: Usage::default(),
             thinking: None,
+            provider_replay: None,
         }
     }
 

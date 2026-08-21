@@ -690,6 +690,7 @@ mod tests {
                 finish_reason: FinishReason::Stop,
                 usage: Usage::default(),
                 thinking: None,
+                provider_replay: None,
             })
         }
 
