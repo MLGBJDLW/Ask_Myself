@@ -690,8 +690,8 @@ fn sanitize_tool_call_history(
         warn!(
             conversation_id = diagnostic.conversation_id.as_deref().unwrap_or("unknown"),
             message_index = diagnostic.message_index,
-            role = %diagnostic.role,
-            reason = %diagnostic.reason,
+            role = diagnostic.role.as_str(),
+            reason = diagnostic.reason.as_str(),
             "Repaired legacy-invalid conversation history before agent dispatch"
         );
     }
