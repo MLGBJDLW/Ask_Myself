@@ -532,6 +532,60 @@ mod tests {
     }
 
     #[test]
+    fn test_office_routing_corpus_covers_attachments_templates_macros_and_multi_format() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+
+        for (query, expected) in [
+            ("附件：董事会简报.pptm", "builtin-pptx-presentation-design"),
+            (
+                "请按母版完善演示文稿并补齐讲者备注",
+                "builtin-pptx-presentation-design",
+            ),
+            ("附件 Q4-budget.xlsm", "builtin-xlsx-workbook-design"),
+            ("保留宏工作簿和数据透视表", "builtin-xlsx-workbook-design"),
+            ("附件：合同模板.dotm", "builtin-docx-document-design"),
+            ("请保留批注修订和内容控件", "builtin-docx-document-design"),
+        ] {
+            let active = get_active_skills_for_query(&db, query, 8).unwrap();
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "{expected} should match Office routing corpus query {query:?}; selected={:?}",
+                active.iter().map(|skill| &skill.id).collect::<Vec<_>>()
+            );
+        }
+
+        let active =
+            get_active_skills_for_query(&db, "把报告.docx和模型.xlsx整理后制作成简报.pptx", 12)
+                .unwrap();
+        for expected in [
+            "builtin-docx-document-design",
+            "builtin-xlsx-workbook-design",
+            "builtin-pptx-presentation-design",
+        ] {
+            assert!(
+                active.iter().any(|skill| skill.id == expected),
+                "missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_office_file_request_does_not_force_office_skills() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let active =
+            get_active_skills_for_query(&db, "请只重构src parser模块并运行Rust单元测试", 8)
+                .unwrap();
+        assert!(active.iter().all(|skill| ![
+            "builtin-docx-document-design",
+            "builtin-xlsx-workbook-design",
+            "builtin-pptx-presentation-design",
+        ]
+        .contains(&skill.id.as_str())));
+    }
+
+    #[test]
     fn test_get_active_skills_matches_fiction_query() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -1055,6 +1109,9 @@ mod tests {
             "scripts/pptx_regression_suite.py",
             "scripts/pptx_delivery_pack.py",
             "scripts/pptx_structured_editor.py",
+            "scripts/test_pptx_structured_editor.py",
+            "scripts/pptxgenjs_adapter.mjs",
+            "scripts/test_pptxgenjs_adapter.py",
             "scripts/html_deck_renderer.py",
             "scripts/test_html_deck_renderer.py",
         ] {
@@ -1090,6 +1147,7 @@ mod tests {
             "scripts/xlsx_audit.py",
             "scripts/xlsx_model_renderer.py",
             "scripts/xlsx_structured_editor.py",
+            "scripts/test_xlsx_structured_editor.py",
             "scripts/test_xlsx_model_renderer.py",
         ] {
             assert!(
@@ -1109,15 +1167,22 @@ mod tests {
             "scripts/office_artifact_service.py",
             "scripts/office_visual_qa.py",
             "scripts/office_artifact_engine.py",
+            "scripts/office_schema.py",
+            "scripts/office_synthetic_preview.py",
             "scripts/test_office_artifact_engine.py",
             "scripts/test_office_artifact_golden.py",
             "scripts/test_office_artifact_runtime.py",
             "scripts/test_office_visual_qa.py",
+            "scripts/test_office_schema.py",
+            "scripts/test_openxml_sdk_validator.py",
+            "scripts/test_office_synthetic_preview.py",
             "tests/golden/docx-spec.json",
             "tests/golden/xlsx-spec.json",
             "tests/golden/pptx-spec.json",
             "tests/golden/expectations.json",
             "scripts/requirements.txt",
+            "scripts/requirements.lock",
+            "scripts/office-python.sbom.json",
         ] {
             assert!(
                 editor_dir.join(path).exists(),
