@@ -11,6 +11,7 @@ use super::tool_dispatch;
 use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
 use super::usage_accounting;
 use super::*;
+use crate::llm::FinishReason;
 
 struct ReplayableSystemPersistenceContext<'a> {
     db: &'a Database,
