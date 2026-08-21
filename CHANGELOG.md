@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.12.23](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.22...nexa-monorepo-v0.12.23) (2026-08-21)
+
+
+### Features
+
+* **mcp:** add user-owned connector configuration ([5e8011c](https://github.com/MLGBJDLW/Nexa/commit/5e8011c28710a8c133b979792977ed1ad28a5fa9))
+
+
+### Bug Fixes
+
+* **agent:** accept completed stop tool rounds ([9fa1627](https://github.com/MLGBJDLW/Nexa/commit/9fa162764d933f8306fe208c5d3cd6e295d3359b))
+* **agent:** import tool terminal reason ([0962bdb](https://github.com/MLGBJDLW/Nexa/commit/0962bdb8403f11721d554ee9cee9130a42a417cb))
+* **agent:** preserve sparse tool call identity ([d91101f](https://github.com/MLGBJDLW/Nexa/commit/d91101f04176f2fa08c1cc87ea872ea727f3d4fc))
+* **agent:** quarantine incomplete tool calls ([c9bf10f](https://github.com/MLGBJDLW/Nexa/commit/c9bf10f6dae7e27bf4178b9cf08a068035708e7e))
+* **agent:** scope tool call ids to replay rounds ([91f7bc4](https://github.com/MLGBJDLW/Nexa/commit/91f7bc4759ccbfe06d15e520bcd7d26b0f85fe21))
+* **chat:** keep feedback and drafts out of layout ([ecb70e4](https://github.com/MLGBJDLW/Nexa/commit/ecb70e45a62e26ffb8a068c971f290f092d748ab))
+* **chat:** preserve deferred drafts during send ([3f2d0c8](https://github.com/MLGBJDLW/Nexa/commit/3f2d0c82ea09f8eb6180f0dbe40c02a5ff58e0f2))
+* **chat:** preserve navigation during draft launch ([41ca94d](https://github.com/MLGBJDLW/Nexa/commit/41ca94d0828c1776a4987c9afdb03dcc4766a800))
+* **chat:** reset persona for new drafts ([eb0bc91](https://github.com/MLGBJDLW/Nexa/commit/eb0bc91d754927bf0cfed99a7613f8b34d993fb4))
+* **chat:** retain drafts when turn launch fails ([5ed6849](https://github.com/MLGBJDLW/Nexa/commit/5ed68493582d1e576396a3904f655f08203356ce))
+* **deepseek:** preserve hosted search reasoning replay ([ef0645b](https://github.com/MLGBJDLW/Nexa/commit/ef0645be2d6b9aaab34377ee05a537f07a4d4c9a))
+* **desktop:** format history repair diagnostics ([76712ec](https://github.com/MLGBJDLW/Nexa/commit/76712ecc8434f6cde2ff87c3d0cb6470771b59f4))
+* **desktop:** log history repair fields safely ([b64f1bc](https://github.com/MLGBJDLW/Nexa/commit/b64f1bc0b3445bf7c9c4e83b43d76179b5e1abb7))
+* **mcp:** compare connector config semantically ([4f7683d](https://github.com/MLGBJDLW/Nexa/commit/4f7683df7e243328275e38b60d4f8e6f8be12ff0))
+* **mcp:** disconnect disabled test clients ([34e42f8](https://github.com/MLGBJDLW/Nexa/commit/34e42f87cbd89bd5b543e0fe97d98fdb89589500))
+* **mcp:** serialize connector reload state ([50f6d0a](https://github.com/MLGBJDLW/Nexa/commit/50f6d0a36411bfe604b5c91dd61cac5f9cf31d18))
+* refine chat lifecycle and open MCP configuration ([44e2e13](https://github.com/MLGBJDLW/Nexa/commit/44e2e131f70da7ef9f06a20ebdab0a3469f8a1b4))
+
 ## [0.12.22](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.21...nexa-monorepo-v0.12.22) (2026-08-20)
 
 
