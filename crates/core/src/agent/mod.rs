@@ -765,8 +765,47 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
         return false;
     }
 
-    // A provider's stream-local index is the stable assembly identity. The
-    // final call id may arrive later, so never invent a durable id from index.
+    // A provider call id is the canonical identity when present. Responses
+    // APIs may report indexes in the full output array, where reasoning or a
+    // hosted search occupies an earlier slot, so those indexes are not always
+    // dense in the client-tool projection.
+    if !delta.id.is_empty() {
+        if let Some(existing) = calls.iter_mut().find(|call| call.id == delta.id) {
+            return apply_delta(existing, delta);
+        }
+
+        if let Some(index) = delta.index.map(|index| index as usize) {
+            if let Some(existing) = calls.get_mut(index) {
+                // Preserve support for providers that reveal the durable id
+                // only after first addressing a dense stream-local slot.
+                if existing.id.is_empty() {
+                    return apply_delta(existing, delta);
+                }
+                // An occupied slot with another durable id means this index
+                // belongs to a wider provider output array. Fall through and
+                // append by canonical id instead of corrupting either call.
+            } else if index == calls.len() {
+                calls.push(ToolCallRequest {
+                    id: delta.id.clone(),
+                    name: delta.name.clone().unwrap_or_default(),
+                    arguments: delta.arguments_delta.clone(),
+                    thought_signature: delta.thought_signature.clone(),
+                });
+                return true;
+            }
+        }
+
+        calls.push(ToolCallRequest {
+            id: delta.id.clone(),
+            name: delta.name.clone().unwrap_or_default(),
+            arguments: delta.arguments_delta.clone(),
+            thought_signature: delta.thought_signature.clone(),
+        });
+        return true;
+    }
+
+    // Without a durable id, the provider's stream-local index is the only
+    // safe assembly identity. Never invent a durable id from that index.
     if let Some(index) = delta.index.map(|index| index as usize) {
         if let Some(existing) = calls.get_mut(index) {
             return apply_delta(existing, delta);
@@ -783,19 +822,6 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
         // An index gap is ambiguous; quarantining the fragment is safer than
         // attaching it to a different parallel call.
         return false;
-    }
-
-    if !delta.id.is_empty() {
-        if let Some(existing) = calls.iter_mut().find(|call| call.id == delta.id) {
-            return apply_delta(existing, delta);
-        }
-        calls.push(ToolCallRequest {
-            id: delta.id.clone(),
-            name: delta.name.clone().unwrap_or_default(),
-            arguments: delta.arguments_delta.clone(),
-            thought_signature: delta.thought_signature.clone(),
-        });
-        return true;
     }
 
     // A legacy provider may omit both id and index for a single call. Once

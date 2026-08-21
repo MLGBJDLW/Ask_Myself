@@ -240,6 +240,62 @@ fn test_accumulate_late_real_id_updates_the_existing_index_slot() {
 }
 
 #[test]
+fn test_accumulate_valid_id_accepts_sparse_provider_output_index() {
+    let mut calls = Vec::new();
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "provider-call-after-reasoning".into(),
+            name: Some("read_file".into()),
+            arguments_delta: r#"{"path":"README.md"}"#.into(),
+            // Responses indexes the full output array. Slot zero may be a
+            // reasoning item rather than a client function call.
+            index: Some(1),
+            thought_signature: None,
+        },
+    ));
+
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "provider-call-after-reasoning");
+    assert!(crate::llm::message_validation::is_complete_tool_call(
+        &calls[0]
+    ));
+}
+
+#[test]
+fn test_accumulate_valid_id_does_not_overwrite_dense_slot_on_sparse_index_collision() {
+    let mut calls = vec![
+        ToolCallRequest {
+            id: "call-a".into(),
+            name: "search".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        },
+        ToolCallRequest {
+            id: "call-b".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"b.md"}"#.into(),
+            thought_signature: None,
+        },
+    ];
+
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "call-c".into(),
+            name: Some("write_file".into()),
+            arguments_delta: r#"{"path":"c.md"}"#.into(),
+            index: Some(1),
+            thought_signature: None,
+        },
+    ));
+
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[1].id, "call-b");
+    assert_eq!(calls[2].id, "call-c");
+}
+
+#[test]
 fn test_accumulate_rejects_unaddressed_parallel_fragment() {
     let mut calls = vec![
         ToolCallRequest {
@@ -3262,6 +3318,69 @@ async fn test_executes_tool_even_when_finish_reason_is_stop() {
 }
 
 #[tokio::test]
+async fn test_executes_complete_tool_with_sparse_responses_output_index() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ScriptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        final_answer: "final answer after sparse tool",
+        first_chunks: vec![StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: "sparse-call".to_string(),
+                name: Some("mock_tool".to_string()),
+                arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                // A Responses reasoning item can occupy provider output slot 0.
+                index: Some(1),
+                thought_signature: None,
+            }),
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            thinking_delta: None,
+        }],
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-v4-pro".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "use the sparse-index tool".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a canonical call id should authorize the sparse-index tool");
+
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(final_msg.text_content(), "final answer after sparse tool");
+    let mut saw_result = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(
+            event,
+            AgentEvent::ToolCallResult { ref call_id, .. } if call_id == "sparse-call"
+        ) {
+            saw_result = true;
+        }
+    }
+    assert!(saw_result, "the sparse-index call must reach dispatch");
+}
+
+#[tokio::test]
 async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(DelayTool {
@@ -5145,7 +5264,7 @@ async fn malformed_tool_call_is_quarantined_before_replan_and_persistence() {
             persona_id: None,
         })
         .expect("conversation");
-    let (tx, _rx) = mpsc::channel(128);
+    let (tx, mut rx) = mpsc::channel(128);
 
     let final_msg = executor
         .run(
@@ -5181,6 +5300,33 @@ async fn malformed_tool_call_is_quarantined_before_replan_and_persistence() {
     assert!(persisted
         .iter()
         .all(|message| !message.content.contains("I will inspect the repository")));
+
+    let mut visible_text = String::new();
+    let mut reset_index = None;
+    let mut rejection_status_index = None;
+    let mut event_index = 0usize;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => visible_text.push_str(&delta),
+            AgentEvent::StreamReset { .. } => {
+                reset_index = Some(event_index);
+                visible_text.clear();
+            }
+            AgentEvent::ControllerStatus { code, .. }
+                if code == "incomplete_tool_calls_rejected" =>
+            {
+                rejection_status_index = Some(event_index);
+            }
+            _ => {}
+        }
+        event_index += 1;
+    }
+    assert_eq!(visible_text, "final answer after safe re-planning");
+    assert!(
+        reset_index
+            .is_some_and(|reset| { rejection_status_index.is_some_and(|status| reset < status) }),
+        "the rejected sample must reset frontend text before re-plan status is emitted"
+    );
 }
 
 #[tokio::test]

@@ -1175,6 +1175,11 @@ impl AgentExecutor {
                         accumulated_content
                             .truncate(accumulated_content.len().saturating_sub(full_content.len()));
                     }
+                    let _ = tx
+                        .send(AgentEvent::StreamReset {
+                            reason: "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning.".to_string(),
+                        })
+                        .await;
                     let trace_message = format!(
                         "provider_returned_incomplete_tool_calls: incomplete_count={}, duplicate_id_count={}, oversized_count={}, assembly_rejected={}, terminal_rejected={}",
                         rejected.incomplete_count,
