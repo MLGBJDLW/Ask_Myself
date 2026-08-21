@@ -688,11 +688,11 @@ fn sanitize_tool_call_history(
     );
     for diagnostic in &report.repairs {
         warn!(
-            conversation_id = diagnostic.conversation_id.as_deref().unwrap_or("unknown"),
-            message_index = diagnostic.message_index,
-            role = diagnostic.role.as_str(),
-            reason = diagnostic.reason.as_str(),
-            "Repaired legacy-invalid conversation history before agent dispatch"
+            "Repaired legacy-invalid conversation history before agent dispatch: conversation_id={}, message_index={}, role={}, reason={}",
+            diagnostic.conversation_id.as_deref().unwrap_or("unknown"),
+            diagnostic.message_index,
+            diagnostic.role,
+            diagnostic.reason,
         );
     }
     report.messages
