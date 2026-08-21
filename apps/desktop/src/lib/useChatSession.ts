@@ -412,6 +412,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeId = externalConversationId ?? internalConversationId;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const navigationGenerationRef = useRef(0);
+  const lastObservedActiveIdRef = useRef(activeId);
+  if (lastObservedActiveIdRef.current !== activeId) {
+    lastObservedActiveIdRef.current = activeId;
+    navigationGenerationRef.current += 1;
+  }
 
   // Track last user message for retry
   const lastUserMessageRef = useRef<{
@@ -875,10 +881,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const setActiveConversation = useCallback((id: string) => {
     // When route-controlled, the caller handles navigation.
     // In uncontrolled mode, we keep the active id locally.
+    navigationGenerationRef.current += 1;
     setInternalConversationId(id);
   }, []);
 
   const createNewConversation = useCallback(() => {
+    navigationGenerationRef.current += 1;
     setInternalConversationId(null);
     setCustomSystemPrompt('');
     setUsageSnapshot(null);
@@ -1055,6 +1063,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
 
       let convId = activeId;
       let createdConversationForSend: Conversation | null = null;
+      const activationGeneration = navigationGenerationRef.current;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
       if (
@@ -1228,9 +1237,12 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           true,
         );
         if (createdConversationForSend) {
-          setConversations((prev) => [createdConversationForSend as Conversation, ...prev]);
-          setInternalConversationId(convId);
-          onConversationCreated?.(convId);
+          const committedConversation = createdConversationForSend as Conversation;
+          setConversations((prev) => [committedConversation, ...prev]);
+          if (navigationGenerationRef.current === activationGeneration) {
+            setInternalConversationId(convId);
+            onConversationCreated?.(convId);
+          }
         }
         return true;
       } catch (e) {

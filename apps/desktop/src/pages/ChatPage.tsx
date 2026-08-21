@@ -1083,8 +1083,11 @@ export function ChatPage() {
   /* ── Handlers (navigation-aware wrappers) ───────────────────────── */
 
   const handleSelectConversation = useCallback(
-    (id: string) => navigate(`/chat/${id}`),
-    [navigate],
+    (id: string) => {
+      chat.setActiveConversation(id);
+      navigate(`/chat/${id}`);
+    },
+    [chat.setActiveConversation, navigate],
   );
 
   const handleNewConversation = useCallback((projectId?: string | null) => {

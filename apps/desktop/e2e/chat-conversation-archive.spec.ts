@@ -162,6 +162,10 @@ test.beforeEach(async ({ page }) => {
             localStorage.removeItem('e2e-fail-next-agent-launch');
             throw new Error('Injected agent launch failure');
           }
+          if (localStorage.getItem('e2e-delay-next-agent-launch') === '1') {
+            localStorage.removeItem('e2e-delay-next-agent-launch');
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
           return null;
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
@@ -393,6 +397,27 @@ test('rejected first turn rolls back its empty conversation and keeps the draft'
   await expect(input).toHaveValue('Keep this draft when the agent launch is rejected.');
   await expect(page).toHaveURL(/\/chat$/);
   await expect(page.getByTestId('conversation-item-conv-new')).toHaveCount(0);
+});
+
+test('a deferred first send never redirects after the user selects another conversation', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  const sidebar = page.getByTestId('chat-history-sidebar');
+  await sidebar.getByRole('button', { name: 'New Chat' }).click();
+  await page.evaluate(() => localStorage.setItem('e2e-delay-next-agent-launch', '1'));
+  const input = page.getByPlaceholder('Type a message...');
+  await input.fill('Start this conversation without stealing later navigation.');
+
+  await input.press('Enter');
+  await sidebar.getByTestId('conversation-item-conv-active').click();
+  await expect(page).toHaveURL(/\/chat\/conv-active$/);
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __CREATE_CONVERSATION_ARGS__: Array<Record<string, unknown>> })
+      .__CREATE_CONVERSATION_ARGS__.length,
+  )).toBe(1);
+  await page.waitForTimeout(400);
+  await expect(page).toHaveURL(/\/chat\/conv-active$/);
+  await expect(sidebar.getByTestId('conversation-item-conv-new')).toHaveCount(1);
 });
 
 test('first persistence is single-flight when Enter is pressed repeatedly', async ({ page }) => {
