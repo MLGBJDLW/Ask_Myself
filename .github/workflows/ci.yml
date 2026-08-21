@@ -127,7 +127,9 @@ jobs:
           test -f apps/desktop/src-tauri/resources/pptxgenjs-runtime/runtime-manifest.json
 
       - name: Verify Office.js add-in contract
-        run: npm run office:addin:test
+        run: |
+          npm run office:addin:test
+          python3 integrations/office-addin/test_deployment.py -v
 
       - name: Build pinned Open XML SDK validator
         run: |

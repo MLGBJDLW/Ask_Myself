@@ -580,10 +580,13 @@ pub fn configure_bundled_office_addin(
     std::fs::create_dir_all(&destination_dir).map_err(CoreError::Io)?;
     for filename in [
         "manifest.xml",
+        "manifest.template.xml",
         "taskpane.html",
         "taskpane.js",
         "support.html",
         "icon.png",
+        "render_manifest.py",
+        "serve_https.py",
         "README.md",
     ] {
         let source = source_dir.join(filename);
@@ -1110,10 +1113,13 @@ mod tests {
         std::fs::create_dir_all(&source).unwrap();
         for filename in [
             "manifest.xml",
+            "manifest.template.xml",
             "taskpane.html",
             "taskpane.js",
             "support.html",
             "icon.png",
+            "render_manifest.py",
+            "serve_https.py",
             "README.md",
         ] {
             std::fs::write(source.join(filename), filename.as_bytes()).unwrap();

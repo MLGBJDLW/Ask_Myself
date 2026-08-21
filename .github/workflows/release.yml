@@ -169,10 +169,13 @@ jobs:
           destination="apps/desktop/src-tauri/resources/office-addin"
           mkdir -p "$destination"
           cp integrations/office-addin/manifest.xml "$destination/"
+          cp integrations/office-addin/manifest.template.xml "$destination/"
           cp integrations/office-addin/taskpane.html "$destination/"
           cp integrations/office-addin/taskpane.js "$destination/"
           cp integrations/office-addin/support.html "$destination/"
           cp integrations/office-addin/icon.png "$destination/"
+          cp integrations/office-addin/render_manifest.py "$destination/"
+          cp integrations/office-addin/serve_https.py "$destination/"
           cp integrations/office-addin/README.md "$destination/"
 
       - name: Install frontend dependencies

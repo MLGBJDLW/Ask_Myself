@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:type="TaskPaneApp">
+  <Id>6d2bdc8e-fffd-4e29-b6bd-f6311369a7bd</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Nexa</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Nexa Office Live Bridge"/>
+  <Description DefaultValue="User-authorized live Word, Excel, and PowerPoint operations from Nexa."/>
+  <IconUrl DefaultValue="{{ORIGIN}}/icon.png"/>
+  <HighResolutionIconUrl DefaultValue="{{ORIGIN}}/icon.png"/>
+  <SupportUrl DefaultValue="{{ORIGIN}}/support.html"/>
+  <AppDomains>
+    <AppDomain>{{ORIGIN}}</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Document"/>
+    <Host Name="Workbook"/>
+    <Host Name="Presentation"/>
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="{{ORIGIN}}/taskpane.html"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+</OfficeApp>
