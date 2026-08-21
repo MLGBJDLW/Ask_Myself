@@ -26,6 +26,8 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
+from xlsx_formula_inventory import dangerous_formula_functions, inventory_xlsx_formulas
+
 CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 MAIN_PARTS = {
@@ -523,6 +525,31 @@ def _windows_package_path_key(name: str) -> tuple[str | None, str | None]:
     return "/".join(segments), None
 
 
+def _decode_xml_for_security_scan(data: bytes) -> str:
+    """Decode XML using the small encoding set accepted by this Office runtime.
+
+    The security preflight must inspect decoded characters, not ASCII byte
+    substrings: UTF-16 inserts NUL bytes between the characters in DOCTYPE and
+    ENTITY declarations. OOXML producers normally use UTF-8, but UTF-16 is
+    legal XML and is therefore handled explicitly. UTF-32 is rejected rather
+    than passed to a parser without an equivalent declaration scan.
+    """
+
+    if data.startswith((b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")) or data.startswith(
+        (b"\x00\x00\x00<", b"<\x00\x00\x00")
+    ):
+        raise ValueError("UTF-32 XML is unsupported by the fail-closed security scanner")
+    if data.startswith(b"\xff\xfe"):
+        return data.decode("utf-16")
+    if data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16")
+    if len(data) >= 4 and data[0] == 0x3C and data[1] == 0 and data[3] == 0:
+        return data.decode("utf-16-le")
+    if len(data) >= 4 and data[0] == 0 and data[1] == 0x3C and data[2] == 0:
+        return data.decode("utf-16-be")
+    return data.decode("utf-8-sig")
+
+
 def validate_ooxml_package(path: Path) -> ValidationReport:
     """Validate ZIP integrity, XML parseability, content types, and rel targets."""
 
@@ -645,8 +672,9 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                     continue
                 try:
                     xml_bytes = archive.read(name)
-                    lowered = xml_bytes.lower()
-                    if b"<!doctype" in lowered or b"<!entity" in lowered:
+                    decoded_xml = _decode_xml_for_security_scan(xml_bytes)
+                    lowered = decoded_xml.casefold()
+                    if "<!doctype" in lowered or "<!entity" in lowered:
                         report.error(
                             "xml.dtd_forbidden",
                             "DTD and entity declarations are forbidden in Office package XML",
@@ -654,7 +682,7 @@ def validate_ooxml_package(path: Path) -> ValidationReport:
                         )
                         continue
                     parsed_xml[name] = ET.fromstring(xml_bytes)
-                except (ET.ParseError, KeyError) as error:
+                except (ET.ParseError, KeyError, UnicodeError, ValueError) as error:
                     report.error("xml.parse", f"XML part cannot be parsed: {error}", name)
             report.checks["xmlParts"] = len(parsed_xml)
 
@@ -772,36 +800,6 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
                 features["embeddedObjects"].append(name)
             if "xl/macrosheets/" in lowered or "xl/intlmacrosheets/" in lowered:
                 features["xlmMacros"].append(name)
-            if (
-                lowered.startswith("xl/worksheets/")
-                and lowered.endswith(".xml")
-                and info.file_size <= MAX_XML_PART_BYTES
-            ):
-                try:
-                    root = ET.fromstring(archive.read(name))
-                except ET.ParseError:
-                    continue
-                functions: set[str] = set()
-                for element in root.iter():
-                    if element.tag.rsplit("}", 1)[-1] != "f":
-                        continue
-                    formula = "".join(element.itertext())
-                    normalized = re.sub(r"\s+", "", formula).upper()
-                    functions.update(
-                        match.group(1)
-                        for match in re.finditer(
-                            r"(?:_XLFN\.)?(WEBSERVICE|RTD|DDE|CALL|EXEC|REGISTER\.ID)\(",
-                            normalized,
-                        )
-                    )
-                    if "|" in formula and "!" in formula:
-                        functions.add("DDE_PIPE")
-                if functions:
-                    features["externalFormulaFunctions"].append(name)
-                    external_formula_details.append({
-                        "part": name,
-                        "functions": sorted(functions),
-                    })
             if lowered.endswith(".rels") and info.file_size <= MAX_XML_PART_BYTES:
                 try:
                     relationships = ET.fromstring(archive.read(name))
@@ -822,6 +820,18 @@ def scan_ooxml_risks(path: Path) -> dict[str, Any]:
                     external_relationship_details.append(detail)
                     if not relation_type.lower().endswith("/hyperlink"):
                         features["unsafeExternalRelationships"].append(name)
+
+        formula_risks: dict[str, set[str]] = {}
+        for item in inventory_xlsx_formulas(archive):
+            functions = dangerous_formula_functions(str(item.get("formula", "")))
+            if functions:
+                formula_risks.setdefault(str(item["part"]), set()).update(functions)
+        for part, functions in sorted(formula_risks.items()):
+            features["externalFormulaFunctions"].append(part)
+            external_formula_details.append({
+                "part": part,
+                "functions": sorted(functions),
+            })
 
     sensitive_parts = sum(len(parts) for parts in features.values())
     high_risk = any(

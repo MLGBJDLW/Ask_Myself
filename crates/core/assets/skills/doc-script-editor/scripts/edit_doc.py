@@ -273,16 +273,18 @@ def _expected_converted_path(input_path: Path, outdir: Path, to: str) -> Path:
 
 def cmd_check(args: argparse.Namespace) -> int:
     backends = [
-        ("python-docx", "docx"),
-        ("python-pptx", "pptx"),
-        ("pypdf", "pypdf"),
-        ("openpyxl", "openpyxl"),
+        ("python-docx", "docx", "docx"),
+        ("python-pptx", "pptx", "pptx"),
+        ("pypdf", "pypdf", "pdf"),
+        ("openpyxl", "openpyxl", "xlsx"),
     ]
     missing_core = []
+    missing_optional = []
     results: list[dict[str, Any]] = []
     if not args.json:
         print(f"python: {sys.version.split()[0]}")
-    for display, mod in backends:
+    for display, mod, artifact_format in backends:
+        required = args.format == "all" or args.format == artifact_format
         try:
             imported = __import__(mod)
             ver = getattr(imported, "__version__", "unknown")
@@ -291,7 +293,8 @@ def cmd_check(args: argparse.Namespace) -> int:
                 "module": mod,
                 "status": "ok",
                 "version": str(ver),
-                "required": True,
+                "required": required,
+                "formats": [artifact_format],
             })
             if not args.json:
                 print(f"  {display:<14} OK      ({ver})")
@@ -300,23 +303,25 @@ def cmd_check(args: argparse.Namespace) -> int:
                 "id": display,
                 "module": mod,
                 "status": "missing",
-                "required": True,
+                "required": required,
+                "formats": [artifact_format],
             })
             if not args.json:
                 print(f"  {display:<14} MISSING")
-            missing_core.append(display)
+            (missing_core if required else missing_optional).append(display)
         except Exception as e:  # noqa: BLE001
             # Backend present but broken (e.g. numpy ABI mismatch). Treat as missing.
             results.append({
                 "id": display,
                 "module": mod,
                 "status": "broken",
-                "required": True,
+                "required": required,
+                "formats": [artifact_format],
                 "detail": f"{type(e).__name__}: {e}",
             })
             if not args.json:
                 print(f"  {display:<14} BROKEN  ({type(e).__name__}: {e})")
-            missing_core.append(display)
+            (missing_core if required else missing_optional).append(display)
     soffice = _find_soffice()
     if soffice:
         results.append({
@@ -400,7 +405,8 @@ def cmd_check(args: argparse.Namespace) -> int:
                 "version": sys.version.split()[0],
                 "executable": sys.executable,
             },
-            "status": "ok" if not missing_core else "missing",
+            "status": "missing" if missing_core else "degraded" if missing_optional else "ok",
+            "requestedFormat": args.format,
             "dependencies": results,
             "officeBackends": office_backends,
         }
@@ -1989,7 +1995,10 @@ def _count_xlsx_formulas(path: Path) -> int:
     count = 0
     try:
         for sheet_name in wb.sheetnames:
-            for row in wb[sheet_name].iter_rows():
+            sheet = wb[sheet_name]
+            if not hasattr(sheet, "iter_rows"):
+                continue
+            for row in sheet.iter_rows():
                 for cell in row:
                     if isinstance(cell.value, str) and cell.value.startswith("="):
                         count += 1
@@ -2232,7 +2241,10 @@ def _xlsx_reference_value(workbook: Any, reference: str) -> Any:
     sheet_name, separator, coordinate = str(reference).rpartition("!")
     if not separator or sheet_name not in workbook.sheetnames:
         raise ValueError(f"invalid workbook reference: {reference}")
-    return workbook[sheet_name][coordinate].value
+    sheet = workbook[sheet_name]
+    if not hasattr(sheet, "iter_rows"):
+        raise ValueError(f"workbook reference targets a chart sheet, not a worksheet: {reference}")
+    return sheet[coordinate].value
 
 
 def _xlsx_relative_formula_pattern(formula: str, coordinate: str) -> str:
@@ -2300,8 +2312,12 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         for sheet_name in contract.get("no_numeric_hardcodes_in", []):
             if sheet_name not in wb.sheetnames:
                 continue
+            sheet = wb[sheet_name]
+            if not hasattr(sheet, "iter_rows"):
+                errors.append({"code": "sheet.not_worksheet", "sheet": str(sheet_name)})
+                continue
             locations: list[str] = []
-            for row in wb[sheet_name].iter_rows():
+            for row in sheet.iter_rows():
                 for cell in row:
                     if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
                         locations.append(cell.coordinate)
@@ -2319,7 +2335,11 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         for sheet_name, minimum in contract.get("min_rows", {}).items():
             if sheet_name not in wb.sheetnames:
                 continue
-            actual = wb[sheet_name].max_row
+            sheet = wb[sheet_name]
+            if not hasattr(sheet, "max_row"):
+                errors.append({"code": "sheet.not_worksheet", "sheet": str(sheet_name)})
+                continue
+            actual = sheet.max_row
             row_checks[str(sheet_name)] = {"minimum": int(minimum), "actual": actual}
             if actual < int(minimum):
                 errors.append({
@@ -2336,7 +2356,11 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
             if not separator or sheet_name not in values_wb.sheetnames:
                 errors.append({"code": "sentinel.invalid_reference", "reference": reference})
                 continue
-            actual = values_wb[sheet_name][coordinate].value
+            try:
+                actual = _xlsx_reference_value(values_wb, str(reference))
+            except ValueError:
+                errors.append({"code": "sentinel.invalid_reference", "reference": reference})
+                continue
             matches = actual == expected
             if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
                 matches = abs(float(actual) - float(expected)) <= 1e-9
@@ -2393,8 +2417,11 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                 sheet_name, separator, coordinates = range_ref.rpartition("!")
                 if not separator or sheet_name not in values_wb.sheetnames:
                     raise ValueError(f"invalid range: {range_ref}")
+                sheet = values_wb[sheet_name]
+                if not hasattr(sheet, "iter_rows"):
+                    raise ValueError(f"range targets chart sheet: {range_ref}")
                 values = [
-                    cell.value for row in values_wb[sheet_name][coordinates] for cell in row
+                    cell.value for row in sheet[coordinates] for cell in row
                     if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool)
                 ]
                 total = float(sum(values))
@@ -2426,7 +2453,12 @@ def _validate_xlsx_contract(path: Path, contract_path: str) -> dict[str, Any]:
             minimum = int(item.get("minMatches", 1))
             formulas: list[tuple[str, str]] = []
             if sheet_name in wb.sheetnames and coordinate_range:
-                for row in wb[sheet_name][coordinate_range]:
+                sheet = wb[sheet_name]
+                if not hasattr(sheet, "iter_rows"):
+                    errors.append({"code": "sheet.not_worksheet", "sheet": sheet_name})
+                    sheet = None
+                rows = sheet[coordinate_range] if sheet is not None else []
+                for row in rows:
                     for cell in row:
                         if isinstance(cell.value, str) and cell.value.startswith("="):
                             formulas.append((cell.coordinate, cell.value))
@@ -2500,25 +2532,49 @@ def _contract_text_checks(text: str, contract: dict[str, Any]) -> tuple[list[dic
 
 
 def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
-    try:
-        import docx  # type: ignore
-    except ImportError:
-        _missing("python-docx")
     contract = _read_json(contract_path)
     _validate_contract_keys(contract, "docx")
-    document = docx.Document(str(path))
-    stories: list[str] = [paragraph.text for paragraph in document.paragraphs]
-    for table in document.tables:
-        stories.extend(cell.text for row in table.rows for cell in row.cells)
-    for section in document.sections:
-        for story in (section.header, section.footer):
-            stories.extend(paragraph.text for paragraph in story.paragraphs)
-            for table in story.tables:
-                stories.extend(cell.text for row in table.rows for cell in row.cells)
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        document_root = ET.fromstring(archive.read("word/document.xml"))
+        styles: dict[str, str] = {}
+        if "word/styles.xml" in names:
+            styles_root = ET.fromstring(archive.read("word/styles.xml"))
+            for style in styles_root.iter(f"{{{word_ns}}}style"):
+                style_id = style.attrib.get(f"{{{word_ns}}}styleId", "")
+                style_name = next(
+                    (
+                        child.attrib.get(f"{{{word_ns}}}val", "")
+                        for child in style
+                        if child.tag == f"{{{word_ns}}}name"
+                    ),
+                    style_id,
+                )
+                if style_id:
+                    styles[style_id] = style_name
+        story_parts = [
+            name
+            for name in archive.namelist()
+            if name == "word/document.xml"
+            or re.fullmatch(
+                r"word/(?:header[0-9]+|footer[0-9]+|comments(?:Extended)?|footnotes|endnotes)\.xml",
+                name,
+                re.IGNORECASE,
+            )
+        ]
+        stories = [
+            "".join(
+                element.text or ""
+                for element in ET.fromstring(archive.read(name)).iter(f"{{{word_ns}}}t")
+            )
+            for name in story_parts
+        ]
+    paragraphs = list(document_root.iter(f"{{{word_ns}}}p"))
     errors, checks = _contract_text_checks("\n".join(stories), contract)
     measurements = {
-        "paragraphs": len(document.paragraphs),
-        "tables": len(document.tables),
+        "paragraphs": len(paragraphs),
+        "tables": sum(1 for _ in document_root.iter(f"{{{word_ns}}}tbl")),
     }
     checks["measurements"] = measurements
     for key, actual in measurements.items():
@@ -2530,20 +2586,32 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                 "actual": actual,
             })
     required_styles = [str(item) for item in contract.get("required_styles", [])]
-    used_styles = {
-        paragraph.style.name
-        for paragraph in document.paragraphs
-        if paragraph.style is not None
-    }
-    missing_styles = [style for style in required_styles if style not in used_styles]
+    paragraph_style_ids = [
+        next(
+            (
+                item.attrib.get(f"{{{word_ns}}}val", "")
+                for item in paragraph.iter(f"{{{word_ns}}}pStyle")
+            ),
+            "",
+        )
+        for paragraph in paragraphs
+    ]
+    def display_style(style_id: str) -> str:
+        if match := re.fullmatch(r"Heading([1-9])", style_id, re.IGNORECASE):
+            return f"Heading {match.group(1)}"
+        return styles.get(style_id, style_id)
+
+    used_styles = {display_style(style_id) for style_id in paragraph_style_ids if style_id}
+    used_style_keys = {style.casefold() for style in used_styles}
+    missing_styles = [style for style in required_styles if style.casefold() not in used_style_keys]
     checks["requiredStyles"] = {"required": required_styles, "missing": missing_styles}
     for style in missing_styles:
         errors.append({"code": "style.missing", "style": style})
 
     heading_levels: list[int] = []
-    for paragraph in document.paragraphs:
-        style_name = paragraph.style.name if paragraph.style is not None else ""
-        match = re.fullmatch(r"Heading ([1-6])", style_name)
+    for style_id in paragraph_style_ids:
+        style_name = display_style(style_id)
+        match = re.fullmatch(r"Heading ?([1-6])", style_name, re.IGNORECASE)
         if match:
             heading_levels.append(int(match.group(1)))
     heading_jumps = [
@@ -2909,6 +2977,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_check = sub.add_parser("check", help="Report available backends")
     p_check.add_argument("--json", action="store_true", help="Emit machine-readable readiness JSON")
+    p_check.add_argument(
+        "--format",
+        choices=["docx", "xlsx", "pptx", "pdf", "all"],
+        default=None,
+        help="Make only this format's package(s) required; without it missing format packages are advisory.",
+    )
     p_check.set_defaults(func=cmd_check)
 
     p_rep = sub.add_parser("replace", help="Replace text (docx/pptx/xlsx)")

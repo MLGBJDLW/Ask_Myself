@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any, Iterable
 from xml.etree import ElementTree as ET
 
+_DOC_SCRIPT_DIR = Path(__file__).resolve().parents[2] / "doc-script-editor" / "scripts"
+if str(_DOC_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_DOC_SCRIPT_DIR))
+from xlsx_formula_inventory import inventory_xlsx_formulas  # type: ignore  # noqa: E402
+
 
 EXCEL_MAX_ROW = 1_048_576
 EXCEL_MAX_COL = 16_384
@@ -796,47 +801,36 @@ def _workbook_sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
 
 def inspect_formula_inventory(path: str | Path) -> dict[str, Any]:
     """Inventory formula kinds, references, caches, and a cache-independent fingerprint."""
-    formula_items: list[dict[str, Any]] = []
     dependency_edges: list[dict[str, str]] = []
     with zipfile.ZipFile(Path(path).expanduser().resolve()) as archive:
-        for sheet_name, part in _workbook_sheet_parts(archive):
-            root = ET.fromstring(archive.read(part))
-            for cell in root.iter():
-                if cell.tag.rsplit("}", 1)[-1] != "c":
-                    continue
-                formula = next(
-                    (child for child in cell if child.tag.rsplit("}", 1)[-1] == "f"),
-                    None,
-                )
-                if formula is None:
-                    continue
-                coordinate = cell.attrib.get("r", "")
-                formula_text = formula.text or ""
-                item = {
-                    "sheet": sheet_name,
-                    "cell": coordinate,
-                    "formula": formula_text,
-                    "type": formula.attrib.get("t", "normal"),
-                    "ref": formula.attrib.get("ref"),
-                    "sharedIndex": formula.attrib.get("si"),
-                }
-                formula_items.append(item)
-                for match in SHEET_REF_RE.finditer(formula_text):
-                    dependency_edges.append({
-                        "from": f"{sheet_name}!{coordinate}",
-                        "to": f"{match.group('sheet')}!{match.group('ref')}",
-                    })
+        formula_items = inventory_xlsx_formulas(archive)
+    for item in formula_items:
+        for match in SHEET_REF_RE.finditer(str(item.get("formula", ""))):
+            dependency_edges.append({
+                "from": str(item.get("location", "")),
+                "to": f"{match.group('sheet')}!{match.group('ref')}",
+            })
     fingerprint_payload = json.dumps(
-        sorted(formula_items, key=lambda item: (item["sheet"].casefold(), item["cell"])),
+        sorted(
+            formula_items,
+            key=lambda item: (
+                str(item.get("part", "")).casefold(),
+                str(item.get("location", "")).casefold(),
+                str(item.get("kind", "")),
+            ),
+        ),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     kinds: dict[str, int] = {}
-    for item in formula_items:
+    cell_formulas = [item for item in formula_items if item.get("kind") == "cell"]
+    for item in cell_formulas:
         kinds[item["type"]] = kinds.get(item["type"], 0) + 1
     return {
-        "formulaCells": len(formula_items),
+        "formulaCells": len(cell_formulas),
+        "formulaDefinitions": len(formula_items) - len(cell_formulas),
+        "formulaSurfaces": len(formula_items),
         "formulaKinds": kinds,
         "formulas": formula_items,
         "dependencyEdges": dependency_edges,

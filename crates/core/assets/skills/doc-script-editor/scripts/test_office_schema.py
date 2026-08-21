@@ -21,6 +21,7 @@ class OfficeSchemaTests(unittest.TestCase):
             "intent": "modify",
             "source": "source.xlsx",
             "destination": "destination.xlsx",
+            "preconditions": {"sourceSha256": "0" * 64},
             "operations": [{
                 "op": "set_formula",
                 "sheet": "Summary",

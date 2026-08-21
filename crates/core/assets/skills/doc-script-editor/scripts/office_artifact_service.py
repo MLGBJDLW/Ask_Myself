@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1062,6 +1063,14 @@ def _exact_operation_parts(
     path: Path,
 ) -> set[str] | None:
     skills_root = Path(__file__).resolve().parents[2]
+    if operation in {"replace", "redact"}:
+        patterns = set(_authorized_part_patterns(artifact_format, operation))
+        with zipfile.ZipFile(path) as archive:
+            return {
+                name
+                for name in archive.namelist()
+                if _matches_any_part_pattern(name, patterns)
+            }
     if artifact_format == "xlsx" and operation in {
         "set_value", "set_formula", "set_range", "clear_range", "set_style",
     }:
@@ -1234,7 +1243,217 @@ def _exact_operation_parts(
 
 def _read_package_parts(path: Path, names: set[str]) -> dict[str, bytes]:
     with zipfile.ZipFile(path) as archive:
-        return {name: archive.read(name) for name in names if name in archive.namelist()}
+        return {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name in names
+        }
+
+
+def _replacement_fragments(
+    fragments: list[str],
+    find: str,
+    replacement: str,
+    occurrence: int | None,
+) -> tuple[list[str], int]:
+    combined = "".join(fragments)
+    starts: list[int] = []
+    cursor = 0
+    for fragment in fragments:
+        starts.append(cursor)
+        cursor += len(fragment)
+    matches: list[tuple[int, int]] = []
+    cursor = 0
+    while find:
+        start = combined.find(find, cursor)
+        if start < 0:
+            break
+        matches.append((start, start + len(find)))
+        cursor = start + len(find)
+    selected = matches if occurrence is None else (
+        [matches[occurrence - 1]] if 1 <= occurrence <= len(matches) else []
+    )
+    result = list(fragments)
+    for start, end in reversed(selected):
+        start_index = max(0, bisect_right(starts, start) - 1)
+        end_index = max(0, bisect_right(starts, end - 1) - 1)
+        start_offset = start - starts[start_index]
+        end_offset = end - starts[end_index]
+        if start_index == end_index:
+            result[start_index] = (
+                result[start_index][:start_offset]
+                + replacement
+                + result[start_index][end_offset:]
+            )
+            continue
+        result[start_index] = result[start_index][:start_offset] + replacement
+        for index in range(start_index + 1, end_index):
+            result[index] = ""
+        result[end_index] = result[end_index][end_offset:]
+    return result, len(matches)
+
+
+def _xml_text_groups(
+    artifact_format: str,
+    part: str,
+    root: ET.Element,
+) -> list[tuple[str, list[ET.Element]]]:
+    if artifact_format == "docx":
+        word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        parent = {child: owner for owner in root.iter() for child in owner}
+        groups: list[tuple[str, list[ET.Element]]] = []
+        lowered = part.casefold()
+        for paragraph in root.iter(f"{{{word_ns}}}p"):
+            nodes = list(paragraph.iter(f"{{{word_ns}}}t"))
+            if not nodes:
+                continue
+            if "/header" in lowered:
+                scope = "header"
+            elif "/footer" in lowered:
+                scope = "footer"
+            elif "/comments" in lowered:
+                scope = "comments"
+            elif "/footnotes" in lowered:
+                scope = "footnotes"
+            elif "/endnotes" in lowered:
+                scope = "endnotes"
+            else:
+                ancestors: set[str] = set()
+                current = parent.get(paragraph)
+                while current is not None:
+                    ancestors.add(current.tag.rsplit("}", 1)[-1])
+                    current = parent.get(current)
+                if "txbxContent" in ancestors:
+                    scope = "textbox"
+                elif "tc" in ancestors:
+                    scope = "table"
+                else:
+                    scope = "body"
+            groups.append((scope, nodes))
+        return groups
+    if artifact_format == "pptx":
+        drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+        return [
+            ("all", nodes)
+            for paragraph in root.iter(f"{{{drawing_ns}}}p")
+            if (nodes := list(paragraph.iter(f"{{{drawing_ns}}}t")))
+        ]
+    if artifact_format == "xlsx":
+        spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        text_tag = f"{{{spreadsheet_ns}}}t"
+        container_tags = {
+            f"{{{spreadsheet_ns}}}si",
+            f"{{{spreadsheet_ns}}}is",
+            f"{{{spreadsheet_ns}}}comment",
+        }
+        scalar_tags = {
+            f"{{{spreadsheet_ns}}}f",
+            f"{{{spreadsheet_ns}}}definedName",
+        }
+        groups = []
+        for element in root.iter():
+            if element.tag in container_tags:
+                nodes = list(element.iter(text_tag))
+                if nodes:
+                    groups.append(("all", nodes))
+            elif element.tag in scalar_tags:
+                groups.append(("all", [element]))
+        return groups
+    return []
+
+
+def _canonical_xml(root: ET.Element) -> str:
+    return ET.canonicalize(ET.tostring(root, encoding="unicode"))
+
+
+def _verify_replace_semantic_scope(
+    artifact_format: str,
+    payload: dict[str, Any],
+    before: dict[str, bytes],
+    after: dict[str, bytes],
+) -> None:
+    find = str(payload.get("find", ""))
+    replacement = str(payload.get("replace", ""))
+    occurrence = payload.get("occurrence")
+    if occurrence is not None:
+        occurrence = int(occurrence)
+    scopes: set[str] | None = None
+    if artifact_format == "docx" and payload.get("scope") is not None:
+        raw_scope = payload["scope"]
+        scopes = {
+            str(item).strip().casefold()
+            for item in (raw_scope if isinstance(raw_scope, list) else str(raw_scope).split(","))
+            if str(item).strip()
+        }
+
+    parsed: list[
+        tuple[str, ET.Element, ET.Element, list[tuple[str, list[ET.Element]]], list[tuple[str, list[ET.Element]]]]
+    ] = []
+    total_matches = 0
+    for part, before_bytes in before.items():
+        before_root = ET.fromstring(before_bytes)
+        after_root = ET.fromstring(after[part])
+        before_groups = _xml_text_groups(artifact_format, part, before_root)
+        after_groups = _xml_text_groups(artifact_format, part, after_root)
+        if len(before_groups) != len(after_groups):
+            raise RuntimeError("strict replace changed the number of textual containers")
+        for (before_scope, before_nodes), (after_scope, after_nodes) in zip(
+            before_groups, after_groups, strict=True
+        ):
+            if before_scope != after_scope or len(before_nodes) != len(after_nodes):
+                raise RuntimeError("strict replace changed textual container structure")
+            if scopes is None or before_scope in scopes:
+                _, count = _replacement_fragments(
+                    [node.text or "" for node in before_nodes],
+                    find,
+                    replacement,
+                    None,
+                )
+                total_matches += count
+        parsed.append((part, before_root, after_root, before_groups, after_groups))
+
+    global_start = 1
+    for part, before_root, after_root, before_groups, after_groups in parsed:
+        for group_index, ((scope, before_nodes), (_, after_nodes)) in enumerate(
+            zip(before_groups, after_groups, strict=True)
+        ):
+            selected_scope = scopes is None or scope in scopes
+            fragments = [node.text or "" for node in before_nodes]
+            _, group_matches = _replacement_fragments(fragments, find, replacement, None)
+            local_occurrence = None
+            should_apply = selected_scope and occurrence is None
+            if selected_scope and occurrence is not None and global_start <= occurrence < global_start + group_matches:
+                local_occurrence = occurrence - global_start + 1
+                should_apply = True
+            expected = fragments
+            if should_apply and group_matches:
+                expected, _ = _replacement_fragments(
+                    fragments,
+                    find,
+                    replacement,
+                    local_occurrence,
+                )
+            actual = [node.text or "" for node in after_nodes]
+            if actual != expected:
+                raise RuntimeError(
+                    f"strict {artifact_format} replace changed text outside the requested scope "
+                    f"at {part} group {group_index}"
+                )
+            if selected_scope:
+                global_start += group_matches
+            for node_index, (before_node, after_node) in enumerate(
+                zip(before_nodes, after_nodes, strict=True)
+            ):
+                if selected_scope:
+                    marker = f"__NEXA_VERIFIED_TEXT_{group_index}_{node_index}__"
+                    before_node.text = marker
+                    after_node.text = marker
+        if _canonical_xml(before_root) != _canonical_xml(after_root):
+            raise RuntimeError(
+                f"strict {artifact_format} replace changed non-text semantics in {part}"
+            )
+    if occurrence is not None and not 1 <= occurrence <= total_matches:
+        raise RuntimeError("strict replace occurrence is outside the verified match inventory")
 
 
 def _verify_exact_semantic_scope(
@@ -1249,6 +1468,9 @@ def _verify_exact_semantic_scope(
     after = _read_package_parts(after_path, set(before))
     if set(after) != set(before):
         raise RuntimeError("strict semantic scope lost a target package part")
+    if operation in {"replace", "redact"}:
+        _verify_replace_semantic_scope(artifact_format, payload, before, after)
+        return
     if artifact_format == "xlsx":
         if operation in {
             "rename_sheet", "set_defined_name", "set_data_validation", "create_table",

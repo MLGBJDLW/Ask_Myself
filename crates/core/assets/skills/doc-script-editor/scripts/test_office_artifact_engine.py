@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import office_artifact_engine
+import office_artifact_service
 from office_artifact_engine import OfficeArtifactEngine, OfficeArtifactError
 
 
@@ -263,10 +264,12 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "_write_candidate_state",
             side_effect=fail_first_restored_state,
         ):
-            with self.assertRaisesRegex(OSError, "checkpoint failure"):
-                self.engine.restore(published["receiptId"])
+            recovered = self.engine.restore(published["receiptId"])
 
         self.assertTrue(failed_once)
+        self.assertEqual("restored", recovered["status"])
+        self.assertEqual("committed", recovered["recovery"]["status"])
+        self.assertIn("checkpoint failure", recovered["recovery"]["originalError"])
         self.assertFalse(destination.exists())
         journals = self.root / ".nexa" / "office-artifacts" / "journals"
         locks = self.root / ".nexa" / "office-artifacts" / "locks"
@@ -371,6 +374,100 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         )
         self.assertEqual("candidate", state["status"])
         self.assertEqual([], list((self.root / ".nexa" / "office-artifacts" / "locks").glob("*.lock")))
+
+    def test_publish_rollback_fault_retains_all_locks_until_journal_recovery(self) -> None:
+        import docx
+
+        destination = self.root / "rollback-fault.docx"
+        manifest = self.root / "rollback-fault-manifest.json"
+        original = docx.Document()
+        original.add_paragraph("Original destination")
+        original.save(destination)
+        destination_before = destination.read_bytes()
+        manifest.write_text('{"status":"original"}\n', encoding="utf-8")
+        manifest_before = manifest.read_bytes()
+        request = self._docx_request(destination)
+        request["delivery"] = {"manifest": str(manifest)}
+        candidate = self.engine.execute(request)
+        real_publish = self.engine._journal_publish_role
+        real_rollback = office_artifact_engine.rollback_published_artifact
+
+        def fail_manifest(journal_path, journal, staged, target, *, validate):
+            if Path(target).resolve() == manifest.resolve():
+                raise OSError("injected manifest publication failure")
+            return real_publish(journal_path, journal, staged, target, validate=validate)
+
+        def fail_destination_rollback(target, snapshot, workspace_root):
+            if Path(target).resolve() == destination.resolve():
+                raise OSError("injected destination rollback failure")
+            return real_rollback(target, snapshot, workspace_root)
+
+        with mock.patch.object(
+            self.engine,
+            "_journal_publish_role",
+            side_effect=fail_manifest,
+        ), mock.patch.object(
+            office_artifact_engine,
+            "rollback_published_artifact",
+            side_effect=fail_destination_rollback,
+        ):
+            with self.assertRaisesRegex(OSError, "manifest publication"):
+                self.engine.decide(candidate["candidateId"], "publish")
+
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        locks = self.root / ".nexa" / "office-artifacts" / "locks"
+        journal_paths = list(journals.glob("*.json"))
+        self.assertEqual(1, len(journal_paths))
+        blocked = json.loads(journal_paths[0].read_text(encoding="utf-8"))
+        self.assertEqual("recovery_blocked", blocked["status"])
+        self.assertEqual(0, blocked["pid"])
+        self.assertEqual(2, len(list(locks.glob("*.lock"))))
+        self.assertNotEqual(destination_before, destination.read_bytes())
+        self.assertEqual(manifest_before, manifest.read_bytes())
+
+        # A fresh engine in the same process must retry pid=0 blocked recovery,
+        # restore every role, and only then release the protected locks.
+        OfficeArtifactEngine(self.root)
+        self.assertEqual(destination_before, destination.read_bytes())
+        self.assertEqual(manifest_before, manifest.read_bytes())
+        self.assertEqual([], list(journals.glob("*.json")))
+        self.assertEqual([], list(locks.glob("*.lock")))
+        _, state = self.engine._load_candidate(candidate["candidateId"])
+        self.assertEqual("recovered_rolled_back", state["status"])
+
+    def test_late_publish_checkpoint_fault_returns_committed_recovery_outcome(self) -> None:
+        destination = self.root / "late-publish.docx"
+        candidate = self.engine.execute(self._docx_request(destination))
+        real_write_journal = self.engine._write_journal
+        failed_once = False
+
+        def fail_committed_checkpoint(path, journal):
+            nonlocal failed_once
+            if (
+                journal.get("kind") == "officeArtifactPublishJournal"
+                and journal.get("status") == "committed"
+                and not failed_once
+            ):
+                failed_once = True
+                raise OSError("injected committed journal checkpoint failure")
+            return real_write_journal(path, journal)
+
+        with mock.patch.object(
+            self.engine,
+            "_write_journal",
+            side_effect=fail_committed_checkpoint,
+        ):
+            published = self.engine.decide(candidate["candidateId"], "publish")
+
+        self.assertTrue(failed_once)
+        self.assertEqual("published", published["status"])
+        self.assertEqual("committed", published["recovery"]["status"])
+        self.assertIn("checkpoint failure", published["recovery"]["originalError"])
+        self.assertTrue(destination.is_file())
+        journals = self.root / ".nexa" / "office-artifacts" / "journals"
+        locks = self.root / ".nexa" / "office-artifacts" / "locks"
+        self.assertEqual([], list(journals.glob("*.json")))
+        self.assertEqual([], list(locks.glob("*.lock")))
 
     def test_startup_recovers_crash_after_artifact_publication(self) -> None:
         destination = self.root / "crash.docx"
@@ -562,6 +659,22 @@ class OfficeArtifactEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(OfficeArtifactError, "allowStyleMerge must be a boolean"):
             self.engine.assess(request)
 
+        from pptx import Presentation
+
+        pptx_source = self.root / "strict-source.pptx"
+        Presentation().save(pptx_source)
+        request = {
+            "requestVersion": 2,
+            "format": "pptx",
+            "intent": "modify",
+            "source": str(pptx_source),
+            "preconditions": {"sourceSha256": hashlib.sha256(pptx_source.read_bytes()).hexdigest()},
+            "destination": str(self.root / "strict-output.pptx"),
+            "operations": [{"op": "replace", "find": "a", "replace": "b", "scope": "body"}],
+        }
+        with self.assertRaisesRegex(OfficeArtifactError, "unknown field.*scope"):
+            self.engine.assess(request)
+
         request = self._docx_request(destination)
         request["requestVersion"] = 2.9
         with self.assertRaisesRegex(OfficeArtifactError, "requestVersion must be 2"):
@@ -577,10 +690,162 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "source": str(source),
             "destination": str(self.root / "verified.docx"),
             "operations": [],
-            "preconditions": {"sourceSha256": "0" * 64},
         }
+        with self.assertRaisesRegex(OfficeArtifactError, "sourceSha256 from inspect"):
+            self.engine.assess(request)
+        request["preconditions"] = {"sourceSha256": "0" * 64}
         with self.assertRaisesRegex(OfficeArtifactError, "source SHA-256"):
             self.engine.assess(request)
+
+    def test_docx_replace_verifier_rejects_unrelated_header_drift(self) -> None:
+        import docx
+
+        source = self.root / "strict-scope-source.docx"
+        document = docx.Document()
+        document.add_paragraph("Body target")
+        document.sections[0].header.paragraphs[0].text = "Header must stay"
+        document.save(source)
+        request = {
+            "requestVersion": 2,
+            "format": "docx",
+            "intent": "modify",
+            "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "destination": str(self.root / "strict-scope-output.docx"),
+            "operations": [{
+                "op": "replace",
+                "find": "Body target",
+                "replace": "Body updated",
+                "scope": "body",
+                "expectedMatches": 1,
+            }],
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            "validation": {"contractVersion": 2, "required_text": ["Body updated"]},
+        }
+        candidate = self.engine.execute(request)
+        candidate_document = docx.Document(candidate["candidatePath"])
+        self.assertEqual("Body updated", candidate_document.paragraphs[0].text)
+        self.assertEqual(
+            "Header must stay",
+            candidate_document.sections[0].header.paragraphs[0].text,
+        )
+
+        real_run_editor = office_artifact_service._run_editor
+
+        def inject_header_drift(path, command, arguments, actions, workspace_root, *, timeout=180):
+            result = real_run_editor(
+                path,
+                command,
+                arguments,
+                actions,
+                workspace_root,
+                timeout=timeout,
+            )
+            if command == "replace":
+                staged = path.with_name(f"{path.name}.scope-fixture")
+                with zipfile.ZipFile(path) as archive, zipfile.ZipFile(staged, "w") as output:
+                    for info in archive.infolist():
+                        data = archive.read(info.filename)
+                        if info.filename.startswith("word/header") and info.filename.endswith(".xml"):
+                            data = data.replace(b"Header must stay", b"Header was drifted")
+                        output.writestr(info, data)
+                staged.replace(path)
+            return result
+
+        request["destination"] = str(self.root / "strict-scope-injected.docx")
+        with mock.patch.object(
+            office_artifact_service,
+            "_run_editor",
+            side_effect=inject_header_drift,
+        ):
+            with self.assertRaisesRegex(OfficeArtifactError, "outside the requested scope"):
+                self.engine.execute(request)
+        self.assertFalse(Path(request["destination"]).exists())
+
+    def test_docx_inspect_reads_content_controls_and_dotm_without_python_docx_loader(self) -> None:
+        import docx
+
+        source = self.root / "content-control-source.docx"
+        document = docx.Document()
+        document.add_paragraph("Controlled insight")
+        document.save(source)
+        request = {
+            "requestVersion": 2,
+            "format": "docx",
+            "intent": "modify",
+            "source": str(source),
+            "destination": str(self.root / "content-control.docx"),
+            "operations": [{
+                "op": "wrap_content_control",
+                "find": "Controlled insight",
+                "tag": "decision-insight",
+            }],
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
+            "validation": {"contractVersion": 2, "required_text": ["Controlled insight"]},
+        }
+        candidate = self.engine.execute(request)
+        inspection = self.engine.inspect(candidate["candidatePath"], "docx")
+        self.assertIn("Controlled insight", inspection["profile"]["textPreview"])
+        self.assertEqual("direct-openxml", inspection["profile"]["profileEngine"])
+
+        dotm = self.root / "content-control.dotm"
+        with zipfile.ZipFile(candidate["candidatePath"]) as archive, zipfile.ZipFile(dotm, "w") as output:
+            for info in archive.infolist():
+                data = archive.read(info.filename)
+                if info.filename == "[Content_Types].xml":
+                    data = data.replace(
+                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                        b"application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+                    )
+                output.writestr(info, data)
+        dotm_inspection = self.engine.inspect(str(dotm), "docx")
+        self.assertIn("Controlled insight", dotm_inspection["profile"]["textPreview"])
+
+    def test_xlsx_chartsheet_can_be_inspected_and_verified_without_row_iteration(self) -> None:
+        import openpyxl
+        from openpyxl.chart import BarChart, Reference
+
+        source = self.root / "chartsheet-source.xlsx"
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Data"
+        worksheet.append(["Quarter", "Value"])
+        worksheet.append(["Q1", 10])
+        worksheet.append(["Q2", 20])
+        chart = BarChart()
+        chart.add_data(
+            Reference(worksheet, min_col=2, min_row=1, max_row=3),
+            titles_from_data=True,
+        )
+        chart.set_categories(Reference(worksheet, min_col=1, min_row=2, max_row=3))
+        workbook.create_chartsheet("Decision chart").add_chart(chart)
+        workbook.save(source)
+        workbook.close()
+        request = {
+            "requestVersion": 2,
+            "format": "xlsx",
+            "intent": "verify",
+            "source": str(source),
+            "destination": str(self.root / "chartsheet-verified.xlsx"),
+            "operations": [],
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+            "guarantees": {
+                "quality": "standard",
+                "preservation": "strict",
+                "calculation": "static",
+                "render": "none",
+            },
+            "validation": {
+                "contractVersion": 2,
+                "required_sheets": ["Data", "Decision chart"],
+            },
+        }
+        inspection = self.engine.inspect(str(source), "xlsx")
+        self.assertEqual("pass", inspection["structural"]["status"])
+        candidate = self.engine.execute(request)
+        self.assertEqual("pass", candidate["validation"]["backend"]["contract"]["status"])
 
     def test_macro_enabled_format_families_preserve_vba_bytes_end_to_end(self) -> None:
         from xml.etree import ElementTree as ET
@@ -645,6 +910,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 "format": artifact_format,
                 "intent": "verify",
                 "source": str(source),
+                "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
                 "destination": str(self.root / f"verified{extension}"),
                 "operations": [],
                 "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
@@ -703,6 +969,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
                 "format": artifact_format,
                 "intent": "verify",
                 "source": str(source),
+                "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
                 "destination": str(self.root / f"verified{extension}"),
                 "operations": [],
                 "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
@@ -840,6 +1107,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "xlsx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(destination),
             "operations": [
                 {"op": "set_value", "sheet": "inputs", "cell": "A1", "value": "=WEBSERVICE(\"https://example.invalid\")"},
@@ -885,6 +1153,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "xlsx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(self.root / "objects-result.xlsx"),
             "operations": [
                 {"op": "rename_sheet", "sheet": "Summary", "newName": "Data"},
@@ -918,6 +1187,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "xlsx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(self.root / "dynamic-result.xlsx"),
             "operations": [{"op": "set_value", "sheet": "Sheet", "cell": "B1", "value": 2}],
             "guarantees": {"calculation": "compatible", "quality": "standard", "render": "none"},
@@ -1011,6 +1281,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "pptx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(destination),
             "operations": [
                 {"op": "clone_slide", "slideIndex": 1},
@@ -1066,6 +1337,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "pptx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(self.root / "insert-result.pptx"),
             "operations": [{
                 "op": "insert_slide",
@@ -1113,6 +1385,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "pptx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(self.root / "review-deck-result.pptx"),
             "operations": [
                 {"op": "set_alt_text", "slideId": slide_id, "shapeId": shape_id, "altText": "Decision title"},
@@ -1183,6 +1456,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "docx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(destination),
             "operations": [
                 {"op": "add_comment", "find": "Approve", "comment": "Owner confirmation required."},
@@ -1221,6 +1495,7 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "format": "docx",
             "intent": "modify",
             "source": str(source),
+            "preconditions": {"sourceSha256": hashlib.sha256(source.read_bytes()).hexdigest()},
             "destination": str(self.root / "structured-result.docx"),
             "operations": [
                 {"op": "add_bookmark", "find": "Decision", "bookmarkName": "DecisionAnchor"},

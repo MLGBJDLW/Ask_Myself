@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from xml.etree import ElementTree as ET
 
 from office_artifact_runtime import (
     office_dependency_lock_status,
@@ -140,6 +141,11 @@ REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
     "set_alt_text": {"altText"},
     "set_speaker_notes": {"text"},
 }
+SAFE_FIELD_INSTRUCTION_RE = re.compile(
+    r"(?i)(PAGE|NUMPAGES|SECTIONPAGES|TOC(?:\s+\\[A-Za-z]+(?:\s+[^\\]+)?)|"
+    r"REF\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\s+\\[A-Za-z]+)*|"
+    r"SEQ\s+[A-Za-z_][A-Za-z0-9_]{0,39}(?:\s+\\[A-Za-z]+(?:\s+\S+)?)*)"
+)
 
 
 class OfficeArtifactError(Exception):
@@ -250,6 +256,20 @@ class ArtifactRequest:
             raise OfficeArtifactError("request.invalid_preconditions", "preconditions must be an object")
         _reject_unknown_keys(preconditions, PRECONDITION_KEYS, "preconditions")
         expected_source_sha = preconditions.get("sourceSha256")
+        if intent != "create" and not expected_source_sha:
+            raise OfficeArtifactError(
+                "precondition.source_sha_required",
+                "modify/verify requires preconditions.sourceSha256 from inspect so the source is CAS-bound",
+                details={"requiredAction": "inspect", "field": "preconditions.sourceSha256"},
+            )
+        if expected_source_sha and (
+            not isinstance(expected_source_sha, str)
+            or re.fullmatch(r"[0-9A-Fa-f]{64}", expected_source_sha) is None
+        ):
+            raise OfficeArtifactError(
+                "schema.precondition_type",
+                "preconditions.sourceSha256 must be a 64-character hexadecimal SHA-256",
+            )
         if expected_source_sha and source is not None:
             actual_source_sha = _sha256(source)
             if actual_source_sha.lower() != str(expected_source_sha).lower():
@@ -666,27 +686,72 @@ class OfficeArtifactEngine:
             profile["formulaProfile"] = self._xlsx_formula_profile(path)
             return profile
 
-        try:
-            from docx import Document  # type: ignore
-        except ImportError as error:
-            raise OfficeArtifactError(
-                "inspect.dependency_missing",
-                "python-docx is required to inspect DOCX artifacts",
-            ) from error
-        document = Document(str(path))
-        headings = [
-            {"index": index, "style": paragraph.style.name, "text": paragraph.text}
-            for index, paragraph in enumerate(document.paragraphs)
-            if paragraph.text.strip() and paragraph.style.name.startswith("Heading")
-        ]
+        word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            document = ET.fromstring(archive.read("word/document.xml"))
+            styles: dict[str, str] = {}
+            if "word/styles.xml" in names:
+                styles_root = ET.fromstring(archive.read("word/styles.xml"))
+                for style in styles_root.iter(f"{{{word_ns}}}style"):
+                    style_id = style.attrib.get(f"{{{word_ns}}}styleId", "")
+                    name = next(
+                        (
+                            item.attrib.get(f"{{{word_ns}}}val", "")
+                            for item in style
+                            if item.tag == f"{{{word_ns}}}name"
+                        ),
+                        style_id,
+                    )
+                    if style_id:
+                        styles[style_id] = name
+            document_paragraphs = list(document.iter(f"{{{word_ns}}}p"))
+            headings = []
+            for index, paragraph in enumerate(document_paragraphs):
+                text = "".join(
+                    item.text or "" for item in paragraph.iter(f"{{{word_ns}}}t")
+                )
+                style_id = next(
+                    (
+                        item.attrib.get(f"{{{word_ns}}}val", "")
+                        for item in paragraph.iter(f"{{{word_ns}}}pStyle")
+                    ),
+                    "",
+                )
+                heading_match = re.fullmatch(r"Heading([1-9])", style_id, re.IGNORECASE)
+                style_name = (
+                    f"Heading {heading_match.group(1)}"
+                    if heading_match
+                    else styles.get(style_id, style_id)
+                )
+                if text.strip() and (
+                    style_name.casefold().startswith("heading")
+                    or style_id.casefold().startswith("heading")
+                ):
+                    headings.append({"index": index, "style": style_name, "text": text})
+            story_parts = [
+                name
+                for name in archive.namelist()
+                if name == "word/document.xml"
+                or re.fullmatch(
+                    r"word/(?:header[0-9]+|footer[0-9]+|comments(?:Extended)?|footnotes|endnotes)\.xml",
+                    name,
+                    re.IGNORECASE,
+                )
+            ]
+            preview_lines = []
+            for name in story_parts:
+                root = ET.fromstring(archive.read(name))
+                text = "".join(item.text or "" for item in root.iter(f"{{{word_ns}}}t"))
+                if text.strip():
+                    preview_lines.append(text)
         return {
-            "paragraphs": len(document.paragraphs),
-            "tables": len(document.tables),
-            "sections": len(document.sections),
+            "paragraphs": len(document_paragraphs),
+            "tables": sum(1 for _ in document.iter(f"{{{word_ns}}}tbl")),
+            "sections": max(1, sum(1 for _ in document.iter(f"{{{word_ns}}}sectPr"))),
             "headings": headings,
-            "textPreview": "\n".join(
-                paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()
-            )[:4000],
+            "textPreview": "\n".join(preview_lines)[:4000],
+            "profileEngine": "direct-openxml",
         }
 
     def assess(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1056,8 +1121,10 @@ class OfficeArtifactEngine:
             "lockRolePaths": [str(path) for path in role_paths],
             "roles": [],
         }
+        journal_active = False
         try:
             self._write_journal(journal_path, journal)
+            journal_active = True
             self._assert_publish_role_preconditions(state, role_paths)
             destination_existed = destination.exists()
             if destination_existed and os.environ.get("NEXA_OFFICE_SKIP_SNAPSHOT") == "1":
@@ -1167,41 +1234,56 @@ class OfficeArtifactEngine:
             journal["committedAt"] = _utc_now()
             self._write_journal(journal_path, journal)
             journal_path.unlink(missing_ok=True)
+            journal_active = False
             return outcome
         except Exception as error:
             if staged is not None:
                 staged.unlink(missing_ok=True)
-            for record in reversed(sidecar_records):
-                rollback_published_artifact(
-                    Path(record["path"]),
-                    Path(record["snapshot"]) if record.get("snapshot") else None,
-                    self.workspace_root,
-                )
-            if published:
-                rollback_published_artifact(destination, snapshot, self.workspace_root)
-            if receipt_path is not None and receipt_path.exists():
-                failure_receipt = receipt or {
-                    "kind": "officeArtifactReceipt",
-                    "version": 1,
-                    "receiptId": receipt_path.stem,
-                    "candidateId": candidate_id,
-                }
-                failure_receipt.update({
-                    "status": "rolled_back",
-                    "rolledBackAt": _utc_now(),
-                    "error": f"{type(error).__name__}: {error}",
-                })
-                failure_receipt["integrity"] = self._receipt_integrity(failure_receipt)
-                write_artifact_manifest(receipt_path, failure_receipt, self.workspace_root)
-            journal["status"] = "rolled_back"
-            journal["rolledBackAt"] = _utc_now()
-            journal["error"] = f"{type(error).__name__}: {error}"
-            self._write_journal(journal_path, journal)
-            journal_path.unlink(missing_ok=True)
+            if journal_active and journal_path.is_file():
+                journal["pid"] = 0
+                journal["status"] = "active"
+                journal["error"] = f"{type(error).__name__}: {error}"
+                journal["updatedAt"] = _utc_now()
+                try:
+                    self._write_journal(journal_path, journal)
+                    recovery_status = self._recover_publish_journal(
+                        journal_path,
+                        journal,
+                        rollback_state="candidate",
+                    )
+                    if recovery_status == "committed":
+                        _, recovered_state = self._load_candidate(candidate_id)
+                        recovered_outcome = self._candidate_outcome(recovered_state)
+                        recovered_outcome.update({
+                            "status": "published",
+                            "path": str(destination),
+                            "receiptId": recovered_state.get("receiptId"),
+                            "sha256": _sha256(destination),
+                            "recovery": {
+                                "status": "committed",
+                                "originalError": f"{type(error).__name__}: {error}",
+                            },
+                        })
+                        journal_active = False
+                        return recovered_outcome
+                except Exception as recovery_error:
+                    try:
+                        blocked = json.loads(journal_path.read_text(encoding="utf-8"))
+                        blocked["pid"] = 0
+                        blocked["status"] = "recovery_blocked"
+                        blocked["recoveryBlockers"] = [
+                            f"{type(recovery_error).__name__}: {recovery_error}"
+                        ]
+                        blocked["updatedAt"] = _utc_now()
+                        self._write_journal(journal_path, blocked)
+                    except Exception:
+                        pass
+                journal_active = journal_path.exists()
             raise
         finally:
-            for lock_path in lock_paths:
-                lock_path.unlink(missing_ok=True)
+            if not journal_active:
+                for lock_path in lock_paths:
+                    lock_path.unlink(missing_ok=True)
 
     def restore(self, receipt_id: str) -> dict[str, Any]:
         if not CANDIDATE_ID_RE.fullmatch(receipt_id):
@@ -1362,7 +1444,7 @@ class OfficeArtifactEngine:
                 "path": str(destination),
                 "restoredSnapshot": str(snapshot) if snapshot else None,
             }
-        except Exception:
+        except Exception as error:
             if journal_active and restore_journal_path.is_file():
                 # A normal I/O exception has the same partial-state risk as a
                 # process crash. Attempt the signed, idempotent recovery path
@@ -1373,8 +1455,23 @@ class OfficeArtifactEngine:
                     restore_journal["pid"] = 0
                     restore_journal["updatedAt"] = _utc_now()
                     self._write_journal(restore_journal_path, restore_journal)
-                    self._recover_restore_journal(restore_journal_path, restore_journal)
+                    recovery_status = self._recover_restore_journal(
+                        restore_journal_path,
+                        restore_journal,
+                    )
                     journal_active = restore_journal_path.exists()
+                    if recovery_status == "restored":
+                        return {
+                            "kind": "officeArtifactOutcome",
+                            "status": "restored",
+                            "receiptId": receipt_id,
+                            "path": str(destination),
+                            "restoredSnapshot": str(snapshot) if snapshot else None,
+                            "recovery": {
+                                "status": "committed",
+                                "originalError": f"{type(error).__name__}: {error}",
+                            },
+                        }
                 except Exception:
                     journal_active = True
             raise
@@ -1392,7 +1489,7 @@ class OfficeArtifactEngine:
         )
         rollback_published_artifact(target, snapshot, self.workspace_root)
 
-    def _recover_restore_journal(self, path: Path, journal: dict[str, Any]) -> None:
+    def _recover_restore_journal(self, path: Path, journal: dict[str, Any]) -> str:
         receipt_id = str(journal.get("receiptId", ""))
         candidate_id = str(journal.get("candidateId", ""))
         if not CANDIDATE_ID_RE.fullmatch(receipt_id) or not CANDIDATE_ID_RE.fullmatch(candidate_id):
@@ -1472,12 +1569,12 @@ class OfficeArtifactEngine:
             else:
                 blockers.append(f"restore target changed: {target}")
         if blockers:
+            journal["pid"] = 0
             journal["status"] = "recovery_blocked"
             journal["recoveryBlockers"] = blockers
             journal["updatedAt"] = _utc_now()
             self._write_journal(path, journal)
-            self._remove_stale_lock(journal)
-            return
+            return "blocked"
         for role in pending:
             self._apply_restore_role(role)
             role["restored"] = True
@@ -1498,6 +1595,7 @@ class OfficeArtifactEngine:
         self._write_journal(path, journal)
         self._remove_stale_lock(journal)
         path.unlink(missing_ok=True)
+        return "restored"
 
     def _journal_publish_role(
         self,
@@ -1547,6 +1645,94 @@ class OfficeArtifactEngine:
         self._write_journal(journal_path, journal)
         return snapshot, validation, role
 
+    def _recover_publish_journal(
+        self,
+        path: Path,
+        journal: dict[str, Any],
+        *,
+        rollback_state: str = "recovered_rolled_back",
+    ) -> str:
+        candidate_id = str(journal.get("candidateId", ""))
+        if not CANDIDATE_ID_RE.fullmatch(candidate_id):
+            raise OfficeArtifactError("journal.integrity_failed", "publish journal candidate id is invalid")
+        state_path = self.candidates_root / candidate_id / "state.json"
+        try:
+            _, state = self._load_candidate(candidate_id)
+        except OfficeArtifactError:
+            state = {}
+        receipt_id = str(state.get("receiptId") or journal.get("receiptId") or "")
+        if state.get("status") == "published" and CANDIDATE_ID_RE.fullmatch(receipt_id):
+            receipt_path = self.receipts_root / f"{receipt_id}.json"
+            if receipt_path.is_file():
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                actual_mac = str(receipt.get("integrity", {}).get("value", ""))
+                if (
+                    hmac.compare_digest(actual_mac, self._receipt_integrity(receipt)["value"])
+                    and receipt.get("status") == "published"
+                    and receipt.get("candidateId") == candidate_id
+                    and receipt.get("destination") == journal.get("destination")
+                    and state.get("receiptId") == receipt_id
+                    and state.get("receiptSha256") == _sha256(receipt_path)
+                    and receipt.get("requestSha256") == state.get("requestSha256")
+                ):
+                    self._remove_stale_lock(journal)
+                    path.unlink(missing_ok=True)
+                    return "committed"
+
+        roles = journal.get("roles", [])
+        if not isinstance(roles, list):
+            raise ValueError("journal roles must be an array")
+        recovery: list[tuple[Path, Path | None, bool]] = []
+        blockers: list[str] = []
+        for role in roles:
+            if not isinstance(role, dict):
+                blockers.append("invalid role record")
+                continue
+            target = workspace_path(Path(str(role.get("path", ""))), self.workspace_root)
+            snapshot = None
+            if role.get("snapshot"):
+                snapshot = workspace_path(
+                    Path(str(role["snapshot"])),
+                    self.workspace_root,
+                    must_exist=True,
+                )
+                if _sha256(snapshot) != role.get("snapshotSha256"):
+                    blockers.append(f"snapshot hash mismatch: {snapshot}")
+                    continue
+            current_sha = _sha256(target) if target.is_file() else None
+            if current_sha == role.get("intendedSha256"):
+                recovery.append((target, snapshot, True))
+            elif (
+                bool(role.get("existedBefore"))
+                and current_sha == role.get("preexistingSha256")
+            ) or (not role.get("existedBefore") and current_sha is None):
+                recovery.append((target, snapshot, False))
+            else:
+                blockers.append(f"target changed during recovery: {target}")
+        if blockers:
+            journal["pid"] = 0
+            journal["status"] = "recovery_blocked"
+            journal["recoveryBlockers"] = blockers
+            journal["updatedAt"] = _utc_now()
+            self._write_journal(path, journal)
+            return "blocked"
+        for target, snapshot, should_restore in reversed(recovery):
+            if should_restore:
+                rollback_published_artifact(target, snapshot, self.workspace_root)
+        if state:
+            state.update({"status": rollback_state, "updatedAt": _utc_now()})
+            self._write_candidate_state(state_path, state)
+        if CANDIDATE_ID_RE.fullmatch(receipt_id):
+            receipt_path = self.receipts_root / f"{receipt_id}.json"
+            if receipt_path.is_file():
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                receipt.update({"status": rollback_state, "rolledBackAt": _utc_now()})
+                receipt["integrity"] = self._receipt_integrity(receipt)
+                write_artifact_manifest(receipt_path, receipt, self.workspace_root)
+        self._remove_stale_lock(journal)
+        path.unlink(missing_ok=True)
+        return "rolled_back"
+
     def _recover_incomplete_journals(self) -> None:
         if not self.journals_root.is_dir():
             return
@@ -1562,95 +1748,24 @@ class OfficeArtifactEngine:
                 if not hmac.compare_digest(actual_mac, self._journal_integrity(journal)["value"]):
                     path.rename(path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}.quarantine"))
                     continue
-                if journal.get("status") != "active":
+                status = journal.get("status")
+                if status in {"committed", "rolled_back", "recovered_rolled_back"}:
                     path.unlink(missing_ok=True)
                     continue
+                if status not in {"active", "recovery_blocked"}:
+                    path.rename(path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}.quarantine"))
+                    continue
                 pid = int(journal.get("pid", 0) or 0)
-                if pid and _process_is_alive(pid):
+                if status == "active" and pid and _process_is_alive(pid):
                     continue
                 if journal.get("kind") == "officeArtifactRestoreJournal":
                     self._recover_restore_journal(path, journal)
                     continue
-                candidate_id = str(journal.get("candidateId", ""))
-                state_path = self.candidates_root / candidate_id / "state.json"
-                try:
-                    _, state = self._load_candidate(candidate_id)
-                except OfficeArtifactError:
-                    state = {}
-                receipt_id = str(state.get("receiptId") or journal.get("receiptId") or "")
-                if state.get("status") == "published" and CANDIDATE_ID_RE.fullmatch(receipt_id):
-                    receipt_path = self.receipts_root / f"{receipt_id}.json"
-                    if receipt_path.is_file():
-                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                        actual_mac = str(receipt.get("integrity", {}).get("value", ""))
-                        if (
-                            hmac.compare_digest(actual_mac, self._receipt_integrity(receipt)["value"])
-                            and receipt.get("status") == "published"
-                            and receipt.get("candidateId") == candidate_id
-                            and receipt.get("destination") == journal.get("destination")
-                            and state.get("receiptId") == receipt_id
-                            and state.get("receiptSha256") == _sha256(receipt_path)
-                            and receipt.get("requestSha256") == state.get("requestSha256")
-                        ):
-                            self._remove_stale_lock(journal)
-                            path.unlink(missing_ok=True)
-                            continue
-
-                roles = journal.get("roles", [])
-                if not isinstance(roles, list):
-                    raise ValueError("journal roles must be an array")
-                recovery: list[tuple[Path, Path | None, bool]] = []
-                blockers: list[str] = []
-                for role in roles:
-                    if not isinstance(role, dict):
-                        blockers.append("invalid role record")
-                        continue
-                    target = workspace_path(Path(str(role.get("path", ""))), self.workspace_root)
-                    snapshot = None
-                    if role.get("snapshot"):
-                        snapshot = workspace_path(
-                            Path(str(role["snapshot"])),
-                            self.workspace_root,
-                            must_exist=True,
-                        )
-                        if _sha256(snapshot) != role.get("snapshotSha256"):
-                            blockers.append(f"snapshot hash mismatch: {snapshot}")
-                            continue
-                    current_sha = _sha256(target) if target.is_file() else None
-                    if current_sha == role.get("intendedSha256"):
-                        recovery.append((target, snapshot, True))
-                    elif (
-                        bool(role.get("existedBefore"))
-                        and current_sha == role.get("preexistingSha256")
-                    ) or (not role.get("existedBefore") and current_sha is None):
-                        recovery.append((target, snapshot, False))
-                    else:
-                        blockers.append(f"target changed during recovery: {target}")
-                if blockers:
-                    journal["status"] = "recovery_blocked"
-                    journal["recoveryBlockers"] = blockers
-                    journal["updatedAt"] = _utc_now()
-                    self._write_journal(path, journal)
-                    self._remove_stale_lock(journal)
-                    continue
-                for target, snapshot, should_restore in reversed(recovery):
-                    if should_restore:
-                        rollback_published_artifact(target, snapshot, self.workspace_root)
-                if state:
-                    state.update({"status": "recovered_rolled_back", "updatedAt": _utc_now()})
-                    self._write_candidate_state(state_path, state)
-                if CANDIDATE_ID_RE.fullmatch(receipt_id):
-                    receipt_path = self.receipts_root / f"{receipt_id}.json"
-                    if receipt_path.is_file():
-                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                        receipt.update({"status": "recovered_rolled_back", "rolledBackAt": _utc_now()})
-                        receipt["integrity"] = self._receipt_integrity(receipt)
-                        write_artifact_manifest(receipt_path, receipt, self.workspace_root)
-                self._remove_stale_lock(journal)
-                path.unlink(missing_ok=True)
+                self._recover_publish_journal(path, journal)
             except Exception as error:  # noqa: BLE001
                 try:
                     journal = json.loads(path.read_text(encoding="utf-8"))
+                    journal["pid"] = 0
                     journal["status"] = "recovery_blocked"
                     journal["recoveryBlockers"] = [f"{type(error).__name__}: {error}"]
                     journal["updatedAt"] = _utc_now()
@@ -1742,12 +1857,39 @@ class OfficeArtifactEngine:
     def _recover_orphan_locks(self) -> None:
         if not self.locks_root.is_dir():
             return
+        protected_locks: set[Path] = set()
+        if self.journals_root.is_dir():
+            for journal_path in self.journals_root.glob("*.json"):
+                try:
+                    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                    if journal.get("kind") not in {
+                        "officeArtifactPublishJournal",
+                        "officeArtifactRestoreJournal",
+                    } or journal.get("status") not in {"active", "recovery_blocked"}:
+                        continue
+                    actual_mac = str(journal.get("integrity", {}).get("value", ""))
+                    if not hmac.compare_digest(
+                        actual_mac,
+                        self._journal_integrity(journal)["value"],
+                    ):
+                        continue
+                    raw_paths = journal.get("lockRolePaths") or [journal.get("destination")]
+                    for raw_path in raw_paths:
+                        destination = workspace_path(Path(str(raw_path)), self.workspace_root)
+                        key = hashlib.sha256(
+                            str(destination).casefold().encode("utf-8")
+                        ).hexdigest()[:24]
+                        protected_locks.add(self.locks_root / f"{key}.lock")
+                except (OSError, json.JSONDecodeError, TypeError, ValueError, OfficeArtifactError):
+                    continue
         for path in self.locks_root.glob("*.lock"):
             try:
                 lock = json.loads(path.read_text(encoding="utf-8"))
                 actual_mac = str(lock.get("integrity", {}).get("value", ""))
                 if not hmac.compare_digest(actual_mac, self._lock_integrity(lock)["value"]):
                     path.rename(path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}.quarantine"))
+                    continue
+                if path in protected_locks:
                     continue
                 if not _process_is_alive(int(lock.get("pid", 0) or 0)):
                     path.unlink(missing_ok=True)
@@ -2443,6 +2585,30 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         missing.append("spec/body/inputMd/prompt")
     if name in {"replace", "redact"} and not operation.get("find"):
         missing.append("find")
+    if name == "insert_field":
+        instruction = " ".join(str(operation.get("instruction", "")).split())
+        if instruction and SAFE_FIELD_INSTRUCTION_RE.fullmatch(instruction) is None:
+            raise OfficeArtifactError(
+                "schema.unsafe_field_instruction",
+                "insert_field instruction must match the PAGE/NUMPAGES/SECTIONPAGES/TOC/REF/SEQ allowlist",
+                details={"location": f"operations[{index}].instruction"},
+            )
+    if artifact_format != "docx" and name in {"replace", "redact"}:
+        unsupported_controls = sorted(
+            field
+            for field in {"scope", "occurrence", "allowStyleMerge"}
+            if field in operation
+        )
+        if unsupported_controls:
+            raise OfficeArtifactError(
+                "schema.unsupported_field",
+                f"{artifact_format} {name} does not support DOCX-only control field(s): "
+                + ", ".join(unsupported_controls),
+                details={
+                    "location": f"operations[{index}]",
+                    "unsupportedFields": unsupported_controls,
+                },
+            )
     if artifact_format == "pptx" and name in {
         "set_text", "clone_slide", "set_transition", "set_alt_text",
         "set_speaker_notes", "add_comment",

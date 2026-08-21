@@ -706,6 +706,38 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         late_report = validate_ooxml_package(late_dtd)
         self.assertIn("xml.dtd_forbidden", {issue.code for issue in late_report.errors})
 
+        for encoding, bom in (("utf-16-le", b"\xff\xfe"), ("utf-16-be", b"\xfe\xff")):
+            encoded_dtd = self.root / f"dtd-{encoding}.docx"
+            payload = (
+                '<?xml version="1.0" encoding="UTF-16"?>'
+                '<!DOCTYPE Types [<!ENTITY x "boom">]><Types>&x;</Types>'
+            ).encode(encoding)
+            with zipfile.ZipFile(encoded_dtd, "w") as archive:
+                archive.writestr("[Content_Types].xml", bom + payload)
+                archive.writestr("_rels/.rels", "<Relationships/>")
+                archive.writestr("word/document.xml", "<document/>")
+            encoded_report = validate_ooxml_package(encoded_dtd)
+            self.assertIn(
+                "xml.dtd_forbidden",
+                {issue.code for issue in encoded_report.errors},
+                encoding,
+            )
+
+            no_bom_dtd = self.root / f"dtd-{encoding}-no-bom.docx"
+            no_declaration = '<!DOCTYPE Types [<!ENTITY x "boom">]><Types>&x;</Types>'.encode(
+                encoding
+            )
+            with zipfile.ZipFile(no_bom_dtd, "w") as archive:
+                archive.writestr("[Content_Types].xml", no_declaration)
+                archive.writestr("_rels/.rels", "<Relationships/>")
+                archive.writestr("word/document.xml", "<document/>")
+            no_bom_report = validate_ooxml_package(no_bom_dtd)
+            self.assertIn(
+                "xml.dtd_forbidden",
+                {issue.code for issue in no_bom_report.errors},
+                f"{encoding} without BOM/declaration",
+            )
+
     def test_validator_rejects_windows_path_aliases_and_ads(self) -> None:
         path = self.root / "windows-collision.docx"
         with zipfile.ZipFile(path, "w") as archive:
@@ -746,6 +778,57 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "externalFormulaFunctions"):
             office_artifact_service._assert_native_network_closed(workbook_path, "xlsx")
+
+        defined_name_path = self.root / "defined-name-webservice.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.save(defined_name_path)
+        workbook.close()
+        with zipfile.ZipFile(defined_name_path) as archive:
+            workbook_xml = ET.fromstring(archive.read("xl/workbook.xml"))
+            worksheet_xml = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        defined_names = next(
+            (item for item in workbook_xml if item.tag == f"{{{spreadsheet_ns}}}definedNames"),
+            None,
+        )
+        if defined_names is None:
+            defined_names = ET.SubElement(workbook_xml, f"{{{spreadsheet_ns}}}definedNames")
+        defined = ET.SubElement(
+            defined_names,
+            f"{{{spreadsheet_ns}}}definedName",
+            {"name": "ExternalRisk"},
+        )
+        defined.text = 'WEBSERVICE("http://127.0.0.1:9/name")'
+        conditional = ET.SubElement(
+            worksheet_xml,
+            f"{{{spreadsheet_ns}}}conditionalFormatting",
+            {"sqref": "A1"},
+        )
+        rule = ET.SubElement(
+            conditional,
+            f"{{{spreadsheet_ns}}}cfRule",
+            {"type": "expression", "priority": "1"},
+        )
+        formula = ET.SubElement(rule, f"{{{spreadsheet_ns}}}formula")
+        formula.text = 'RTD("server",,"topic")'
+        defined_name_path = _rewrite_zip(
+            defined_name_path,
+            {
+                "xl/workbook.xml": ET.tostring(workbook_xml, encoding="utf-8", xml_declaration=True),
+                "xl/worksheets/sheet1.xml": ET.tostring(
+                    worksheet_xml, encoding="utf-8", xml_declaration=True
+                ),
+            },
+            output=self.root / "defined-name-and-cf-risk.xlsx",
+        )
+        risk = scan_ooxml_risks(defined_name_path)
+        self.assertIn("xl/workbook.xml", risk["features"]["externalFormulaFunctions"])
+        self.assertIn(
+            "xl/worksheets/sheet1.xml",
+            risk["features"]["externalFormulaFunctions"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "externalFormulaFunctions"):
+            office_artifact_service._assert_native_network_closed(defined_name_path, "xlsx")
 
         try:
             from pptx import Presentation
