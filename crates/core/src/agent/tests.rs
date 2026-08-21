@@ -1841,7 +1841,7 @@ struct LengthContinuationProvider {
 
 struct TruncatedToolCallProvider {
     stream_calls: Arc<AtomicUsize>,
-    saw_output_limit_tool_error: Arc<Mutex<bool>>,
+    saw_safe_replan_context: Arc<Mutex<bool>>,
 }
 
 struct MalformedToolCallProvider {
@@ -2065,10 +2065,21 @@ impl LlmProvider for TruncatedToolCallProvider {
                 thinking_delta: None,
             }
         } else {
-            let saw_error = request.messages.iter().any(|message| {
-                message.role == Role::Tool && message.text_content().contains("output token limit")
+            let has_tool_protocol_unit = request.messages.iter().any(|message| {
+                message.role == Role::Tool
+                    || message
+                        .tool_calls
+                        .as_ref()
+                        .is_some_and(|calls| !calls.is_empty())
             });
-            *self.saw_output_limit_tool_error.lock().unwrap() = saw_error;
+            let has_replan_instruction = request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message
+                        .text_content()
+                        .contains("incomplete tool-call envelope")
+            });
+            *self.saw_safe_replan_context.lock().unwrap() =
+                !has_tool_protocol_unit && has_replan_instruction;
             StreamChunk {
                 delta: "final answer after re-planning".to_string(),
                 tool_call_delta: None,
@@ -5026,10 +5037,10 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         executions: Arc::clone(&executions),
     }));
     let stream_calls = Arc::new(AtomicUsize::new(0));
-    let saw_output_limit_tool_error = Arc::new(Mutex::new(false));
+    let saw_safe_replan_context = Arc::new(Mutex::new(false));
     let provider = TruncatedToolCallProvider {
         stream_calls: Arc::clone(&stream_calls),
-        saw_output_limit_tool_error: Arc::clone(&saw_output_limit_tool_error),
+        saw_safe_replan_context: Arc::clone(&saw_safe_replan_context),
     };
     let executor = AgentExecutor::new(
         Box::new(provider),
@@ -5065,8 +5076,8 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         "a length-truncated tool call must never execute"
     );
     assert!(
-        *saw_output_limit_tool_error.lock().unwrap(),
-        "the next model step must receive a synthetic tool error and re-plan"
+        *saw_safe_replan_context.lock().unwrap(),
+        "the next model step must receive a controller replan without a fabricated tool unit"
     );
 }
 

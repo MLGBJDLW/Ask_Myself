@@ -101,21 +101,18 @@ pub(super) struct ToolDispatchSummary {
 #[derive(Debug, Clone)]
 pub(super) enum ToolDispatchBlock {
     LoopGuard(String),
-    OutputLimit,
 }
 
 impl ToolDispatchBlock {
     fn policy_label(&self) -> &'static str {
         match self {
             Self::LoopGuard(_) => "blockedByLoopGuard",
-            Self::OutputLimit => "blockedByOutputLimit",
         }
     }
 
     fn result(&self, call: &ToolCallRequest) -> crate::tools::ToolResult {
         match self {
             Self::LoopGuard(reason) => loop_guard_blocked_result(call, reason),
-            Self::OutputLimit => output_limit_truncated_tool_result(call),
         }
     }
 }
@@ -124,11 +121,12 @@ impl AgentExecutor {
     pub(super) async fn dispatch_tool_calls(
         &self,
         ctx: ToolDispatchContext<'_>,
-        tool_calls: &[ToolCallRequest],
+        verified_tool_calls: &VerifiedToolCallBatch,
         tool_dispatch_block: Option<ToolDispatchBlock>,
         started_call_ids: &mut HashSet<String>,
         tool_run_started_ids: &mut HashSet<String>,
     ) -> Result<Vec<ToolDispatchSummary>, CoreError> {
+        let tool_calls = verified_tool_calls.as_slice();
         let ToolDispatchContext {
             db,
             tx,

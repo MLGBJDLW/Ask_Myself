@@ -81,6 +81,7 @@ mod steering;
 mod stream_recovery;
 mod tool_discovery;
 mod tool_dispatch;
+mod tool_protocol;
 mod tool_runtime;
 pub mod tool_scheduler;
 mod trace_builder;
@@ -100,12 +101,11 @@ use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 pub use self::sampling::llm_streaming_disabled_by_env;
 use self::stream_recovery::{ContextOverflowRecoveryDecision, StreamRecoveryPolicy};
+use self::tool_protocol::{VerifiedToolCallBatch, MAX_TOOL_CALL_ARGUMENT_BYTES};
 use self::tool_runtime::{
     build_provider_hosted_tool_run_item, build_tool_run_item, tool_call_execution_batches,
 };
-use self::tool_scheduler::{
-    loop_guard_blocked_result, output_limit_truncated_tool_result, ToolSchedulerPolicy,
-};
+use self::tool_scheduler::{loop_guard_blocked_result, ToolSchedulerPolicy};
 use self::trace_builder::{
     append_developer_persisted_trace_status, append_internal_persisted_trace_status,
     append_persisted_trace_loaded_skills, append_persisted_trace_loop_event,
@@ -734,6 +734,14 @@ impl AgentExecutor {
 /// parallel-call fragments are never assigned by recency guesswork.
 fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta) -> bool {
     fn apply_delta(existing: &mut ToolCallRequest, delta: &ToolCallDelta) -> bool {
+        if existing
+            .arguments
+            .len()
+            .saturating_add(delta.arguments_delta.len())
+            > MAX_TOOL_CALL_ARGUMENT_BYTES
+        {
+            return false;
+        }
         if !delta.id.is_empty() {
             if !existing.id.is_empty() && existing.id != delta.id {
                 return false;
@@ -751,6 +759,10 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             existing.thought_signature = delta.thought_signature.clone();
         }
         true
+    }
+
+    if delta.arguments_delta.len() > MAX_TOOL_CALL_ARGUMENT_BYTES {
+        return false;
     }
 
     // A provider's stream-local index is the stable assembly identity. The

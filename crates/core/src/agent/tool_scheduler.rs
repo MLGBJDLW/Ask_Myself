@@ -123,23 +123,6 @@ pub(crate) fn loop_guard_blocked_result(call: &ToolCallRequest, reason: &str) ->
     )
 }
 
-pub(crate) fn output_limit_truncated_tool_result(call: &ToolCallRequest) -> ToolResult {
-    structured_tool_error_result(
-        &call.id,
-        "output_limit_truncated_tool_call",
-        format!(
-            "Tool call '{}' was not executed because the provider response hit its output token limit, so the arguments may be truncated even if they parse as valid JSON.",
-            call.name
-        ),
-        serde_json::json!({
-            "tool": &call.name,
-            "arguments": "discarded because completeness cannot be proven",
-            "recovery": "re-issue the tool call with complete arguments, then continue the task"
-        }),
-        true,
-    )
-}
-
 pub(crate) fn tool_timeout_for_call(
     configured_timeout_secs: Option<u32>,
     tool_name: &str,
