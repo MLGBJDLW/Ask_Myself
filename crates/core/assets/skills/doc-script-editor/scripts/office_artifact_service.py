@@ -1177,7 +1177,7 @@ def _exact_operation_parts(
         from pptx_structured_editor import _pptx_chart_targets  # type: ignore
 
         with zipfile.ZipFile(path) as archive:
-            targets = _pptx_chart_targets(archive, {}, payload)
+            targets = _pptx_chart_targets(archive, {}, {}, payload)
         return {targets["chartPart"], targets["workbookPart"]}
     if artifact_format == "pptx" and operation in {"clone_slide", "insert_slide"}:
         scripts = skills_root / "pptx-presentation-design" / "scripts"
@@ -1195,7 +1195,9 @@ def _exact_operation_parts(
             if operation == "clone_slide":
                 source = _target_slide(payload, presentation_order(archive))
                 clone_part = _allocate_part(source["part"], set(archive.namelist()))
-                mapping = _discover_clone_closure(archive, source["part"], clone_part)
+                mapping = _discover_clone_closure(
+                    archive, {}, {}, source["part"], clone_part
+                )
                 exact = set(mapping.values())
                 for old_part, new_part in mapping.items():
                     if _rels_path(old_part) in archive.namelist():
