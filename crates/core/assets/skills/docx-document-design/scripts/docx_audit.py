@@ -11,6 +11,8 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from docx_review_editor import UNSUPPORTED_REVISION_ELEMENTS, extract_comments
+
 
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -69,6 +71,7 @@ def count_relationships(zf: zipfile.ZipFile) -> dict[str, int]:
 
 def audit(path: Path) -> dict:
     warnings: list[str] = []
+    comment_threads = extract_comments(path)["comments"]
     with zipfile.ZipFile(path) as zf:
         names = set(zf.namelist())
         document_xml = read_text(zf, "word/document.xml")
@@ -82,14 +85,38 @@ def audit(path: Path) -> dict:
         if count_tag(document_xml, "altChunk"):
             warnings.append("contains altChunk embedded content")
 
+        revision_names = {"ins", "del", *UNSUPPORTED_REVISION_ELEMENTS}
+        revision_counts: dict[str, int] = {}
+        revision_parts: dict[str, dict[str, int]] = {}
+        for name in sorted(names):
+            if not name.startswith("word/") or not name.endswith(".xml"):
+                continue
+            root = parse_xml(read_text(zf, name))
+            if root is None:
+                continue
+            counts: dict[str, int] = {}
+            for element in root.iter():
+                local = element.tag.rsplit("}", 1)[-1]
+                if local in revision_names:
+                    counts[local] = counts.get(local, 0) + 1
+                    revision_counts[local] = revision_counts.get(local, 0) + 1
+            if counts:
+                revision_parts[name] = counts
         tracked_changes = {
-            "insertions": count_tag(document_xml, "ins"),
-            "deletions": count_tag(document_xml, "del"),
-            "move_from": count_tag(document_xml, "moveFrom"),
-            "move_to": count_tag(document_xml, "moveTo"),
+            "insertions": revision_counts.get("ins", 0),
+            "deletions": revision_counts.get("del", 0),
+            "move_from": revision_counts.get("moveFrom", 0),
+            "move_to": revision_counts.get("moveTo", 0),
+            "all": dict(sorted(revision_counts.items())),
+            "parts": revision_parts,
+            "unsupported_for_accept_reject": sorted(
+                name for name in revision_counts if name in UNSUPPORTED_REVISION_ELEMENTS
+            ),
         }
         if any(tracked_changes.values()):
             warnings.append("tracked changes present")
+        if tracked_changes["unsupported_for_accept_reject"]:
+            warnings.append("tracked changes require native Word accept/reject")
 
         relationships = count_relationships(zf)
         if relationships["external"]:
@@ -110,6 +137,9 @@ def audit(path: Path) -> dict:
             "headers": len(headers),
             "footers": len(footers),
             "comments": count_tag(comments_xml, "comment"),
+            "comment_threads": comment_threads,
+            "comment_replies": sum(1 for item in comment_threads if item["parentId"] is not None),
+            "resolved_comments": sum(1 for item in comment_threads if item["resolved"]),
             "tracked_changes": tracked_changes,
             "styles": count_style_types(styles_xml),
             "relationships": relationships,

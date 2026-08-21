@@ -2534,6 +2534,13 @@ def _contract_text_checks(text: str, contract: dict[str, Any]) -> tuple[list[dic
 def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
     contract = _read_json(contract_path)
     _validate_contract_keys(contract, "docx")
+    skills_root = Path(__file__).resolve().parents[2]
+    review_dir = skills_root / "docx-document-design" / "scripts"
+    if str(review_dir) not in sys.path:
+        sys.path.insert(0, str(review_dir))
+    from docx_review_editor import UNSUPPORTED_REVISION_ELEMENTS  # type: ignore
+
+    revision_names = {"ins", "del", *UNSUPPORTED_REVISION_ELEMENTS}
     word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
@@ -2635,6 +2642,7 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
         "comments": 0,
         "trackedInsertions": 0,
         "trackedDeletions": 0,
+        "trackedChanges": {},
     }
     with zipfile.ZipFile(path) as archive:
         for name in archive.namelist():
@@ -2671,6 +2679,9 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
                     package_checks["trackedInsertions"] += 1
                 elif local == "del":
                     package_checks["trackedDeletions"] += 1
+                if local in revision_names:
+                    tracked_changes = package_checks["trackedChanges"]
+                    tracked_changes[local] = tracked_changes.get(local, 0) + 1
     package_checks["languageValues"] = sorted(set(package_checks["languageValues"]))
     checks["accessibilityAndLayout"] = package_checks
     if (
@@ -2714,14 +2725,13 @@ def _validate_docx_contract(path: Path, contract_path: str) -> dict[str, Any]:
             "minimum": minimum_comments,
             "actual": package_checks["comments"],
         })
-    revision_count = package_checks["trackedInsertions"] + package_checks["trackedDeletions"]
+    revision_count = sum(package_checks["trackedChanges"].values())
     if contract.get("require_tracked_changes") and revision_count == 0:
         errors.append({"code": "tracked_changes.missing"})
     if contract.get("require_no_tracked_changes") and revision_count:
         errors.append({
             "code": "tracked_changes.present",
-            "insertions": package_checks["trackedInsertions"],
-            "deletions": package_checks["trackedDeletions"],
+            "counts": package_checks["trackedChanges"],
         })
     return {
         "status": "fail" if errors else "pass",

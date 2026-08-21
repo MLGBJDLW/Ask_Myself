@@ -30,6 +30,7 @@
     {"if": {"properties": {"format": {"const": "docx"}}, "required": ["format"]}, "then": {"properties": {"operations": {"items": {"oneOf": [
       {"$ref": "#/$defs/docxCreate"}, {"$ref": "#/$defs/docxReplace"}, {"$ref": "#/$defs/docxRedact"},
       {"$ref": "#/$defs/docxSecureRedact"}, {"$ref": "#/$defs/docxAddComment"},
+      {"$ref": "#/$defs/docxReplyComment"}, {"$ref": "#/$defs/docxResolveComment"},
       {"$ref": "#/$defs/docxTrackedReplace"}, {"$ref": "#/$defs/docxAddBookmark"},
       {"$ref": "#/$defs/docxInsertField"}, {"$ref": "#/$defs/docxContentControl"},
       {"$ref": "#/$defs/docxProtection"}, {"$ref": "#/$defs/docxTemplateBinding"}, {"$ref": "#/$defs/docxNoArg"}
@@ -74,6 +75,14 @@
     "docxAddComment": {
       "type": "object", "additionalProperties": false, "required": ["op", "find", "comment"],
       "properties": {"op": {"const": "add_comment"}, "elementId": {"type": "string"}, "find": {"type": "string", "minLength": 1}, "comment": {"type": "string"}, "author": {"type": "string"}, "initials": {"type": "string"}, "date": {"type": "string"}, "occurrence": {"type": "integer", "minimum": 1}}
+    },
+    "docxReplyComment": {
+      "type": "object", "additionalProperties": false, "required": ["op", "commentId", "comment"],
+      "properties": {"op": {"const": "reply_comment"}, "elementId": {"type": "string"}, "commentId": {"type": "string", "minLength": 1}, "comment": {"type": "string"}, "author": {"type": "string"}, "initials": {"type": "string"}, "date": {"type": "string"}}
+    },
+    "docxResolveComment": {
+      "type": "object", "additionalProperties": false, "required": ["op", "commentId"],
+      "properties": {"op": {"const": "resolve_comment"}, "elementId": {"type": "string"}, "commentId": {"type": "string", "minLength": 1}, "resolved": {"type": "boolean"}}
     },
     "docxTrackedReplace": {
       "type": "object", "additionalProperties": false, "required": ["op", "find", "replace"],

@@ -1506,10 +1506,12 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             "destination": str(destination),
             "operations": [
                 {"op": "add_comment", "find": "Approve", "comment": "Owner confirmation required."},
+                {"op": "reply_comment", "commentId": "0", "comment": "Owner confirmed."},
+                {"op": "resolve_comment", "commentId": "0", "resolved": True},
                 {"op": "tracked_replace", "find": "old", "replace": "new", "author": "Nexa"},
             ],
             "guarantees": {"quality": "standard", "preservation": "strict", "render": "none"},
-            "validation": {"contractVersion": 2, "min_comments": 1, "require_tracked_changes": True},
+            "validation": {"contractVersion": 2, "min_comments": 2, "require_tracked_changes": True},
         })
 
         self.assertEqual("candidate", outcome["status"])
@@ -1519,6 +1521,11 @@ class OfficeArtifactEngineTests(unittest.TestCase):
             self.assertIn(b"commentRangeStart", xml)
             self.assertIn(b":ins", xml)
             self.assertIn(b":del", xml)
+        inspection = self.engine.inspect(outcome["candidatePath"], "docx")
+        self.assertEqual(2, len(inspection["profile"]["comments"]))
+        self.assertEqual("0", inspection["profile"]["comments"][1]["parentId"])
+        self.assertTrue(all(item["resolved"] for item in inspection["profile"]["comments"]))
+        self.assertEqual({"del": 1, "ins": 1}, inspection["profile"]["trackedChanges"]["counts"])
         state_text = (Path(outcome["candidatePath"]).parent / "state.json").read_text(
             encoding="utf-8"
         )

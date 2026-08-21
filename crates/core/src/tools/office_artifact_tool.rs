@@ -250,6 +250,8 @@ enum OfficeOperation {
     Redact(ReplaceOperation),
     SecureRedact(SecureRedactOperation),
     AddComment(CommentOperation),
+    ReplyComment(CommentReplyOperation),
+    ResolveComment(CommentResolutionOperation),
     TrackedReplace(TrackedReplaceOperation),
     AddBookmark(BookmarkOperation),
     InsertField(FieldOperation),
@@ -348,6 +350,27 @@ struct CommentOperation {
     x: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     y: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommentReplyOperation {
+    comment_id: String,
+    comment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initials: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    date: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommentResolutionOperation {
+    comment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1245,6 +1268,37 @@ mod tests {
             }
         }));
         assert!(invalid_boolean.is_err());
+
+        let valid_comment_thread = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "execute",
+            "workspace_root": ".",
+            "request": {
+                "requestVersion": 2,
+                "format": "docx",
+                "intent": "modify",
+                "operations": [
+                    {"op": "reply_comment", "commentId": "7", "comment": "Confirmed"},
+                    {"op": "resolve_comment", "commentId": "7", "resolved": true}
+                ]
+            }
+        }));
+        assert!(valid_comment_thread.is_ok());
+
+        let invalid_resolution = serde_json::from_value::<OfficeArtifactArgs>(json!({
+            "action": "execute",
+            "workspace_root": ".",
+            "request": {
+                "requestVersion": 2,
+                "format": "docx",
+                "intent": "modify",
+                "operations": [{
+                    "op": "resolve_comment",
+                    "commentId": "7",
+                    "resolved": "yes"
+                }]
+            }
+        }));
+        assert!(invalid_resolution.is_err());
     }
 
     #[test]

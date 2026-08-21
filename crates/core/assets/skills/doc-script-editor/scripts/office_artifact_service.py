@@ -421,7 +421,8 @@ def _native_operations(
         "set_alt_text", "set_speaker_notes", "add_comment",
     }
     docx_review = {
-        "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+        "add_comment", "reply_comment", "resolve_comment", "strip_comments",
+        "tracked_replace", "accept_changes", "reject_changes",
         "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
         "bind_template",
     }
@@ -1000,7 +1001,7 @@ def _authorized_part_patterns(artifact_format: str, operation: str) -> tuple[str
             return (
                 "word/*.xml", "docProps/core.xml", "docProps/custom.xml",
             )
-        if operation in {"add_comment", "strip_comments"}:
+        if operation in {"add_comment", "reply_comment", "resolve_comment", "strip_comments"}:
             return (
                 "word/document.xml", "word/comments*.xml", "word/_rels/*.rels",
                 "[Content_Types].xml",

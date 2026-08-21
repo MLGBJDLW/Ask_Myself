@@ -7,8 +7,10 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import docx_review_editor
+import docx_audit
 
 
 class DocxReviewEditorTests(unittest.TestCase):
@@ -54,6 +56,108 @@ class DocxReviewEditorTests(unittest.TestCase):
             with zipfile.ZipFile(stripped) as archive:
                 self.assertNotIn("word/comments.xml", archive.namelist())
 
+    def test_comment_replies_and_thread_resolution_use_native_metadata_parts(self) -> None:
+        import docx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            threaded = root / "threaded.docx"
+
+            result = docx_review_editor.patch_docx_reviews(source, threaded, [
+                {
+                    "op": "add_comment",
+                    "find": "target",
+                    "comment": "Parent review",
+                    "author": "Reviewer A",
+                },
+                {
+                    "op": "reply_comment",
+                    "commentId": "0",
+                    "comment": "Reply review",
+                    "author": "Reviewer B",
+                },
+                {"op": "resolve_comment", "commentId": "0", "resolved": True},
+            ])
+
+            self.assertEqual(["0", "1"], result["operations"][2]["detail"]["affectedCommentIds"])
+            comments = docx_review_editor.extract_comments(threaded)["comments"]
+            self.assertEqual(2, len(comments))
+            self.assertIsNone(comments[0]["parentId"])
+            self.assertEqual("0", comments[1]["parentId"])
+            self.assertTrue(all(comment["resolved"] for comment in comments))
+            self.assertTrue(all(comment["paraId"] for comment in comments))
+            self.assertTrue(all(comment["durableId"] for comment in comments))
+            self.assertEqual("Review target here", docx.Document(threaded).paragraphs[0].text)
+            audit = docx_audit.audit(threaded)
+            self.assertEqual(1, audit["comment_replies"])
+            self.assertEqual(2, audit["resolved_comments"])
+            with zipfile.ZipFile(threaded) as archive:
+                for part in (
+                    "word/comments.xml",
+                    "word/commentsExtended.xml",
+                    "word/commentsIds.xml",
+                    "word/commentsExtensible.xml",
+                ):
+                    self.assertIn(part, archive.namelist())
+                extended = archive.read("word/commentsExtended.xml")
+                self.assertIn(b"paraIdParent", extended)
+                self.assertEqual(2, extended.count(b'done="1"'))
+                comments_xml = archive.read("word/comments.xml")
+                self.assertIn(b'mc:Ignorable="w14"', comments_xml)
+                self.assertIn(b'xmlns:w14=', comments_xml)
+                self.assertNotIn(b"Ignorable=", archive.read("word/document.xml"))
+
+    def test_accept_reject_fail_closed_for_unhandled_revision_kinds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root, "Moved content")
+            complex_redline = root / "complex-redline.docx"
+            with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(complex_redline, "w") as output_archive:
+                for info in input_archive.infolist():
+                    payload = input_archive.read(info.filename)
+                    if info.filename == "word/document.xml":
+                        document = ET.fromstring(payload)
+                        paragraph = next(item for item in document.iter() if item.tag.endswith("}p"))
+                        move = ET.SubElement(paragraph, f"{{{docx_review_editor.W_NS}}}moveFrom")
+                        run = ET.SubElement(move, f"{{{docx_review_editor.W_NS}}}r")
+                        ET.SubElement(run, f"{{{docx_review_editor.W_NS}}}t").text = "Moved"
+                        payload = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                    output_archive.writestr(info, payload)
+
+            with self.assertRaisesRegex(docx_review_editor.DocxReviewError, "unsupported.*moveFrom"):
+                docx_review_editor.patch_docx_reviews(
+                    complex_redline,
+                    root / "unsafe-accepted.docx",
+                    [{"op": "accept_changes"}],
+                )
+            audit = docx_audit.audit(complex_redline)
+            self.assertEqual(["moveFrom"], audit["tracked_changes"]["unsupported_for_accept_reject"])
+
+    def test_unknown_markup_compatibility_prefix_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self._source(root)
+            future = root / "future-word.docx"
+            with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(future, "w") as output_archive:
+                for info in input_archive.infolist():
+                    payload = input_archive.read(info.filename)
+                    if info.filename == "word/document.xml":
+                        document = ET.fromstring(payload)
+                        document.set(
+                            f"{{{docx_review_editor.MC_NS}}}Ignorable",
+                            "w14 w99",
+                        )
+                        payload = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+                    output_archive.writestr(info, payload)
+
+            with self.assertRaisesRegex(docx_review_editor.DocxReviewError, "unknown.*w99"):
+                docx_review_editor.patch_docx_reviews(
+                    future,
+                    root / "unsafe-edit.docx",
+                    [{"op": "add_comment", "find": "target", "comment": "Review"}],
+                )
+
     def test_tracked_replace_accept_and_reject_views(self) -> None:
         import docx
 
@@ -72,8 +176,8 @@ class DocxReviewEditorTests(unittest.TestCase):
             }])
             with zipfile.ZipFile(redline) as archive:
                 document_xml = archive.read("word/document.xml")
-            self.assertIn(b"<ns0:del", document_xml)
-            self.assertIn(b"<ns0:ins", document_xml)
+            self.assertIn(b"<w:del", document_xml)
+            self.assertIn(b"<w:ins", document_xml)
             self.assertIn(b"delText", document_xml)
 
             docx_review_editor.patch_docx_reviews(redline, accepted, [{"op": "accept_changes"}])
@@ -81,8 +185,8 @@ class DocxReviewEditorTests(unittest.TestCase):
             self.assertEqual("Approve new wording", docx.Document(accepted).paragraphs[0].text)
             self.assertEqual("Approve old wording", docx.Document(rejected).paragraphs[0].text)
             with zipfile.ZipFile(accepted) as archive:
-                self.assertNotIn(b"<ns0:ins", archive.read("word/document.xml"))
-                self.assertNotIn(b"<ns0:del", archive.read("word/document.xml"))
+                self.assertNotIn(b"<w:ins", archive.read("word/document.xml"))
+                self.assertNotIn(b"<w:del", archive.read("word/document.xml"))
 
     def test_bookmark_field_content_control_and_protection_are_native_word_objects(self) -> None:
         import docx

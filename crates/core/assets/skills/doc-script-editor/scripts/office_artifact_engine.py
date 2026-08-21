@@ -73,6 +73,8 @@ OPERATION_KEYS: dict[str, dict[str, set[str]]] = {
         "redact": {"find", "replace", "expectedSha256", "expectedMatches", "scope", "occurrence", "allowStyleMerge"},
         "secure_redact": {"find", "replace", "expectedSha256", "expectedMatches", "privacyScrub"},
         "add_comment": {"find", "comment", "author", "initials", "date", "occurrence"},
+        "reply_comment": {"commentId", "comment", "author", "initials", "date"},
+        "resolve_comment": {"commentId", "resolved"},
         "strip_comments": set(),
         "tracked_replace": {"find", "replace", "author", "date", "occurrence"},
         "add_bookmark": {"find", "bookmarkName", "occurrence"},
@@ -128,6 +130,8 @@ REQUIRED_OPERATION_KEYS: dict[str, set[str]] = {
     "reorder_slides": {"order"},
     "secure_redact": {"find"},
     "add_comment": {"find", "comment"},
+    "reply_comment": {"commentId", "comment"},
+    "resolve_comment": {"commentId"},
     "tracked_replace": {"find", "replace"},
     "add_bookmark": {"find", "bookmarkName"},
     "insert_field": {"find", "instruction"},
@@ -196,7 +200,8 @@ class LocalOpenXmlFormatAdapter:
 FORMAT_ADAPTERS: dict[str, LocalOpenXmlFormatAdapter] = {
     "docx": LocalOpenXmlFormatAdapter("docx", frozenset({
         "create", "replace", "redact", "secure_redact", "validate", "render",
-        "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+        "add_comment", "reply_comment", "resolve_comment", "strip_comments",
+        "tracked_replace", "accept_changes", "reject_changes",
         "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
         "bind_template",
     })),
@@ -694,7 +699,18 @@ class OfficeArtifactEngine:
             profile["formulaProfile"] = self._xlsx_formula_profile(path)
             return profile
 
+        review_scripts = skills_root / "docx-document-design" / "scripts"
+        if str(review_scripts) not in sys.path:
+            sys.path.insert(0, str(review_scripts))
+        from docx_review_editor import (  # type: ignore
+            UNSUPPORTED_REVISION_ELEMENTS,
+            extract_comments,
+        )
+
         word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        revision_elements = {"ins", "del", *UNSUPPORTED_REVISION_ELEMENTS}
+        revision_counts: dict[str, int] = {}
+        revision_parts: dict[str, dict[str, int]] = {}
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
             document = ET.fromstring(archive.read("word/document.xml"))
@@ -811,6 +827,19 @@ class OfficeArtifactEngine:
                         key.rsplit("}", 1)[-1]: value
                         for key, value in protected.attrib.items()
                     }
+            for name in sorted(names):
+                if not name.startswith("word/") or not name.endswith(".xml"):
+                    continue
+                root = ET.fromstring(archive.read(name))
+                counts: dict[str, int] = {}
+                for element in root.iter():
+                    local = element.tag.rsplit("}", 1)[-1]
+                    if local in revision_elements:
+                        counts[local] = counts.get(local, 0) + 1
+                        revision_counts[local] = revision_counts.get(local, 0) + 1
+                if counts:
+                    revision_parts[name] = counts
+        comments = extract_comments(path)["comments"]
         return {
             "paragraphs": len(document_paragraphs),
             "tables": sum(1 for _ in document.iter(f"{{{word_ns}}}tbl")),
@@ -822,6 +851,16 @@ class OfficeArtifactEngine:
             "fields": fields,
             "contentControls": content_controls,
             "protection": protection,
+            "comments": comments,
+            "trackedChanges": {
+                "counts": dict(sorted(revision_counts.items())),
+                "parts": revision_parts,
+                "unsupportedForAcceptReject": sorted(
+                    name
+                    for name in revision_counts
+                    if name in UNSUPPORTED_REVISION_ELEMENTS
+                ),
+            },
         }
 
     def assess(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2716,7 +2755,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
             "schema.missing_field",
             f"missing required field(s) at operations[{index}]: {', '.join(missing)}",
         )
-    boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst", "allowMultiple"}
+    boolean_fields = {"allowStyleMerge", "privacyScrub", "htmlFirst", "allowMultiple", "resolved"}
     integer_fields = {"expectedMatches", "occurrence", "slideIndex", "afterIndex", "after", "styleId", "baseStyleId", "x", "y"}
     string_fields = {
         "elementId", "spec", "title", "subtitle", "body", "font", "footer", "author",
@@ -2729,6 +2768,7 @@ def _validate_operation(artifact_format: str, operation: dict[str, Any], index: 
         "altText",
         "authorEngine",
         "target",
+        "commentId",
     }
     boolean_fields.update({"allowBlank", "showErrorMessage"})
     for field in boolean_fields & set(operation):

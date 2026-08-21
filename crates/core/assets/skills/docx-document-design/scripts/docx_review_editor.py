@@ -15,14 +15,73 @@ from xml.etree import ElementTree as ET
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
+W16CID_NS = "http://schemas.microsoft.com/office/word/2016/wordml/cid"
+W16CEX_NS = "http://schemas.microsoft.com/office/word/2018/wordml/cex"
+W16_NS = "http://schemas.microsoft.com/office/word/2018/wordml"
+W16DU_NS = "http://schemas.microsoft.com/office/word/2023/wordml/word16du"
+W16SDTDH_NS = "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash"
+W16SDTFL_NS = "http://schemas.microsoft.com/office/word/2024/wordml/sdtformatlock"
+W16SE_NS = "http://schemas.microsoft.com/office/word/2015/wordml/symex"
+WP14_NS = "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 COMMENTS_REL = f"{R_NS}/comments"
 COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
+COMMENT_METADATA = {
+    "word/commentsExtended.xml": (
+        W15_NS,
+        "commentsEx",
+        "http://schemas.microsoft.com/office/2011/relationships/commentsExtended",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml",
+    ),
+    "word/commentsIds.xml": (
+        W16CID_NS,
+        "commentsIds",
+        "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml",
+    ),
+    "word/commentsExtensible.xml": (
+        W16CEX_NS,
+        "commentsExtensible",
+        "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtensible+xml",
+    ),
+}
+WORD_EXTENSION_NAMESPACES = {
+    "w14": W14_NS,
+    "w15": W15_NS,
+    "w16": W16_NS,
+    "w16cid": W16CID_NS,
+    "w16cex": W16CEX_NS,
+    "w16du": W16DU_NS,
+    "w16sdtdh": W16SDTDH_NS,
+    "w16sdtfl": W16SDTFL_NS,
+    "w16se": W16SE_NS,
+    "wp14": WP14_NS,
+}
+for _prefix, _namespace in {
+    "w": W_NS,
+    "w14": W14_NS,
+    "w15": W15_NS,
+    "w16": W16_NS,
+    "w16cid": W16CID_NS,
+    "w16cex": W16CEX_NS,
+    "w16du": W16DU_NS,
+    "w16sdtdh": W16SDTDH_NS,
+    "w16sdtfl": W16SDTFL_NS,
+    "w16se": W16SE_NS,
+    "wp14": WP14_NS,
+    "mc": MC_NS,
+}.items():
+    ET.register_namespace(_prefix, _namespace)
 SUPPORTED_OPERATIONS = {
-    "add_comment", "strip_comments", "tracked_replace", "accept_changes", "reject_changes",
+    "add_comment", "reply_comment", "resolve_comment", "strip_comments",
+    "tracked_replace", "accept_changes", "reject_changes",
     "add_bookmark", "insert_field", "wrap_content_control", "set_protection",
     "bind_template",
 }
@@ -36,12 +95,46 @@ def _q(local: str) -> str:
     return f"{{{W_NS}}}{local}"
 
 
+def _qn(namespace: str, local: str) -> str:
+    return f"{{{namespace}}}{local}"
+
+
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
 def _parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
     return {child: parent for parent in root.iter() for child in parent}
+
+
+def _serialize(root: ET.Element) -> bytes:
+    if root.tag.startswith(f"{{{W_NS}}}"):
+        attribute = _qn(MC_NS, "Ignorable")
+        declared_tokens = root.attrib.get(attribute, "").split()
+        unknown_tokens = sorted(
+            token for token in declared_tokens if token not in WORD_EXTENSION_NAMESPACES
+        )
+        if unknown_tokens:
+            raise DocxReviewError(
+                "cannot safely preserve unknown mc:Ignorable namespace prefix(es): "
+                + ", ".join(unknown_tokens)
+            )
+        used_namespaces = {
+            qualified[1:].split("}", 1)[0]
+            for element in root.iter()
+            for qualified in [element.tag, *element.attrib]
+            if qualified.startswith("{") and "}" in qualified
+        }
+        ignorable = [
+            prefix
+            for prefix, namespace in WORD_EXTENSION_NAMESPACES.items()
+            if namespace in used_namespaces
+        ]
+        if ignorable:
+            root.set(attribute, " ".join(ignorable))
+        else:
+            root.attrib.pop(attribute, None)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def _run_signature(run: ET.Element) -> bytes:
@@ -150,6 +243,222 @@ def _next_word_id(roots: list[ET.Element]) -> str:
     return str(max(identifiers, default=-1) + 1)
 
 
+def _current_part(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    name: str,
+) -> bytes | None:
+    if name in replacements:
+        return replacements[name]
+    if name in additions:
+        return additions[name]
+    if name in archive.namelist():
+        return archive.read(name)
+    return None
+
+
+def _store_part(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    name: str,
+    data: bytes,
+) -> None:
+    if name in archive.namelist():
+        replacements[name] = data
+        additions.pop(name, None)
+    else:
+        additions[name] = data
+        replacements.pop(name, None)
+
+
+def _next_hex_identifier(values: list[str]) -> str:
+    occupied = {
+        value.upper()
+        for value in values
+        if re.fullmatch(r"[0-9A-Fa-f]{8}", value or "")
+    }
+    candidate = max((int(value, 16) for value in occupied), default=0) + 1
+    if candidate > 0xFFFFFFFF:
+        candidate = 1
+    while f"{candidate:08X}" in occupied:
+        candidate += 1
+        if candidate > 0xFFFFFFFF:
+            candidate = 1
+    return f"{candidate:08X}"
+
+
+def _utc_timestamp(value: object | None = None) -> str:
+    if value:
+        return str(value)
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _save_comment_thread_package(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    comments: ET.Element,
+) -> dict[str, dict[str, Any]]:
+    roots: dict[str, ET.Element] = {}
+    for name, (namespace, root_name, _, _) in COMMENT_METADATA.items():
+        data = _current_part(archive, replacements, additions, name)
+        roots[name] = ET.fromstring(data) if data else ET.Element(_qn(namespace, root_name))
+
+    extended = roots["word/commentsExtended.xml"]
+    identifiers = roots["word/commentsIds.xml"]
+    extensible = roots["word/commentsExtensible.xml"]
+    extended_by_para = {
+        item.attrib.get(_qn(W15_NS, "paraId"), "").upper(): item
+        for item in extended
+        if _local(item.tag) == "commentEx"
+    }
+    identifier_by_para = {
+        item.attrib.get(_qn(W16CID_NS, "paraId"), "").upper(): item
+        for item in identifiers
+        if _local(item.tag) == "commentId"
+    }
+    extensible_by_durable = {
+        item.attrib.get(_qn(W16CEX_NS, "durableId"), "").upper(): item
+        for item in extensible
+        if _local(item.tag) == "commentExtensible"
+    }
+    para_values = list(extended_by_para) + list(identifier_by_para)
+    durable_values = list(extensible_by_durable)
+    by_comment_id: dict[str, dict[str, Any]] = {}
+    for comment in comments:
+        if _local(comment.tag) != "comment":
+            continue
+        comment_id = comment.attrib.get(_q("id"), "")
+        if not comment_id or comment_id in by_comment_id:
+            raise DocxReviewError(f"comment id is missing or duplicated: {comment_id!r}")
+        paragraphs = [item for item in comment.iter() if _local(item.tag) == "p"]
+        if not paragraphs:
+            raise DocxReviewError(f"comment has no paragraph: {comment_id}")
+        paragraph = paragraphs[-1]
+        para_id = paragraph.attrib.get(_qn(W14_NS, "paraId"), "")
+        if not re.fullmatch(r"[0-9A-Fa-f]{8}", para_id):
+            para_id = _next_hex_identifier(para_values)
+            paragraph.set(_qn(W14_NS, "paraId"), para_id)
+        para_id = para_id.upper()
+        para_values.append(para_id)
+        comment_ex = extended_by_para.get(para_id)
+        if comment_ex is None:
+            comment_ex = ET.SubElement(
+                extended,
+                _qn(W15_NS, "commentEx"),
+                {_qn(W15_NS, "paraId"): para_id, _qn(W15_NS, "done"): "0"},
+            )
+            extended_by_para[para_id] = comment_ex
+        comment_identifier = identifier_by_para.get(para_id)
+        if comment_identifier is None:
+            durable_id = _next_hex_identifier(durable_values)
+            durable_values.append(durable_id)
+            comment_identifier = ET.SubElement(
+                identifiers,
+                _qn(W16CID_NS, "commentId"),
+                {
+                    _qn(W16CID_NS, "paraId"): para_id,
+                    _qn(W16CID_NS, "durableId"): durable_id,
+                },
+            )
+            identifier_by_para[para_id] = comment_identifier
+        durable_id = comment_identifier.attrib.get(_qn(W16CID_NS, "durableId"), "").upper()
+        if not re.fullmatch(r"[0-9A-F]{8}", durable_id):
+            durable_id = _next_hex_identifier(durable_values)
+            durable_values.append(durable_id)
+            comment_identifier.set(_qn(W16CID_NS, "durableId"), durable_id)
+        if durable_id not in extensible_by_durable:
+            extensible_by_durable[durable_id] = ET.SubElement(
+                extensible,
+                _qn(W16CEX_NS, "commentExtensible"),
+                {
+                    _qn(W16CEX_NS, "durableId"): durable_id,
+                    _qn(W16CEX_NS, "dateUtc"): _utc_timestamp(comment.attrib.get(_q("date"))),
+                },
+            )
+        by_comment_id[comment_id] = {
+            "comment": comment,
+            "paraId": para_id,
+            "durableId": durable_id,
+            "commentEx": comment_ex,
+        }
+
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        "word/comments.xml",
+        _serialize(comments),
+    )
+    for name, root in roots.items():
+        _store_part(
+            archive,
+            replacements,
+            additions,
+            name,
+            _serialize(root),
+        )
+
+    rels_name = "word/_rels/document.xml.rels"
+    rels_data = _current_part(archive, replacements, additions, rels_name)
+    if rels_data is None:
+        raise DocxReviewError("document relationships part is missing")
+    rels = ET.fromstring(rels_data)
+    required_relationships = {
+        COMMENTS_REL: "comments.xml",
+        **{metadata[2]: name.rsplit("/", 1)[-1] for name, metadata in COMMENT_METADATA.items()},
+    }
+    used = {child.attrib.get("Id", "") for child in rels}
+    next_id = 1
+    for relationship_type, target in required_relationships.items():
+        if any(child.attrib.get("Type") == relationship_type for child in rels):
+            continue
+        while f"rId{next_id}" in used:
+            next_id += 1
+        relationship_id = f"rId{next_id}"
+        used.add(relationship_id)
+        ET.SubElement(rels, f"{{{REL_NS}}}Relationship", {
+            "Id": relationship_id,
+            "Type": relationship_type,
+            "Target": target,
+        })
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        rels_name,
+        ET.tostring(rels, encoding="utf-8", xml_declaration=True),
+    )
+
+    content_types_data = _current_part(
+        archive, replacements, additions, "[Content_Types].xml"
+    )
+    if content_types_data is None:
+        raise DocxReviewError("[Content_Types].xml is missing")
+    content_types = ET.fromstring(content_types_data)
+    required_content_types = {
+        "/word/comments.xml": COMMENTS_CONTENT_TYPE,
+        **{f"/{name}": metadata[3] for name, metadata in COMMENT_METADATA.items()},
+    }
+    for part_name, content_type in required_content_types.items():
+        if any(child.attrib.get("PartName") == part_name for child in content_types):
+            continue
+        ET.SubElement(content_types, f"{{{CT_NS}}}Override", {
+            "PartName": part_name,
+            "ContentType": content_type,
+        })
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        "[Content_Types].xml",
+        ET.tostring(content_types, encoding="utf-8", xml_declaration=True),
+    )
+    return by_comment_id
+
+
 def _add_comment(
     archive: zipfile.ZipFile,
     replacements: dict[str, bytes],
@@ -157,9 +466,9 @@ def _add_comment(
     operation: dict[str, Any],
 ) -> dict[str, Any]:
     document = ET.fromstring(replacements.get("word/document.xml", archive.read("word/document.xml")))
-    comments_data = replacements.get("word/comments.xml")
-    if comments_data is None and "word/comments.xml" in archive.namelist():
-        comments_data = archive.read("word/comments.xml")
+    comments_data = _current_part(
+        archive, replacements, additions, "word/comments.xml"
+    )
     comments = ET.fromstring(comments_data) if comments_data else ET.Element(_q("comments"))
     comment_id = _next_word_id([document, comments])
     find = str(operation.get("find", ""))
@@ -192,39 +501,211 @@ def _add_comment(
         _q("id"): comment_id,
         _q("author"): str(operation.get("author", "Nexa")),
         _q("initials"): str(operation.get("initials", "NX")),
-        _q("date"): str(operation.get("date") or datetime.now(timezone.utc).isoformat()),
+        _q("date"): _utc_timestamp(operation.get("date")),
     })
     comment_paragraph = ET.SubElement(comment, _q("p"))
     comment_run = ET.SubElement(comment_paragraph, _q("r"))
     ET.SubElement(comment_run, _q("t")).text = str(operation.get("comment", ""))
-    replacements["word/document.xml"] = ET.tostring(document, encoding="utf-8", xml_declaration=True)
-    if comments_data:
-        replacements["word/comments.xml"] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
-    else:
-        additions["word/comments.xml"] = ET.tostring(comments, encoding="utf-8", xml_declaration=True)
+    replacements["word/document.xml"] = _serialize(document)
+    metadata = _save_comment_thread_package(
+        archive, replacements, additions, comments
+    )[comment_id]
+    return {
+        "commentId": comment_id,
+        "anchor": find,
+        "paraId": metadata["paraId"],
+        "durableId": metadata["durableId"],
+    }
 
-    rels_name = "word/_rels/document.xml.rels"
-    rels = ET.fromstring(replacements.get(rels_name, archive.read(rels_name)))
-    if not any(child.attrib.get("Type") == COMMENTS_REL for child in rels):
-        used = {child.attrib.get("Id", "") for child in rels}
-        number = 1
-        while f"rId{number}" in used:
-            number += 1
-        ET.SubElement(rels, f"{{{REL_NS}}}Relationship", {
-            "Id": f"rId{number}", "Type": COMMENTS_REL, "Target": "comments.xml",
-        })
-        replacements[rels_name] = ET.tostring(rels, encoding="utf-8", xml_declaration=True)
-    content_types = ET.fromstring(
-        replacements.get("[Content_Types].xml", archive.read("[Content_Types].xml"))
-    )
-    if not any(child.attrib.get("PartName") == "/word/comments.xml" for child in content_types):
-        ET.SubElement(content_types, f"{{{CT_NS}}}Override", {
-            "PartName": "/word/comments.xml", "ContentType": COMMENTS_CONTENT_TYPE,
-        })
-        replacements["[Content_Types].xml"] = ET.tostring(
-            content_types, encoding="utf-8", xml_declaration=True
+
+def _set_comment_extended_attributes(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    updates: dict[str, dict[str, str]],
+) -> None:
+    name = "word/commentsExtended.xml"
+    data = _current_part(archive, replacements, additions, name)
+    if data is None:
+        raise DocxReviewError("commentsExtended metadata is missing")
+    root = ET.fromstring(data)
+    remaining = set(updates)
+    for item in root:
+        para_id = item.attrib.get(_qn(W15_NS, "paraId"), "").upper()
+        if para_id not in updates:
+            continue
+        for key, value in updates[para_id].items():
+            item.set(_qn(W15_NS, key), value)
+        remaining.discard(para_id)
+    if remaining:
+        raise DocxReviewError(
+            "commentsExtended entries are missing: " + ", ".join(sorted(remaining))
         )
-    return {"commentId": comment_id, "anchor": find}
+    _store_part(
+        archive,
+        replacements,
+        additions,
+        name,
+        _serialize(root),
+    )
+
+
+def _add_reply_markers(document: ET.Element, parent_id: str, reply_id: str) -> None:
+    candidates: list[tuple[ET.Element, ET.Element, ET.Element]] = []
+    for paragraph in [item for item in document.iter() if _local(item.tag) == "p"]:
+        starts = [
+            item
+            for item in list(paragraph)
+            if _local(item.tag) == "commentRangeStart"
+            and item.attrib.get(_q("id"), "") == parent_id
+        ]
+        references = [
+            item
+            for item in list(paragraph)
+            if any(
+                _local(descendant.tag) == "commentReference"
+                and descendant.attrib.get(_q("id"), "") == parent_id
+                for descendant in item.iter()
+            )
+        ]
+        if len(starts) == 1 and len(references) == 1:
+            candidates.append((paragraph, starts[0], references[0]))
+    if len(candidates) != 1:
+        raise DocxReviewError(
+            f"reply parent must have exactly one direct comment anchor; found {len(candidates)}"
+        )
+    paragraph, parent_start, parent_reference = candidates[0]
+    children = list(paragraph)
+    paragraph.insert(
+        children.index(parent_start) + 1,
+        ET.Element(_q("commentRangeStart"), {_q("id"): reply_id}),
+    )
+    children = list(paragraph)
+    insertion_index = children.index(parent_reference) + 1
+    paragraph.insert(
+        insertion_index,
+        ET.Element(_q("commentRangeEnd"), {_q("id"): reply_id}),
+    )
+    reference_run = ET.Element(_q("r"))
+    properties = ET.SubElement(reference_run, _q("rPr"))
+    ET.SubElement(properties, _q("rStyle"), {_q("val"): "CommentReference"})
+    ET.SubElement(reference_run, _q("commentReference"), {_q("id"): reply_id})
+    paragraph.insert(insertion_index + 1, reference_run)
+
+
+def _reply_comment(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    parent_id = str(operation.get("commentId", ""))
+    if not parent_id:
+        raise DocxReviewError("reply_comment requires commentId")
+    comments_data = _current_part(
+        archive, replacements, additions, "word/comments.xml"
+    )
+    if comments_data is None:
+        raise DocxReviewError("reply_comment requires an existing comments.xml part")
+    comments = ET.fromstring(comments_data)
+    metadata = _save_comment_thread_package(
+        archive, replacements, additions, comments
+    )
+    if parent_id not in metadata:
+        raise DocxReviewError(f"commentId not found: {parent_id}")
+    document = ET.fromstring(
+        replacements.get("word/document.xml", archive.read("word/document.xml"))
+    )
+    reply_id = _next_word_id([document, comments])
+    _add_reply_markers(document, parent_id, reply_id)
+    reply = ET.SubElement(comments, _q("comment"), {
+        _q("id"): reply_id,
+        _q("author"): str(operation.get("author", "Nexa")),
+        _q("initials"): str(operation.get("initials", "NX")),
+        _q("date"): _utc_timestamp(operation.get("date")),
+    })
+    paragraph = ET.SubElement(reply, _q("p"))
+    run = ET.SubElement(paragraph, _q("r"))
+    ET.SubElement(run, _q("t")).text = str(operation.get("comment", ""))
+    metadata = _save_comment_thread_package(
+        archive, replacements, additions, comments
+    )
+    parent_para_id = str(metadata[parent_id]["paraId"])
+    reply_para_id = str(metadata[reply_id]["paraId"])
+    _set_comment_extended_attributes(
+        archive,
+        replacements,
+        additions,
+        {reply_para_id: {"paraIdParent": parent_para_id, "done": "0"}},
+    )
+    replacements["word/document.xml"] = _serialize(document)
+    return {
+        "commentId": reply_id,
+        "parentCommentId": parent_id,
+        "paraId": reply_para_id,
+        "durableId": metadata[reply_id]["durableId"],
+    }
+
+
+def _resolve_comment(
+    archive: zipfile.ZipFile,
+    replacements: dict[str, bytes],
+    additions: dict[str, bytes],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    comment_id = str(operation.get("commentId", ""))
+    if not comment_id:
+        raise DocxReviewError("resolve_comment requires commentId")
+    comments_data = _current_part(
+        archive, replacements, additions, "word/comments.xml"
+    )
+    if comments_data is None:
+        raise DocxReviewError("resolve_comment requires an existing comments.xml part")
+    comments = ET.fromstring(comments_data)
+    metadata = _save_comment_thread_package(
+        archive, replacements, additions, comments
+    )
+    if comment_id not in metadata:
+        raise DocxReviewError(f"commentId not found: {comment_id}")
+    extended_data = _current_part(
+        archive, replacements, additions, "word/commentsExtended.xml"
+    )
+    if extended_data is None:
+        raise DocxReviewError("commentsExtended metadata is missing")
+    extended = ET.fromstring(extended_data)
+    children: dict[str, set[str]] = {}
+    for item in extended:
+        para_id = item.attrib.get(_qn(W15_NS, "paraId"), "").upper()
+        parent = item.attrib.get(_qn(W15_NS, "paraIdParent"), "").upper()
+        if parent:
+            children.setdefault(parent, set()).add(para_id)
+    root_para = str(metadata[comment_id]["paraId"]).upper()
+    affected = {root_para}
+    pending = [root_para]
+    while pending:
+        current = pending.pop()
+        for child in children.get(current, set()):
+            if child not in affected:
+                affected.add(child)
+                pending.append(child)
+    resolved = bool(operation.get("resolved", True))
+    _set_comment_extended_attributes(
+        archive,
+        replacements,
+        additions,
+        {para_id: {"done": "1" if resolved else "0"} for para_id in affected},
+    )
+    by_para = {
+        str(item["paraId"]).upper(): identifier
+        for identifier, item in metadata.items()
+    }
+    return {
+        "commentId": comment_id,
+        "resolved": resolved,
+        "affectedCommentIds": sorted(
+            by_para[para_id] for para_id in affected if para_id in by_para
+        ),
+    }
 
 
 def _tracked_replace(
@@ -253,7 +734,7 @@ def _tracked_replace(
     insertion = ET.Element(_q("ins"), common)
     insertion.append(_clone_run_with_text(template_run, replacement))
     _replace_match_with_elements(paragraph, nodes, start, end, [deletion, insertion])
-    replacements["word/document.xml"] = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+    replacements["word/document.xml"] = _serialize(document)
     return {"revisionId": revision_id, "before": find, "after": replacement}
 
 
@@ -282,9 +763,7 @@ def _add_bookmark(
         _clone_run_with_text(template_run, find),
         ET.Element(_q("bookmarkEnd"), {_q("id"): bookmark_id}),
     ])
-    replacements["word/document.xml"] = ET.tostring(
-        document, encoding="utf-8", xml_declaration=True
-    )
+    replacements["word/document.xml"] = _serialize(document)
     return {"bookmarkId": bookmark_id, "bookmarkName": name, "anchor": find}
 
 
@@ -311,9 +790,7 @@ def _insert_field(
     field = ET.Element(_q("fldSimple"), {_q("instr"): f" {instruction} "})
     field.append(_clone_run_with_text(template_run, str(operation.get("displayText", "1"))))
     _replace_match_with_elements(paragraph, nodes, start, end, [field])
-    replacements["word/document.xml"] = ET.tostring(
-        document, encoding="utf-8", xml_declaration=True
-    )
+    replacements["word/document.xml"] = _serialize(document)
     return {"instruction": instruction, "anchor": find}
 
 
@@ -350,9 +827,7 @@ def _wrap_content_control(
     content = ET.SubElement(sdt, _q("sdtContent"))
     content.append(_clone_run_with_text(template_run, find))
     _replace_match_with_elements(paragraph, nodes, start, end, [sdt])
-    replacements["word/document.xml"] = ET.tostring(
-        document, encoding="utf-8", xml_declaration=True
-    )
+    replacements["word/document.xml"] = _serialize(document)
     return {"tag": tag, "title": title, "lock": lock, "anchor": find}
 
 
@@ -384,7 +859,7 @@ def _set_protection(
             _q("enforcement"): "1",
         })
         settings.insert(0, protection)
-    replacements[settings_name] = ET.tostring(settings, encoding="utf-8", xml_declaration=True)
+    replacements[settings_name] = _serialize(settings)
     return {"mode": mode, "enforced": mode != "none", "passwordProtected": False}
 
 
@@ -465,9 +940,7 @@ def _bind_template(
             for node in nodes[1:]:
                 node.text = ""
             bound.append({"key": key, "target": kind, "valueLength": len(value)})
-    replacements["word/document.xml"] = ET.tostring(
-        document, encoding="utf-8", xml_declaration=True
-    )
+    replacements["word/document.xml"] = _serialize(document)
     return {"bindings": bound}
 
 
@@ -495,7 +968,29 @@ def _resolve_revisions(data: bytes, accept: bool) -> tuple[bytes, int]:
                 index += 1
         parent.remove(target)
         count += 1
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True), count
+    return _serialize(root), count
+
+
+UNSUPPORTED_REVISION_ELEMENTS = {
+    "cellDel", "cellIns", "cellMerge", "conflictDel", "conflictIns",
+    "customXmlDelRangeStart", "customXmlDelRangeEnd",
+    "customXmlInsRangeStart", "customXmlInsRangeEnd",
+    "customXmlMoveFromRangeStart", "customXmlMoveFromRangeEnd",
+    "customXmlMoveToRangeStart", "customXmlMoveToRangeEnd",
+    "moveFrom", "moveFromRangeStart", "moveFromRangeEnd",
+    "moveTo", "moveToRangeStart", "moveToRangeEnd",
+    "numberingChange", "pPrChange", "rPrChange", "sectPrChange",
+    "tblGridChange", "tblPrChange", "tblPrExChange", "tcPrChange", "trPrChange",
+}
+
+
+def _unsupported_revisions(data: bytes) -> list[str]:
+    root = ET.fromstring(data)
+    return sorted({
+        _local(element.tag)
+        for element in root.iter()
+        if _local(element.tag) in UNSUPPORTED_REVISION_ELEMENTS
+    })
 
 
 def _strip_comments(
@@ -518,7 +1013,7 @@ def _strip_comments(
                     removed_markers += 1
                     changed = True
         if changed:
-            replacements[name] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            replacements[name] = _serialize(root)
     comment_parts = {
         name for name in archive.namelist()
         if name.startswith("word/comments") or "/comments" in name and name.endswith(".xml")
@@ -554,6 +1049,10 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
                 raise DocxReviewError(f"unsupported review operation at index {index}: {name}")
             if name == "add_comment":
                 detail = _add_comment(archive, replacements, additions, operation)
+            elif name == "reply_comment":
+                detail = _reply_comment(archive, replacements, additions, operation)
+            elif name == "resolve_comment":
+                detail = _resolve_comment(archive, replacements, additions, operation)
             elif name == "strip_comments":
                 detail = _strip_comments(archive, replacements, deletions)
             elif name == "tracked_replace":
@@ -572,9 +1071,21 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
                 accept = name == "accept_changes"
                 changed_parts = []
                 revisions = 0
-                for part in archive.namelist():
-                    if not part.startswith("word/") or not part.endswith(".xml"):
-                        continue
+                revision_parts = [
+                    part
+                    for part in archive.namelist()
+                    if part.startswith("word/") and part.endswith(".xml")
+                ]
+                for part in revision_parts:
+                    unsupported = _unsupported_revisions(
+                        replacements.get(part, archive.read(part))
+                    )
+                    if unsupported:
+                        raise DocxReviewError(
+                            f"{name} cannot safely resolve unsupported tracked-change "
+                            f"element(s) in {part}: {', '.join(unsupported)}"
+                        )
+                for part in revision_parts:
                     data, count = _resolve_revisions(replacements.get(part, archive.read(part)), accept)
                     if count:
                         replacements[part] = data
@@ -582,6 +1093,15 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
                         revisions += count
                 detail = {"revisions": revisions, "changedParts": changed_parts}
             receipts.append({"op": name, "detail": detail})
+        changed_part_names = sorted(
+            {
+                name
+                for name, data in replacements.items()
+                if name not in archive.namelist() or archive.read(name) != data
+            }
+            | set(additions)
+            | deletions
+        )
         output.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, "w") as destination:
             existing = set()
@@ -596,7 +1116,7 @@ def patch_docx_reviews(source: Path, output: Path, operations: list[dict[str, An
     return {
         "kind": "docxReviewEdit",
         "operations": receipts,
-        "changedParts": sorted(set(replacements) | set(additions) | deletions),
+        "changedParts": changed_part_names,
     }
 
 
@@ -605,18 +1125,62 @@ def extract_comments(path: Path) -> dict[str, Any]:
         if "word/comments.xml" not in archive.namelist():
             return {"kind": "docxComments", "comments": []}
         root = ET.fromstring(archive.read("word/comments.xml"))
+        extended = (
+            ET.fromstring(archive.read("word/commentsExtended.xml"))
+            if "word/commentsExtended.xml" in archive.namelist()
+            else None
+        )
+        identifiers = (
+            ET.fromstring(archive.read("word/commentsIds.xml"))
+            if "word/commentsIds.xml" in archive.namelist()
+            else None
+        )
+    extended_by_para = {
+        item.attrib.get(_qn(W15_NS, "paraId"), "").upper(): {
+            "parentParaId": item.attrib.get(_qn(W15_NS, "paraIdParent"), "").upper(),
+            "resolved": item.attrib.get(_qn(W15_NS, "done"), "0") in {"1", "true", "on"},
+        }
+        for item in (list(extended) if extended is not None else [])
+        if _local(item.tag) == "commentEx"
+    }
+    durable_by_para = {
+        item.attrib.get(_qn(W16CID_NS, "paraId"), "").upper(): item.attrib.get(
+            _qn(W16CID_NS, "durableId"), ""
+        )
+        for item in (list(identifiers) if identifiers is not None else [])
+        if _local(item.tag) == "commentId"
+    }
     comments = []
     for comment in root:
         if _local(comment.tag) != "comment":
             continue
+        paragraphs = [item for item in comment.iter() if _local(item.tag) == "p"]
+        para_id = (
+            paragraphs[-1].attrib.get(_qn(W14_NS, "paraId"), "").upper()
+            if paragraphs
+            else ""
+        )
+        extra = extended_by_para.get(para_id, {})
         comments.append({
             "id": comment.attrib.get(_q("id"), ""),
             "author": comment.attrib.get(_q("author"), ""),
             "date": comment.attrib.get(_q("date"), ""),
+            "paraId": para_id,
+            "durableId": durable_by_para.get(para_id, ""),
+            "parentParaId": extra.get("parentParaId", ""),
+            "resolved": bool(extra.get("resolved", False)),
             "text": "".join(
                 element.text or "" for element in comment.iter() if _local(element.tag) == "t"
             ),
         })
+    comment_id_by_para = {
+        item["paraId"]: item["id"]
+        for item in comments
+        if item["paraId"]
+    }
+    for item in comments:
+        parent_para_id = str(item.pop("parentParaId", ""))
+        item["parentId"] = comment_id_by_para.get(parent_para_id) if parent_para_id else None
     return {"kind": "docxComments", "comments": comments}
 
 

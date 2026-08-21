@@ -534,6 +534,49 @@ class OfficeArtifactRuntimeTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertIn("required_text.missing", result["error"])
 
+    def test_docx_no_tracked_changes_contract_counts_move_and_property_revisions(self) -> None:
+        import docx
+
+        source = self.root / "complex-revisions.docx"
+        document = docx.Document()
+        document.add_paragraph("Move this text")
+        document.save(source)
+        with zipfile.ZipFile(source) as archive:
+            root = ET.fromstring(archive.read("word/document.xml"))
+            paragraph = next(item for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "p")
+            move = ET.SubElement(
+                paragraph,
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}moveFrom",
+            )
+            run = ET.SubElement(
+                move,
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r",
+            )
+            ET.SubElement(
+                run,
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t",
+            ).text = "Moved"
+        complex_revision = _rewrite_zip(
+            source,
+            {
+                "word/document.xml": ET.tostring(
+                    root, encoding="utf-8", xml_declaration=True
+                )
+            },
+            output=self.root / "complex-revisions-mutated.docx",
+        )
+        contract = self.root / "no-revisions.json"
+        contract.write_text(
+            json.dumps({"contractVersion": 2, "require_no_tracked_changes": True}),
+            encoding="utf-8",
+        )
+
+        result = edit_doc._validate_docx_contract(complex_revision, str(contract))
+
+        self.assertEqual("fail", result["status"])
+        tracked = result["checks"]["accessibilityAndLayout"]["trackedChanges"]
+        self.assertEqual({"moveFrom": 1}, tracked)
+
     def test_pptx_validation_contract_passes_for_required_content(self) -> None:
         from pptx import Presentation
 
