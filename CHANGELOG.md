@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.25](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.24...nexa-monorepo-v0.12.25) (2026-08-22)
+
+
+### Features
+
+* **models:** add glm 5.3 and deepseek v4 ([10cb236](https://github.com/MLGBJDLW/Nexa/commit/10cb236acf6701422d16ef4df783ea4e8fc7e051))
+
+
+### Bug Fixes
+
+* **agent:** harden runtime and provider compatibility ([fa27714](https://github.com/MLGBJDLW/Nexa/commit/fa27714ecd444583c0b64ac68fb2ca694392a831))
+* **agent:** recover incomplete streamed tool calls ([3c4e61a](https://github.com/MLGBJDLW/Nexa/commit/3c4e61a33835e423e817d5c331f9c91967e5ac45))
+* **browser:** use the native browser workspace ([263a265](https://github.com/MLGBJDLW/Nexa/commit/263a265553f1661ea98f34f3da57fad73b64e659))
+* **chat:** reconcile durable runs in the client ([d888821](https://github.com/MLGBJDLW/Nexa/commit/d8888212df2e2ac4670a6559eeaf5f0ee5513149))
+* **runtime:** checkpoint stopped executions safely ([f4a8f9c](https://github.com/MLGBJDLW/Nexa/commit/f4a8f9cbd15986e6af267b1a3f33b65194ba9a29))
+* **runtime:** persist retry and task boundaries ([3a97b62](https://github.com/MLGBJDLW/Nexa/commit/3a97b62331c14a02c33f37b6722369a7bd633a0a))
+* **tools:** normalize schemas before approval and execution ([4b92408](https://github.com/MLGBJDLW/Nexa/commit/4b924087f0f46b29fd30cbcef94af2c4b73be1fb))
+* **ui:** stabilize timers mermaid and pause controls ([efe8e01](https://github.com/MLGBJDLW/Nexa/commit/efe8e0196c38368571bb98bac618574053afd011))
+
 ## [0.12.24](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.23...nexa-monorepo-v0.12.24) (2026-08-21)
 
 
