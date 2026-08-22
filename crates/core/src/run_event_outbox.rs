@@ -1,7 +1,7 @@
 //! Durable, ordered publication for one Agent Run's Run Events.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -72,6 +72,8 @@ enum AgentRunEventOutboxCommand {
 pub enum AgentRunEventSubmitError {
     #[error("Run Event outbox is already closed")]
     AlreadyClosed,
+    #[error("Run Event producer is suspended at a resumable checkpoint boundary")]
+    Suspended,
     #[error("Run Event producers must submit an unsequenced event, got {event_seq}")]
     SequencedEvent { event_seq: u64 },
     #[error("Run Event belongs to {actual_run_id}, expected {expected_run_id}")]
@@ -199,6 +201,7 @@ impl AgentRunEventOutboxes {
             conversation_id: conversation_id.to_string(),
             sender,
             terminal_submitted: Arc::clone(&terminal_submitted),
+            submissions_paused: Arc::new(AtomicBool::new(false)),
             cancellation: cancellation.clone(),
             completion,
             accepted_high_water: Arc::new(AtomicU64::new(initial_sequence)),
@@ -642,6 +645,7 @@ pub struct AgentRunEventOutbox {
     conversation_id: String,
     sender: tokio::sync::mpsc::Sender<AgentRunEventOutboxCommand>,
     terminal_submitted: Arc<Mutex<bool>>,
+    submissions_paused: Arc<AtomicBool>,
     cancellation: CancellationToken,
     completion: tokio::sync::watch::Receiver<AgentRunEventOutboxOutcome>,
     accepted_high_water: Arc<AtomicU64>,
@@ -695,6 +699,9 @@ impl AgentRunEventOutbox {
             .map_err(|_| AgentRunEventSubmitError::ActorUnavailable)?;
         if *terminal_submitted {
             return Err(AgentRunEventSubmitError::AlreadyClosed);
+        }
+        if self.submissions_paused.load(Ordering::Acquire) {
+            return Err(AgentRunEventSubmitError::Suspended);
         }
         let terminal = event.closes_run();
         if let Err(error) = self
@@ -753,6 +760,9 @@ impl AgentRunEventOutbox {
         if *terminal_submitted {
             return Err(AgentRunEventOutboxFailure::ActorUnavailable);
         }
+        if self.submissions_paused.swap(true, Ordering::AcqRel) {
+            return Err(AgentRunEventOutboxFailure::ActorUnavailable);
+        }
         if let Err(error) = self
             .sender
             .try_send(AgentRunEventOutboxCommand::PauseCheckpoint {
@@ -780,6 +790,21 @@ impl AgentRunEventOutbox {
                     Some(current.saturating_add(1))
                 });
         Ok(result)
+    }
+
+    /// Re-open producer submission only after the durable run has been
+    /// atomically re-queued from its checkpoint and before its new executor is
+    /// spawned. The terminal lock serializes this with terminal acceptance.
+    pub fn resume_submissions(&self) -> Result<(), AgentRunEventSubmitError> {
+        let terminal_submitted = self
+            .terminal_submitted
+            .lock()
+            .map_err(|_| AgentRunEventSubmitError::ActorUnavailable)?;
+        if *terminal_submitted {
+            return Err(AgentRunEventSubmitError::AlreadyClosed);
+        }
+        self.submissions_paused.store(false, Ordering::Release);
+        Ok(())
     }
 
     pub fn is_closed_for_submission(&self) -> bool {

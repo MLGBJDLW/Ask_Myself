@@ -4,7 +4,7 @@
 //! chat commands can focus on Host Surface concerns such as task events and UI
 //! persistence.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,8 @@ use nexa_core::agent::{
     AgentRequestKind, AgentSteeringMessage, CancellationToken,
 };
 use nexa_core::agent_run::{
-    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventVisibility,
+    AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventKind,
+    AgentRunEventVisibility,
 };
 use nexa_core::app_settings::AppConfig;
 use nexa_core::approval::{
@@ -73,7 +74,7 @@ use crate::agent_task_events::emit_agent_task_run_update;
 use crate::app_events::{emit_app_event, emit_main_window_event};
 use crate::browser::agent_tool::NativeBrowserSessionTool;
 use crate::browser::BrowserState;
-use crate::commands::TerminalState;
+use crate::commands::{PendingToolApproval, PendingToolApprovals, TerminalState};
 use crate::subagent_lifecycle::SubagentLifecycleRuntime;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
@@ -118,8 +119,7 @@ pub struct DesktopAgentTurnStream {
 }
 
 pub struct DesktopAgentApprovalRuntime {
-    pub pending:
-        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>>,
+    pub pending: PendingToolApprovals,
     pub session_store: SessionApprovalStore,
     pub approval_mode: ToolApprovalMode,
 }
@@ -298,6 +298,7 @@ pub struct DesktopRunningAgentStopRequest {
     pub db: Arc<Database>,
     pub app_handle: AppHandle,
     pub conversation_id: String,
+    pub pending_approvals: PendingToolApprovals,
 }
 
 struct DesktopApprovalCallbackInput {
@@ -366,55 +367,178 @@ pub fn orchestration_profile_artifact(config: &AgentConfig) -> serde_json::Value
     })
 }
 
-pub fn request_desktop_running_agent_stop(
+pub async fn request_desktop_running_agent_stop(
     task_state: nexa_core::runtime::ActiveAgentTurn,
     request: DesktopRunningAgentStopRequest,
-) {
+) -> Result<(), DesktopRunningAgentStopError> {
     let DesktopRunningAgentStopRequest {
         db,
         app_handle,
         conversation_id,
+        pending_approvals,
     } = request;
     let task_run_id = task_state.handle.run_id.clone();
     let task_orchestrator_run_id = task_state.orchestrator_run_id.clone();
     let turn_id = task_state.handle.turn_id.clone();
-    let stream_event_seq = Arc::clone(&task_state.event_outbox);
-    if let Err(error) = db.cancel_interactions_for_stopped_run(&task_run_id) {
-        warn!("Failed to cancel interactions for stopped run {task_run_id}: {error}");
-    }
-    let stop_event = AgentRunEvent::status_update(
-        &task_run_id,
-        Some(&turn_id),
-        0,
-        nexa_core::agent_run::AgentRunPhase::Responding,
-        "Stop requested",
-        Some("cancelling"),
-        Some(&serde_json::json!({ "reason": "user_stop" })),
-    );
-    if let Err(error) = stream_event_seq.submit(stop_event) {
-        warn!("Failed to submit stop-request RunEvent for {conversation_id}: {error}");
+    if let Err(error) =
+        fence_and_checkpoint_desktop_agent_turn(task_state, db.as_ref(), &pending_approvals).await
+    {
+        let failed_closed = reconcile_authoritative_run_event_outbox_failure(
+            &db,
+            &task_run_id,
+            task_orchestrator_run_id.as_deref(),
+            &turn_id,
+            &error,
+        );
+        if !failed_closed {
+            let _ = nexa_core::task_run::AgentTaskRuntime::new(db.as_ref())
+                .fail_pre_executor_launch_if_open(&task_run_id, error.reason_code());
+            let _ = reconcile_authoritative_run_event_outbox_failure(
+                &db,
+                &task_run_id,
+                task_orchestrator_run_id.as_deref(),
+                &turn_id,
+                &error,
+            );
+        }
+        emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
+        return Err(DesktopRunningAgentStopError {
+            message: format!("Could not preserve a resumable stop: {error}"),
+        });
     }
 
+    emit_agent_task_run_update(&db, &app_handle, &conversation_id, &task_run_id);
+    Ok(())
+}
+
+async fn fence_and_checkpoint_desktop_agent_turn(
+    task_state: nexa_core::runtime::ActiveAgentTurn,
+    db: &Database,
+    pending_approvals: &PendingToolApprovals,
+) -> Result<(), AgentRunEventOutboxFailure> {
+    let task_run_id = task_state.handle.run_id.clone();
+    let turn_id = task_state.handle.turn_id.clone();
+    let event_outbox = Arc::clone(&task_state.event_outbox);
+
+    // Establish the execution boundary first. No model/tool future remains
+    // alive while the outbox drains and commits the resumable checkpoint.
     task_state.cancel_token.cancel();
-    let abort_task = task_state.task;
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if !abort_task.is_finished() {
-            abort_task.abort();
-            finalize_desktop_agent_stop(DesktopAgentStopFinalization {
-                db: &db,
-                app_handle: &app_handle,
-                conversation_id: &conversation_id,
-                task_run_id: &task_run_id,
-                task_orchestrator_run_id: task_orchestrator_run_id.as_deref(),
-                turn_id: &turn_id,
-                event_seq: stream_event_seq.as_ref(),
-                reason: "aborted_after_cancel_timeout",
-                summary: "Stopped by user",
+    task_state.task.abort();
+    let _ = task_state.task.await;
+
+    resolve_desktop_pending_approvals_for_stopped_run(
+        db,
+        event_outbox.as_ref(),
+        &task_run_id,
+        &turn_id,
+        pending_approvals,
+    )
+    .await?;
+
+    event_outbox
+        .pause_with_checkpoint(&turn_id, "user_stop")
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn resolve_desktop_pending_approvals_for_stopped_run(
+    db: &Database,
+    event_outbox: &AgentRunEventOutbox,
+    task_run_id: &str,
+    turn_id: &str,
+    pending_approvals: &PendingToolApprovals,
+) -> Result<(), AgentRunEventOutboxFailure> {
+    // Remove the in-memory senders before any fallible persistence work. The
+    // executor is already fenced, so every drained prompt is terminally denied.
+    let registered = {
+        let mut pending = pending_approvals.lock().await;
+        let request_ids = pending
+            .iter()
+            .filter_map(|(request_id, approval)| {
+                (approval.task_run_id == task_run_id).then(|| request_id.clone())
             })
-            .await;
+            .collect::<Vec<_>>();
+        for request_id in &request_ids {
+            if let Some(approval) = pending.remove(request_id) {
+                let _ = approval.sender.send(ApprovalDecision::Deny);
+            }
         }
-    });
+        request_ids
+    };
+
+    event_outbox.flush().await?;
+    let durable_events = db.list_agent_run_events(task_run_id).map_err(|error| {
+        AgentRunEventOutboxFailure::Persistence {
+            message: error.to_string(),
+        }
+    })?;
+    let (mut unresolved, resolved) = approval_resolution_state(&durable_events);
+    unresolved.extend(
+        registered
+            .into_iter()
+            .filter(|request_id| !resolved.contains(request_id)),
+    );
+
+    let mut unresolved = unresolved.into_iter().collect::<Vec<_>>();
+    unresolved.sort();
+    for request_id in unresolved {
+        event_outbox
+            .submit(
+                AgentRunEvent::from_agent_event(&AgentEvent::ApprovalResolved {
+                    request_id,
+                    decision: ApprovalDecision::Deny,
+                })
+                .with_context(Some(task_run_id), Some(turn_id), None),
+            )
+            .map_err(submit_error_as_outbox_failure)?;
+    }
+    Ok(())
+}
+
+fn approval_resolution_state(events: &[AgentRunEvent]) -> (HashSet<String>, HashSet<String>) {
+    let mut unresolved = HashSet::new();
+    let mut resolved = HashSet::new();
+    for event in events {
+        match event.kind {
+            AgentRunEventKind::ApprovalRequested => {
+                if let Some(request_id) = event
+                    .payload
+                    .get("request")
+                    .and_then(|request| request.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !resolved.contains(request_id) {
+                        unresolved.insert(request_id.to_string());
+                    }
+                }
+            }
+            AgentRunEventKind::ApprovalResolved => {
+                if let Some(request_id) = event
+                    .payload
+                    .get("requestId")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    unresolved.remove(request_id);
+                    resolved.insert(request_id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    (unresolved, resolved)
+}
+
+fn submit_error_as_outbox_failure(error: AgentRunEventSubmitError) -> AgentRunEventOutboxFailure {
+    match error {
+        AgentRunEventSubmitError::QueueFull => AgentRunEventOutboxFailure::QueueFull,
+        other => AgentRunEventOutboxFailure::Persistence {
+            message: other.to_string(),
+        },
+    }
+}
+
+pub struct DesktopRunningAgentStopError {
+    pub message: String,
 }
 
 pub fn annotate_user_artifacts_with_execution_mode(
@@ -1387,8 +1511,12 @@ pub(super) fn provider_config_is_local(config: &ProviderConfig) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    host.eq_ignore_ascii_case("localhost")
-        || host
+    let normalized_host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    normalized_host.eq_ignore_ascii_case("localhost")
+        || normalized_host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|address| address.is_loopback())
 }
@@ -2346,7 +2474,13 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
             }
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            pending.lock().await.insert(req.id.clone(), tx);
+            pending.lock().await.insert(
+                req.id.clone(),
+                PendingToolApproval {
+                    task_run_id: task_run_id.clone(),
+                    sender: tx,
+                },
+            );
             emit_agent_frontend_event(
                 event_seq.as_ref(),
                 &conv,
@@ -2968,14 +3102,36 @@ fn repair_orphaned_tool_calls(db: &Database, conversation_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_core::agent_run::{AgentRunEventKind, AgentRunPhase};
     use nexa_core::app_settings::ShellAccessMode;
-    use nexa_core::approval::ToolApprovalMode;
-    use nexa_core::conversation::{CollectionContext, CreateConversationInput, ImageAttachment};
+    use nexa_core::approval::{ApprovalRisk, ToolApprovalMode};
+    use nexa_core::conversation::{
+        AgentTaskRun, CollectionContext, CreateConversationInput, ImageAttachment,
+    };
+    use nexa_core::db_executor::DatabaseExecutor;
     use nexa_core::llm::ProviderType;
+    use nexa_core::run_event_outbox::{AgentRunEventDelivery, AgentRunEventOutboxes};
+    use nexa_core::runtime::{ActiveAgentTurn, AgentTurnHandle};
     use nexa_core::sources::CreateSourceInput;
     use nexa_core::workflow_automation::{
         SaveWorkflowAutomationInput, WorkflowAutomationApprovalPolicy, WorkflowAutomationTrigger,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct BlockingStopDelivery {
+        entered: Arc<AtomicBool>,
+    }
+
+    impl AgentRunEventDelivery for BlockingStopDelivery {
+        fn deliver_run_event(&self, _conversation_id: &str, event: &AgentRunEvent) {
+            if event.label == "block checkpoint queue" {
+                self.entered.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+
+        fn deliver_task_run_snapshot(&self, _conversation_id: &str, _snapshot: AgentTaskRun) {}
+    }
 
     #[test]
     fn registry_health_requires_activity_runtime_core_tools() {
@@ -2983,6 +3139,158 @@ mod tests {
         assert_eq!(
             missing_core_runtime_tools(&ToolRegistry::new()),
             REQUIRED_ACTIVITY_RUNTIME_TOOLS
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_fences_execution_and_resolves_approval_before_checkpoint() {
+        let db = Database::open_memory().expect("open memory database");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".to_string(),
+                model: "test-model".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: "stop-user".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Stop before the side effect".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).expect("add user message");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .expect("create turn");
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "Stop boundary",
+                Some("test"),
+                Some("test-model"),
+            )
+            .expect("create run");
+        db.mark_agent_task_run_started(&run.id, "approval")
+            .expect("start run");
+
+        let delivery_entered = Arc::new(AtomicBool::new(false));
+        let executor = DatabaseExecutor::new(db.clone(), 8).expect("database executor");
+        let outbox = AgentRunEventOutboxes::new(
+            executor,
+            Arc::new(BlockingStopDelivery {
+                entered: Arc::clone(&delivery_entered),
+            }),
+        )
+        .open(&conversation.id, &run.id)
+        .await
+        .expect("open outbox");
+
+        let approval_request = ApprovalRequest::new(
+            "approval-stop",
+            "write_file",
+            &serde_json::json!({ "path": "notes.md" }),
+            ApprovalRisk::High,
+            "write notes",
+        );
+        outbox
+            .submit(
+                AgentRunEvent::from_agent_event(&AgentEvent::ApprovalRequested {
+                    request: approval_request,
+                })
+                .with_context(Some(&run.id), Some(&turn.id), None),
+            )
+            .expect("submit approval request");
+        outbox.flush().await.expect("persist approval request");
+
+        let pending_approvals = Arc::new(TokioMutex::new(HashMap::new()));
+        let (approval_sender, _approval_receiver) = tokio::sync::oneshot::channel();
+        pending_approvals.lock().await.insert(
+            "approval-stop".to_string(),
+            crate::commands::PendingToolApproval {
+                task_run_id: run.id.clone(),
+                sender: approval_sender,
+            },
+        );
+
+        outbox
+            .submit(
+                AgentRunEvent::from_agent_event(&AgentEvent::Status {
+                    content: "block checkpoint queue".to_string(),
+                    tone: Some("running".to_string()),
+                })
+                .with_context(Some(&run.id), Some(&turn.id), None),
+            )
+            .expect("submit blocking event");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !delivery_entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("delivery entered blocking section");
+
+        let late_side_effect = Arc::new(AtomicBool::new(false));
+        let late_side_effect_for_task = Arc::clone(&late_side_effect);
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            late_side_effect_for_task.store(true, Ordering::SeqCst);
+        });
+        let (steering_tx, _steering_rx) = mpsc::unbounded_channel();
+        let active_turn = ActiveAgentTurn {
+            handle: AgentTurnHandle::running(&conversation.id, &run.id, &turn.id),
+            cancel_token: CancellationToken::new(),
+            task,
+            steering_tx,
+            event_outbox: Arc::clone(&outbox),
+            orchestrator_run_id: None,
+            frontend_paint_recorded: AtomicBool::new(false),
+        };
+
+        fence_and_checkpoint_desktop_agent_turn(active_turn, &db, &pending_approvals)
+            .await
+            .expect("create resumable stop");
+
+        assert!(
+            !late_side_effect.load(Ordering::SeqCst),
+            "executor must be fenced before checkpoint persistence can block"
+        );
+        assert!(pending_approvals.lock().await.is_empty());
+        let events = db.list_agent_run_events(&run.id).expect("run event ledger");
+        let resolved_index = events
+            .iter()
+            .position(|event| event.kind == AgentRunEventKind::ApprovalResolved)
+            .expect("approval resolution event");
+        let pause_index = events
+            .iter()
+            .position(|event| {
+                event.phase == AgentRunPhase::Paused && event.status.as_deref() == Some("paused")
+            })
+            .expect("pause checkpoint event");
+        assert!(resolved_index < pause_index);
+        assert_eq!(
+            events[resolved_index].payload["requestId"],
+            serde_json::json!("approval-stop")
+        );
+        assert_eq!(
+            events[resolved_index].payload["decision"],
+            serde_json::json!("deny")
+        );
+        assert_eq!(
+            db.get_agent_task_run(&run.id).expect("paused task").status,
+            "paused"
         );
     }
 

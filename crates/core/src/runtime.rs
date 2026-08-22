@@ -231,6 +231,11 @@ pub struct StartTurnRequest {
     /// Legacy hosts omit this field and continue to allocate a new turn.
     #[serde(default)]
     pub resume_checkpoint_id: Option<String>,
+    /// Optional user-message anchor whose completed suffix should be replaced.
+    /// This is distinct from transport idempotency: it models an intentional
+    /// reply retry/edit while preserving one durable user bubble.
+    #[serde(default)]
+    pub retry_from_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<ImageAttachment>,
     #[serde(default)]

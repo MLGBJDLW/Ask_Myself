@@ -16,6 +16,7 @@ use serde_json::Value;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use crate::agent_run::{AgentRunEvent, AgentRunEventKind};
 use crate::conversation::{
     AgentTaskArtifact, AgentTaskArtifactSummary, AgentTaskRun, AgentTurnLaunchRecord,
     ConversationMessage,
@@ -28,6 +29,7 @@ const AUTOMATION_NAME_MAX_CHARS: usize = 160;
 const AUTOMATION_DESCRIPTION_MAX_CHARS: usize = 2_000;
 const AUTOMATION_PROMPT_MAX_CHARS: usize = 12_000;
 const RESUME_PROMPT_MAX_STATE_CHARS: usize = 7_000;
+const RESUME_PARTIAL_OUTPUT_MAX_CHARS: usize = 24_000;
 const SCHEDULER_RETRY_EVENT_LOOKBACK_LIMIT: usize = 50;
 const SCHEDULER_RETRY_BACKOFF_SECONDS: [i64; 4] = [300, 900, 3_600, 14_400];
 const SCHEDULER_RETRY_MAX_ATTEMPTS: usize = 4;
@@ -647,9 +649,82 @@ fn compact_json(value: &Value, max_chars: usize) -> String {
     out
 }
 
+fn partial_assistant_output(events: &[AgentRunEvent]) -> Option<Value> {
+    let mut order = Vec::<String>::new();
+    let mut blocks = HashMap::<String, String>::new();
+    for event in events {
+        if event.kind == AgentRunEventKind::StreamReset {
+            order.clear();
+            blocks.clear();
+            continue;
+        }
+        if event.kind != AgentRunEventKind::OutputDelta
+            || event.payload.get("channel").and_then(Value::as_str) != Some("answer")
+        {
+            continue;
+        }
+        let Some(block_id) = event.payload.get("blockId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(delta) = event.payload.get("delta").and_then(Value::as_str) else {
+            continue;
+        };
+        let offset = event
+            .payload
+            .get("offset")
+            .and_then(Value::as_u64)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .unwrap_or_default();
+        if !blocks.contains_key(block_id) {
+            if offset != 0 {
+                continue;
+            }
+            order.push(block_id.to_string());
+        }
+        let block = blocks.entry(block_id.to_string()).or_default();
+        if offset > block.len() || !block.is_char_boundary(offset) {
+            continue;
+        }
+        block.truncate(offset);
+        block.push_str(delta);
+    }
+
+    let output = order
+        .into_iter()
+        .filter_map(|block_id| blocks.remove(&block_id))
+        .filter(|block| !block.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if output.trim().is_empty() {
+        return None;
+    }
+    let char_count = output.chars().count();
+    let truncated_prefix_chars = char_count.saturating_sub(RESUME_PARTIAL_OUTPUT_MAX_CHARS);
+    let text = if truncated_prefix_chars == 0 {
+        output
+    } else {
+        output.chars().skip(truncated_prefix_chars).collect()
+    };
+    Some(serde_json::json!({
+        "text": text,
+        "truncatedPrefixChars": truncated_prefix_chars,
+    }))
+}
+
 fn build_resume_prompt(run: &AgentTaskRun, checkpoint_id: &str, state: &Value) -> String {
+    let partial_output = state
+        .get("partialAssistantOutput")
+        .and_then(|value| value.get("text"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| {
+            format!(
+                "\n\nAssistant output already shown before the pause (continue after it without repeating it):\n<paused_assistant_output>\n{text}\n</paused_assistant_output>"
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}\n\nInstructions:\n- Start by naming the resumed checkpoint and the next unfinished phase.\n- Prefer liveTurnState.taskPlan when present; it is the freshest in-memory execution state captured at the checkpoint boundary.\n- Continue from the checkpoint state instead of restarting completed work.\n- Do not redo completed tool work unless the checkpoint shows stale, failed, missing, or contradictory evidence.\n- Treat recentEvents and artifacts as durable pointers; inspect only the files, sources, or records needed for the next decision.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Run verification before the final answer, then say what was resumed and what still needs verification.\n\nCheckpoint state:\n{}",
+        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}{}\n\nInstructions:\n- Start by naming the resumed checkpoint and the next unfinished phase.\n- Prefer liveTurnState.taskPlan when present; it is the freshest in-memory execution state captured at the checkpoint boundary.\n- Continue after partialAssistantOutput exactly where it stopped; do not repeat text already shown.\n- Continue from the checkpoint state instead of restarting completed work.\n- Do not redo completed tool work unless the checkpoint shows stale, failed, missing, or contradictory evidence.\n- Treat recentEvents and artifacts as durable pointers; inspect only the files, sources, or records needed for the next decision.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Run verification before the final answer, then say what was resumed and what still needs verification.\n\nCheckpoint state:\n{}",
         run.title,
         run.id,
         checkpoint_id,
@@ -657,6 +732,7 @@ fn build_resume_prompt(run: &AgentTaskRun, checkpoint_id: &str, state: &Value) -
         run.phase,
         run.route_kind.as_deref().unwrap_or("unknown"),
         run.summary.as_deref().unwrap_or("No summary yet."),
+        partial_output,
         compact_json(state, RESUME_PROMPT_MAX_STATE_CHARS)
     )
 }
@@ -1373,11 +1449,11 @@ impl Database {
         } else {
             Some(serde_json::to_string(&message.tool_calls)?)
         };
-        let artifacts_json = message
-            .artifacts
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
+        let artifacts_json = Some(serde_json::to_string(&serde_json::json!({
+            "kind": "checkpointContinuation",
+            "version": 1,
+            "checkpointId": &checkpoint_id,
+        }))?);
         let image_attachments_json = message
             .image_attachments
             .as_ref()
@@ -1667,6 +1743,12 @@ impl Database {
             "artifacts": artifacts,
             "checkpointedAt": Utc::now().to_rfc3339(),
         });
+        if let Some(partial_output) = partial_assistant_output(&self.list_agent_run_events(run_id)?)
+        {
+            if let Some(map) = state.as_object_mut() {
+                map.insert("partialAssistantOutput".to_string(), partial_output);
+            }
+        }
         if let Some(live_state) = live_state {
             if let Some(map) = state.as_object_mut() {
                 map.insert("liveTurnState".to_string(), live_state.clone());
@@ -2186,6 +2268,8 @@ impl Database {
 mod tests {
     use uuid::Uuid;
 
+    use crate::agent::StreamBlockChannel;
+    use crate::agent_run::AgentRunEvent;
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::db::Database;
     use crate::error::CoreError;
@@ -2791,6 +2875,68 @@ mod tests {
     }
 
     #[test]
+    fn task_resume_checkpoint_carries_partial_assistant_output_forward() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-5".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user = add_user_message(&db, &conversation.id, "Explain the result");
+        let turn = db
+            .create_conversation_turn(&conversation.id, &user.id, Some("chat"))
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &user.id,
+                "Partial response",
+                Some("openai"),
+                Some("gpt-5"),
+            )
+            .unwrap();
+        db.save_agent_run_event(&AgentRunEvent::output_delta(
+            &run.id,
+            Some(&turn.id),
+            1,
+            "answer-block",
+            StreamBlockChannel::Answer,
+            0,
+            "Partial ",
+        ))
+        .unwrap();
+        db.save_agent_run_event(&AgentRunEvent::output_delta(
+            &run.id,
+            Some(&turn.id),
+            2,
+            "answer-block",
+            StreamBlockChannel::Answer,
+            8,
+            "answer",
+        ))
+        .unwrap();
+
+        let checkpoint = db
+            .create_task_resume_checkpoint(&run.id, "user_stop")
+            .unwrap();
+
+        assert_eq!(
+            checkpoint.state["partialAssistantOutput"]["text"].as_str(),
+            Some("Partial answer")
+        );
+        assert!(checkpoint.resume_prompt.contains("Partial answer"));
+        assert!(checkpoint
+            .resume_prompt
+            .contains("continue after it without repeating it"));
+    }
+
+    #[test]
     fn task_checkpoint_resume_requeues_the_original_turn_and_run_atomically() {
         let db = Database::open_memory().unwrap();
         let conversation = db
@@ -2863,6 +3009,14 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].id, response.id);
         assert_eq!(messages[1].content, checkpoint.resume_prompt);
+        assert_eq!(
+            messages[1]
+                .artifacts
+                .as_ref()
+                .and_then(|artifacts| artifacts.get("kind"))
+                .and_then(serde_json::Value::as_str),
+            Some("checkpointContinuation")
+        );
         let (launch_key, response_message_id): (Option<String>, Option<String>) = db
             .conn()
             .query_row(

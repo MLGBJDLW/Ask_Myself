@@ -1,5 +1,6 @@
 use super::conversation::desktop_package_host_snapshot;
 use super::*;
+use crate::desktop_agent_session::resolve_desktop_pending_approvals_for_stopped_run;
 use nexa_core::package_host::PackageSurfaceKind;
 use nexa_core::task_orchestrator::{
     workflow_automation_delivery_envelope, workflow_automation_execution_ticket,
@@ -309,6 +310,7 @@ async fn launch_task_orchestrator_execution_ticket(
         })),
         task_orchestrator_run_id: Some(workflow_run_id.clone()),
         resume_checkpoint_id: None,
+        retry_from_message_id: None,
         idempotency_key: format!("workflow:{queue_id}"),
     })
     .await;
@@ -914,12 +916,14 @@ pub async fn get_task_resume_prompt_cmd(
 pub async fn pause_agent_task_run_cmd(
     state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
+    approval_state: tauri::State<'_, ApprovalState>,
     run_id: String,
 ) -> Result<TaskResumeCheckpoint, String> {
     pause_agent_task_run(
         state.db.as_ref(),
         &state.run_event_outboxes,
         &agent_state.sessions,
+        &approval_state.pending,
         &run_id,
     )
     .await
@@ -929,6 +933,7 @@ async fn pause_agent_task_run(
     db: &Database,
     run_event_outboxes: &AgentRunEventOutboxes,
     sessions: &nexa_core::runtime::AgentSessionManager,
+    pending_approvals: &PendingToolApprovals,
     run_id: &str,
 ) -> Result<TaskResumeCheckpoint, String> {
     let _run_lifecycle_guard = sessions.acquire_run_lifecycle(run_id).await;
@@ -970,12 +975,17 @@ async fn pause_agent_task_run(
             .await
             .map_err(|error| error.to_string())?,
     };
-    // Drain everything accepted before the producer stopped, then make the
-    // pause decision from the resulting durable state.
-    event_outbox
-        .flush()
-        .await
-        .map_err(|error| error.to_string())?;
+    // Resolve approvals and drain everything accepted before the producer
+    // stopped, then make the pause decision from the durable state.
+    resolve_desktop_pending_approvals_for_stopped_run(
+        db,
+        event_outbox.as_ref(),
+        run_id,
+        &event_turn_id,
+        pending_approvals,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     let run = db
         .get_agent_task_run(&run_id)
         .map_err(|err| err.to_string())?;
@@ -1089,9 +1099,11 @@ mod pause_tests {
         let outboxes = AgentRunEventOutboxes::new(executor, Arc::new(NoopDelivery));
         let sessions = nexa_core::runtime::AgentSessionManager::new();
 
-        let checkpoint = pause_agent_task_run(&db, &outboxes, &sessions, &run.id)
-            .await
-            .expect("pause task run");
+        let pending_approvals = Arc::new(TokioMutex::new(HashMap::new()));
+        let checkpoint =
+            pause_agent_task_run(&db, &outboxes, &sessions, &pending_approvals, &run.id)
+                .await
+                .expect("pause task run");
 
         assert_eq!(
             db.get_agent_task_run(&run.id).expect("paused task").status,
@@ -1213,7 +1225,8 @@ mod pause_tests {
             })
             .await;
 
-        let error = pause_agent_task_run(&db, &outboxes, &sessions, &run.id)
+        let pending_approvals = Arc::new(TokioMutex::new(HashMap::new()));
+        let error = pause_agent_task_run(&db, &outboxes, &sessions, &pending_approvals, &run.id)
             .await
             .expect_err("user-input barrier must win the pause race");
 
