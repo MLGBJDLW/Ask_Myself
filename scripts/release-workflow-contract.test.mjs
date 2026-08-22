@@ -71,6 +71,11 @@ test('release PR CI dispatch does not depend on a local git checkout', () => {
   assert.match(releaseWorkflow, /GH_REPO: \$\{\{ github\.repository \}\}/);
   assert.match(
     releaseWorkflow,
+    /gh pr list --state open --head "\$RELEASE_PR_BRANCH"/,
+  );
+  assert.doesNotMatch(releaseWorkflow, /"\$OWNER:\$RELEASE_PR_BRANCH"/);
+  assert.match(
+    releaseWorkflow,
     /gh api --method POST[\s\S]*?repos\/\$GITHUB_REPOSITORY\/actions\/workflows\/ci\.yml\/dispatches[\s\S]*?-f ref="\$RELEASE_PR_BRANCH"/,
   );
   assert.doesNotMatch(releaseWorkflow, /gh workflow run ci\.yml/);
