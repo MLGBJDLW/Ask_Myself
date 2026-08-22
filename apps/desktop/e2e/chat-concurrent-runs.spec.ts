@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
       collectionContext: null,
       projectId: null,
       personaId: null,
-      titleIsAuto: false,
+      initialAutoTitlePending: false,
       archivedAt: null,
       createdAt: nowIso,
       updatedAt: nowIso,

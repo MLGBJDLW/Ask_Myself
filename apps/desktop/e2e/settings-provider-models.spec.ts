@@ -1006,14 +1006,14 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");
 });
 
-test("settings discovers GLM-5.3 without enabling an unavailable or restricted route", async ({ page }) => {
+test("settings selects the public GLM-5.3 flagship route by default", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
 
   await expect(page.getByRole("button", { name: /GLM Coding Plan/ })).toHaveCount(0);
   const zhipuCard = page.getByRole("button", { name: /^Zhipu \(GLM\)/ });
-  await expect(zhipuCard).toContainText("Model API coming soon");
+  await expect(zhipuCard).toContainText("GLM-5.3 flagship Model API");
   await zhipuCard.click();
 
   const baseUrlField = page
@@ -1026,12 +1026,12 @@ test("settings discovers GLM-5.3 without enabling an unavailable or restricted r
 
   const modelField = page.getByTestId("default-model-field");
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
-  await expectNexaValue(modelSelect, "");
+  await expectNexaValue(modelSelect, "glm-5.3");
   await modelSelect.click();
   const glm53 = page.locator('[role="option"][data-value="glm-5.3"]');
   await expect(glm53).toBeVisible();
-  await expect(glm53).toContainText("Unavailable for this credential");
-  await expect(glm53).toHaveAttribute("data-disabled", "true");
+  await expect(glm53).not.toContainText("Unavailable for this credential");
+  await expect(glm53).toHaveAttribute("data-disabled", "false");
   await page.keyboard.press("Escape");
 });
 

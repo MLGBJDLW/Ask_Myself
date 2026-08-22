@@ -1,5 +1,8 @@
 import {
   DurableRunReconciler,
+  taskRunCanAcceptStop,
+  taskRunIsActive,
+  taskRunIsSuspended,
   type DurableRunReconciliationPort,
 } from '../src/lib/streaming/runReconciliation';
 import type {
@@ -292,6 +295,33 @@ test('suspensions and terminal task states are classified without duplicating pr
     });
     assertEqual(outcome.kind, expectedKind, `${run.status}/${run.phase} classification`);
   }
+});
+
+test('hydration restores paused and awaiting-input runs as suspensions', async () => {
+  for (const run of [
+    taskRun('paused'),
+    taskRun('running', { phase: 'awaiting_user_input' }),
+  ]) {
+    const { port } = createPort({ async listTaskRuns() { return [run]; } });
+    const outcome = await new DurableRunReconciler(port).reconcile({
+      reason: 'hydration',
+      conversationId: 'conversation-1',
+    });
+    assertEqual(outcome.kind, 'suspended', `${run.status}/${run.phase} hydration`);
+  }
+});
+
+test('typed task lifecycle helpers preserve stop and pause semantics', () => {
+  const running = taskRun('running');
+  const awaiting = taskRun('running', { phase: 'awaiting_user_input' });
+  const paused = taskRun('paused');
+
+  assertEqual(taskRunIsActive(running), true, 'running task is active');
+  assertEqual(taskRunCanAcceptStop(running), true, 'running task can stop');
+  assertEqual(taskRunIsSuspended(awaiting), true, 'awaiting input is suspended');
+  assertEqual(taskRunIsActive(awaiting), false, 'awaiting input cannot be paused again');
+  assertEqual(taskRunCanAcceptStop(awaiting), true, 'awaiting input can still be stopped');
+  assertEqual(taskRunCanAcceptStop(paused), false, 'paused task resumes instead of stopping');
 });
 
 test('stale generations are rejected between durable queries', async () => {

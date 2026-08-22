@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
       collectionContext: null,
       projectId: 'project-legacy',
       personaId: 'programmer',
-      titleIsAuto: false,
+      initialAutoTitlePending: false,
       archivedAt: null,
       createdAt: nowIso,
       updatedAt: nowIso,
