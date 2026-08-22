@@ -114,7 +114,9 @@ jobs:
           if [ "$PR_COUNT" = "0" ]; then
             exit 0
           fi
-          gh workflow run ci.yml --ref "$RELEASE_PR_BRANCH"
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches" \
+            -f ref="$RELEASE_PR_BRANCH"
 
       - name: Ensure release stays draft until artifacts are verified
         if: steps.release.outputs.release_created == 'true'
