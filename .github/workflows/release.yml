@@ -101,6 +101,7 @@ jobs:
         if: (github.event_name != 'workflow_dispatch' || inputs.release_tag == '') && steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           HAS_RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
           RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
         run: |

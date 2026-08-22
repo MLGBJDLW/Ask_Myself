@@ -68,6 +68,7 @@ test('manual dispatch can resume an existing draft release without creating a ne
 });
 
 test('release PR CI dispatch does not depend on a local git checkout', () => {
+  assert.match(releaseWorkflow, /GH_REPO: \$\{\{ github\.repository \}\}/);
   assert.match(
     releaseWorkflow,
     /gh api --method POST[\s\S]*?repos\/\$GITHUB_REPOSITORY\/actions\/workflows\/ci\.yml\/dispatches[\s\S]*?-f ref="\$RELEASE_PR_BRANCH"/,
