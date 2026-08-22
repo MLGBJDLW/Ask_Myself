@@ -9,37 +9,19 @@ const releaseWorkflow = fs.readFileSync(
   path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
   'utf8',
 );
-const nativeAcceptanceWorkflow = fs.readFileSync(
-  path.join(repositoryRoot, '.github', 'workflows', 'office-native-acceptance.yml'),
-  'utf8',
+const nativeAcceptanceWorkflowPath = path.join(
+  repositoryRoot,
+  '.github',
+  'workflows',
+  'office-native-acceptance.yml',
 );
 
-test('release runs SHA-bound native Office acceptance before building artifacts', () => {
-  assert.match(nativeAcceptanceWorkflow, /^  workflow_call:\s*$/m);
-  assert.match(nativeAcceptanceWorkflow, /target_ref:[\s\S]*?required: true[\s\S]*?type: string/);
-  assert.match(nativeAcceptanceWorkflow, /target_sha:[\s\S]*?required: true[\s\S]*?type: string/);
-
-  assert.match(releaseWorkflow, /^  native-office-acceptance:\s*$/m);
-  assert.match(
-    releaseWorkflow,
-    /uses: \.\/\.github\/workflows\/office-native-acceptance\.yml/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /target_ref: \$\{\{ needs\.release-please\.outputs\.target_ref \}\}/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /target_sha: \$\{\{ needs\.release-please\.outputs\.target_sha \}\}/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /needs: \[release-please, preflight, native-office-acceptance\]/,
-  );
-  assert.doesNotMatch(
-    releaseWorkflow,
-    /actions\/workflows\/office-native-acceptance\.yml\/runs/,
-  );
+test('release has no self-hosted Office dependency and keeps hosted safety gates', () => {
+  assert.equal(fs.existsSync(nativeAcceptanceWorkflowPath), false);
+  assert.doesNotMatch(releaseWorkflow, /native-office-acceptance|office-native-acceptance/);
+  assert.match(releaseWorkflow, /needs: \[release-please, preflight\]/);
+  assert.match(releaseWorkflow, /TAURI_SIGNING_PRIVATE_KEY is required/);
+  assert.match(releaseWorkflow, /REQUIRED_UPDATER_PLATFORMS=\(windows-x86_64 linux-x86_64\)/);
 });
 
 test('manual dispatch can resume an existing draft release without creating a new tag', () => {
