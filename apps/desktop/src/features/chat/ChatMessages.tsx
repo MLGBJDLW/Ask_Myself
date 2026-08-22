@@ -18,6 +18,7 @@ import {
   X,
   BookOpen,
   CheckCircle2,
+  Play,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -42,7 +43,9 @@ import type {
   StreamRoundEvent,
   ToolCallEvent,
   TraceEvent,
+  TurnTiming,
 } from "../../lib/streaming/protocol";
+import { formatThinkingDuration, useElapsedTime } from "../../lib/useElapsedTime";
 import {
   extractPersistedTraceItems,
   extractTurnTrace,
@@ -108,6 +111,7 @@ interface ChatMessagesProps {
   isThinking: boolean;
   toolCalls: ToolCallEvent[];
   taskRun?: AgentTaskRun | null;
+  turnTiming?: TurnTiming | null;
   isStreaming: boolean;
   error?: string | null;
   onRetry?: (messageId?: string, visionTurnOverride?: VisionTurnOverride, refreshVision?: boolean) => void;
@@ -116,6 +120,7 @@ interface ChatMessagesProps {
   onEditAndResend?: (messageId: string, newContent: string) => void;
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
   onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
+  onResumePaused?: () => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
   isCompacting?: boolean;
@@ -621,6 +626,7 @@ export function ChatMessages(props: ChatMessagesProps) {
     onEditAndResend,
     onApprovePlan,
     onQuestionSubmit,
+    onResumePaused,
     loadingMsgs,
     lastCached,
     isCompacting = false,
@@ -661,6 +667,12 @@ export function ChatMessages(props: ChatMessagesProps) {
     return responses;
   }, [props.messages]);
   const { t } = useTranslation();
+  const thinkingElapsedLabel = useElapsedTime(
+    props.turnTiming,
+    isStreaming,
+    0,
+    formatThinkingDuration,
+  );
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -892,7 +904,13 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const renderThinkingTraceNode = useCallback(
-    (key: string, sections: ThinkingSection[], isStreaming = false, forceExpanded = false) => (
+    (
+      key: string,
+      sections: ThinkingSection[],
+      isStreaming = false,
+      forceExpanded = false,
+      durationLabel: string | null = null,
+    ) => (
       <div key={key} className="flex justify-start mb-1">
         <div className="w-full min-w-0">
           <ThinkingBlock
@@ -901,6 +919,7 @@ export function ChatMessages(props: ChatMessagesProps) {
             isStreaming={isStreaming}
             defaultExpanded={isStreaming || forceExpanded}
             collapseOnFinish={!forceExpanded}
+            elapsedLabel={durationLabel}
           />
         </div>
       </div>
@@ -984,7 +1003,12 @@ export function ChatMessages(props: ChatMessagesProps) {
   );
 
   const renderTimelineTraceNode = useCallback(
-    (key: string, sections: TimelineSection[], isStreaming = false) => {
+    (
+      key: string,
+      sections: TimelineSection[],
+      isStreaming = false,
+      durationLabel: string | null = null,
+    ) => {
       if (sections.length === 0) return <Fragment key={key} />;
       const ordered: Array<
         | { kind: 'trace'; id: string; sections: TimelineSection[] }
@@ -1047,6 +1071,8 @@ export function ChatMessages(props: ChatMessagesProps) {
                 item.id,
                 renderTimelineSections(item.sections),
                 isStreaming && index === lastTraceIndex,
+                false,
+                index === lastTraceIndex ? durationLabel : null,
               )
             : (
                 <div key={item.id} className="mb-1 flex justify-start">
@@ -2258,6 +2284,7 @@ export function ChatMessages(props: ChatMessagesProps) {
             "current-turn-working-trace",
             collapsedLiveTrace.historySections,
             false,
+            !isStreaming ? thinkingElapsedLabel : null,
           )}
           {renderTraceReplyNode(
             collapsedLiveTrace.finalItem.id,
@@ -2279,7 +2306,12 @@ export function ChatMessages(props: ChatMessagesProps) {
             transition={shouldReduceMotion ? INSTANT_TRANSITION : SOFT_FADE_TRANSITION}
           >
             {item.kind === "thinking"
-              ? renderTimelineTraceNode(item.id, item.sections, item.isStreaming)
+              ? renderTimelineTraceNode(
+                  item.id,
+                  item.sections,
+                  item.isStreaming,
+                  item.isStreaming ? thinkingElapsedLabel : null,
+                )
               : renderTraceReplyNode(
                   item.id,
                   item.content,
@@ -2331,6 +2363,7 @@ export function ChatMessages(props: ChatMessagesProps) {
               isStreaming={currentTraceActive}
               defaultExpanded={currentTraceActive}
               collapseOnFinish
+              elapsedLabel={thinkingElapsedLabel}
             />
           </div>
         </motion.div>
@@ -2374,6 +2407,26 @@ export function ChatMessages(props: ChatMessagesProps) {
             </div>
           </motion.div>
         )}
+
+      {taskRun?.status === 'paused' && onResumePaused && (
+        <div
+          className="mb-3 flex justify-start"
+          data-testid="chat-paused-resume"
+          role="status"
+        >
+          <div className="flex items-center gap-3 rounded-lg border border-accent/25 bg-accent/10 px-3.5 py-2.5 text-sm">
+            <span className="text-text-secondary">{t('taskCenter.paused')}</span>
+            <button
+              type="button"
+              onClick={onResumePaused}
+              className="inline-flex items-center gap-1.5 rounded-md border border-accent/35 bg-surface-1 px-2.5 py-1 text-xs font-medium text-accent hover:bg-surface-2"
+            >
+              <Play className="h-3.5 w-3.5" />
+              {t('taskCenter.resume')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {(isCompacting || compactCompleteVisible) &&
         renderCompactStatus(isCompacting, "compact-status-current")}

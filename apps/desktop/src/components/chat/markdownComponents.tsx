@@ -446,6 +446,19 @@ export function sanitizeMermaidSvg(svg: string): string {
   template.innerHTML = sanitized;
   const root = template.content.firstElementChild;
   if (!root || root.tagName.toLowerCase() !== 'svg') return '';
+  const existingStyle = root.getAttribute('style')?.trim();
+  root.setAttribute(
+    'style',
+    [
+      existingStyle,
+      'font-family: Inter, ui-sans-serif, system-ui, sans-serif',
+      'font-size: 16px',
+      'line-height: normal',
+      'letter-spacing: normal',
+      'color: #0f172a',
+      'color-scheme: light',
+    ].filter(Boolean).join('; '),
+  );
 
   root.querySelectorAll('*').forEach((element) => {
     for (const name of ['href', 'xlink:href']) {
@@ -540,6 +553,22 @@ export function MermaidBlock({ chart }: { chart: string }) {
 
         const renderId = `mermaid-${diagramId}-${++mermaidRenderSequence}`;
         const rendered = await enqueueMermaidRender(async () => {
+          const renderHost = document.createElement('div');
+          renderHost.style.cssText = [
+            'all: initial',
+            'display: block',
+            'position: fixed',
+            'left: -100000px',
+            'top: 0',
+            'width: 1200px',
+            'font-family: Inter, ui-sans-serif, system-ui, sans-serif',
+            'font-size: 16px',
+            'line-height: normal',
+            'letter-spacing: normal',
+            'color: #0f172a',
+            'color-scheme: light',
+          ].join(';');
+          document.body.appendChild(renderHost);
           try {
             const repairedChart = repairMermaidFlowchartLabels(normalizedChart);
             const candidates = repairedChart === normalizedChart
@@ -550,7 +579,7 @@ export function MermaidBlock({ chart }: { chart: string }) {
               try {
                 const parsed = await mermaid.parse(candidate, { suppressErrors: true });
                 if (!parsed) continue;
-                return await mermaid.render(renderId, candidate);
+                return await mermaid.render(renderId, candidate, renderHost);
               } catch {
                 document.getElementById(renderId)?.remove();
               }
@@ -558,6 +587,7 @@ export function MermaidBlock({ chart }: { chart: string }) {
             return null;
           } finally {
             document.getElementById(renderId)?.remove();
+            renderHost.remove();
           }
         });
         if (!rendered) {
@@ -615,7 +645,13 @@ export function MermaidBlock({ chart }: { chart: string }) {
       <div
         className="mermaid-surface overflow-x-auto bg-white px-3 py-3 text-slate-900"
         data-testid="mermaid-surface"
-        style={{ colorScheme: 'light' }}
+        style={{
+          colorScheme: 'light',
+          fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+          fontSize: '16px',
+          lineHeight: 'normal',
+          letterSpacing: 'normal',
+        }}
       >
         {svg && renderState === 'ready' ? (
           <div

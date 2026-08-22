@@ -23,6 +23,7 @@ interface ThinkingBlockProps {
   defaultExpanded?: boolean;
   collapseOnFinish?: boolean;
   children?: React.ReactNode;
+  elapsedLabel?: string | null;
 }
 
 const THINKING_MOODS = [
@@ -120,17 +121,16 @@ export function ThinkingBlock({
   defaultExpanded,
   collapseOnFinish = true,
   children,
+  elapsedLabel,
 }: ThinkingBlockProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
   const [expanded, setExpanded] = useState(defaultExpanded ?? isStreaming);
-  const startTimeRef = useRef<number>(Date.now());
   const prevStreamingRef = useRef(isStreaming);
   const autoOpenedRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const userScrolledUpRef = useRef(false);
-  const [elapsed, setElapsed] = useState(0);
   const [moodOrder, setMoodOrder] = useState(() => shuffledThinkingMoods());
 
   const effectiveSections = sections && sections.length > 0 ? sections : null;
@@ -143,8 +143,6 @@ export function ThinkingBlock({
   useEffect(() => {
     const hasContent = combinedContent.trim().length > 0 || hasSectionCards;
     if (!prevStreamingRef.current && isStreaming) {
-      startTimeRef.current = Date.now();
-      setElapsed(0);
       setMoodOrder(shuffledThinkingMoods());
     }
     if (isStreaming && hasContent) {
@@ -157,21 +155,6 @@ export function ThinkingBlock({
     }
     prevStreamingRef.current = isStreaming;
   }, [collapseOnFinish, combinedContent, hasSectionCards, isStreaming]);
-
-  // Track elapsed thinking time
-  useEffect(() => {
-    if (!isStreaming) {
-      // Capture final elapsed
-      setElapsed(Math.round((Date.now() - startTimeRef.current) / 1000));
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setElapsed(Math.round((Date.now() - startTimeRef.current) / 1000));
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isStreaming]);
 
   // Auto-follow: keep the inner trace panel scrolled to the latest token
   // while streaming, unless the user has scrolled up away from the bottom.
@@ -203,12 +186,14 @@ export function ThinkingBlock({
   }, [isStreaming]);
 
   const summaryText = isStreaming
-    ? t('chat.thinkingElapsed', { seconds: elapsed.toString() })
-    : elapsed > 0
-      ? t('chat.thoughtFor', { seconds: elapsed.toString() })
+    ? elapsedLabel
+      ? `${t('chat.thinking')} · ${elapsedLabel}`
+      : t('chat.thinking')
+    : elapsedLabel
+      ? `${t('chat.thinkingCompleted')} · ${elapsedLabel}`
       : t('chat.thinkingCompleted');
   const traceActive = isStreaming && !shouldReduceMotion;
-  const thinkingMood = moodOrder[Math.floor(elapsed / 6) % moodOrder.length] ?? THINKING_MOODS[0];
+  const thinkingMood = moodOrder[0] ?? THINKING_MOODS[0];
 
   return (
     <div

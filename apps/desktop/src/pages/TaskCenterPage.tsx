@@ -30,6 +30,11 @@ import { toast } from 'sonner';
 import { useTranslation, type TranslationKey } from '../i18n';
 import * as api from '../lib/api';
 import { useElapsedTime } from '../lib/useElapsedTime';
+import { turnTimingFromTaskRun } from '../lib/streaming/durableReplay';
+import {
+  taskRunCanAcceptStop,
+  taskRunIsActive,
+} from '../lib/streaming/runReconciliation';
 import { useDeveloperMode } from '../lib/developerMode';
 import {
   invalidateTaskCheckpointLoadState,
@@ -230,25 +235,12 @@ function statusIcon(status: string) {
   return <Circle className="h-3.5 w-3.5" />;
 }
 
-function isActiveTask(status: string) {
-  return ['queued', 'running', 'waiting_approval', 'awaiting_user_input', 'cancelling'].includes(status);
-}
-
 function TaskElapsed({ run }: { run: AgentTaskRunListItem['run'] }) {
-  const timing = useMemo(() => {
-    const startedAt = Date.parse(run.startedAt ?? run.createdAt);
-    const finishedAt = run.finishedAt ? Date.parse(run.finishedAt) : null;
-    if (!Number.isFinite(startedAt)) return null;
-    return {
-      startedAtEpochMs: startedAt,
-      startedAtMonotonicMs: null,
-      firstEventAtEpochMs: null,
-      firstVisibleOutputAtEpochMs: null,
-      finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
-      finishedAtMonotonicMs: null,
-    };
-  }, [run.createdAt, run.finishedAt, run.startedAt]);
-  const elapsed = useElapsedTime(timing, isActiveTask(run.status));
+  const timing = useMemo(
+    () => turnTimingFromTaskRun(run),
+    [run.createdAt, run.finishedAt, run.phase, run.startedAt, run.status, run.updatedAt],
+  );
+  const elapsed = useElapsedTime(timing, taskRunIsActive(run));
   return elapsed ? <RiskPill>{elapsed}</RiskPill> : null;
 }
 
@@ -477,7 +469,7 @@ export function TaskCenterPage() {
     if (!selected) return;
 
     const cached = detailCacheRef.current.get(selected.run.id);
-    if (!cached || isActiveTask(selected.run.status)) return;
+    if (!cached || taskRunCanAcceptStop(selected.run)) return;
     setEvents(cached.events ?? []);
     setSchedulerEvents(cached.schedulerEvents ?? []);
     setGraph(cached.graph ?? null);
@@ -521,7 +513,7 @@ export function TaskCenterPage() {
 
   const loadDetailPanel = useCallback(async (panel: TaskDetailPanel) => {
     if (!selected) return;
-    if (loadedPanels.has(panel) && !isActiveTask(selected.run.status)) return;
+    if (loadedPanels.has(panel) && !taskRunCanAcceptStop(selected.run)) return;
     const generation = detailGenerationRef.current;
     const runId = selected.run.id;
     setLoadingPanels((current) => new Set([...current, panel]));
@@ -612,7 +604,7 @@ export function TaskCenterPage() {
   }, []);
 
   const handleCancel = useCallback(async () => {
-    if (!selected || !isActiveTask(selected.run.status)) return;
+    if (!selected || !taskRunCanAcceptStop(selected.run)) return;
     setStoppingId(selected.run.id);
     try {
       await api.agentStop(selected.run.conversationId);
@@ -626,7 +618,7 @@ export function TaskCenterPage() {
   }, [copy.stopError, copy.stopped, load, selected]);
 
   const handlePause = useCallback(async () => {
-    if (!selected || !isActiveTask(selected.run.status) || selected.run.status === 'awaiting_user_input') return;
+    if (!selected || !taskRunIsActive(selected.run)) return;
     setPausingId(selected.run.id);
     try {
       const runId = selected.run.id;
@@ -788,7 +780,7 @@ export function TaskCenterPage() {
     }
   }, [copy.openFileError]);
 
-  const runningCount = tasks.filter((task) => isActiveTask(task.run.status)).length;
+  const runningCount = tasks.filter((task) => taskRunCanAcceptStop(task.run)).length;
   const failedCount = tasks.filter((task) => ['failed', 'timed_out'].includes(task.run.status)).length;
   const completedCount = tasks.filter((task) => task.run.status === 'completed').length;
   const highRiskTools = toolAccess.filter((tool) => tool.riskLevel === 'high');
@@ -994,7 +986,7 @@ export function TaskCenterPage() {
                       <RotateCcw className="h-4 w-4" />
                       {copy.retry}
                     </button>
-                    {isActiveTask(selected.run.status) && selected.run.status !== 'awaiting_user_input' && (
+                    {taskRunIsActive(selected.run) && (
                       <button
                         type="button"
                         onClick={() => void handlePause()}
@@ -1016,7 +1008,7 @@ export function TaskCenterPage() {
                         {copy.resume}
                       </button>
                     )}
-                    {isActiveTask(selected.run.status) && (
+                    {taskRunCanAcceptStop(selected.run) && (
                       <button
                         type="button"
                         aria-label={copy.cancelTask}
