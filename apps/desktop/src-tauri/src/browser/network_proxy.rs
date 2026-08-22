@@ -12,6 +12,7 @@ use url::Url;
 use super::policy::private_or_special_ip;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const COPY_INTERRUPT_POLL: Duration = Duration::from_millis(100);
 
 /// A loopback-only SOCKS5 proxy that enforces the agent's network boundary for
 /// every WebView connection, including fetches, images, scripts and iframes.
@@ -20,7 +21,8 @@ pub struct BrowserNetworkProxy {
     address: SocketAddr,
     running: Arc<AtomicBool>,
     agent_restricted: Arc<AtomicBool>,
-    active_connections: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    restriction_generation: Arc<AtomicU64>,
+    active_connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
 }
 
 impl BrowserNetworkProxy {
@@ -36,11 +38,13 @@ impl BrowserNetworkProxy {
         let url = Url::parse(&format!("socks5://{address}"))
             .map_err(|error| format!("Could not create browser network policy URL: {error}"))?;
         let running = Arc::new(AtomicBool::new(true));
+        let restriction_generation = Arc::new(AtomicU64::new(0));
         let active_connections = Arc::new(Mutex::new(HashMap::new()));
         let next_connection_id = Arc::new(AtomicU64::new(1));
 
         let running_for_thread = Arc::clone(&running);
         let restriction_for_thread = Arc::clone(&agent_restricted);
+        let restriction_generation_for_thread = Arc::clone(&restriction_generation);
         let connections_for_thread = Arc::clone(&active_connections);
         std::thread::Builder::new()
             .name("nexa-browser-network-policy".to_string())
@@ -52,6 +56,8 @@ impl BrowserNetworkProxy {
                                 break;
                             }
                             let restriction = Arc::clone(&restriction_for_thread);
+                            let restriction_generation =
+                                Arc::clone(&restriction_generation_for_thread);
                             let connections = Arc::clone(&connections_for_thread);
                             let connection_id = next_connection_id.fetch_add(1, Ordering::Relaxed);
                             let _ = std::thread::Builder::new()
@@ -61,6 +67,7 @@ impl BrowserNetworkProxy {
                                         client,
                                         connection_id,
                                         restriction,
+                                        restriction_generation,
                                         connections,
                                     );
                                 });
@@ -79,6 +86,7 @@ impl BrowserNetworkProxy {
             address,
             running,
             agent_restricted,
+            restriction_generation,
             active_connections,
         })
     }
@@ -90,6 +98,7 @@ impl BrowserNetworkProxy {
     pub fn set_agent_restricted(&self, restricted: bool) {
         let was_restricted = self.agent_restricted.swap(restricted, Ordering::AcqRel);
         if restricted && !was_restricted {
+            self.restriction_generation.fetch_add(1, Ordering::AcqRel);
             self.close_active_connections();
         }
     }
@@ -103,8 +112,10 @@ impl BrowserNetworkProxy {
 
     fn close_active_connections(&self) {
         if let Ok(connections) = self.active_connections.lock() {
-            for connection in connections.values() {
-                let _ = connection.shutdown(Shutdown::Both);
+            for connection_group in connections.values() {
+                for connection in connection_group {
+                    let _ = connection.shutdown(Shutdown::Both);
+                }
             }
         }
     }
@@ -118,14 +129,14 @@ impl Drop for BrowserNetworkProxy {
 
 struct ActiveConnection {
     id: u64,
-    connections: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
 }
 
 impl ActiveConnection {
     fn register(
         id: u64,
         stream: &TcpStream,
-        connections: Arc<Mutex<HashMap<u64, TcpStream>>>,
+        connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
     ) -> io::Result<Self> {
         connections
             .lock()
@@ -137,10 +148,23 @@ impl ActiveConnection {
                         "browser proxy connection limit reached",
                     ));
                 }
-                connections.insert(id, stream.try_clone()?);
+                connections.insert(id, vec![stream.try_clone()?]);
                 Ok(())
             })?;
         Ok(Self { id, connections })
+    }
+
+    fn register_peer(&self, stream: &TcpStream) -> io::Result<()> {
+        let peer = stream.try_clone()?;
+        let mut connections = self
+            .connections
+            .lock()
+            .map_err(|_| io::Error::other("browser proxy connection registry is unavailable"))?;
+        let group = connections.get_mut(&self.id).ok_or_else(|| {
+            io::Error::other("browser proxy connection closed before peer registration")
+        })?;
+        group.push(peer);
+        Ok(())
     }
 }
 
@@ -156,8 +180,10 @@ fn handle_client(
     mut client: TcpStream,
     connection_id: u64,
     agent_restricted: Arc<AtomicBool>,
-    active_connections: Arc<Mutex<HashMap<u64, TcpStream>>>,
+    restriction_generation: Arc<AtomicU64>,
+    active_connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
 ) -> io::Result<()> {
+    let connection_generation = restriction_generation.load(Ordering::Acquire);
     client.set_nonblocking(false)?;
     client.set_read_timeout(Some(IO_TIMEOUT))?;
     client.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -214,6 +240,7 @@ fn handle_client(
         finish_rejection(&mut client);
         return Ok(());
     };
+    _active.register_peer(&upstream)?;
     if agent_restricted.load(Ordering::Acquire)
         && upstream
             .peer_addr()
@@ -226,20 +253,57 @@ fn handle_client(
     send_reply(&mut client, 0, upstream.local_addr().ok())?;
     client.flush()?;
 
-    client.set_read_timeout(None)?;
-    client.set_write_timeout(None)?;
-    upstream.set_read_timeout(None)?;
-    upstream.set_write_timeout(None)?;
+    client.set_read_timeout(Some(COPY_INTERRUPT_POLL))?;
+    client.set_write_timeout(Some(IO_TIMEOUT))?;
+    upstream.set_read_timeout(Some(COPY_INTERRUPT_POLL))?;
+    upstream.set_write_timeout(Some(IO_TIMEOUT))?;
     let mut client_reader = client.try_clone()?;
     let mut upstream_writer = upstream.try_clone()?;
+    let reverse_generation = Arc::clone(&restriction_generation);
     let reverse = std::thread::spawn(move || {
-        let _ = io::copy(&mut client_reader, &mut upstream_writer);
+        let _ = copy_until_generation_changes(
+            &mut client_reader,
+            &mut upstream_writer,
+            reverse_generation.as_ref(),
+            connection_generation,
+        );
         let _ = upstream_writer.shutdown(Shutdown::Write);
     });
-    let _ = io::copy(&mut upstream, &mut client);
+    let _ = copy_until_generation_changes(
+        &mut upstream,
+        &mut client,
+        restriction_generation.as_ref(),
+        connection_generation,
+    );
     let _ = client.shutdown(Shutdown::Write);
     let _ = reverse.join();
     Ok(())
+}
+
+fn copy_until_generation_changes(
+    reader: &mut TcpStream,
+    writer: &mut TcpStream,
+    restriction_generation: &AtomicU64,
+    connection_generation: u64,
+) -> io::Result<()> {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        if restriction_generation.load(Ordering::Acquire) != connection_generation {
+            return Ok(());
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => writer.write_all(&buffer[..read])?,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn finish_rejection(client: &mut TcpStream) {
@@ -390,27 +454,29 @@ mod tests {
 
     #[test]
     fn taking_agent_control_closes_existing_private_connections() {
-        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(false))).unwrap();
-        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let address = target.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            let mut byte = [0_u8; 1];
-            let _ = stream.read_exact(&mut byte);
-        });
-        let mut stream = connect_request(&proxy, address);
-        let mut header = [0_u8; 4];
-        stream.read_exact(&mut header).unwrap();
-        let address_length = if header[3] == 1 { 6 } else { 18 };
-        let mut address = vec![0_u8; address_length];
-        stream.read_exact(&mut address).unwrap();
+        for _ in 0..16 {
+            let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(false))).unwrap();
+            let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let address = target.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = target.accept().unwrap();
+                let mut byte = [0_u8; 1];
+                let _ = stream.read_exact(&mut byte);
+            });
+            let mut stream = connect_request(&proxy, address);
+            let mut header = [0_u8; 4];
+            stream.read_exact(&mut header).unwrap();
+            let address_length = if header[3] == 1 { 6 } else { 18 };
+            let mut address = vec![0_u8; address_length];
+            stream.read_exact(&mut address).unwrap();
 
-        proxy.set_agent_restricted(true);
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut byte = [0_u8; 1];
-        assert_ne!(stream.read(&mut byte).unwrap_or(0), 1);
-        server.join().unwrap();
+            proxy.set_agent_restricted(true);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            assert_ne!(stream.read(&mut byte).unwrap_or(0), 1);
+            server.join().unwrap();
+        }
     }
 }

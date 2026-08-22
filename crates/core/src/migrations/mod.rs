@@ -2474,6 +2474,12 @@ Every answer that uses knowledge base search results.
              ON task_resume_checkpoints(response_message_id)
              WHERE response_message_id IS NOT NULL;",
     ),
+    (
+        "v118_retire_playwright_browser_connector",
+        "DELETE FROM mcp_servers
+         WHERE id = 'builtin-playwright-browser'
+            OR builtin_id = 'playwright-browser';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -3345,24 +3351,21 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_browser_connector_seeded_disabled() {
+    fn test_builtin_playwright_connector_is_retired_in_favor_of_native_browser() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).expect("migrations should succeed");
 
-        let (name, transport, enabled, builtin_id, args): (String, String, i64, String, String) = conn
+        let count: i64 = conn
             .query_row(
-                "SELECT name, transport, enabled, builtin_id, args FROM mcp_servers WHERE id = 'builtin-playwright-browser'",
+                "SELECT COUNT(*) FROM mcp_servers
+                 WHERE id = 'builtin-playwright-browser'
+                    OR builtin_id = 'playwright-browser'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| row.get(0),
             )
             .unwrap();
 
-        assert_eq!(name, "Browser Automation");
-        assert_eq!(transport, "streamable_http");
-        assert_eq!(enabled, 0);
-        assert_eq!(builtin_id, "playwright-browser");
-        assert!(args.contains("@playwright/mcp@latest"));
-        assert!(args.contains("${PORT}"));
+        assert_eq!(count, 0);
     }
 
     #[test]

@@ -211,18 +211,29 @@ Do not stack unusual search operators or several near-duplicate queries. Start w
 
 ---
 
-## Controlled Desktop Automation
+## Browser and Controlled Desktop Automation
+
+Use `browser_session` for interactive website work. It operates the visible
+Nexa Browser Workspace shared with the user, including tabs, cookies,
+observation-scoped element references, navigation, interaction, waits, and
+control handoff. Observe before acting and use the latest observation ID and
+element refs. The session ID may be omitted when the conversation already has
+an active Browser Workspace; continue to use the explicit tab ID returned by
+the workspace.
 
 Use `desktop_automation` only for narrow, user-visible local actions:
 
-- open an http/https URL in the default browser
-- open a browser search for a query
 - open or reveal a file/folder inside the current registered source scope
-- wait briefly during an approved automation flow
 
-`desktop_automation` is for handoff to the user's desktop, not for reading page contents. Use `fetch_url` for read-only web content extraction, and use retrieval/file tools for local content. URL, search, open-path, and reveal-path actions require confirmation; `wait` does not. Source paths must resolve inside registered sources and the active source scope.
+`desktop_automation` is for local path handoff, not browser interaction or
+reading page contents. Use `fetch_url` for read-only web extraction and
+`browser_session` when the page must be observed or manipulated. Source paths
+must resolve inside registered sources and the active source scope.
 
-Do not claim you can see or inspect the user's screen after launching a desktop action unless a tool result actually provides that state. For full browser interaction through MCP, use an enabled browser automation connector such as Playwright MCP when available; otherwise explain the limitation and use the safer handoff actions above.
+Do not claim you can see or inspect the user's screen after launching a desktop
+action unless a tool result actually provides that state. Do not ask for or
+prefer a browser MCP connector when `browser_session` is available. The native
+workspace is the canonical interactive browser surface.
 
 ---
 

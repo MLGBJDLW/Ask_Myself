@@ -34,6 +34,34 @@ impl NativeBrowserSessionTool {
         }
         Ok(())
     }
+
+    fn resolve_session_id(
+        &self,
+        requested: Option<&str>,
+        conversation_id: Option<&str>,
+    ) -> Result<String, CoreError> {
+        if let Some(session_id) = requested
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+        {
+            self.owned_session(session_id, conversation_id)?;
+            return Ok(session_id.to_string());
+        }
+        let conversation_id = conversation_id.ok_or_else(|| {
+            Self::invalid(
+                "browser_session requires sessionId when no conversation owns an active Browser Workspace",
+            )
+        })?;
+        self.state
+            .active_session(conversation_id)
+            .map_err(Self::invalid)?
+            .map(|session| session.id)
+            .ok_or_else(|| {
+                Self::invalid(
+                    "No active Browser Workspace exists for this conversation. Use create_session first.",
+                )
+            })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,11 +94,11 @@ fn required<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str, CoreErro
 }
 
 fn condition_matches(observation: &serde_json::Value, condition: &serde_json::Value) -> bool {
-    match condition
+    let condition_type = condition
         .get("type")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-    {
+        .unwrap_or_default();
+    match condition_type {
         "page_loaded" => true,
         "text_present" => condition
             .get("text")
@@ -81,6 +109,15 @@ fn condition_matches(observation: &serde_json::Value, condition: &serde_json::Va
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|content| content.contains(text))
             }),
+        "text_absent" => condition
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| {
+                observation
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|content| !content.contains(text))
+            }),
         "url_matches" => condition
             .get("pattern")
             .and_then(serde_json::Value::as_str)
@@ -90,6 +127,43 @@ fn condition_matches(observation: &serde_json::Value, condition: &serde_json::Va
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|url| url.contains(pattern))
             }),
+        "element_present" | "element_absent" => {
+            let Some(elements) = observation
+                .get("elements")
+                .and_then(serde_json::Value::as_array)
+            else {
+                return false;
+            };
+            let matches = elements.iter().any(|element| {
+                let ref_matches = condition
+                    .get("ref")
+                    .or_else(|| condition.get("targetRef"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|expected| {
+                        element.get("ref").and_then(serde_json::Value::as_str) == Some(expected)
+                    });
+                let name_matches = condition
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|expected| {
+                        element
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|name| name.contains(expected))
+                    });
+                let role_matches = condition
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|expected| {
+                        element
+                            .get("role")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|role| role.eq_ignore_ascii_case(expected))
+                    });
+                ref_matches && name_matches && role_matches
+            });
+            matches == (condition_type == "element_present")
+        }
         _ => false,
     }
 }
@@ -151,7 +225,7 @@ impl Tool for NativeBrowserSessionTool {
                 "modifiers": { "type": "array", "items": { "type": "string", "enum": ["Alt", "Control", "Meta", "Shift"] }, "uniqueItems": true },
                 "scrollX": { "type": "integer", "default": 0 },
                 "scrollY": { "type": "integer", "default": 0 },
-                "condition": { "type": "object", "description": "Condition type: page_loaded, text_present, or url_matches." },
+                "condition": { "type": "object", "description": "Condition type: page_loaded, text_present, text_absent, url_matches, element_present, or element_absent. Element conditions accept ref/targetRef, name, and role." },
                 "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000, "default": 15000 }
             },
             "required": ["action"],
@@ -249,8 +323,9 @@ impl Tool for NativeBrowserSessionTool {
             );
         }
 
-        let session_id = required(args.session_id.as_deref(), "sessionId")?;
-        self.owned_session(session_id, conversation_id)?;
+        let resolved_session_id =
+            self.resolve_session_id(args.session_id.as_deref(), conversation_id)?;
+        let session_id = resolved_session_id.as_str();
         if action == "close_session" {
             self.state
                 .acquire_agent_control(session_id, context.call_id)
@@ -333,9 +408,29 @@ impl Tool for NativeBrowserSessionTool {
                     .map_err(Self::invalid)?;
                 observation_result(context.call_id, observation)
             }
-            "go_back" | "go_forward" => Err(Self::invalid(
-                "Agent history traversal is unavailable under fail-closed network policy; navigate to an explicit validated URL instead",
-            )),
+            "go_back" | "go_forward" => {
+                self.state
+                    .acquire_agent_control(session_id, context.call_id)
+                    .map_err(Self::invalid)?;
+                if action == "go_back" {
+                    self.state
+                        .go_back_as_agent(session_id, tab_id, context.call_id)
+                        .await
+                        .map_err(Self::invalid)?;
+                } else {
+                    self.state
+                        .go_forward_as_agent(session_id, tab_id, context.call_id)
+                        .await
+                        .map_err(Self::invalid)?;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let observation = self
+                    .state
+                    .observe(session_id, tab_id, context.call_id)
+                    .await
+                    .map_err(Self::invalid)?;
+                observation_result(context.call_id, observation)
+            }
             "reload" => {
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
@@ -360,12 +455,19 @@ impl Tool for NativeBrowserSessionTool {
                     .map_err(Self::invalid)?;
                 observation_result(context.call_id, observation)
             }
-            "move" | "hover" | "click" | "double_click" | "drag" | "type" | "select"
-            | "press" | "scroll" => {
+            "move" | "hover" | "click" | "double_click" | "drag" | "type" | "select" | "press"
+            | "scroll" => {
                 let observation_id = required(args.observation_id.as_deref(), "observationId")?;
                 let target_ref = if matches!(
                     action.as_str(),
-                    "move" | "hover" | "click" | "double_click" | "drag" | "type" | "select" | "press"
+                    "move"
+                        | "hover"
+                        | "click"
+                        | "double_click"
+                        | "drag"
+                        | "type"
+                        | "select"
+                        | "press"
                 ) {
                     Some(required(args.target_ref.as_deref(), "targetRef")?)
                 } else {
@@ -487,4 +589,44 @@ fn observation_result(
             attachments: Vec::new(),
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::condition_matches;
+
+    #[test]
+    fn wait_conditions_cover_text_absence_and_semantic_elements() {
+        let observation = serde_json::json!({
+            "text": "Dashboard ready",
+            "elements": [
+                { "ref": "e-1", "role": "button", "name": "Save changes" },
+                { "ref": "e-2", "role": "status", "name": "Ready" }
+            ]
+        });
+
+        assert!(condition_matches(
+            &observation,
+            &serde_json::json!({ "type": "text_absent", "text": "Loading" })
+        ));
+        assert!(condition_matches(
+            &observation,
+            &serde_json::json!({
+                "type": "element_present",
+                "role": "BUTTON",
+                "name": "Save"
+            })
+        ));
+        assert!(condition_matches(
+            &observation,
+            &serde_json::json!({
+                "type": "element_absent",
+                "targetRef": "missing"
+            })
+        ));
+        assert!(!condition_matches(
+            &observation,
+            &serde_json::json!({ "type": "element_absent", "ref": "e-2" })
+        ));
+    }
 }
