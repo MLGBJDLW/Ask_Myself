@@ -1,7 +1,26 @@
 name: Native Office Acceptance
 
 on:
+  workflow_call:
+    inputs:
+      target_ref:
+        description: Release tag or ref whose source is under acceptance
+        required: true
+        type: string
+      target_sha:
+        description: Immutable commit expected for the accepted source
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Optional tag or ref; defaults to the selected workflow ref
+        required: false
+        type: string
+      target_sha:
+        description: Optional expected commit; defaults to the selected workflow SHA
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -9,7 +28,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: office-native-${{ github.sha }}
+  group: office-native-${{ inputs.target_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -21,14 +40,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.target_ref || github.sha }}
 
       - name: Verify exact clean checkout
         shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.target_sha || github.sha }}
         run: |
           $actualSha = (git rev-parse HEAD).Trim().ToLowerInvariant()
-          if ($actualSha -ne '${{ github.sha }}'.ToLowerInvariant()) {
-            throw "Checked-out SHA $actualSha does not match ${{ github.sha }}"
+          $expectedSha = $env:EXPECTED_SHA.Trim().ToLowerInvariant()
+          if ($actualSha -ne $expectedSha) {
+            throw "Checked-out SHA $actualSha does not match $expectedSha"
           }
           if (git status --porcelain=v1 --untracked-files=all) {
             throw 'Native acceptance requires a clean checkout.'
@@ -52,12 +74,13 @@ jobs:
         shell: pwsh
         env:
           ACCEPTANCE_ROOT: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_SHA: ${{ inputs.target_sha || github.sha }}
           NEXA_RUN_OFFICE_NATIVE_SMOKE: '1'
         run: |
           & $env:OFFICE_PYTHON crates/core/assets/skills/doc-script-editor/scripts/office_native_acceptance.py `
             --repo-root $env:GITHUB_WORKSPACE `
             --output-dir $env:ACCEPTANCE_ROOT `
-            --expected-sha '${{ github.sha }}'
+            --expected-sha $env:EXPECTED_SHA
 
       - name: Hash acceptance certificate
         shell: pwsh
@@ -73,7 +96,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: office-native-acceptance-${{ github.sha }}
+          name: office-native-acceptance-${{ inputs.target_sha || github.sha }}
           path: ${{ runner.temp }}/nexa-office-native-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 30

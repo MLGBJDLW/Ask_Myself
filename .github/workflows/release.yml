@@ -4,6 +4,11 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag to resume; leave empty for release PR maintenance
+        required: false
+        type: string
 
 concurrency:
   group: release-master
@@ -21,22 +26,79 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      release_created: ${{ steps.resume.outputs.release_created || steps.release.outputs.release_created }}
+      tag_name: ${{ steps.resume.outputs.tag_name || steps.release.outputs.tag_name }}
+      version: ${{ steps.resume.outputs.version || steps.release.outputs.version }}
+      target_ref: ${{ steps.resume.outputs.tag_name || steps.release.outputs.tag_name }}
+      target_sha: ${{ steps.resume.outputs.target_sha || github.sha }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        if: github.event_name != 'workflow_dispatch' || inputs.release_tag == ''
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           target-branch: master
           # Push runs create/update the release PR for new conventional commits,
           # then create the release/tag when that release PR is merged.
-          # Manual runs are PR maintenance only.
+          # Manual runs without release_tag are PR maintenance only.
           skip-github-release: ${{ github.event_name == 'workflow_dispatch' }}
 
+      - name: Resolve existing draft release
+        id: resume
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^nexa-monorepo-v([0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::Invalid Nexa release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          release_json=$(gh release view "$RELEASE_TAG" \
+            --json isDraft,tagName \
+            --repo "$GITHUB_REPOSITORY")
+          actual_tag=$(jq -r '.tagName' <<<"$release_json")
+          is_draft=$(jq -r '.isDraft' <<<"$release_json")
+          if [ "$actual_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::Resolved release tag $actual_tag does not match requested tag $RELEASE_TAG"
+            exit 1
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::Release $RELEASE_TAG is not a draft release"
+            exit 1
+          fi
+
+          target_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)
+          version="${RELEASE_TAG#nexa-monorepo-v}"
+          comparison_status=$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$target_sha...master" \
+            --jq .status)
+          if [ "$comparison_status" != "ahead" ] && [ "$comparison_status" != "identical" ]; then
+            echo "::error::Release target $target_sha is not an ancestor of master"
+            exit 1
+          fi
+
+          manifest_version=$(gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$target_sha" \
+            --jq .version)
+          if [ "$manifest_version" != "$version" ]; then
+            echo "::error::Release tag version $version does not match package.json version $manifest_version"
+            exit 1
+          fi
+
+          {
+            echo "release_created=true"
+            echo "tag_name=$RELEASE_TAG"
+            echo "version=$version"
+            echo "target_sha=$target_sha"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Trigger checks for release PR updates made by GITHUB_TOKEN
-        if: steps.release.outputs.release_created != 'true'
+        if: (github.event_name != 'workflow_dispatch' || inputs.release_tag == '') && steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HAS_RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
@@ -60,6 +122,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit ${{ steps.release.outputs.tag_name }} --draft --repo ${{ github.repository }}
 
+  native-office-acceptance:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/office-native-acceptance.yml
+    with:
+      target_ref: ${{ needs.release-please.outputs.target_ref }}
+      target_sha: ${{ needs.release-please.outputs.target_sha }}
+
   preflight:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -74,23 +148,8 @@ jobs:
             exit 1
           fi
 
-      - name: Require successful native Office acceptance for this SHA
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          accepted=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/office-native-acceptance.yml/runs" \
-            -f head_sha="$GITHUB_SHA" \
-            -f status=completed \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-          if [ "$accepted" -lt 1 ]; then
-            echo "::error::Release SHA $GITHUB_SHA has no successful Native Office Acceptance run."
-            exit 1
-          fi
-
   build:
-    needs: [release-please, preflight]
+    needs: [release-please, preflight, native-office-acceptance]
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
       contents: write
@@ -109,6 +168,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.target_sha }}
 
       - name: Install system dependencies (Linux)
         if: matrix.platform == 'ubuntu-24.04'
@@ -238,8 +299,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          TARGET_SHA: ${{ needs.release-please.outputs.target_sha }}
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
+          actual_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if [ "$actual_sha" != "$TARGET_SHA" ]; then
+            echo "::error::Release tag $TAG moved from $TARGET_SHA to $actual_sha"
+            exit 1
+          fi
+
           ARTIFACTS='${{ steps.tauri.outputs.artifactPaths }}'
           echo "Uploading artifacts for $TAG"
           {
@@ -277,10 +347,20 @@ jobs:
       - name: Verify release artifacts and generate updater manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+          TARGET_SHA: ${{ needs.release-please.outputs.target_sha }}
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
-          VERSION="${{ needs.release-please.outputs.version }}"
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
+          VERSION="$RELEASE_VERSION"
           REPO="${{ github.repository }}"
+          actual_sha=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
+          if [ "$actual_sha" != "$TARGET_SHA" ]; then
+            echo "::error::Release tag $TAG moved from $TARGET_SHA to $actual_sha"
+            exit 1
+          fi
+
           gh release view "$TAG" --json body -q .body --repo "$REPO" > /tmp/release-notes.md
           NOTES=$(head -c 5000 /tmp/release-notes.md)
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -386,4 +466,14 @@ jobs:
       - name: Publish verified release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ needs.release-please.outputs.tag_name }} --draft=false --repo ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          TARGET_SHA: ${{ needs.release-please.outputs.target_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)
+          if [ "$actual_sha" != "$TARGET_SHA" ]; then
+            echo "::error::Release tag $RELEASE_TAG moved from $TARGET_SHA to $actual_sha"
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"

@@ -119,6 +119,9 @@ jobs:
       - name: Install locked PPTX author adapter
         run: npm ci --ignore-scripts
 
+      - name: Verify release workflow recovery contract
+        run: npm run release:workflow:test
+
       - name: Verify Office author supply chain and bundle closure
         run: |
           npm audit --audit-level=high

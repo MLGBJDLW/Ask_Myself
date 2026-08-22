@@ -5,6 +5,7 @@
     "tauri": "npm run tauri --prefix apps/desktop --",
     "catalog:audit": "node scripts/model-catalog-audit.mjs",
     "catalog:audit:test": "node scripts/model-catalog-audit.test.mjs",
+    "release:workflow:test": "node --test scripts/release-workflow-contract.test.mjs",
     "office:addin:test": "node --test integrations/office-addin/office-addin-contract.test.mjs",
     "office:supply-chain:test": "node --test vendor/image-size-safe/image-size-safe.test.mjs",
     "office:pptxgenjs:bundle": "node scripts/bundle-pptxgenjs-runtime.mjs --output apps/desktop/src-tauri/resources/pptxgenjs-runtime",
