@@ -4,6 +4,7 @@ import * as api from './api';
 import { isOptimisticSteeringMessage, isSteeringMessage } from './chatMessageGuards';
 import { hasPersistedResultAfterLatestUserMessage } from './streaming/chatVisibility';
 import { durableRunReconciler } from './streaming/runReconciliationRuntime';
+import { turnTimingFromTaskRun } from './streaming/durableReplay';
 import type {
   AgentCollaborationMode,
   AgentExecutionMode,
@@ -688,9 +689,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             isCurrent: () => (
               !cancelled && generation === conversationHydrationGenerationRef.current
             ),
-          })
+            })
             .then(outcome => {
-              if (outcome.kind !== 'active') return;
+              if (outcome.kind !== 'active' && outcome.kind !== 'suspended') return;
               streamStore.restoreFromRunEvents(
                 activeId,
                 outcome.snapshot.taskRun,
@@ -698,7 +699,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
                 outcome.snapshot.taskEvents,
               );
               const restoredStream = streamStore.getStream(activeId);
-              if (restoredStream?.isStreaming) {
+              if (outcome.kind === 'active' && restoredStream?.isStreaming) {
                 knownStreamConversationsRef.current.add(activeId);
               }
             })
@@ -808,14 +809,14 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       // Also refresh conversation list (updatedAt changes)
       const refreshListPromise = loadConversations();
 
-      // Auto-title runs after every completed turn while the title remains
-      // auto-managed. This lets the opening placeholder mature as the topic
-      // becomes clearer. The backend atomically refuses to overwrite a manual
-      // rename that happens while generation is in flight.
+      // Auto-title is a one-shot first-turn operation. The backend consumes the
+      // same durable flag atomically, so later turns and concurrent manual
+      // renames cannot change the initial title.
       const conv = conversationsRef.current.find((c) => c.id === completedConversationId);
       if (
         conv
-        && conv.titleIsAuto !== false
+        && conv.initialAutoTitlePending !== false
+        && !conv.title.trim()
         && !autoTitleInFlightRef.current.has(completedConversationId)
       ) {
         const firstUserMsg = (messageCacheRef.current[completedConversationId] ?? []).find((m) => m.role === 'user');
@@ -836,7 +837,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           .then((llmTitle) => {
             if (llmTitle) {
               setConversations((prev) =>
-                prev.map((c) => (c.id === completedConversationId ? { ...c, title: llmTitle } : c)),
+                prev.map((c) => (
+                  c.id === completedConversationId
+                    ? { ...c, title: llmTitle, initialAutoTitlePending: false }
+                    : c
+                )),
               );
             }
           })
@@ -1005,7 +1010,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       try {
         await api.renameConversation(id, title);
         setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, title, titleIsAuto: false } : c)),
+          prev.map((c) => (c.id === id ? { ...c, title, initialAutoTitlePending: false } : c)),
         );
       } catch (e) {
         toast.error(formatUserError(t('chat.renameError'), e));
@@ -1066,9 +1071,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       const activationGeneration = navigationGenerationRef.current;
 
       const liveStream = convId ? streamStore.getStream(convId) : undefined;
+      const acceptsLiveSteering = Boolean(
+        liveStream?.isStreaming
+        && (
+          liveStream.turnHandle !== null
+          || liveStream.turnTiming?.startedAtMonotonicMs != null
+        )
+      );
       if (
         convId
-        && liveStream?.isStreaming
+        && acceptsLiveSteering
         && !options?.interactionContinuation
         && !options?.resumeCheckpointId
       ) {
@@ -1217,25 +1229,24 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       compactionUsageRef.current.delete(convId);
 
       try {
-        await streamSend(
-          convId,
-          content,
+        await streamSend({
+          conversationId: convId,
+          message: content,
           attachments,
-          configForSend.id,
-          personaForSend,
-          options?.skillIds,
-          options?.executionMode,
-          options?.powerMode,
-          options?.collaborationMode,
-          options?.moaPreset,
-          options?.orchestrationProfile,
-          options?.customOrchestration,
-          options?.visionTurnOverride,
-          options?.userArtifacts,
-          options?.taskOrchestratorRunId,
-          options?.resumeCheckpointId,
-          true,
-        );
+          agentConfigId: configForSend.id,
+          personaId: personaForSend,
+          skillIds: options?.skillIds,
+          executionMode: options?.executionMode,
+          powerMode: options?.powerMode,
+          collaborationMode: options?.collaborationMode,
+          moaPreset: options?.moaPreset,
+          orchestrationProfile: options?.orchestrationProfile,
+          customOrchestration: options?.customOrchestration,
+          visionTurnOverride: options?.visionTurnOverride,
+          userArtifacts: options?.userArtifacts,
+          taskOrchestratorRunId: options?.taskOrchestratorRunId,
+          resumeCheckpointId: options?.resumeCheckpointId,
+        }, { propagateErrors: true });
         if (createdConversationForSend) {
           const committedConversation = createdConversationForSend as Conversation;
           setConversations((prev) => [committedConversation, ...prev]);
@@ -1274,6 +1285,53 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       streamStop(activeId);
     }
   }, [activeId, streamStop]);
+
+  const reconcileDurableRetryLaunchFailure = useCallback(async (
+    conversationId: string,
+    messagesBeforeRetry: ConversationMessage[],
+    turnsBeforeRetry: ConversationTurn[],
+  ) => {
+    try {
+      const [[, durableMessages], durableTurns, durableTaskRuns] = await Promise.all([
+        api.getConversation(conversationId),
+        api.getConversationTurns(conversationId),
+        api.getAgentTaskRuns(conversationId),
+      ]);
+      setMessagesForConversation(conversationId, durableMessages);
+      setTurnsForConversation(conversationId, durableTurns);
+      setTaskRunsForConversation(conversationId, durableTaskRuns);
+      const outcome = await durableRunReconciler.reconcile({
+        reason: 'watchdog',
+        conversationId,
+        taskRuns: durableTaskRuns,
+        missingRunConfirmations: 0,
+      });
+      if (
+        outcome.kind === 'active'
+        || outcome.kind === 'suspended'
+        || outcome.kind === 'completed'
+        || outcome.kind === 'pending'
+      ) {
+        streamStore.restoreFromRunEvents(
+          conversationId,
+          outcome.snapshot.taskRun,
+          outcome.snapshot.runEvents,
+          outcome.snapshot.taskEvents,
+        );
+      }
+      if (outcome.kind === 'active') {
+        knownStreamConversationsRef.current.add(conversationId);
+      } else {
+        knownStreamConversationsRef.current.delete(conversationId);
+      }
+    } catch {
+      setMessagesForConversation(conversationId, messagesBeforeRetry);
+      setTurnsForConversation(conversationId, turnsBeforeRetry);
+      knownStreamConversationsRef.current.delete(conversationId);
+    }
+    suppressedLiveUsageRef.current.delete(conversationId);
+    compactionUsageRef.current.delete(conversationId);
+  }, [setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   const retry = useCallback(async (
     messageId?: string,
@@ -1359,24 +1417,21 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     delete retryOptions.resumeCheckpointId;
     delete retryOptions.interactionContinuation;
 
-    // Re-add optimistic user message
-    const optimisticMsg: ConversationMessage = {
-      id: `temp-${Date.now()}`,
-      conversationId: activeId,
-      role: 'user',
+    const retriedMessage: ConversationMessage = {
+      ...targetMessage,
       content,
-      toolCallId: null,
-      toolCalls: [],
       artifacts: retryOptions.userArtifacts ?? null,
-      tokenCount: 0,
-      createdAt: new Date().toISOString(),
-      sortOrder: targetUserIdx,
-      thinking: null,
       imageAttachments: attachments ?? null,
     };
+    const messagesBeforeRetry = messages;
+    const turnsBeforeRetry = turns;
 
-    // Remove the target user message and every local message after it.
-    setMessagesForConversation(activeId, (prev) => prev.slice(0, targetUserIdx));
+    // Keep the original user identity and replace only the completed suffix.
+    // The backend applies the same operation atomically before launching.
+    setMessagesForConversation(activeId, (prev) => [
+      ...prev.slice(0, targetUserIdx),
+      retriedMessage,
+    ]);
     setTurnsForConversation(activeId, (prev) =>
       prev.filter((turn) => {
         const userIdx = messageIndexById.get(turn.userMessageId);
@@ -1386,29 +1441,35 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setChatError(null);
     lastUserMessageRef.current = { content, attachments, personaId, options: retryOptions };
 
-    setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
     compactionUsageRef.current.delete(activeId);
 
-    await streamSend(
-      activeId,
-      content,
-      attachments,
-      activeAgentConfigRef.current?.id ?? null,
-      personaId ?? activePersonaId,
-      retryOptions.skillIds,
-      retryOptions.executionMode,
-      retryOptions.powerMode,
-      retryOptions.collaborationMode,
-      retryOptions.moaPreset,
-      retryOptions.orchestrationProfile,
-      retryOptions.customOrchestration,
-      retryOptions.visionTurnOverride,
-      retryOptions.userArtifacts,
-      null,
-    );
-  }, [activeId, activePersonaId, messages, setMessagesForConversation, setTurnsForConversation, streamSend, t, turns]);
+    try {
+      await streamSend({
+        conversationId: activeId,
+        message: content,
+        attachments,
+        agentConfigId: activeAgentConfigRef.current?.id ?? null,
+        personaId: personaId ?? activePersonaId,
+        skillIds: retryOptions.skillIds,
+        executionMode: retryOptions.executionMode,
+        powerMode: retryOptions.powerMode,
+        collaborationMode: retryOptions.collaborationMode,
+        moaPreset: retryOptions.moaPreset,
+        orchestrationProfile: retryOptions.orchestrationProfile,
+        customOrchestration: retryOptions.customOrchestration,
+        visionTurnOverride: retryOptions.visionTurnOverride,
+        userArtifacts: retryOptions.userArtifacts,
+        retryFromMessageId: targetMessage.id,
+      }, { propagateErrors: true });
+    } catch {
+      // A launch error can happen either before or after the backend commits
+      // the retry transaction. Re-read durable authority before restoring the
+      // optimistic snapshot.
+      await reconcileDurableRetryLaunchFailure(activeId, messagesBeforeRetry, turnsBeforeRetry);
+    }
+  }, [activeId, activePersonaId, messages, reconcileDurableRetryLaunchFailure, setMessagesForConversation, setTurnsForConversation, streamSend, t, turns]);
 
   /* ── Delete single message (optimistic, local only) ─────────────── */
   const deleteMessage = useCallback((messageId: string) => {
@@ -1423,35 +1484,59 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     const msgIndex = messages.findIndex((m) => m.id === messageId);
     if (msgIndex < 0) return;
 
-    // Remove messages from this point onwards (optimistic)
-    setMessagesForConversation(activeId, (prev) => prev.slice(0, msgIndex));
+    const targetMessage = messages[msgIndex];
+    if (!targetMessage || targetMessage.role !== 'user' || isSteeringMessage(targetMessage)) return;
+
+    const attachments = targetMessage.imageAttachments ?? undefined;
+    const editOptions: ChatSendOptions = {
+      userArtifacts: targetMessage.artifacts ?? null,
+      visionTurnOverride: persistedVisionOverride(targetMessage.artifacts, attachments),
+    };
+    const messagesBeforeEdit = messages;
+    const turnsBeforeEdit = turns;
+    const retainedUserMessageIds = new Set(
+      messages.slice(0, msgIndex).filter((message) => message.role === 'user').map((message) => message.id),
+    );
+    const editedMessage: ConversationMessage = {
+      ...targetMessage,
+      content: newContent,
+    };
+
+    // Preserve the durable user-message identity and replace only its suffix.
+    setMessagesForConversation(activeId, (prev) => [
+      ...prev.slice(0, msgIndex),
+      editedMessage,
+    ]);
+    setTurnsForConversation(activeId, (prev) =>
+      prev.filter((turn) => retainedUserMessageIds.has(turn.userMessageId)),
+    );
     setChatError(null);
 
-    // Track for retry
-    lastUserMessageRef.current = { content: newContent };
-
-    // Add optimistic user message and stream
-    const optimisticMsg: ConversationMessage = {
-      id: `temp-${Date.now()}`,
-      conversationId: activeId,
-      role: 'user',
+    lastUserMessageRef.current = {
       content: newContent,
-      toolCallId: null,
-      toolCalls: [],
-      artifacts: null,
-      tokenCount: 0,
-      createdAt: new Date().toISOString(),
-      sortOrder: msgIndex,
-      thinking: null,
-      imageAttachments: null,
+      attachments,
+      personaId: activePersonaId,
+      options: editOptions,
     };
-    setMessagesForConversation(activeId, (prev) => [...prev, optimisticMsg]);
     knownStreamConversationsRef.current.add(activeId);
     suppressedLiveUsageRef.current.delete(activeId);
     compactionUsageRef.current.delete(activeId);
 
-    await streamSend(activeId, newContent, undefined, activeAgentConfigRef.current?.id ?? null);
-  }, [activeId, messages, setMessagesForConversation, streamSend]);
+    try {
+      await streamSend({
+        conversationId: activeId,
+        message: newContent,
+        attachments,
+        agentConfigId: activeAgentConfigRef.current?.id ?? null,
+        personaId: activePersonaId,
+        visionTurnOverride: editOptions.visionTurnOverride,
+        userArtifacts: editOptions.userArtifacts,
+        retryFromMessageId: targetMessage.id,
+      }, { propagateErrors: true });
+    } catch {
+      await reconcileDurableRetryLaunchFailure(activeId, messagesBeforeEdit, turnsBeforeEdit);
+    }
+  }, [activeId, activePersonaId, messages, reconcileDurableRetryLaunchFailure, setMessagesForConversation, setTurnsForConversation, streamSend, turns]);
 
   /* ── Reload messages (e.g. after compaction) ────────────────────── */
   const reloadMessages = useCallback(async (options?: {
@@ -1536,19 +1621,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const activeTurnTiming = shouldShowLivePreview
     ? streamTurnTiming
     : activeTaskRun
-      ? (() => {
-          const startedAt = Date.parse(activeTaskRun.startedAt ?? activeTaskRun.createdAt);
-          const finishedAt = activeTaskRun.finishedAt ? Date.parse(activeTaskRun.finishedAt) : null;
-          if (!Number.isFinite(startedAt)) return null;
-          return {
-            startedAtEpochMs: startedAt,
-            startedAtMonotonicMs: null,
-            firstEventAtEpochMs: null,
-            firstVisibleOutputAtEpochMs: null,
-            finishedAtEpochMs: finishedAt != null && Number.isFinite(finishedAt) ? finishedAt : null,
-            finishedAtMonotonicMs: null,
-          };
-        })()
+      ? turnTimingFromTaskRun(activeTaskRun)
       : null;
   const liveUsageSuppressed = activeId ? suppressedLiveUsageRef.current.has(activeId) : false;
   const scopedLastUsage = activeId && !liveUsageSuppressed ? lastUsage : null;

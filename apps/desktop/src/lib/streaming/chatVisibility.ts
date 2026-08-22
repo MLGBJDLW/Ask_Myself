@@ -43,12 +43,18 @@ export function isQuestionResponseMessage(message: ConversationMessage): boolean
   return message.role === 'user' && artifactContainsKind(message.artifacts, 'questionResponse');
 }
 
+export function isCheckpointContinuationMessage(message: ConversationMessage): boolean {
+  return message.role === 'user'
+    && artifactContainsKind(message.artifacts, 'checkpointContinuation');
+}
+
 function isNormalUserTurnMessage(message: ConversationMessage): boolean {
   return (
     message.role === 'user' &&
     !isSteeringMessage(message) &&
     !isGoalMessage(message) &&
-    !isQuestionResponseMessage(message)
+    !isQuestionResponseMessage(message) &&
+    !isCheckpointContinuationMessage(message)
   );
 }
 
@@ -104,12 +110,11 @@ export function projectChatStreamingVisibility(
 }
 
 /**
- * Steering and structured interaction continuations are control-plane events,
- * not ordinary chat turns. Steering stays out of history entirely. A question
- * response remains in the projected collection as a system row so card state
- * can still discover its `questionResponse` artifact, while normal message and
- * turn rendering naturally omit it. This preserves durable audit/replay data
- * without adding a duplicate user bubble after a card selection.
+ * Steering and structured continuations are control-plane events, not ordinary
+ * chat turns. Steering stays out of history entirely. Question responses and
+ * checkpoint continuation prompts remain in the projected collection as
+ * system rows so durable replay can consume them while normal bubble rendering
+ * omits them.
  */
 export function projectChatMessageVisibility(
   input: ChatMessageVisibilityInput,
@@ -117,7 +122,9 @@ export function projectChatMessageVisibility(
   return {
     historyMessages: input.messages
       .filter(message => !isSteeringMessage(message))
-      .map(message => isQuestionResponseMessage(message)
+      .map(message => (
+        isQuestionResponseMessage(message) || isCheckpointContinuationMessage(message)
+      )
         ? { ...message, role: 'system' as const }
         : message),
     liveSteeringMessages: input.isStreaming
