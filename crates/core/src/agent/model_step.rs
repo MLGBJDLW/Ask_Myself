@@ -1397,6 +1397,19 @@ impl AgentExecutor {
         let prompt_cache_observation =
             self.complete_prompt_cache_observation(chunk_usage.as_ref(), None);
 
+        // Some otherwise OpenAI-compatible providers close a successful tool
+        // stream without repeating a finish reason. A clean transport close
+        // plus a fully sealable batch is still an unambiguous tool boundary.
+        // Malformed, duplicate, oversized, or ambiguous assemblies remain
+        // quarantined by the canonical seal in the turn loop.
+        if finish_reason.is_none()
+            && !tool_calls.is_empty()
+            && VerifiedToolCallBatch::seal(tool_calls.clone(), tool_call_assembly_rejected, true)
+                .is_ok()
+        {
+            finish_reason = Some(FinishReason::ToolCalls);
+        }
+
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
             full_content,
             tool_calls,

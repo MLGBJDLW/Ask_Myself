@@ -135,10 +135,10 @@ pub(crate) fn atomic_tool_replay_unit_end(messages: &[Message], start: usize) ->
             break;
         };
         end += 1;
-        if !assistant
+        if assistant
             .tool_calls
             .as_ref()
-            .is_some_and(|calls| !calls.is_empty())
+            .is_none_or(|calls| calls.is_empty())
         {
             break;
         }
@@ -251,10 +251,10 @@ pub fn prepare_provider_replay_history(
             let end = atomic_tool_replay_unit_end(&normalized, index);
             let invalid_envelope = normalized[index..end].iter().any(|message| {
                 if message.role != Role::Assistant
-                    || !message
+                    || message
                         .tool_calls
                         .as_ref()
-                        .is_some_and(|calls| !calls.is_empty())
+                        .is_none_or(|calls| calls.is_empty())
                 {
                     return false;
                 }
