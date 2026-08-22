@@ -244,6 +244,7 @@ jobs:
           npx playwright test
           e2e/app-window-frame.spec.ts
           e2e/chat-conversation-archive.spec.ts
+          e2e/chat-steering.spec.ts
           e2e/chat-done-preview-persistence.spec.ts
           e2e/chat-mermaid-rendering.spec.ts
           e2e/chat-model-switch-context.spec.ts
@@ -253,7 +254,7 @@ jobs:
           e2e/chat-turn-navigation.spec.ts
           e2e/chat-plan-progress-panel.spec.ts
           e2e/chat-recording-dock.spec.ts
-          --grep "themed window frame|Agent browser interaction|Agent drag uses observation-scoped|Agent pointer preparation|conversation actions offer archive and delete|archived conversations can be restored|a direct archived conversation link|model selector|shared Browser Workspace|interactive terminal dock|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges|recording dock exposes responsive"
+          --grep "themed window frame|Agent browser interaction|Agent drag uses observation-scoped|Agent pointer preparation|conversation actions offer archive and delete|archived conversations can be restored|a direct archived conversation link|retries a persisted user message|edits a persisted user message through the durable retry boundary|restores the persisted reply suffix|reconciles the durable reply suffix|generates the initial empty chat title once|hydrates a paused run with its durable partial output|model selector|shared Browser Workspace|interactive terminal dock|floating plan capsule|only the Plan capsule drags|Mermaid|turn timeline|right-side timeline|file edit badges|recording dock exposes responsive"
 
       - name: Upload browser regression diagnostics
         if: ${{ failure() }}
