@@ -940,7 +940,7 @@ pub async fn generate_title_cmd(
         .db
         .get_conversation(&conversation_id)
         .map_err(|e| e.to_string())?;
-    if !conversation.title_is_auto {
+    if !conversation.initial_auto_title_pending || !conversation.title.trim().is_empty() {
         return Ok(conversation.title);
     }
 

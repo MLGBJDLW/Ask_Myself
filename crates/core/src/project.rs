@@ -275,7 +275,7 @@ impl Database {
                         ),
                         project_id: row.get(6)?,
                         persona_id: row.get(7)?,
-                        title_is_auto: row.get::<_, i64>(8)? != 0,
+                        initial_auto_title_pending: row.get::<_, i64>(8)? != 0,
                         archived_at: row.get(9)?,
                         created_at: row.get(10)?,
                         updated_at: row.get(11)?,
