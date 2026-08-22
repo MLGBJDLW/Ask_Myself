@@ -1,6 +1,6 @@
 [package]
 name = "nexa-core"
-version = "0.12.24"
+version = "0.12.25"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
