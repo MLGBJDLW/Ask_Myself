@@ -219,6 +219,10 @@ mod tests {
             ProviderType::DeepSeek
         );
         assert_eq!(
+            provider_type_for_parts("open_ai", Some("https://api.deepseek.com/v1")),
+            ProviderType::DeepSeek
+        );
+        assert_eq!(
             provider_type_from_key("open_router"),
             Some(ProviderType::OpenRouter)
         );

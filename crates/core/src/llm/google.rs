@@ -155,7 +155,8 @@ struct GeminiRequestV2 {
 struct GeminiFunctionDeclaration {
     name: String,
     description: String,
-    parameters: serde_json::Value,
+    #[serde(rename = "parametersJsonSchema")]
+    parameters_json_schema: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -543,23 +544,145 @@ fn convert_messages(
     (system_instruction, contents)
 }
 
-/// Recursively removes JSON Schema fields that Google Gemini API does not accept.
+/// Project arbitrary built-in/MCP JSON Schema into Gemini's documented
+/// function-calling subset. Runtime validation keeps the stronger local
+/// contract; this provider projection should guide the model without causing a
+/// request-wide 400 for unsupported vocabulary.
 fn clean_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let cleaned: serde_json::Map<String, serde_json::Value> = map
+    let Some(schema) = value.as_object() else {
+        return serde_json::json!({ "type": "object", "properties": {} });
+    };
+    let mut cleaned = serde_json::Map::new();
+
+    if let Some(schema_type) = schema.get("type") {
+        let normalized_type = match schema_type {
+            serde_json::Value::String(value) => Some(value.to_ascii_lowercase()),
+            serde_json::Value::Array(values) => values
                 .iter()
-                .filter(|(key, _)| {
-                    key.as_str() != "$schema" && key.as_str() != "additionalProperties"
-                })
-                .map(|(key, val)| (key.clone(), clean_schema_for_gemini(val)))
-                .collect();
-            serde_json::Value::Object(cleaned)
+                .filter_map(serde_json::Value::as_str)
+                .find(|value| *value != "null")
+                .map(str::to_ascii_lowercase),
+            _ => None,
+        };
+        if let Some(schema_type) = normalized_type {
+            cleaned.insert("type".to_string(), serde_json::Value::String(schema_type));
         }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(clean_schema_for_gemini).collect())
+    }
+    for key in ["description", "format", "$ref"] {
+        if let Some(value) = schema.get(key).and_then(serde_json::Value::as_str) {
+            cleaned.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
-        other => other.clone(),
+    }
+    if let Some(nullable) = schema.get("nullable").and_then(serde_json::Value::as_bool) {
+        cleaned.insert("nullable".to_string(), serde_json::Value::Bool(nullable));
+    }
+
+    if let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        let properties = properties
+            .iter()
+            .map(|(name, schema)| (name.clone(), clean_schema_for_gemini(schema)))
+            .collect();
+        cleaned.insert(
+            "properties".to_string(),
+            serde_json::Value::Object(properties),
+        );
+        cleaned
+            .entry("type".to_string())
+            .or_insert_with(|| serde_json::Value::String("object".to_string()));
+    }
+    if let Some(items) = schema.get("items") {
+        cleaned.insert("items".to_string(), clean_schema_for_gemini(items));
+        cleaned
+            .entry("type".to_string())
+            .or_insert_with(|| serde_json::Value::String("array".to_string()));
+    }
+    if let Some(definitions) = schema.get("$defs").and_then(serde_json::Value::as_object) {
+        cleaned.insert(
+            "$defs".to_string(),
+            serde_json::Value::Object(
+                definitions
+                    .iter()
+                    .map(|(name, schema)| (name.clone(), clean_schema_for_gemini(schema)))
+                    .collect(),
+            ),
+        );
+    }
+
+    if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+        let required = required
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(|field| serde_json::Value::String(field.to_string()))
+            .collect::<Vec<_>>();
+        if !required.is_empty() {
+            cleaned.insert("required".to_string(), serde_json::Value::Array(required));
+        }
+    }
+    if let Some(ordering) = schema
+        .get("propertyOrdering")
+        .and_then(serde_json::Value::as_array)
+    {
+        cleaned.insert(
+            "propertyOrdering".to_string(),
+            serde_json::Value::Array(ordering.clone()),
+        );
+    }
+
+    let enum_values = schema
+        .get("enum")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .or_else(|| schema.get("const").cloned().map(|value| vec![value]));
+    if let Some(enum_values) = enum_values.filter(|values| !values.is_empty()) {
+        if !cleaned.contains_key("type") {
+            let inferred = if enum_values.iter().all(serde_json::Value::is_string) {
+                Some("string")
+            } else if enum_values
+                .iter()
+                .all(|value| value.as_i64().is_some() || value.as_u64().is_some())
+            {
+                Some("integer")
+            } else if enum_values.iter().all(serde_json::Value::is_number) {
+                Some("number")
+            } else if enum_values.iter().all(serde_json::Value::is_boolean) {
+                Some("boolean")
+            } else {
+                None
+            };
+            if let Some(inferred) = inferred {
+                cleaned.insert(
+                    "type".to_string(),
+                    serde_json::Value::String(inferred.to_string()),
+                );
+            }
+        }
+        cleaned.insert("enum".to_string(), serde_json::Value::Array(enum_values));
+    }
+
+    let union = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array);
+    if let Some(union) = union {
+        let variants = union
+            .iter()
+            .map(clean_schema_for_gemini)
+            .collect::<Vec<_>>();
+        if !variants.is_empty() {
+            cleaned.insert("anyOf".to_string(), serde_json::Value::Array(variants));
+        }
+    }
+
+    if cleaned.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::Value::Object(cleaned)
     }
 }
 
@@ -577,7 +700,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         .map(|tool| GeminiFunctionDeclaration {
             name: tool.name.clone(),
             description: tool.description.clone(),
-            parameters: clean_schema_for_gemini(&tool.parameters),
+            parameters_json_schema: clean_schema_for_gemini(&tool.parameters),
         })
         .collect::<Vec<_>>();
     let mut converted = Vec::new();
@@ -1855,6 +1978,124 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["functionDeclarations"][0]["name"], "run_shell");
         assert_eq!(tools[1], serde_json::json!({"googleSearch": {}}));
+    }
+
+    #[test]
+    fn tool_declarations_use_gemini_json_schema_without_typed_schema_failures() {
+        let tool = ToolDefinition {
+            name: "appearance".to_string(),
+            description: "Apply appearance".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "manifest": {
+                        "type": "object",
+                        "properties": {
+                            "manifestVersion": { "type": "integer", "enum": [1, 2] },
+                            "kind": { "const": "theme-resource" },
+                            "variant": {
+                                "oneOf": [
+                                    { "type": "string", "enum": ["dark"] },
+                                    { "type": "string", "enum": ["light"] }
+                                ]
+                            }
+                        },
+                        "allOf": [{ "required": ["manifestVersion"] }]
+                    }
+                }
+            }),
+        };
+
+        let tools = convert_tools(&[tool]);
+        let declaration = &tools[0]["functionDeclarations"][0];
+        let schema = &declaration["parametersJsonSchema"];
+
+        assert!(declaration.get("parameters").is_none());
+        assert_eq!(
+            schema["properties"]["manifest"]["properties"]["manifestVersion"]["enum"],
+            serde_json::json!([1, 2]),
+        );
+        assert_eq!(
+            schema["properties"]["manifest"]["properties"]["kind"]["enum"],
+            serde_json::json!(["theme-resource"]),
+        );
+        assert!(schema["properties"]["manifest"]["properties"]["variant"]
+            .get("anyOf")
+            .is_some());
+        let encoded = serde_json::to_string(schema).unwrap();
+        for unsupported in ["\"const\"", "\"oneOf\"", "\"allOf\""] {
+            assert!(
+                !encoded.contains(unsupported),
+                "schema retained {unsupported}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_builtin_tool_projects_to_the_safe_gemini_schema_subset() {
+        fn assert_subset(value: &serde_json::Value, path: &str, schema_keywords: bool) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, child) in object {
+                        if schema_keywords {
+                            assert!(
+                                !matches!(
+                                    key.as_str(),
+                                    "$schema"
+                                        | "const"
+                                        | "oneOf"
+                                        | "allOf"
+                                        | "additionalProperties"
+                                        | "default"
+                                        | "examples"
+                                        | "minimum"
+                                        | "maximum"
+                                        | "minLength"
+                                        | "maxLength"
+                                        | "pattern"
+                                        | "minItems"
+                                        | "maxItems"
+                                        | "uniqueItems"
+                                        | "if"
+                                        | "then"
+                                        | "else"
+                                        | "not"
+                                ),
+                                "unsupported Gemini schema keyword {key} at {path}"
+                            );
+                        }
+                        let child_uses_schema_keywords = if schema_keywords {
+                            !matches!(key.as_str(), "properties" | "$defs")
+                        } else {
+                            true
+                        };
+                        assert_subset(child, &format!("{path}.{key}"), child_uses_schema_keywords);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        assert_subset(child, &format!("{path}[{index}]"), schema_keywords);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let definitions = crate::tools::default_tool_registry().definitions();
+        let converted = convert_tools(&definitions);
+        let declarations = converted[0]["functionDeclarations"]
+            .as_array()
+            .expect("Gemini function declarations");
+        assert_eq!(declarations.len(), definitions.len());
+        for declaration in declarations {
+            let name = declaration["name"].as_str().unwrap_or("unknown");
+            let schema = declaration
+                .get("parametersJsonSchema")
+                .expect("Gemini JSON Schema projection");
+            assert_eq!(schema["type"], "object", "{name} must remain object-shaped");
+            assert_subset(schema, name, true);
+        }
     }
 
     #[test]

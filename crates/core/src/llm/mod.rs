@@ -256,6 +256,21 @@ impl std::fmt::Display for ReasoningEffort {
     }
 }
 
+impl ReasoningEffort {
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
+            "xhigh" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request / response types
 // ---------------------------------------------------------------------------

@@ -67,6 +67,37 @@
         }
       }
     },
+    "nativeWebSearch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dialect",
+        "supportsDomains",
+        "supportsRecency",
+        "supportsLocale",
+        "supportsLocation",
+        "supportsCitations",
+        "supportsStreamEvents",
+        "canMixClientTools"
+      ],
+      "properties": {
+        "dialect": {
+          "enum": [
+            "openAiResponses",
+            "anthropicServerTool",
+            "geminiGoogleSearch",
+            "deepSeekResponses"
+          ]
+        },
+        "supportsDomains": { "type": "boolean" },
+        "supportsRecency": { "type": "boolean" },
+        "supportsLocale": { "type": "boolean" },
+        "supportsLocation": { "type": "boolean" },
+        "supportsCitations": { "type": "boolean" },
+        "supportsStreamEvents": { "type": "boolean" },
+        "canMixClientTools": { "type": "boolean" }
+      }
+    },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -87,7 +118,8 @@
         "promptCache": { "type": "boolean" },
         "asyncJobs": { "type": "boolean" },
         "batch": { "type": "boolean" },
-        "dimensionOverride": { "type": "boolean" }
+        "dimensionOverride": { "type": "boolean" },
+        "nativeWebSearch": { "$ref": "#/$defs/nativeWebSearch" }
       }
     },
     "limits": {
