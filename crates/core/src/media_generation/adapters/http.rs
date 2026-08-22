@@ -641,12 +641,12 @@ fn is_public_ip(address: std::net::IpAddr) -> bool {
         }
         std::net::IpAddr::V6(address) => {
             let segments = address.segments();
-            !address.is_loopback()
-                && !address.is_unspecified()
-                && !address.is_unique_local()
-                && !address.is_unicast_link_local()
-                && !address.is_multicast()
-                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+                || address.is_multicast()
+                || segments[0] == 0x2001 && segments[1] == 0x0db8)
                 && (segments[0] & 0xffc0) != 0xfec0
                 && address
                     .to_ipv4()
