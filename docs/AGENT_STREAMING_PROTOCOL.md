@@ -92,16 +92,41 @@ completion state. A resumable pause or user-input wait may flush its accepted
 prefix, but it does not satisfy the terminal barrier. Main-window availability
 is not part of this durability contract.
 
+Requesting a checkpoint pause first cancels and awaits the run's current
+executor, establishing an execution fence before any checkpoint persistence can
+block. Pending approvals owned by that run are then denied and recorded as
+`approvalResolved`; no dead receiver may survive into replay. Finally, the
+outbox drains the accepted prefix and commits the checkpoint under the same gate
+used for terminal acceptance. Later submissions receive the explicit
+`Suspended` result and cannot overtake the checkpoint. The outbox remains alive
+but producer-gated while paused. A checkpoint continuation may reopen producer
+submission only after the task and original turn are atomically re-queued and
+before the replacement executor is spawned.
+
 Launch, pause, stop, and same-run continuation decisions are serialized by the
 run's lifecycle barrier. A new launch acquires that barrier after its durable
 run ID exists and re-reads the task projection before spawning; checkpoint and
 interaction continuations acquire it before claiming their durable response.
 This closes both the database-to-session registration gap and duplicate
-executor retries. A checkpoint continuation appends one idempotent transcript
-message and reuses the original turn, run, and open outbox.
+executor retries. A checkpoint continuation appends one idempotent,
+presentation-hidden control message and reuses the original turn, run, and open
+outbox. The checkpoint state carries bounded durable assistant output already
+shown before the pause so the replacement executor continues after it instead
+of repeating it.
+If a committed launch cannot open its Run Event outbox before executor
+registration, it fails closed through the same terminal-arbitration transaction;
+it must not remain queued without an executor or block a later reply retry.
+Reply retries and edits of persisted user messages use the same durable suffix
+replacement transaction. Both preserve the original user-message ID, replace
+the selected message content in place, and remove later turns before launching
+the replacement executor.
 Creating a resumable pause is also one outbox-owned transaction: its checkpoint
 row, paused Run Event, task projection, and turn projection commit together
 before the checkpoint is returned or delivered.
+
+Stopping a running turn creates a resumable checkpoint. Stopping while the run
+is awaiting user input instead cancels the pending interaction and terminalizes
+the run; an already paused run remains resumable and is not silently cancelled.
 
 Before accepting launches after process restart, recovery compares active task
 projections with their durable Run Event boundaries. A paused or
@@ -124,3 +149,6 @@ message is available.
 
 The chat surface hydrates an active conversation once. Live events and recovery
 patch that projection instead of initiating a second completion fetch.
+When a suspended run is replayed after restart, elapsed-time presentation freezes
+at the latest durable suspension event timestamp (falling back to the task
+projection update time for legacy rows), not at the time the UI happens to load.
