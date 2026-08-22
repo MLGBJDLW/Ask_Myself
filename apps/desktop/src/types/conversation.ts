@@ -13,7 +13,7 @@ export interface Conversation {
   projectId?: string | null;
   personaId?: string | null;
   /** `true` if the title is still auto-generated. Becomes `false` after a user rename. */
-  titleIsAuto?: boolean;
+  initialAutoTitlePending?: boolean;
   /** Timestamp set while the conversation is hidden from the active sidebar. */
   archivedAt?: string | null;
   createdAt: string;

@@ -6,7 +6,10 @@ use super::policy::{
     normalize_browser_url, BrowserActionRisk, NavigationActor,
 };
 use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_SCRIPT};
-use super::state::{browser_target_screen_point, BrowserControlOwner, ControlLease};
+use super::state::{
+    browser_history_target_expression, browser_target_screen_point, with_agent_navigation_approval,
+    BrowserControlOwner, BrowserHistoryDirection, ControlLease,
+};
 use nexa_core::browser_runtime::{BrowserBounds, BrowserElementBounds};
 
 #[test]
@@ -108,6 +111,8 @@ fn takeover_script_uses_an_unforgeable_all_frame_navigation_signal() {
 #[test]
 fn browser_tool_advertises_only_platform_supported_pointer_actions() {
     let actions = browser_action_names();
+    assert!(actions.contains(&"go_back"));
+    assert!(actions.contains(&"go_forward"));
     #[cfg(target_os = "windows")]
     {
         assert!(actions.contains(&"move"));
@@ -118,6 +123,25 @@ fn browser_tool_advertises_only_platform_supported_pointer_actions() {
         assert!(!actions.contains(&"move"));
         assert!(!actions.contains(&"hover"));
     }
+}
+
+#[test]
+fn agent_history_traversal_targets_adjacent_entries_and_cleans_failed_approval() {
+    let back = browser_history_target_expression(BrowserHistoryDirection::Back);
+    let forward = browser_history_target_expression(BrowserHistoryDirection::Forward);
+    assert!(back.contains("currentEntry.index + (-1)"));
+    assert!(forward.contains("currentEntry.index + (1)"));
+    assert!(back.contains("target.key"));
+    assert!(back.contains("target.url"));
+
+    let approved = std::sync::Mutex::new(HashSet::new());
+    let result = with_agent_navigation_approval(
+        &approved,
+        "https://public.example/previous".to_string(),
+        || Err("history traversal failed".to_string()),
+    );
+    assert!(result.is_err());
+    assert!(approved.lock().unwrap().is_empty());
 }
 
 #[test]

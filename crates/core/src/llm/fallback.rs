@@ -111,10 +111,10 @@ impl AutomaticFallbackProvider {
     fn locked_position_for_request(&self, request: &CompletionRequest) -> Option<usize> {
         let locked_route = request.messages.iter().rev().find_map(|message| {
             if message.role == super::Role::Assistant
-                && !message
+                && message
                     .tool_calls
                     .as_ref()
-                    .is_some_and(|calls| !calls.is_empty())
+                    .is_none_or(|calls| calls.is_empty())
             {
                 if message.provider_turn().is_some_and(|envelope| {
                     matches!(

@@ -116,6 +116,27 @@ function testQuestionResponseIsControlPlaneHistory(): void {
   );
 }
 
+function testCheckpointContinuationIsControlPlaneHistory(): void {
+  const continuation = message({
+    id: 'checkpoint-continuation-1',
+    role: 'user',
+    content: 'Resume this Nexa task from a durable checkpoint.',
+    artifacts: {
+      kind: 'checkpointContinuation',
+      version: 1,
+      checkpointId: 'checkpoint-1',
+    },
+  });
+
+  const projection = projectChatMessageVisibility({
+    isStreaming: true,
+    messages: [continuation],
+  });
+
+  assertEqual(projection.historyMessages.length, 1, 'checkpoint prompt remains replayable');
+  assertEqual(projection.historyMessages[0].role, 'system', 'checkpoint prompt stays out of user bubbles');
+}
+
 function main(): void {
   testFullReplyFollowedBySummaryStaysVisible();
   console.log('ok - full reply followed by summary stays visible');
@@ -123,6 +144,8 @@ function main(): void {
   console.log('ok - single final reply still collapses surrounding thinking');
   testQuestionResponseIsControlPlaneHistory();
   console.log('ok - question response stays out of visible user turns');
+  testCheckpointContinuationIsControlPlaneHistory();
+  console.log('ok - checkpoint continuation stays out of visible user turns');
 }
 
 main();

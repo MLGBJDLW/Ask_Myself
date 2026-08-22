@@ -1200,31 +1200,10 @@ impl AgentExecutor {
                             tone: Some("warning".to_string()),
                         })
                         .await;
-                    for call in &rejected.calls {
-                        if call.id.trim().is_empty() || call.name.trim().is_empty() {
-                            continue;
-                        }
-                        let run = build_tool_run_item(
-                            &self.tools,
-                            &call.id,
-                            &call.name,
-                            ToolRunStatus::Failed,
-                            None,
-                            Some(
-                                "Rejected because the provider did not finish the tool-call envelope."
-                                    .to_string(),
-                            ),
-                            Some(true),
-                            Some(serde_json::json!({
-                                "kind": "incompleteToolCall",
-                                "executed": false,
-                            })),
-                            Some("incomplete provider output".to_string()),
-                            Some(0),
-                        );
-                        append_persisted_trace_tool_run(&mut persisted_trace_items, &run);
-                        let _ = tx.send(AgentEvent::ToolRunCompleted { run }).await;
-                    }
+                    // Assembly fragments are provider protocol drafts, not tool
+                    // executions. StreamReset already removes their preparing
+                    // previews; keep the rejection as controller/internal trace
+                    // state instead of manufacturing a failed chat tool card.
 
                     if iteration + 1 < self.config.max_iterations {
                         if let Some(message) = prompt_ir::controller_state_message(

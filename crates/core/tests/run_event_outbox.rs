@@ -229,6 +229,35 @@ async fn pause_checkpoint_event_and_projections_commit_as_one_boundary() {
         &[true],
         "delivery must observe the checkpoint, event, task, and turn after commit"
     );
+
+    assert_eq!(
+        outbox.submit(AgentRunEvent::status_update(
+            &run_id,
+            Some(&turn_id),
+            0,
+            AgentRunPhase::Responding,
+            "late producer output",
+            Some("running"),
+            None,
+        )),
+        Err(nexa_core::run_event_outbox::AgentRunEventSubmitError::Suspended),
+        "the old producer must stay fenced after the checkpoint commits"
+    );
+    outbox
+        .resume_submissions()
+        .expect("checkpoint relaunch reopens submissions");
+    outbox
+        .submit(AgentRunEvent::status_update(
+            &run_id,
+            Some(&turn_id),
+            0,
+            AgentRunPhase::Responding,
+            "Resumed from checkpoint",
+            Some("running"),
+            None,
+        ))
+        .expect("new producer can submit after resume");
+    assert_eq!(outbox.flush().await.expect("resume committed"), 2);
 }
 
 #[tokio::test]

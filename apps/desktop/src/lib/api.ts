@@ -79,8 +79,6 @@ import type {
   ConversationStats,
   ConversationSearchResult,
   ImageAttachment,
-  VisionTurnOverride,
-  ArtifactPayload,
   Checkpoint,
   CheckpointBranch,
   FileCheckpoint,
@@ -145,16 +143,13 @@ import type { ProviderPreset } from "./providerPresets";
 import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
 import {
   buildAgentChatRequest,
-  type AgentCollaborationMode,
+  type AgentChatRequestInput,
   type AgentExecutionMode,
-  type AgentPowerMode,
-  type CustomOrchestrationOptions,
-  type MoaPresetId,
-  type OrchestrationProfile,
 } from "./agentChatRequest";
 
 export type {
   AgentCollaborationMode,
+  AgentChatRequestInput,
   AgentExecutionMode,
   AgentPowerMode,
   CustomOrchestrationOptions,
@@ -1678,42 +1673,8 @@ export const removeConversationFromProject = (conversationId: string) =>
 
 // ── Agent Chat ──────────────────────────────────────────────────────────
 
-export const agentChat = (
-  conversationId: string,
-  message: string,
-  attachments?: ImageAttachment[],
-  agentConfigId?: string | null,
-  personaId?: string | null,
-  skillIds?: string[],
-  executionMode?: AgentExecutionMode | null,
-  powerMode?: AgentPowerMode | null,
-  collaborationMode?: AgentCollaborationMode | null,
-  moaPreset?: MoaPresetId | null,
-  orchestrationProfile?: OrchestrationProfile | null,
-  customOrchestration?: CustomOrchestrationOptions | null,
-  visionTurnOverride?: VisionTurnOverride | null,
-  userArtifacts?: ArtifactPayload | null,
-  taskOrchestratorRunId?: string | null,
-  resumeCheckpointId?: string | null,
-) => {
-  const request = buildAgentChatRequest({
-    conversationId,
-    message,
-    attachments,
-    agentConfigId,
-    personaId,
-    skillIds,
-    executionMode,
-    powerMode,
-    collaborationMode,
-    moaPreset,
-    orchestrationProfile,
-    customOrchestration,
-    visionTurnOverride,
-    userArtifacts,
-    taskOrchestratorRunId,
-    resumeCheckpointId,
-  });
+export const agentChat = (input: AgentChatRequestInput) => {
+  const request = buildAgentChatRequest(input);
   return invoke<AgentTurnHandle>('agent_chat_cmd', { request });
 };
 

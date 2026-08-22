@@ -734,14 +734,6 @@ impl AgentExecutor {
 /// parallel-call fragments are never assigned by recency guesswork.
 fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta) -> bool {
     fn apply_delta(existing: &mut ToolCallRequest, delta: &ToolCallDelta) -> bool {
-        if existing
-            .arguments
-            .len()
-            .saturating_add(delta.arguments_delta.len())
-            > MAX_TOOL_CALL_ARGUMENT_BYTES
-        {
-            return false;
-        }
         if !delta.id.is_empty() {
             if !existing.id.is_empty() && existing.id != delta.id {
                 return false;
@@ -754,7 +746,9 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             }
             existing.name = name.to_string();
         }
-        existing.arguments.push_str(&delta.arguments_delta);
+        if !merge_tool_argument_fragment(&mut existing.arguments, &delta.arguments_delta) {
+            return false;
+        }
         if delta.thought_signature.is_some() {
             existing.thought_signature = delta.thought_signature.clone();
         }
@@ -831,6 +825,35 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
         return apply_delta(&mut calls[0], delta);
     }
     false
+}
+
+fn merge_tool_argument_fragment(arguments: &mut String, fragment: &str) -> bool {
+    if fragment.is_empty() {
+        return true;
+    }
+    if arguments.is_empty() {
+        arguments.push_str(fragment);
+        return true;
+    }
+    if fragment == arguments {
+        return true;
+    }
+
+    let fragment_is_object =
+        serde_json::from_str::<serde_json::Value>(fragment).is_ok_and(|value| value.is_object());
+    let concatenated_is_object =
+        serde_json::from_str::<serde_json::Value>(&format!("{arguments}{fragment}"))
+            .is_ok_and(|value| value.is_object());
+    if fragment.starts_with(arguments.as_str()) || (fragment_is_object && !concatenated_is_object) {
+        arguments.clear();
+        arguments.push_str(fragment);
+    } else {
+        if arguments.len().saturating_add(fragment.len()) > MAX_TOOL_CALL_ARGUMENT_BYTES {
+            return false;
+        }
+        arguments.push_str(fragment);
+    }
+    true
 }
 
 /// Resolve which accumulated [`ToolCallRequest`] a streaming delta refers to.

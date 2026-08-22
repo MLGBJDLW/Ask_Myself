@@ -161,10 +161,10 @@ impl ResponsesReplayPayload {
                 }
                 Some("message") => {
                     if !Self::completed_item(item)
-                        || !item
+                        || item
                             .get("content")
                             .and_then(serde_json::Value::as_array)
-                            .is_some_and(|content| !content.is_empty())
+                            .is_none_or(|content| content.is_empty())
                     {
                         return false;
                     }

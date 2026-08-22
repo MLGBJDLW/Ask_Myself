@@ -149,6 +149,7 @@ When adding or changing tools, optimize for model-call correctness rather than d
 - Every registered tool must expose a `ToolCapabilityDescriptor` through the registry. Treat it as the Nexa capability package manifest for the invocation: ecosystem surface, UI render kind, runtime scheduling capabilities, resource keys, access category, read/write/execute/network capability, approval need, risk level, and risk reason. Settings, approval UI, scheduling, and stream projection should read this descriptor instead of maintaining separate name-based tables.
 - Object-shaped tool schemas automatically include `wait_for_previous`. The model can set it to `true` when a tool call depends on files, artifacts, or command output from an earlier tool call in the same turn; the scheduler will start a new execution batch before that call.
 - Approval policy is target-aware. Shell commands are keyed by command prefix, file tools by resolved file resource, network tools by host, and MCP tools by server/tool identity. Use the target-aware policy APIs for new approval flows; legacy per-tool policies remain as a fallback only.
+- Provider argument aliases, scalar types, and enum casing are canonicalized through one registry algorithm before scheduling, capability classification, policy evaluation, approval display, and execution. A tool must never execute a value that the approval path interpreted differently.
 - Tool results can expose separate output channels through `ToolOutput`: `llm_content` for the next model call, `display_content` for the UI, `data` for structured payloads, `artifacts` for auxiliary JSON, and `attachments` for rich outputs. Existing `ToolResult.content` remains the display fallback for older tools.
 
 ### `read_file`
@@ -613,6 +614,28 @@ Do not treat `desktop_automation` with `action: "web_search"` as evidence retrie
 
 ---
 
+### `browser_session`
+
+Control the conversation-owned Nexa Browser Workspace. This is the canonical
+interactive browser surface for agents; the retired built-in Playwright MCP is
+not required. The tool shares visible tabs, cookies, control leases, and
+observation-scoped element references with the user.
+
+Core actions include session/tab creation and selection, explicit navigation,
+back/forward/reload, observation, semantic waits, pointer/keyboard interaction,
+and closing tabs or sessions. When a conversation already owns an active
+workspace, `sessionId` may be omitted; `tabId`, the latest `observationId`, and
+fresh element refs remain explicit where applicable.
+
+Safety posture:
+- Observe before interaction and use refs only from the latest observation.
+- Agent navigation is restricted to validated public HTTP(S) targets; private
+  network and unapproved navigation remain blocked by the native proxy.
+- User takeover invalidates the Agent control lease and prior observations.
+- Consequential actions retain the normal approval policy.
+
+---
+
 ### `desktop_automation`
 
 Perform controlled local browser or desktop handoff actions. This tool is intentionally narrow: it can open a URL/search in the user's default browser, open or reveal source-scoped local paths, or wait briefly. It does not read page contents or perform raw mouse/keyboard control.
@@ -633,7 +656,7 @@ Safety posture:
 - URL/search/path launch actions require user confirmation.
 - Local path actions must resolve inside a registered source and the active source scope.
 - Use `web_search` for readable search results.
-- Use `fetch_url` when the agent needs page text; use Playwright MCP when an enabled connector should interact with page elements.
+- Use `fetch_url` when the agent needs page text; use `browser_session` when the page must be observed or manipulated.
 
 > **Example:** Open a confirmed dashboard URL in the user's default browser, or reveal a report file that was just generated under a registered source.
 

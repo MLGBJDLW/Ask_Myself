@@ -355,6 +355,17 @@ impl<'a> AgentTaskRuntime<'a> {
         })
     }
 
+    /// Fail closed when a durable launch was committed but its Run Event
+    /// outbox could not be opened before executor registration.
+    pub fn fail_pre_executor_launch_if_open(
+        &self,
+        run_id: &str,
+        failure_reason: &str,
+    ) -> Result<bool, CoreError> {
+        self.fail_run_event_outbox_if_open(run_id, failure_reason)
+            .map(|outcome| matches!(outcome, AgentRunFailClosedOutcome::Claimed { .. }))
+    }
+
     pub fn record_timeline_event(
         &self,
         run_id: &str,

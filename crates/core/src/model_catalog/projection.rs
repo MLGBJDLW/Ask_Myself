@@ -536,7 +536,17 @@ pub fn normalize_endpoint_url(value: Option<&str>) -> String {
     let Ok(mut url) = reqwest::Url::parse(raw) else {
         return raw.trim_end_matches('/').to_string();
     };
-    let normalized_path = url.path().trim_end_matches('/').to_string();
+    let mut normalized_path = url.path().trim_end_matches('/').to_string();
+    // DeepSeek's official integrations use both the SDK base URL and its
+    // OpenAI-compatible `/v1` alias. Canonicalize only this exact public host;
+    // arbitrary edited endpoints must continue to retain path identity.
+    if url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
+        && normalized_path.eq_ignore_ascii_case("/v1")
+    {
+        normalized_path.clear();
+    }
     url.set_path(&normalized_path);
     url.to_string()
 }

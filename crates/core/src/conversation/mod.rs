@@ -35,10 +35,9 @@ pub struct Conversation {
     pub collection_context: Option<CollectionContext>,
     pub project_id: Option<String>,
     pub persona_id: Option<String>,
-    /// `true` when the title was set automatically (default after creation) and
-    /// may be overwritten by auto-title regeneration. Set to `false` once the
-    /// user renames the conversation manually.
-    pub title_is_auto: bool,
+    /// True only while the conversation is waiting for its first automatic
+    /// title. The first automatic title or a user rename consumes this flag.
+    pub initial_auto_title_pending: bool,
     pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -1147,7 +1146,7 @@ impl Database {
                 collection_context: parse_collection_context(row.get(5)?),
                 project_id: row.get(6)?,
                 persona_id: row.get(7)?,
-                title_is_auto: row.get::<_, i64>(8)? != 0,
+                initial_auto_title_pending: row.get::<_, i64>(8)? != 0,
                 archived_at: row.get(9)?,
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
@@ -1177,7 +1176,7 @@ impl Database {
                 collection_context: parse_collection_context(row.get(5)?),
                 project_id: row.get(6)?,
                 persona_id: row.get(7)?,
-                title_is_auto: row.get::<_, i64>(8)? != 0,
+                initial_auto_title_pending: row.get::<_, i64>(8)? != 0,
                 archived_at: row.get(9)?,
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
@@ -1207,7 +1206,7 @@ impl Database {
                     collection_context: parse_collection_context(row.get(5)?),
                     project_id: row.get(6)?,
                     persona_id: row.get(7)?,
-                    title_is_auto: row.get::<_, i64>(8)? != 0,
+                    initial_auto_title_pending: row.get::<_, i64>(8)? != 0,
                     archived_at: row.get(9)?,
                     created_at: row.get(10)?,
                     updated_at: row.get(11)?,
@@ -1330,15 +1329,14 @@ impl Database {
 
     /// Update the title of a conversation (also bumps `updated_at`).
     ///
-    /// This is the **auto-title** path: it preserves `title_is_auto = 1` so
-    /// that subsequent auto-title regeneration remains allowed. Use
-    /// [`Self::rename_conversation_by_user`] for user-initiated renames.
+    /// This is the one-shot auto-title path. The guarded update also consumes
+    /// title_is_auto, so later turns cannot silently rename the conversation.
     pub fn update_conversation_title(&self, id: &str, title: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(
             "UPDATE conversations
-             SET title = ?2, updated_at = datetime('now')
-             WHERE id = ?1 AND title_is_auto = 1",
+             SET title = ?2, title_is_auto = 0, updated_at = datetime('now')
+             WHERE id = ?1 AND title_is_auto = 1 AND title = ''",
             rusqlite::params![id, title],
         )?;
         if affected == 0 {
@@ -1871,6 +1869,244 @@ impl Database {
             idempotency_key,
             None,
         )
+    }
+
+    /// Replace one completed conversation suffix while preserving its original
+    /// user message identity. Reply retry and edit/resend use this path so the
+    /// durable transcript contains one user bubble.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retry_agent_turn_and_run(
+        &self,
+        message: &ConversationMessage,
+        retry_from_user_message_id: &str,
+        title: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        idempotency_key: &str,
+    ) -> Result<AgentTurnLaunchRecord, CoreError> {
+        let idempotency_key = idempotency_key.trim();
+        let retry_from_user_message_id = retry_from_user_message_id.trim();
+        if idempotency_key.is_empty() || idempotency_key.len() > 256 {
+            return Err(CoreError::InvalidInput(
+                "Agent retry idempotency key must contain 1 to 256 bytes".to_string(),
+            ));
+        }
+        if retry_from_user_message_id.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Agent retry requires a user message anchor".to_string(),
+            ));
+        }
+        if message.role != Role::User || message.conversation_id.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "Agent retry payload must be a conversation-scoped user message".to_string(),
+            ));
+        }
+
+        let artifacts_json = message
+            .artifacts
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let image_attachments_json = message
+            .image_attachments
+            .as_ref()
+            .filter(|attachments| !attachments.is_empty())
+            .map(serde_json::to_string)
+            .transpose()?;
+        let turn_id = new_id();
+        let run_id = new_id();
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let existing = tx
+            .query_row(
+                "SELECT r.id, r.turn_id, r.user_message_id, r.status,
+                        m.content, m.artifacts_json, m.image_attachments_json,
+                        r.provider, r.model, m.sort_order
+                 FROM agent_task_runs r
+                 JOIN messages m ON m.id = r.user_message_id
+                 WHERE r.conversation_id = ?1 AND r.idempotency_key = ?2",
+                rusqlite::params![&message.conversation_id, idempotency_key],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, i64>(9)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((
+            existing_run_id,
+            existing_turn_id,
+            existing_message_id,
+            status,
+            existing_content,
+            existing_artifacts,
+            existing_attachments,
+            existing_provider,
+            existing_model,
+            existing_sort_order,
+        )) = existing
+        {
+            let same_request = existing_message_id == retry_from_user_message_id
+                && existing_content == message.content
+                && existing_artifacts == artifacts_json
+                && existing_attachments == image_attachments_json
+                && existing_provider.as_deref() == provider
+                && existing_model.as_deref() == model;
+            if !same_request {
+                return Err(CoreError::InvalidInput(format!(
+                    "Agent retry idempotency key {idempotency_key} was already used for different input"
+                )));
+            }
+            return Ok(AgentTurnLaunchRecord {
+                conversation_id: message.conversation_id.clone(),
+                user_message_id: existing_message_id,
+                user_message_sort_order: existing_sort_order,
+                turn_id: existing_turn_id,
+                run_id: existing_run_id,
+                status,
+                reused: true,
+            });
+        }
+
+        let (anchor_role, anchor_sort_order): (String, i64) = tx
+            .query_row(
+                "SELECT role, sort_order
+                 FROM messages
+                 WHERE id = ?1 AND conversation_id = ?2",
+                rusqlite::params![retry_from_user_message_id, &message.conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                CoreError::NotFound(format!("Retry user message {retry_from_user_message_id}"))
+            })?;
+        if anchor_role != "user" {
+            return Err(CoreError::InvalidInput(
+                "Agent retry anchor must identify a user message".to_string(),
+            ));
+        }
+
+        let active_suffix_runs: i64 = tx.query_row(
+            "SELECT COUNT(*)
+             FROM agent_task_runs r
+             JOIN conversation_turns t ON t.id = r.turn_id
+             JOIN messages m ON m.id = t.user_message_id
+             WHERE r.conversation_id = ?1
+               AND m.sort_order >= ?2
+               AND r.status IN (
+                   'queued', 'running', 'cancelling', 'waiting_approval',
+                   'awaiting_user_input', 'paused'
+               )",
+            rusqlite::params![&message.conversation_id, anchor_sort_order],
+            |row| row.get(0),
+        )?;
+        if active_suffix_runs > 0 {
+            return Err(CoreError::Conflict(
+                "Cannot retry while the selected conversation suffix is still active".to_string(),
+            ));
+        }
+
+        tx.execute(
+            "DELETE FROM agent_task_runs
+             WHERE turn_id IN (
+                 SELECT t.id
+                 FROM conversation_turns t
+                 JOIN messages m ON m.id = t.user_message_id
+                 WHERE t.conversation_id = ?1 AND m.sort_order >= ?2
+             )",
+            rusqlite::params![&message.conversation_id, anchor_sort_order],
+        )?;
+        tx.execute(
+            "DELETE FROM conversation_turns
+             WHERE id IN (
+                 SELECT t.id
+                 FROM conversation_turns t
+                 JOIN messages m ON m.id = t.user_message_id
+                 WHERE t.conversation_id = ?1 AND m.sort_order >= ?2
+             )",
+            rusqlite::params![&message.conversation_id, anchor_sort_order],
+        )?;
+        tx.execute(
+            "DELETE FROM messages
+             WHERE conversation_id = ?1 AND sort_order > ?2",
+            rusqlite::params![&message.conversation_id, anchor_sort_order],
+        )?;
+        tx.execute(
+            "UPDATE messages
+             SET content = ?3,
+                 tool_call_id = NULL,
+                 tool_calls_json = NULL,
+                 artifacts_json = ?4,
+                 token_count = ?5,
+                 thinking = NULL,
+                 image_attachments_json = ?6
+             WHERE id = ?1 AND conversation_id = ?2 AND role = 'user'",
+            rusqlite::params![
+                retry_from_user_message_id,
+                &message.conversation_id,
+                &message.content,
+                &artifacts_json,
+                message.token_count,
+                &image_attachments_json,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&message.conversation_id],
+        )?;
+        let inserted_turn = tx.execute(
+            "INSERT INTO conversation_turns
+                 (id, conversation_id, launch_project_id, user_message_id, route_kind, status)
+             SELECT ?1, id, project_id, ?3, NULL, 'running'
+             FROM conversations WHERE id = ?2",
+            rusqlite::params![
+                &turn_id,
+                &message.conversation_id,
+                retry_from_user_message_id
+            ],
+        )?;
+        if inserted_turn == 0 {
+            return Err(CoreError::NotFound(format!(
+                "Conversation {}",
+                message.conversation_id
+            )));
+        }
+        tx.execute(
+            "INSERT INTO agent_task_runs
+             (id, conversation_id, turn_id, user_message_id, status, phase, title, provider, model, idempotency_key)
+             VALUES (?1, ?2, ?3, ?4, 'queued', 'queued', ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                &run_id,
+                &message.conversation_id,
+                &turn_id,
+                retry_from_user_message_id,
+                title,
+                provider,
+                model,
+                idempotency_key,
+            ],
+        )?;
+        tx.commit()?;
+
+        Ok(AgentTurnLaunchRecord {
+            conversation_id: message.conversation_id.clone(),
+            user_message_id: retry_from_user_message_id.to_string(),
+            user_message_sort_order: anchor_sort_order,
+            turn_id,
+            run_id,
+            status: "queued".to_string(),
+            reused: false,
+        })
     }
 
     /// Atomically consumes an optional interaction response with turn launch.
@@ -5004,7 +5240,31 @@ mod tests {
 
         let updated = db.get_conversation(&conv.id).unwrap();
         assert_eq!(updated.title, "My manual title");
-        assert!(!updated.title_is_auto);
+        assert!(!updated.initial_auto_title_pending);
+    }
+
+    #[test]
+    fn test_auto_title_is_committed_only_once() {
+        let db = Database::open_memory().unwrap();
+        let conv = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+
+        db.update_conversation_title(&conv.id, "First automatic title")
+            .unwrap();
+        db.update_conversation_title(&conv.id, "Later automatic title")
+            .unwrap();
+
+        let updated = db.get_conversation(&conv.id).unwrap();
+        assert_eq!(updated.title, "First automatic title");
+        assert!(!updated.initial_auto_title_pending);
     }
 
     #[test]
@@ -5428,6 +5688,93 @@ mod tests {
         let messages = db.get_messages(&conversation.id).unwrap();
         assert_eq!(messages[0].sort_order, 0);
         assert_eq!(messages[1].sort_order, 1);
+    }
+
+    #[test]
+    fn test_reply_retry_reuses_one_durable_user_message_and_replaces_the_suffix() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let user_message = ConversationMessage {
+            id: "retry-user".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Explain the retry bug".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 4,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        let first = db
+            .create_agent_turn_and_run(
+                &user_message,
+                "Explain the retry bug",
+                Some("openai"),
+                Some("gpt-5"),
+                "retry-first",
+            )
+            .unwrap();
+        let assistant = ConversationMessage {
+            id: "retry-assistant".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::Assistant,
+            content: "First answer".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 2,
+            created_at: String::new(),
+            sort_order: 1,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&assistant).unwrap();
+        db.finalize_conversation_turn(&first.turn_id, "success", Some(&assistant.id), None)
+            .unwrap();
+        db.finish_agent_task_run(&first.run_id, "completed", None, None, None)
+            .unwrap();
+
+        let mut retry_payload = user_message.clone();
+        retry_payload.id = "must-not-create-a-second-user-message".to_string();
+        let retry = db
+            .retry_agent_turn_and_run(
+                &retry_payload,
+                &user_message.id,
+                "Explain the retry bug",
+                Some("openai"),
+                Some("gpt-5"),
+                "retry-second",
+            )
+            .unwrap();
+
+        assert_eq!(retry.user_message_id, user_message.id);
+        assert_ne!(retry.run_id, first.run_id);
+        let messages = db.get_messages(&conversation.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, user_message.id);
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(
+            db.get_conversation_turns(&conversation.id).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            db.get_agent_task_runs_for_conversation(&conversation.id)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

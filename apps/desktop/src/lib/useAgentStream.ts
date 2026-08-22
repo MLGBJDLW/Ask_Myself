@@ -2,22 +2,12 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import * as api from './api';
 import { streamStore } from './streamStore';
 import type {
-  ImageAttachment,
-  VisionTurnOverride,
   ApprovalRequest,
-  ArtifactPayload,
   UsageTotal,
 } from '../types/conversation';
 import type { StreamState } from './streamStore';
 import type { StreamRoundEvent, ToolCallEvent, TraceEvent } from './streaming/protocol';
-import type {
-  AgentCollaborationMode,
-  AgentExecutionMode,
-  AgentPowerMode,
-  CustomOrchestrationOptions,
-  MoaPresetId,
-  OrchestrationProfile,
-} from './api';
+import type { AgentChatRequestInput } from './agentChatRequest';
 import { agentTurnStateSuspendsStream } from './streaming/runEventLifecycle';
 
 type AutoCompactedInfo = { summary: string } | null;
@@ -31,23 +21,8 @@ const EMPTY_TASK_EVENTS: NonNullable<StreamState['taskEvents']> = [];
 
 interface UseAgentStreamReturn {
   send: (
-    conversationId: string,
-    message: string,
-    attachments?: ImageAttachment[],
-    agentConfigId?: string | null,
-    personaId?: string | null,
-    skillIds?: string[],
-    executionMode?: AgentExecutionMode | null,
-    powerMode?: AgentPowerMode | null,
-    collaborationMode?: AgentCollaborationMode | null,
-    moaPreset?: MoaPresetId | null,
-    orchestrationProfile?: OrchestrationProfile | null,
-    customOrchestration?: CustomOrchestrationOptions | null,
-    visionTurnOverride?: VisionTurnOverride | null,
-    userArtifacts?: ArtifactPayload | null,
-    taskOrchestratorRunId?: string | null,
-    resumeCheckpointId?: string | null,
-    propagateErrors?: boolean,
+    input: AgentChatRequestInput,
+    options?: { propagateErrors?: boolean },
   ) => Promise<void>;
   stop: (conversationId: string) => Promise<void>;
   isStreaming: boolean;
@@ -139,61 +114,33 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
   }, []);
 
   const send = useCallback(async (
-    conversationId: string,
-    message: string,
-    attachments?: ImageAttachment[],
-    agentConfigId?: string | null,
-    personaId?: string | null,
-    skillIds?: string[],
-    executionMode?: AgentExecutionMode | null,
-    powerMode?: AgentPowerMode | null,
-    collaborationMode?: AgentCollaborationMode | null,
-    moaPreset?: MoaPresetId | null,
-    orchestrationProfile?: OrchestrationProfile | null,
-    customOrchestration?: CustomOrchestrationOptions | null,
-    visionTurnOverride?: VisionTurnOverride | null,
-    userArtifacts?: ArtifactPayload | null,
-    taskOrchestratorRunId?: string | null,
-    resumeCheckpointId?: string | null,
-    propagateErrors = false,
+    input: AgentChatRequestInput,
+    options: { propagateErrors?: boolean } = {},
   ) => {
+    const { conversationId } = input;
     activeConversationRef.current = conversationId;
     streamStore.startStream(conversationId);
 
     try {
-      const handle = await api.agentChat(
-        conversationId,
-        message,
-        attachments,
-        agentConfigId,
-        personaId,
-        skillIds,
-        executionMode,
-        powerMode,
-        collaborationMode,
-        moaPreset,
-        orchestrationProfile,
-        customOrchestration,
-        visionTurnOverride,
-        userArtifacts,
-        taskOrchestratorRunId,
-        resumeCheckpointId,
-      );
+      const handle = await api.agentChat(input);
       streamStore.bindTurnHandle(conversationId, handle);
       if (handle && agentTurnStateSuspendsStream(handle.state)) {
         streamStore.markResumableSuspension(conversationId);
       }
     } catch (err) {
       streamStore.sendError(conversationId, String(err));
-      if (propagateErrors) throw err;
+      if (options.propagateErrors) throw err;
     }
   }, []);
 
   const stop = useCallback(async (conversationId: string) => {
     try {
       await api.agentStop(conversationId);
-    } catch { /* ignore */ }
-    streamStore.stopStream(conversationId);
+      streamStore.markResumableSuspension(conversationId);
+    } catch {
+      // Keep the live projection active when the backend did not accept the
+      // pause; a later durable event or retry can still settle it safely.
+    }
   }, []);
 
   const clearPreview = useCallback(() => {

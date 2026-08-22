@@ -704,21 +704,23 @@ mod tests {
             .iter()
             .find(|model| model.id == "deepseek-v4-flash")
             .expect("deepseek-v4-flash should be listed");
+        let vision = deepseek
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash-vision-exp")
+            .expect("deepseek-v4-flash-vision-exp should be listed");
         assert!(
             deepseek.native_web_search.is_none(),
             "Flash-only search must not leak through the provider preset"
         );
-        assert!(
-            pro.native_web_search.is_none(),
-            "DeepSeek does not expose Responses for V4 Pro"
-        );
-        assert_eq!(
-            flash
-                .native_web_search
-                .expect("DeepSeek V4 Flash should expose Responses search")
-                .can_mix_client_tools,
-            true
-        );
+        for model in [pro, flash, vision] {
+            assert!(
+                model
+                    .native_web_search
+                    .expect("current DeepSeek V4 models should expose Responses search")
+                    .can_mix_client_tools
+            );
+        }
         let reasoning = pro
             .capabilities
             .as_ref()
@@ -726,7 +728,7 @@ mod tests {
             .expect("deepseek-v4-pro should expose reasoning capability");
         assert_eq!(
             reasoning.effort_levels,
-            vec!["high".to_string(), "max".to_string()]
+            vec!["low".to_string(), "high".to_string(), "max".to_string()]
         );
         assert_eq!(reasoning.default_effort.as_deref(), Some("high"));
         assert_eq!(
@@ -1101,8 +1103,8 @@ mod tests {
             .models
             .iter()
             .find(|model| model.id == "glm-5.2")
-            .expect("GLM-5.2 should remain the recommended live default");
-        assert_eq!(glm52.recommended, Some(true));
+            .expect("GLM-5.2 should remain available as a legacy option");
+        assert_eq!(glm52.recommended, Some(false));
         let glm52_reasoning = glm52
             .capabilities
             .as_ref()
@@ -1116,8 +1118,8 @@ mod tests {
             .find(|model| model.id == "glm-5.3")
             .expect("the released GLM-5.3 model should be discoverable");
         assert_eq!(glm53.source, Some(ModelCatalogSource::Official));
-        assert_eq!(glm53.status, Some(ModelLifecycleStatus::Gated));
-        assert_eq!(glm53.recommended, Some(false));
+        assert_eq!(glm53.status, Some(ModelLifecycleStatus::Active));
+        assert_eq!(glm53.recommended, Some(true));
         let reasoning = glm53
             .capabilities
             .as_ref()
@@ -1135,17 +1137,17 @@ mod tests {
             Some("https://open.bigmodel.cn/api/paas/v4"),
             None,
             None,
-            "2026-08-15T00:00:00Z",
+            "2026-08-22T00:00:00Z",
         );
         let glm53_descriptor = snapshot
             .descriptors
             .iter()
             .find(|model| model.id == "glm-5.3")
-            .expect("GLM-5.3 descriptor should remain visible while unavailable");
-        assert_eq!(glm53_descriptor.available_to_credential, Some(false));
+            .expect("GLM-5.3 descriptor should be available through the public Model API");
+        assert_eq!(glm53_descriptor.available_to_credential, Some(true));
         assert_eq!(
             glm53_descriptor.product_readiness,
-            crate::model_catalog::ProductReadiness::Known
+            crate::model_catalog::ProductReadiness::ProductReady
         );
 
         for base_url in [
@@ -1183,6 +1185,13 @@ mod tests {
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::DeepSeek, "deepseek-v4-pro"),
             Some(false)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(
+                ProviderType::DeepSeek,
+                "deepseek-v4-flash-vision-exp"
+            ),
+            Some(true)
         );
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::AlibabaModelStudio, "qwen3-vl-plus"),

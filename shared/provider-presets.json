@@ -6974,7 +6974,7 @@
     "baseUrl": "https://api.deepseek.com",
     "requiresApiKey": true,
     "icon": "🔎",
-    "description": "DeepSeek V4 Pro/Flash",
+    "description": "DeepSeek V4 Pro, Flash, and Flash Vision Experimental",
     "capabilities": {
       "vision": false
     },
@@ -6983,15 +6983,38 @@
         "id": "deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "tagKey": "providers.tagLatest",
-        "source": "curated",
-        "productReadiness": "known",
+        "version": "DeepSeek-V4-Pro-0813",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
         "recommended": true,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-22",
+        "releaseDate": "2026-08-13",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 384000,
+        "nativeWebSearch": {
+          "dialect": "deepSeekResponses",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": false,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
         "capabilities": {
+          "vision": false,
+          "promptCache": true,
           "reasoning": {
-            "effortLevels": [
-              "high",
-              "max"
-            ],
+            "mode": "optional",
+            "effortLevels": ["low", "high", "max"],
             "defaultEffort": "high",
             "thinkingBudget": {
               "enabled": false
@@ -7002,6 +7025,7 @@
       {
         "id": "deepseek-v4-flash",
         "name": "DeepSeek V4 Flash",
+        "version": "DeepSeek-V4-Flash-0731",
         "nativeWebSearch": {
           "dialect": "deepSeekResponses",
           "supportsDomains": false,
@@ -7013,12 +7037,72 @@
           "canMixClientTools": true
         },
         "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "preview",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-22",
+        "releaseDate": "2026-07-31",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 384000,
         "capabilities": {
+          "vision": false,
+          "promptCache": true,
           "reasoning": {
-            "effortLevels": [
-              "high",
-              "max"
-            ],
+            "mode": "optional",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "high",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "deepseek-v4-flash-vision-exp",
+        "name": "DeepSeek V4 Flash Vision Experimental",
+        "version": "DeepSeek-V4-Flash-Vision-Exp",
+        "tagKey": "providers.tagVision",
+        "source": "official",
+        "status": "preview",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-22",
+        "releaseDate": "2026-08-21",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 384000,
+        "maxImages": 600,
+        "maxInputBytes": 50331648,
+        "nativeWebSearch": {
+          "dialect": "deepSeekResponses",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": false,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["low", "high", "max"],
             "defaultEffort": "high",
             "thinkingBudget": {
               "enabled": false
@@ -7481,7 +7565,7 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.3 metadata (Model API coming soon), plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.3 flagship Model API, plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
@@ -7491,13 +7575,13 @@
         "name": "GLM-5.3",
         "tagKey": "providers.tagLatest",
         "source": "official",
-        "status": "gated",
-        "access": "account_enablement",
-        "productReadiness": "known",
-        "availableToCredential": false,
-        "recommended": false,
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": true,
         "regions": ["cn-mainland"],
-        "lastVerifiedAt": "2026-08-15",
+        "lastVerifiedAt": "2026-08-22",
         "releaseDate": "2026-08-14",
         "inputModalities": ["text"],
         "outputModalities": ["text"],
@@ -7524,7 +7608,7 @@
         "tagKey": "providers.tagLatest",
         "source": "curated",
         "productReadiness": "known",
-        "recommended": true,
+        "recommended": false,
         "capabilities": {
           "reasoning": {
             "effortLevels": [

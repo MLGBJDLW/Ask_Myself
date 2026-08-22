@@ -205,7 +205,7 @@ struct RecordingSession {
 }
 
 enum VoiceSession {
-    Recording(RecordingSession),
+    Recording(Box<RecordingSession>),
     Ready(VoiceSpoolDescriptor),
     DeletionPending {
         descriptor: Option<VoiceSpoolDescriptor>,
@@ -311,7 +311,7 @@ impl VoiceAudioSpool {
 
         sessions.insert(
             session_id.clone(),
-            VoiceSession::Recording(RecordingSession {
+            VoiceSession::Recording(Box::new(RecordingSession {
                 session_id: session_id.clone(),
                 created_at_ms,
                 sample_rate,
@@ -326,7 +326,7 @@ impl VoiceAudioSpool {
                 file: Some(file),
                 part_path,
                 recording_manifest_path,
-            }),
+            })),
         );
         Ok(VoiceSpoolStarted {
             session_id,

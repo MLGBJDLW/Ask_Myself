@@ -37,6 +37,7 @@ export interface AgentChatRequestInput {
   userArtifacts?: ArtifactPayload | null;
   taskOrchestratorRunId?: string | null;
   resumeCheckpointId?: string | null;
+  retryFromMessageId?: string | null;
 }
 
 export interface AgentChatRequest {
@@ -58,6 +59,7 @@ export interface AgentChatRequest {
   userArtifacts: ArtifactPayload | null;
   taskOrchestratorRunId: string | null;
   resumeCheckpointId: string | null;
+  retryFromMessageId: string | null;
 }
 
 function interactionIdFromArtifacts(userArtifacts?: ArtifactPayload | null): string {
@@ -76,8 +78,9 @@ export function buildAgentChatRequest(
 ): AgentChatRequest {
   const interactionId = interactionIdFromArtifacts(input.userArtifacts);
   const resumeCheckpointId = input.resumeCheckpointId?.trim() || '';
-  if (interactionId && resumeCheckpointId) {
-    throw new Error('Interaction continuation and checkpoint resume are mutually exclusive');
+  const retryFromMessageId = input.retryFromMessageId?.trim() || '';
+  if ([interactionId, resumeCheckpointId, retryFromMessageId].filter(Boolean).length > 1) {
+    throw new Error('Interaction, checkpoint resume, and reply retry are mutually exclusive');
   }
 
   return {
@@ -103,5 +106,6 @@ export function buildAgentChatRequest(
     userArtifacts: input.userArtifacts ?? null,
     taskOrchestratorRunId: input.taskOrchestratorRunId ?? null,
     resumeCheckpointId: resumeCheckpointId || null,
+    retryFromMessageId: retryFromMessageId || null,
   };
 }

@@ -227,7 +227,7 @@ function testUncataloguedImageModelsRemainEditable(): void {
   );
 }
 
-function testGlm53IsDiscoverableWithoutAdvertisingAnUnavailableRoute(): void {
+function testGlm53AndDeepSeekCurrentModelsExposeOfficialCapabilities(): void {
   type RawPreset = {
     id: string;
     provider: string;
@@ -251,18 +251,48 @@ function testGlm53IsDiscoverableWithoutAdvertisingAnUnavailableRoute(): void {
   });
   const model = models.find(candidate => candidate.id === 'glm-5.3');
   assert(model, 'the released GLM-5.3 model should be discoverable');
-  assertEqual(model.descriptor.lifecycle, 'gated', 'the ordinary Model API is not live yet');
-  assertEqual(model.descriptor.productReadiness, 'known', 'release facts are known without claiming callability');
-  assertEqual(model.descriptor.availableToCredential, false, 'the unavailable route must remain disabled');
+  assertEqual(model.descriptor.lifecycle, 'active', 'the ordinary GLM-5.3 Model API is live');
+  assertEqual(model.descriptor.productReadiness, 'product_ready', 'GLM-5.3 is product ready');
+  assertEqual(model.descriptor.availableToCredential, true, 'GLM-5.3 is available to credentials');
   assertEqual(model.descriptor.limits.contextTokens, 1_000_000, 'GLM-5.3 context should be official');
   assertEqual(model.descriptor.limits.maxOutputTokens, 131_072, 'GLM-5.3 output limit should be official');
-  assertEqual(selectImplicitDefault(models), null, 'Zhipu should continue requiring an explicit live model selection');
+  assertEqual(selectImplicitDefault(models)?.id, 'glm-5.3', 'GLM-5.3 should be the implicit Zhipu default');
   const rawReasoning = model.capabilities?.reasoning as {
     mode?: string;
     defaultEffort?: string;
   } | null | undefined;
   assertEqual(rawReasoning?.mode, 'always', 'GLM-5.3 reasoning cannot be disabled');
   assertEqual(rawReasoning?.defaultEffort, 'max', 'GLM-5.3 should default to max effort');
+
+  const deepseek = findPreset('deep_seek', 'https://api.deepseek.com');
+  assert(deepseek, 'the official DeepSeek API preset should exist');
+  const deepseekModels = attachModelDescriptors(deepseek.models, {
+    surface: 'text',
+    providerId: deepseek.id,
+    endpointId: `text:${deepseek.id}`,
+    apiStyle: 'openai_chat',
+  });
+  for (const id of [
+    'deepseek-v4-pro',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash-vision-exp',
+  ]) {
+    const candidate = deepseekModels.find(model => model.id === id);
+    assert(candidate, `${id} should be present in the official DeepSeek catalog`);
+    assertEqual(candidate.descriptor.limits.contextTokens, 1_000_000, `${id} context`);
+    assertEqual(candidate.descriptor.limits.maxOutputTokens, 384_000, `${id} output`);
+    assertEqual(candidate.descriptor.capabilities.toolCalling, true, `${id} tools`);
+    assertEqual(candidate.descriptor.capabilities.structuredOutput, true, `${id} JSON`);
+    assertEqual(
+      candidate.descriptor.capabilities.nativeWebSearch?.dialect,
+      'deepSeekResponses',
+      `${id} Responses search`,
+    );
+  }
+  const vision = deepseekModels.find(model => model.id === 'deepseek-v4-flash-vision-exp');
+  assert(vision, 'DeepSeek vision model');
+  assertEqual(vision.descriptor.capabilities.vision, true, 'DeepSeek vision capability');
+  assert(vision.descriptor.inputModalities.includes('image'), 'DeepSeek vision input modality');
 
   for (const codingPlanUrl of [
     'https://open.bigmodel.cn/api/coding/paas/v4',
@@ -294,4 +324,4 @@ testEndpointIdentityRequiresAnExactBaseUrlMatch();
 testSavedExternalEndpointIdentityRequiresAnUnchangedScope();
 testWizardRequiresAnExplicitNonEmptyModel();
 testUncataloguedImageModelsRemainEditable();
-testGlm53IsDiscoverableWithoutAdvertisingAnUnavailableRoute();
+testGlm53AndDeepSeekCurrentModelsExposeOfficialCapabilities();

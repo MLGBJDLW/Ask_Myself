@@ -433,6 +433,30 @@ mod tests {
     }
 
     #[test]
+    fn scheduling_canonicalizes_enum_values_before_approval_decisions() {
+        let tools = crate::tools::default_tool_registry();
+        let policy = ToolSchedulerPolicy::new(
+            Some(30),
+            None,
+            false,
+            HashSet::from(["appearance".to_string()]),
+            HashSet::from(["appearance".to_string()]),
+        );
+        let decision = policy.decision_for(
+            &tools,
+            &ToolCallRequest {
+                id: "call-appearance-approval".to_string(),
+                name: "appearance".to_string(),
+                arguments: serde_json::json!({ "action": "APPLY" }).to_string(),
+                thought_signature: None,
+            },
+        );
+
+        assert_eq!(decision.parsed_args["action"], "apply");
+        assert!(tools.requires_confirmation("appearance", &decision.parsed_args));
+    }
+
+    #[test]
     fn timeout_gives_subagents_minimum_outer_budget() {
         assert_eq!(
             tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),

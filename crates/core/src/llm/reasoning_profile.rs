@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::provider_catalog::model_capabilities_from_catalog;
+
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
     is_deepseek_anthropic_endpoint, is_deepseek_public_endpoint, is_google_public_endpoint,
@@ -291,6 +293,23 @@ fn profile(
     }
 }
 
+fn catalog_reasoning_effort_policy(
+    provider: ProviderType,
+    model: &str,
+) -> Option<(Vec<ReasoningEffort>, Option<ReasoningEffort>)> {
+    let reasoning = model_capabilities_from_catalog(provider, model)?.reasoning?;
+    let accepted = reasoning
+        .effort_levels
+        .iter()
+        .filter_map(|effort| ReasoningEffort::from_wire(effort))
+        .collect::<Vec<_>>();
+    let default = reasoning
+        .default_effort
+        .as_deref()
+        .and_then(ReasoningEffort::from_wire);
+    Some((accepted, default))
+}
+
 pub fn resolve_reasoning_profile(
     provider: ProviderType,
     base_url: Option<&str>,
@@ -539,31 +558,24 @@ pub fn resolve_reasoning_profile(
         return value;
     }
 
-    if provider == ProviderType::DeepSeek
-        && is_deepseek_public_endpoint(provider, base_url)
-        && matches!(model.as_str(), "deepseek-v4-pro" | "deepseek-v4-flash")
-    {
-        let mut value = profile(
-            key,
-            "deepseek-direct-thinking-v1",
-            ThinkingModeControl::ThinkingType,
-            ReasoningEffortField::TopLevel,
-            ReasoningEffortMapping::Exact,
-            (
-                &[
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::High,
-                    ReasoningEffort::Max,
-                ],
-                Some(ReasoningEffort::High),
-            ),
-            ReasoningBudgetField::None,
-        );
-        value.preserve_reasoning_history = true;
-        value.replay_policy = ReasoningReplayPolicy::RequiredOnToolCall;
-        value.omit_temperature_when_reasoning = true;
-        return value;
+    if provider == ProviderType::DeepSeek && is_deepseek_public_endpoint(provider, base_url) {
+        if let Some((accepted_efforts, default_effort)) =
+            catalog_reasoning_effort_policy(provider, &model)
+        {
+            let mut value = profile(
+                key,
+                "deepseek-direct-thinking-v1",
+                ThinkingModeControl::ThinkingType,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (&accepted_efforts, default_effort),
+                ReasoningBudgetField::None,
+            );
+            value.preserve_reasoning_history = true;
+            value.replay_policy = ReasoningReplayPolicy::RequiredOnToolCall;
+            value.omit_temperature_when_reasoning = true;
+            return value;
+        }
     }
 
     if provider == ProviderType::Moonshot && is_moonshot_public_endpoint(provider, base_url) {

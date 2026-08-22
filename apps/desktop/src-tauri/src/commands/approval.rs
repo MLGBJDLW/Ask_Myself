@@ -19,8 +19,10 @@ pub async fn approve_tool_call_cmd(
         pending.remove(&request_id)
     };
     match sender {
-        Some(tx) => {
-            tx.send(decision)
+        Some(pending) => {
+            pending
+                .sender
+                .send(decision)
                 .map_err(|_| "Approval request already resolved or expired".to_string())?;
             Ok(())
         }

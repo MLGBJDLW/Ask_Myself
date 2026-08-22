@@ -22,6 +22,23 @@ export interface ReasoningCapability {
   thinkingBudget?: ThinkingBudgetCapability;
 }
 
+export type NativeSearchDialect =
+  | 'openAiResponses'
+  | 'anthropicServerTool'
+  | 'geminiGoogleSearch'
+  | 'deepSeekResponses';
+
+export interface NativeWebSearchCapability {
+  dialect: NativeSearchDialect;
+  supportsDomains: boolean;
+  supportsRecency: boolean;
+  supportsLocale: boolean;
+  supportsLocation: boolean;
+  supportsCitations: boolean;
+  supportsStreamEvents: boolean;
+  canMixClientTools: boolean;
+}
+
 export interface ModelCapabilities {
   reasoning?: ReasoningCapability | null;
   vision?: boolean;
@@ -40,6 +57,7 @@ export interface ModelCapabilities {
   asyncJobs?: boolean;
   batch?: boolean;
   dimensionOverride?: boolean;
+  nativeWebSearch?: NativeWebSearchCapability;
 }
 
 export interface ModelLimits {
@@ -113,7 +131,9 @@ export interface LegacyCatalogModel {
     promptCache?: boolean;
     asyncJobs?: boolean;
     batch?: boolean;
+    nativeWebSearch?: NativeWebSearchCapability;
   };
+  nativeWebSearch?: NativeWebSearchCapability;
   supportsTools?: boolean | null;
   supportsStructuredOutput?: boolean | null;
   supportsDimensionOverride?: boolean;
@@ -214,6 +234,7 @@ export function projectModelDescriptor(
       asyncJobs: rawCapabilities.asyncJobs || undefined,
       batch: rawCapabilities.batch || undefined,
       dimensionOverride: model.supportsDimensionOverride || undefined,
+      nativeWebSearch: rawCapabilities.nativeWebSearch ?? model.nativeWebSearch ?? undefined,
     },
     limits: {
       contextTokens: model.contextTokens ?? null,

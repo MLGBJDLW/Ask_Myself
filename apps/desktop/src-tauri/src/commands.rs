@@ -219,9 +219,19 @@ pub struct DownloadCancelFlag(pub Arc<AtomicBool>);
 /// persist until the app is closed.
 #[derive(Default)]
 pub struct ApprovalState {
-    pub pending: Arc<TokioMutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>>,
+    pub pending: PendingToolApprovals,
     pub session_store: SessionApprovalStore,
 }
+
+/// A pending desktop approval remains associated with its owning durable run.
+/// Stop/pause paths use that ownership to resolve the prompt before committing
+/// a resumable checkpoint.
+pub struct PendingToolApproval {
+    pub task_run_id: String,
+    pub sender: tokio::sync::oneshot::Sender<ApprovalDecision>,
+}
+
+pub type PendingToolApprovals = Arc<TokioMutex<HashMap<String, PendingToolApproval>>>;
 
 #[tauri::command]
 pub fn list_workflow_templates_cmd(

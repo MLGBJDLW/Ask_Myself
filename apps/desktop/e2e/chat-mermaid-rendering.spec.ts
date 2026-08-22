@@ -3,7 +3,43 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
-    localStorage.setItem('nexa-theme', 'dream');
+    const plugin = {
+      manifestVersion: 2,
+      kind: 'theme-resource',
+      id: 'mermaid-extreme-theme',
+      name: 'Mermaid Extreme Theme',
+      theme: {
+        baseTheme: 'dark',
+        mode: 'dark',
+        colors: {
+          surface0: '#000000',
+          surface1: '#050505',
+          surface2: '#0a0a0a',
+          surface3: '#101010',
+          surface4: '#161616',
+          textPrimary: '#f8fafc',
+          textSecondary: '#cbd5e1',
+          textTertiary: '#94a3b8',
+          thinkingText: '#f472b6',
+          replyText: '#f8fafc',
+          accent: '#22d3ee',
+        },
+        effects: { densityScale: 1.3, radiusScale: 1.4 },
+        typography: {
+          fontFamily: '"Georgia", serif',
+          baseSize: 24,
+          lineHeight: 2.2,
+          letterSpacing: 0.18,
+        },
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: { kind: 'none' },
+      },
+    };
+    localStorage.setItem('nexa-theme-resource-plugins-v2', JSON.stringify([plugin]));
+    localStorage.setItem('nexa-active-theme-v1', plugin.id);
 
     const nowIso = new Date().toISOString();
     const conversation = {
@@ -204,6 +240,7 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   await page.goto('/chat/conv-mermaid');
 
   const surfaces = page.getByTestId('mermaid-surface');
+  await expect(page.locator('html')).toHaveAttribute('data-custom-theme', 'true');
   await expect(surfaces).toHaveCount(4);
   await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
   await expect(page.locator('svg style')).toHaveCount(4);
@@ -237,6 +274,67 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
       elements.map((element) => getComputedStyle(element).color),
     )).toEqual(expectedSurfaceColors);
   }
+});
+
+test('isolates Mermaid geometry and palette from extreme custom typography', async ({ page }) => {
+  await page.goto('/chat/conv-mermaid');
+
+  const surfaces = page.getByTestId('mermaid-surface');
+  await expect(surfaces).toHaveCount(4);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
+  const diagnostics = await surfaces.evaluateAll((elements) => elements.map((surface) => {
+    const svg = surface.querySelector('svg');
+    if (!svg) throw new Error('missing Mermaid SVG');
+    const nodeDiagnostics = Array.from(svg.querySelectorAll<SVGGElement>('g.node'))
+      .slice(0, 12)
+      .map((node) => {
+        const shape = node.querySelector<SVGGraphicsElement>('rect, polygon, path, circle, ellipse');
+        const label = node.querySelector<SVGGraphicsElement>('.label, .nodeLabel, text');
+        if (!shape || !label) return null;
+        const shapeBox = shape.getBoundingClientRect();
+        const labelBox = label.getBoundingClientRect();
+        const fill = getComputedStyle(shape).fill;
+        const labelCenter = {
+          x: labelBox.x + labelBox.width / 2,
+          y: labelBox.y + labelBox.height / 2,
+        };
+        return {
+          fill,
+          label: label.textContent ?? '',
+          shapeBox: { x: shapeBox.x, y: shapeBox.y, width: shapeBox.width, height: shapeBox.height },
+          labelBox: { x: labelBox.x, y: labelBox.y, width: labelBox.width, height: labelBox.height },
+          centered:
+            labelCenter.x >= shapeBox.x - 1
+            && labelCenter.x <= shapeBox.x + shapeBox.width + 1
+            && labelCenter.y >= shapeBox.y - 1
+            && labelCenter.y <= shapeBox.y + shapeBox.height + 1,
+        };
+      })
+      .filter((value): value is {
+        fill: string;
+        label: string;
+        shapeBox: { x: number; y: number; width: number; height: number };
+        labelBox: { x: number; y: number; width: number; height: number };
+        centered: boolean;
+      } => value !== null);
+    const style = getComputedStyle(svg);
+    return {
+      letterSpacing: style.letterSpacing,
+      lineHeight: style.lineHeight,
+      nodes: nodeDiagnostics,
+    };
+  }));
+
+  for (const diagram of diagnostics) {
+    expect(diagram.letterSpacing).toBe('normal');
+    expect(diagram.lineHeight).toBe('normal');
+    expect(
+      diagram.nodes.every((node) => node.centered),
+      JSON.stringify(diagram.nodes.filter((node) => !node.centered), null, 2),
+    ).toBe(true);
+    expect(diagram.nodes.every((node) => !/^rgb\(0, 0, 0\)$/.test(node.fill))).toBe(true);
+  }
+  expect(diagnostics.flatMap((diagram) => diagram.nodes).length).toBeGreaterThan(0);
 });
 
 test('keeps every Mermaid timeline section readable', async ({ page }) => {

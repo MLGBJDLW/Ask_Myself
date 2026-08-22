@@ -530,7 +530,9 @@ mod tests {
             .iter()
             .all(|server| !server.id.starts_with(USER_JSON_ID_PREFIX)));
         assert!(remaining.iter().any(|server| server.name == "Managed"));
-        assert!(remaining.iter().any(|server| server.builtin_id.is_some()));
+        assert!(remaining
+            .iter()
+            .all(|server| server.builtin_id.as_deref() != Some("playwright-browser")));
     }
 
     #[test]

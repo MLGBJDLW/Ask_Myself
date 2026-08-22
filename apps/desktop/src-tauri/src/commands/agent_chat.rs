@@ -158,6 +158,7 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub user_artifacts: Option<serde_json::Value>,
     pub task_orchestrator_run_id: Option<String>,
     pub resume_checkpoint_id: Option<String>,
+    pub retry_from_message_id: Option<String>,
     pub idempotency_key: String,
 }
 
@@ -294,6 +295,7 @@ pub async fn agent_chat_cmd(
         user_artifacts: request.user_artifacts,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
         resume_checkpoint_id: request.resume_checkpoint_id,
+        retry_from_message_id: request.retry_from_message_id,
         idempotency_key: request.idempotency_key,
     })
     .await
@@ -366,6 +368,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         user_artifacts,
         task_orchestrator_run_id,
         resume_checkpoint_id,
+        retry_from_message_id,
         idempotency_key,
     } = request;
     let execution_mode = AgentExecutionMode::from_wire(execution_mode.as_deref())?;
@@ -385,6 +388,19 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    let retry_from_message_id = retry_from_message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    if retry_from_message_id.is_some()
+        && (resume_checkpoint_id.is_some() || task_orchestrator_run_id.is_some())
+    {
+        return Err(
+            "Reply retry cannot also resume a task checkpoint or Task Orchestrator run."
+                .to_string(),
+        );
+    }
     if resume_checkpoint_id.is_some() && task_orchestrator_run_id.is_some() {
         return Err(
             "Task checkpoint resumes recover their original Task Orchestrator identity."
@@ -598,7 +614,16 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             }
         }),
     };
-    let launch_result = if let Some(checkpoint_id) = resume_checkpoint_id.as_deref() {
+    let launch_result = if let Some(retry_message_id) = retry_from_message_id.as_deref() {
+        state.db.retry_agent_turn_and_run(
+            &user_msg,
+            retry_message_id,
+            &task_title_from_message(&message),
+            Some(&db_config.provider),
+            Some(&db_config.model),
+            &idempotency_key,
+        )
+    } else if let Some(checkpoint_id) = resume_checkpoint_id.as_deref() {
         state.db.resume_agent_turn_from_checkpoint(
             &user_msg,
             Some(&db_config.provider),
@@ -753,12 +778,51 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     {
         Ok(outbox) => outbox,
         Err(error) => {
+            let terminalized = reconcile_pre_executor_launch_failure(
+                state.db.as_ref(),
+                &launch_record.run_id,
+                task_orchestrator_run_id.as_deref(),
+                &launch_record.turn_id,
+                &error.to_string(),
+            );
             if let Some(previous) = resumed_turn.take() {
-                agent_state.sessions.register(previous).await;
+                if terminalized {
+                    previous.cancel_token.cancel();
+                    previous.task.abort();
+                    let _ = previous.task.await;
+                } else {
+                    agent_state.sessions.register(previous).await;
+                }
             }
+            emit_agent_task_run_update(
+                &state.db,
+                &app_handle,
+                &conversation_id,
+                &launch_record.run_id,
+            );
             return Err(error.to_string());
         }
     };
+    if let Err(error) = stream_event_seq.resume_submissions() {
+        let message = format!("Could not open the Run Event producer boundary: {error}");
+        finalize_desktop_agent_initialization_failure(
+            state.db.as_ref(),
+            &app_handle,
+            &conversation_id,
+            &launch_record.run_id,
+            task_orchestrator_run_id.as_deref(),
+            &launch_record.turn_id,
+            stream_event_seq.as_ref(),
+            &message,
+        )
+        .await;
+        if let Some(previous) = resumed_turn.take() {
+            previous.cancel_token.cancel();
+            previous.task.abort();
+            let _ = previous.task.await;
+        }
+        return Err(message);
+    }
     if stream_event_seq.is_closed_for_submission() {
         if let Some(previous) = resumed_turn.take() {
             agent_state.sessions.register(previous).await;
@@ -1459,11 +1523,52 @@ fn initialization_frontend_message(error: &str) -> &'static str {
     }
 }
 
+fn reconcile_pre_executor_launch_failure(
+    db: &Database,
+    task_run_id: &str,
+    task_orchestrator_run_id: Option<&str>,
+    turn_id: &str,
+    error: &str,
+) -> bool {
+    let failure_reason = format!("run_event_launch_open_failed: {error}");
+    let claimed = match nexa_core::task_run::AgentTaskRuntime::new(db)
+        .fail_pre_executor_launch_if_open(task_run_id, &failure_reason)
+    {
+        Ok(claimed) => claimed,
+        Err(failure) => {
+            warn!(
+                "Failed to terminalize committed launch {task_run_id} before executor start: {failure}"
+            );
+            return false;
+        }
+    };
+    let trace = serde_json::json!({
+        "initializationError": error,
+        "status": "failed",
+        "stage": "run_event_outbox_open",
+    });
+    reconcile_initialization_terminal_barrier(
+        db,
+        task_run_id,
+        task_orchestrator_run_id,
+        turn_id,
+        false,
+        "failed",
+        "error",
+        "Agent initialization failed",
+        &failure_reason,
+        &trace,
+    );
+    claimed
+}
+
 #[cfg(test)]
 mod initialization_error_tests {
     use super::{
-        desktop_agent_chat_launch, initialization_frontend_message, launch_status_needs_executor,
-        reconcile_initialization_terminal_barrier, reused_launch_needs_no_executor,
+        desktop_agent_chat_launch, initialization_frontend_message, interaction_run_stop_path,
+        launch_status_needs_executor, reconcile_initialization_terminal_barrier,
+        reconcile_pre_executor_launch_failure, reused_launch_needs_no_executor,
+        InteractionRunStopPath,
     };
     use nexa_core::conversation::{
         AgentTurnLaunchRecord, ConversationMessage, CreateConversationInput,
@@ -1739,6 +1844,101 @@ mod initialization_error_tests {
 
         assert_eq!(launch.handle.state, AgentTurnState::Paused);
     }
+
+    #[test]
+    fn committed_retry_setup_failure_is_terminal_and_allows_another_retry() {
+        let db = Database::open_memory().expect("open memory db");
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-test".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        let message = ConversationMessage {
+            id: "retry-user".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "Retry this answer".to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 3,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        let original = db
+            .create_agent_turn_and_run(
+                &message,
+                "Original run",
+                Some("open_ai"),
+                Some("gpt-test"),
+                "retry-original",
+            )
+            .expect("create original run");
+        db.finish_agent_task_run(&original.run_id, "completed", None, None, None)
+            .expect("finish original run");
+        db.finalize_conversation_turn(&original.turn_id, "success", None, None)
+            .expect("finish original turn");
+
+        let committed = db
+            .retry_agent_turn_and_run(
+                &message,
+                &message.id,
+                "Committed retry",
+                Some("open_ai"),
+                Some("gpt-test"),
+                "retry-committed",
+            )
+            .expect("commit retry transaction");
+        assert!(reconcile_pre_executor_launch_failure(
+            &db,
+            &committed.run_id,
+            None,
+            &committed.turn_id,
+            "outbox open failed",
+        ));
+        assert_eq!(
+            db.get_agent_task_run(&committed.run_id)
+                .expect("failed committed retry")
+                .status,
+            "failed"
+        );
+
+        let next = db.retry_agent_turn_and_run(
+            &message,
+            &message.id,
+            "Retry after setup failure",
+            Some("open_ai"),
+            Some("gpt-test"),
+            "retry-after-setup-failure",
+        );
+        assert!(
+            next.is_ok(),
+            "terminalized setup failure must not block retry"
+        );
+    }
+
+    #[test]
+    fn awaiting_input_stop_uses_terminal_cancel_path() {
+        assert_eq!(
+            interaction_run_stop_path("awaiting_user_input"),
+            InteractionRunStopPath::FinalizeCancellation,
+        );
+        assert_eq!(
+            interaction_run_stop_path("paused"),
+            InteractionRunStopPath::AlreadyPaused,
+        );
+        assert_eq!(
+            interaction_run_stop_path("running"),
+            InteractionRunStopPath::PauseRunning,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1997,10 +2197,26 @@ pub async fn agent_steer_cmd(
 
 // ── Agent Stop Command ──────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractionRunStopPath {
+    AlreadyPaused,
+    PauseRunning,
+    FinalizeCancellation,
+}
+
+fn interaction_run_stop_path(status: &str) -> InteractionRunStopPath {
+    match status {
+        "paused" => InteractionRunStopPath::AlreadyPaused,
+        "awaiting_user_input" | "cancelling" => InteractionRunStopPath::FinalizeCancellation,
+        _ => InteractionRunStopPath::PauseRunning,
+    }
+}
+
 #[tauri::command]
 pub async fn agent_stop_cmd(
     state: tauri::State<'_, AppState>,
     agent_state: tauri::State<'_, AgentState>,
+    approval_state: tauri::State<'_, ApprovalState>,
     app_handle: AppHandle,
     conversation_id: String,
 ) -> Result<(), String> {
@@ -2014,22 +2230,31 @@ pub async fn agent_stop_cmd(
             .db
             .get_agent_task_run(&run_id)
             .map_err(|error| error.to_string())?;
-        if !matches!(run.status.as_str(), "awaiting_user_input" | "cancelling") {
-            if let Ok(Some(turn)) = agent_state
-                .sessions
-                .take_for_run(&conversation_id, &run_id)
-                .await
-            {
-                request_desktop_running_agent_stop(
-                    turn,
-                    DesktopRunningAgentStopRequest {
-                        db: state.db.clone(),
-                        app_handle,
-                        conversation_id,
-                    },
-                );
+        match interaction_run_stop_path(&run.status) {
+            InteractionRunStopPath::AlreadyPaused => return Ok(()),
+            InteractionRunStopPath::PauseRunning => {
+                if let Ok(Some(turn)) = agent_state
+                    .sessions
+                    .take_for_run(&conversation_id, &run_id)
+                    .await
+                {
+                    if let Err(error) = request_desktop_running_agent_stop(
+                        turn,
+                        DesktopRunningAgentStopRequest {
+                            db: state.db.clone(),
+                            app_handle,
+                            conversation_id,
+                            pending_approvals: approval_state.pending.clone(),
+                        },
+                    )
+                    .await
+                    {
+                        return Err(error.message);
+                    }
+                }
+                return Ok(());
             }
-            return Ok(());
+            InteractionRunStopPath::FinalizeCancellation => {}
         }
         let mut event_outbox = None;
         let mut task_orchestrator_run_id = None;
@@ -2100,14 +2325,19 @@ pub async fn agent_stop_cmd(
     }
 
     if let Some(turn) = agent_state.sessions.take(&conversation_id).await {
-        request_desktop_running_agent_stop(
+        if let Err(error) = request_desktop_running_agent_stop(
             turn,
             DesktopRunningAgentStopRequest {
                 db: state.db.clone(),
                 app_handle,
                 conversation_id,
+                pending_approvals: approval_state.pending.clone(),
             },
-        );
+        )
+        .await
+        {
+            return Err(error.message);
+        }
     }
     Ok(())
 }

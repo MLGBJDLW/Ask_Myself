@@ -42,7 +42,7 @@ pub struct McpServer {
     pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
-    /// Non-`None` for built-in servers managed by the app (e.g. "playwright-browser").
+    /// Non-`None` for built-in servers managed by the app.
     /// Built-in connectors cannot be deleted and have their process lifecycle managed.
     pub builtin_id: Option<String>,
 }

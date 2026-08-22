@@ -1189,8 +1189,8 @@ fn responses_input_items(messages: &[Message]) -> Result<Vec<serde_json::Value>,
                 ContentPart::ProviderTurn { .. } => {}
             }
         }
-        let generic_message = (!content.is_empty()
-            && !(message.role == Role::Assistant && replayed_message))
+        let generic_message = (!(content.is_empty()
+            || message.role == Role::Assistant && replayed_message))
             .then(|| {
                 serde_json::json!({
                 "type": "message",
@@ -1295,17 +1295,24 @@ fn build_responses_request(
             body["temperature"] = serde_json::json!(temperature);
         }
     } else if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
-        if request.reasoning_enabled == Some(false)
+        let effort = if request.reasoning_enabled == Some(false)
             || request.reasoning_effort == Some(ReasoningEffort::None)
         {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
-        } else if request.reasoning_enabled == Some(true) || request.reasoning_effort.is_some() {
-            body["thinking"] = serde_json::json!({ "type": "enabled" });
-            if let Some(effort) = request.reasoning_effort.as_ref() {
-                if effort != &ReasoningEffort::None {
-                    body["reasoning_effort"] = serde_json::json!(effort.to_string());
+            Some("none")
+        } else {
+            match request.reasoning_effort.as_ref() {
+                Some(ReasoningEffort::Minimal | ReasoningEffort::Low) => Some("low"),
+                Some(ReasoningEffort::Medium | ReasoningEffort::High | ReasoningEffort::XHigh) => {
+                    Some("high")
                 }
+                Some(ReasoningEffort::Max) => Some("max"),
+                Some(ReasoningEffort::None) => Some("none"),
+                None if request.reasoning_enabled == Some(true) => Some("high"),
+                None => None,
             }
+        };
+        if let Some(effort) = effort {
+            body["reasoning"] = serde_json::json!({ "effort": effort });
         }
     }
     Ok(body)
@@ -2762,7 +2769,7 @@ impl LlmProvider for OpenAiProvider {
                             && is_deepseek_missing_reasoning_replay(&error) =>
                     {
                         warn!(
-                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with thinking disabled"
+                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
                         );
                         let safe_request = without_reasoning(request);
                         self.complete_hosted_search(&safe_request, dialect, mode, capability)
@@ -2920,7 +2927,7 @@ impl LlmProvider for OpenAiProvider {
                             && is_deepseek_missing_reasoning_replay(&error) =>
                     {
                         warn!(
-                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with thinking disabled"
+                            "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
                         );
                         let safe_request = without_reasoning(request);
                         self.stream_hosted_search_events(&safe_request, dialect, mode, capability)
@@ -3817,7 +3824,7 @@ data: [DONE]
     }
 
     #[tokio::test]
-    async fn deepseek_responses_retries_missing_reasoning_on_same_route_with_thinking_disabled() {
+    async fn deepseek_responses_retries_missing_reasoning_on_same_route_with_reasoning_disabled() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");
@@ -3878,10 +3885,12 @@ data: [DONE]
         assert_eq!(answer, "recovered");
         let bodies = bodies.lock().expect("request bodies");
         assert_eq!(bodies.len(), 2);
-        assert_eq!(bodies[0]["thinking"]["type"], "enabled");
-        assert_eq!(bodies[0]["reasoning_effort"], "high");
-        assert_eq!(bodies[1]["thinking"]["type"], "disabled");
-        assert!(bodies[1].get("reasoning_effort").is_none());
+        assert_eq!(bodies[0]["reasoning"]["effort"], "high");
+        assert_eq!(bodies[1]["reasoning"]["effort"], "none");
+        for body in bodies.iter() {
+            assert!(body.get("thinking").is_none());
+            assert!(body.get("reasoning_effort").is_none());
+        }
     }
 
     #[test]
@@ -5646,6 +5655,7 @@ data: [DONE]
             "deepseek-v4-flash",
         );
         let mut request = endpoint_reasoning_request("deepseek-v4-flash");
+        request.reasoning_effort = Some(ReasoningEffort::High);
         request.tools = Some(vec![
             ToolDefinition {
                 name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
@@ -5679,6 +5689,9 @@ data: [DONE]
         assert_eq!(tools[1]["type"], "function");
         assert_eq!(tools[1]["name"], "read_file");
         assert!(body.get("include").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

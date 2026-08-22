@@ -80,14 +80,30 @@ export interface DurableRunReconcilerOptions {
   delay?: (delayMs: number) => Promise<void>;
 }
 
-export function taskRunIsActive(taskRun: AgentTaskRun): boolean {
-  return ['queued', 'running', 'waiting_approval', 'cancelling']
-    .includes(taskRun.status.toLowerCase());
+export function taskRunIsAwaitingUserInput(taskRun: AgentTaskRun): boolean {
+  const status = taskRun.status.toLowerCase();
+  return taskRun.phase === 'awaiting_user_input' || status === 'awaiting_user_input';
 }
 
-function taskRunIsSuspended(taskRun: AgentTaskRun): boolean {
+export function taskRunIsSuspended(taskRun: AgentTaskRun): boolean {
   const status = taskRun.status.toLowerCase();
-  return taskRun.phase === 'awaiting_user_input' || status === 'paused';
+  return taskRunIsAwaitingUserInput(taskRun)
+    || taskRun.phase === 'paused'
+    || status === 'paused';
+}
+
+export function taskRunIsActive(taskRun: AgentTaskRun): boolean {
+  return !taskRunIsSuspended(taskRun)
+    && ['queued', 'running', 'waiting_approval', 'cancelling']
+      .includes(taskRun.status.toLowerCase());
+}
+
+export function taskRunCanAcceptStop(taskRun: AgentTaskRun): boolean {
+  return taskRunIsActive(taskRun) || taskRunIsAwaitingUserInput(taskRun);
+}
+
+function taskRunHasContinuableProjection(taskRun: AgentTaskRun): boolean {
+  return taskRunIsActive(taskRun) || taskRunIsSuspended(taskRun);
 }
 
 function newestFirst(taskRuns: AgentTaskRun[]): AgentTaskRun[] {
@@ -157,7 +173,7 @@ export class DurableRunReconciler {
 
     const candidates = newestFirst(taskRuns);
     const taskRun = request.reason === 'hydration'
-      ? candidates.find(taskRunIsActive)
+      ? candidates.find(taskRunHasContinuableProjection)
       : this.selectWatchdogRun(candidates, request);
     if (!taskRun) {
       if (request.reason === 'hydration') return { kind: 'idle' };
@@ -197,10 +213,8 @@ export class DurableRunReconciler {
       taskEvents: taskEvents.slice(-256),
     };
 
-    if (request.reason === 'hydration' || taskRunIsActive(taskRun) && !taskRunIsSuspended(taskRun)) {
-      return { kind: 'active', snapshot };
-    }
     if (taskRunIsSuspended(taskRun)) return { kind: 'suspended', snapshot };
+    if (taskRunIsActive(taskRun)) return { kind: 'active', snapshot };
 
     const status = taskRun.status.toLowerCase();
     if (status === 'completed') {

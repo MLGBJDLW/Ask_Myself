@@ -42,6 +42,35 @@ struct BrowserPageSnapshot {
     elements: Vec<BrowserElement>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserHistoryTarget {
+    key: String,
+    url: String,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BrowserHistoryDirection {
+    Back,
+    Forward,
+}
+
+impl BrowserHistoryDirection {
+    fn offset(self) -> i8 {
+        match self {
+            Self::Back => -1,
+            Self::Forward => 1,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::Forward => "forward",
+        }
+    }
+}
+
 pub type BrowserObservationPayload = CoreBrowserObservation;
 
 #[derive(Clone)]
@@ -661,6 +690,110 @@ impl BrowserState {
             .map_err(|error| error.to_string())
     }
 
+    pub async fn go_back_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        self.traverse_history_as_agent(session_id, tab_id, call_id, BrowserHistoryDirection::Back)
+            .await
+    }
+
+    pub async fn go_forward_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        self.traverse_history_as_agent(
+            session_id,
+            tab_id,
+            call_id,
+            BrowserHistoryDirection::Forward,
+        )
+        .await
+    }
+
+    async fn traverse_history_as_agent(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        call_id: &str,
+        direction: BrowserHistoryDirection,
+    ) -> Result<(), String> {
+        let (webview, lease_generation) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            ) {
+                return Err(format!(
+                    "Browser control changed before the Agent could go {}",
+                    direction.label()
+                ));
+            }
+            let tab = session
+                .tabs
+                .get(tab_id)
+                .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+            (tab.webview.clone(), session.control_lease.generation())
+        };
+
+        let expression = browser_history_target_expression(direction);
+        let value = eval_json(&webview, &expression).await?;
+        if value.is_null() {
+            return Err(format!(
+                "No validated browser history entry is available to go {}",
+                direction.label()
+            ));
+        }
+        let target: BrowserHistoryTarget = serde_json::from_value(value)
+            .map_err(|error| format!("Browser history target was invalid: {error}"))?;
+        let target_url = Url::parse(&target.url)
+            .map_err(|error| format!("Browser history URL was invalid: {error}"))?;
+        validate_agent_network_url(&target_url).await?;
+
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if session.control_lease.generation() != lease_generation
+            || !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        {
+            return Err(format!(
+                "Browser control changed before the Agent could go {}",
+                direction.label()
+            ));
+        }
+        let tab = session
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        let approval = target_url.to_string();
+        let target_key = serde_json::to_string(&target.key)
+            .map_err(|error| format!("Browser history key was invalid: {error}"))?;
+        with_agent_navigation_approval(&tab.approved_agent_urls, approval, || {
+            tab.webview
+                .eval(format!("window.navigation.traverseTo({target_key})"))
+                .map_err(|error| error.to_string())
+        })
+    }
+
     pub fn acquire_control(
         &self,
         session_id: &str,
@@ -1230,17 +1363,9 @@ impl BrowserState {
             .get(tab_id)
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
         let approval = current_url.to_string();
-        tab.approved_agent_urls
-            .lock()
-            .map_err(|_| "Browser navigation policy is unavailable".to_string())?
-            .insert(approval.clone());
-        if let Err(error) = tab.webview.reload() {
-            if let Ok(mut approved) = tab.approved_agent_urls.lock() {
-                approved.remove(&approval);
-            }
-            return Err(error.to_string());
-        }
-        Ok(())
+        with_agent_navigation_approval(&tab.approved_agent_urls, approval, || {
+            tab.webview.reload().map_err(|error| error.to_string())
+        })
     }
 
     pub fn close_tab(&self, session_id: &str, tab_id: &str) -> Result<BrowserSessionInfo, String> {
@@ -1654,6 +1779,31 @@ fn safe_identifier(input: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
         .take(80)
         .collect()
+}
+
+pub(super) fn browser_history_target_expression(direction: BrowserHistoryDirection) -> String {
+    format!(
+        "(() => {{ const api = window.navigation; if (!api || typeof api.entries !== 'function' || typeof api.traverseTo !== 'function' || !api.currentEntry) return null; const targetIndex = api.currentEntry.index + ({}); const target = api.entries().find((entry) => entry.index === targetIndex); return target && typeof target.url === 'string' && typeof target.key === 'string' ? {{ key: target.key, url: target.url }} : null; }})()",
+        direction.offset()
+    )
+}
+
+pub(super) fn with_agent_navigation_approval(
+    approved_urls: &Mutex<HashSet<String>>,
+    approval: String,
+    navigate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    approved_urls
+        .lock()
+        .map_err(|_| "Browser navigation policy is unavailable".to_string())?
+        .insert(approval.clone());
+    if let Err(error) = navigate() {
+        if let Ok(mut approved) = approved_urls.lock() {
+            approved.remove(&approval);
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn session_info(session: &BrowserSession) -> BrowserSessionInfo {

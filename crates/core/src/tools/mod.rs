@@ -78,13 +78,6 @@ fn with_scheduler_control_parameters(mut parameters: serde_json::Value) -> serde
                 "default": false
             })
         });
-    // Closed top-level schemas give providers a much stronger contract and
-    // prevent invented bookkeeping fields from reaching individual tools.
-    // Preserve an explicit setting for runtime/MCP definitions that truly
-    // accept arbitrary properties.
-    schema
-        .entry("additionalProperties")
-        .or_insert_with(|| serde_json::Value::Bool(false));
     parameters
 }
 
@@ -948,7 +941,7 @@ impl ToolRegistry {
     ) -> serde_json::Value {
         let mut value = parse_tool_arguments_value(arguments).unwrap_or_default();
         if let Some(tool) = self.get(name) {
-            normalize_property_aliases(&mut value, &tool.definition().parameters);
+            normalize_tool_argument_value(&mut value, &tool.definition().parameters);
         }
         value
     }
@@ -1053,39 +1046,127 @@ fn snake_to_camel_case(value: &str) -> String {
 }
 
 fn normalize_property_aliases(value: &mut serde_json::Value, schema: &serde_json::Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    let Some(properties) = schema
-        .get("properties")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return;
-    };
-    let keys = object.keys().cloned().collect::<Vec<_>>();
-    for key in keys {
-        if properties.contains_key(&key) {
-            continue;
+    match value {
+        serde_json::Value::Object(object) => {
+            let Some(properties) = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            else {
+                return;
+            };
+            let keys = object.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                if properties.contains_key(&key) {
+                    continue;
+                }
+                let snake = camel_to_snake_case(&key);
+                let camel = snake_to_camel_case(&key);
+                let canonical = if properties.contains_key(&snake) {
+                    Some(snake)
+                } else if properties.contains_key(&camel) {
+                    Some(camel)
+                } else {
+                    None
+                };
+                let Some(canonical) = canonical else {
+                    continue;
+                };
+                if object.contains_key(&canonical) {
+                    continue;
+                }
+                if let Some(value) = object.remove(&key) {
+                    object.insert(canonical, value);
+                }
+            }
+            for (field, field_schema) in properties {
+                if let Some(field_value) = object.get_mut(field) {
+                    normalize_property_aliases(field_value, field_schema);
+                }
+            }
         }
-        let snake = camel_to_snake_case(&key);
-        let camel = snake_to_camel_case(&key);
-        let canonical = if properties.contains_key(&snake) {
-            Some(snake)
-        } else if properties.contains_key(&camel) {
-            Some(camel)
-        } else {
-            None
-        };
-        let Some(canonical) = canonical else {
-            continue;
-        };
-        if object.contains_key(&canonical) {
-            continue;
+        serde_json::Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for item in items {
+                    normalize_property_aliases(item, item_schema);
+                }
+            }
         }
-        if let Some(value) = object.remove(&key) {
-            object.insert(canonical, value);
-        }
+        _ => {}
     }
+}
+
+fn coerce_unambiguous_property_values(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            let Some(properties) = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            else {
+                return;
+            };
+
+            for (field, field_schema) in properties {
+                let Some(field_value) = object.get_mut(field) else {
+                    continue;
+                };
+                let expected = field_schema.get("type").and_then(serde_json::Value::as_str);
+                if let Some(encoded) = field_value.as_str().map(str::trim) {
+                    let replacement = match expected {
+                        Some("integer") => encoded
+                            .parse::<i64>()
+                            .ok()
+                            .map(serde_json::Value::from)
+                            .or_else(|| encoded.parse::<u64>().ok().map(serde_json::Value::from)),
+                        Some("number") => encoded
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|value| value.is_finite())
+                            .and_then(serde_json::Number::from_f64)
+                            .map(serde_json::Value::Number),
+                        Some("boolean") if encoded.eq_ignore_ascii_case("true") => {
+                            Some(serde_json::Value::Bool(true))
+                        }
+                        Some("boolean") if encoded.eq_ignore_ascii_case("false") => {
+                            Some(serde_json::Value::Bool(false))
+                        }
+                        _ => None,
+                    };
+                    if let Some(replacement) = replacement {
+                        *field_value = replacement;
+                    }
+                }
+
+                if let (Some(actual), Some(allowed)) = (
+                    field_value.as_str(),
+                    field_schema
+                        .get("enum")
+                        .and_then(serde_json::Value::as_array),
+                ) {
+                    if let Some(canonical) = allowed.iter().find_map(|candidate| {
+                        candidate
+                            .as_str()
+                            .filter(|candidate| candidate.eq_ignore_ascii_case(actual))
+                    }) {
+                        *field_value = serde_json::Value::String(canonical.to_string());
+                    }
+                }
+                coerce_unambiguous_property_values(field_value, field_schema);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for item in items {
+                    coerce_unambiguous_property_values(item, item_schema);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_tool_argument_value(value: &mut serde_json::Value, schema: &serde_json::Value) {
+    normalize_property_aliases(value, schema);
+    coerce_unambiguous_property_values(value, schema);
 }
 
 fn json_value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
@@ -1180,7 +1261,7 @@ fn normalize_tool_arguments(
             "Tool arguments must be a JSON object.".to_string(),
         ));
     }
-    normalize_property_aliases(&mut value, schema);
+    normalize_tool_argument_value(&mut value, schema);
     if let Some(issue) = top_level_argument_issue(&value, schema) {
         return Err(issue);
     }
@@ -2233,19 +2314,14 @@ mod tests {
     }
 
     #[test]
-    fn default_tool_definitions_close_top_level_object_schemas() {
-        let registry = default_tool_registry();
+    fn scheduler_metadata_does_not_force_provider_specific_schema_closure() {
+        let tool = EchoArgumentsTool;
+        let definition = tool.definition();
 
-        for definition in registry.definitions() {
-            if definition.parameters["type"].as_str() == Some("object") {
-                assert_eq!(
-                    definition.parameters["additionalProperties"],
-                    serde_json::Value::Bool(false),
-                    "{} should reject invented top-level fields at the provider boundary",
-                    definition.name
-                );
-            }
-        }
+        assert!(definition.parameters.get("additionalProperties").is_none());
+        assert!(definition.parameters["properties"]
+            .as_object()
+            .is_some_and(|properties| properties.contains_key("wait_for_previous")));
     }
 
     #[tokio::test]
@@ -2272,6 +2348,81 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&result.content).unwrap()["start_line"],
             7
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_coerces_unambiguous_scalar_argument_encodings() {
+        let db = Database::open_memory().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoArgumentsTool));
+
+        let result = registry
+            .execute(
+                "echo_arguments",
+                crate::tools::ToolExecutionContext::new(
+                    "call-coerce",
+                    r#"{"startLine":"7"}"#,
+                    &db,
+                    &[],
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "coercion failed: {}", result.content);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result.content).unwrap()["start_line"],
+            7
+        );
+    }
+
+    #[test]
+    fn argument_normalization_recurses_through_nested_objects_and_arrays() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "run_options": {
+                    "type": "object",
+                    "properties": {
+                        "timeout_ms": { "type": "integer" },
+                        "enabled": { "type": "boolean" },
+                        "mode": { "type": "string", "enum": ["Fast", "Safe"] }
+                    }
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "retry_count": { "type": "integer" }
+                        }
+                    }
+                }
+            }
+        });
+        let mut value = serde_json::json!({
+            "runOptions": {
+                "timeoutMs": "1500",
+                "enabled": "TRUE",
+                "mode": "safe"
+            },
+            "steps": [{ "retryCount": "2" }]
+        });
+
+        normalize_property_aliases(&mut value, &schema);
+        coerce_unambiguous_property_values(&mut value, &schema);
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "run_options": {
+                    "timeout_ms": 1500,
+                    "enabled": true,
+                    "mode": "Safe"
+                },
+                "steps": [{ "retry_count": 2 }]
+            })
         );
     }
 

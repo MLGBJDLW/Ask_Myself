@@ -118,6 +118,73 @@ fn test_accumulate_appends_arguments() {
 }
 
 #[test]
+fn test_accumulate_replaces_cumulative_provider_argument_snapshots() {
+    let mut calls = Vec::new();
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "call_snapshot".into(),
+            name: Some("create_file".into()),
+            arguments_delta: r#"{"path":"notes/a"#.into(),
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "call_snapshot".into(),
+            name: Some("create_file".into()),
+            arguments_delta: r#"{"path":"notes/a.md","content":"ok"}"#.into(),
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].arguments,
+        r#"{"path":"notes/a.md","content":"ok"}"#,
+    );
+    assert!(crate::llm::message_validation::is_complete_tool_call(
+        &calls[0]
+    ));
+}
+
+#[test]
+fn test_cumulative_snapshot_limit_applies_to_replacement_not_snapshot_sum() {
+    let final_arguments = format!(r#"{{"content":"{}"}}"#, "x".repeat(700_000));
+    let partial_arguments = final_arguments[..600_000].to_string();
+    let mut calls = Vec::new();
+
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "call-large-snapshot".into(),
+            name: Some("create_file".into()),
+            arguments_delta: partial_arguments,
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+    assert!(accumulate_tool_call(
+        &mut calls,
+        &ToolCallDelta {
+            id: "call-large-snapshot".into(),
+            name: Some("create_file".into()),
+            arguments_delta: final_arguments.clone(),
+            index: Some(0),
+            thought_signature: None,
+        },
+    ));
+
+    assert_eq!(calls[0].arguments, final_arguments);
+    assert!(crate::llm::message_validation::is_complete_tool_call(
+        &calls[0]
+    ));
+}
+
+#[test]
 fn test_accumulate_empty_id_appends_to_last() {
     let mut calls = vec![ToolCallRequest {
         id: "call_1".into(),
@@ -3452,6 +3519,65 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
         .expect("run should finish after releasing the slow tool")
         .expect("run should succeed");
     assert_eq!(final_msg.text_content(), "parallel final answer");
+}
+
+#[tokio::test]
+async fn complete_tool_envelope_survives_a_clean_stream_close_without_finish_reason() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ScriptedProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        final_answer: "final answer after recovered tool boundary",
+        first_chunks: vec![StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: "clean-close-call".to_string(),
+                name: Some("recording_tool".to_string()),
+                arguments_delta: r#"{"value":"complete"}"#.to_string(),
+                index: Some(0),
+                thought_signature: None,
+            }),
+            finish_reason: None,
+            usage: None,
+            thinking_delta: None,
+        }],
+    };
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(64);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "use the recording tool".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a sealable clean-close tool round should continue");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer after recovered tool boundary"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

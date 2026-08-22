@@ -32,7 +32,11 @@ import {
   turnLifecycleTimelineSections,
   visibleTraceEventsForTimeline,
 } from '../src/lib/streaming/timelineViewModel';
-import { formatElapsedDuration, resolveElapsedDurationMs } from '../src/lib/useElapsedTime';
+import {
+  formatElapsedDuration,
+  formatThinkingDuration,
+  resolveElapsedDurationMs,
+} from '../src/lib/useElapsedTime';
 import { armStreamWatchdog, clearStreamWatchdog } from '../src/lib/streaming/watchdog';
 import { streamStore } from '../src/lib/streamStore';
 import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
@@ -104,6 +108,17 @@ test('checkpoint resume request uses a deterministic idempotency key and camelCa
     Object.prototype.hasOwnProperty.call(request, 'resumeCheckpointId'),
     'request should expose resumeCheckpointId in camelCase',
   );
+});
+
+test('reply retry carries a durable message replacement anchor', () => {
+  const request = buildAgentChatRequest({
+    conversationId: 'conversation-1',
+    message: 'Keep this prompt as one bubble',
+    retryFromMessageId: ' user-message-7 ',
+  }, () => 'retry-request-1');
+
+  assertEqual(request.idempotencyKey, 'retry-request-1', 'retry launch idempotency key');
+  assertEqual(request.retryFromMessageId, 'user-message-7', 'retry anchor should be normalized');
 });
 
 test('checkpoint resume and interaction continuation cannot share one agent request', () => {
@@ -207,6 +222,46 @@ test('paused launch handles are resumable stream suspensions', () => {
   assertEqual(suspended.isStreaming, false, 'paused launch handle settles live streaming');
   assertEqual(suspended.isThinking, false, 'paused launch handle settles thinking');
   assertEqual(suspended.turnHandle?.runId, handle.runId, 'paused launch retains its resumable run');
+  streamStore.clearStream(conversationId);
+});
+
+test('resumable user stop retains partial output without manufacturing cancellation', () => {
+  const conversationId = 'conversation-resumable-user-stop';
+  const handle = {
+    sessionId: conversationId,
+    runId: 'run-resumable-stop',
+    turnId: 'turn-resumable-stop',
+    state: 'running' as const,
+  };
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, handle);
+  streamStore.dispatch(conversationId, {
+    conversationId,
+    runEvent: {
+      ...runEvent({
+        eventSeq: 1,
+        kind: 'outputDelta',
+        payload: {
+          blockId: 'partial-answer',
+          channel: 'answer',
+          offset: 0,
+          delta: 'Partial answer worth keeping',
+        },
+      }),
+      runId: handle.runId,
+      turnId: handle.turnId,
+    },
+  } as AgentFrontendEvent);
+
+  streamStore.markResumableSuspension(conversationId);
+
+  const suspended = streamStore.getStream(conversationId);
+  assert(suspended, 'resumably stopped stream should remain addressable');
+  assertEqual(suspended.isStreaming, false, 'resumable stop settles transport');
+  assertEqual(suspended.streamText, 'Partial answer worth keeping', 'partial output is retained');
+  assertEqual(suspended.error, null, 'resumable stop is not a cancellation failure');
+  assertEqual(suspended.finishReason, null, 'resumable stop is not a terminal finish');
+  assertEqual(suspended.turnHandle?.runId, handle.runId, 'run identity remains resumable');
   streamStore.clearStream(conversationId);
 });
 
@@ -475,6 +530,37 @@ test('historical stream projection uses canonical run events and typed task time
   assertEqual(projected.streamRounds[0]?.reply, 'canonical', 'canonical output should win');
   assertEqual(projected.taskEvents.length, 1, 'timeline task event remains available');
   assertEqual(projected.taskEvents[0].id, 'timeline', 'timeline task event id');
+});
+
+test('durable replay freezes paused timing at the persisted suspension event', () => {
+  const pausedAt = '2026-01-01T00:00:05.000Z';
+  const projected = projectRunEventsToStreamState(
+    {
+      ...taskRun('paused'),
+      phase: 'paused',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      finishedAt: null,
+      updatedAt: '2026-01-01T00:01:00.000Z',
+    },
+    [
+      {
+        ...runEvent({
+          eventSeq: 5,
+          kind: 'status',
+          phase: 'paused',
+          status: 'paused',
+          label: 'Run paused',
+        }),
+        createdAt: pausedAt,
+      },
+    ],
+  );
+
+  assertEqual(
+    projected.turnTiming?.finishedAtEpochMs,
+    Date.parse(pausedAt),
+    'reloading a paused run must not count time after the durable pause boundary',
+  );
 });
 
 test('historical projection marks stale active task runs as interrupted', () => {
@@ -2501,6 +2587,13 @@ test('turn duration formatting uses locale-neutral clock output', () => {
   };
   assertEqual(formatTurnDuration(turn), '1:08', 'completed turn wall duration');
   assertEqual(formatElapsedDuration(8_900), '0:08', 'live elapsed duration');
+});
+
+test('thinking duration promotes seconds through minutes, hours, and days', () => {
+  assertEqual(formatThinkingDuration(8_900), '8s', 'seconds');
+  assertEqual(formatThinkingDuration(68_000), '1m 08s', 'minutes');
+  assertEqual(formatThinkingDuration(3_668_000), '1h 01m 08s', 'hours');
+  assertEqual(formatThinkingDuration(90_068_000), '1d 01h 01m', 'days');
 });
 
 test('dispatches canonical cancelled terminal errors without surfacing failed state', () => {

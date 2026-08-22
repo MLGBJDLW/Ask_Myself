@@ -852,6 +852,32 @@ export function ChatPage() {
     [handleChatSend],
   );
 
+  const handleResumePaused = useCallback(async () => {
+    const run = chat.taskRun;
+    if (!run || run.status !== 'paused') return;
+    try {
+      const resume = await api.getTaskResumePrompt(run.id);
+      if (resume.run.id !== run.id || resume.checkpoint.runId !== run.id) {
+        throw new Error('Resume checkpoint does not belong to the active task');
+      }
+      await chat.send(
+        resume.prompt,
+        undefined,
+        undefined,
+        {
+          resumeCheckpointId: resume.checkpoint.id,
+          userArtifacts: {
+            kind: 'checkpointContinuation',
+            version: 1,
+            checkpointId: resume.checkpoint.id,
+          },
+        },
+      );
+    } catch (error) {
+      toast.error(formatUserError(t('taskCenter.resumeError'), error));
+    }
+  }, [chat.send, chat.taskRun, t]);
+
   const handleClearGraphContext = useCallback(() => {
     clearGraphAgentContext();
     setPendingGraphContext(null);
@@ -981,7 +1007,14 @@ export function ChatPage() {
                 ? { taskOrchestratorRunId: initialTaskOrchestratorRunId }
                 : {}),
               ...(initialResumeCheckpointId
-                ? { resumeCheckpointId: initialResumeCheckpointId }
+                ? {
+                    resumeCheckpointId: initialResumeCheckpointId,
+                    userArtifacts: {
+                      kind: 'checkpointContinuation',
+                      version: 1,
+                      checkpointId: initialResumeCheckpointId,
+                    },
+                  }
                 : {}),
             }
           : undefined,
@@ -1777,6 +1810,7 @@ export function ChatPage() {
               isThinking={chat.isThinking}
               toolCalls={chat.toolCalls}
               taskRun={chat.taskRun}
+              turnTiming={chat.turnTiming}
               isStreaming={chat.isStreaming}
               error={chat.error}
               onRetry={isArchivedConversation ? undefined : chat.retry}
@@ -1784,6 +1818,7 @@ export function ChatPage() {
               onDeleteMessage={isArchivedConversation ? undefined : chat.deleteMessage}
               onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
               onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
+              onResumePaused={isArchivedConversation ? undefined : handleResumePaused}
               onQuestionSubmit={isArchivedConversation ? undefined : (message, artifact) => {
                 void handleChatSend(message, undefined, { userArtifacts: artifact });
               }}

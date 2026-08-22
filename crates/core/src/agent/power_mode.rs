@@ -154,16 +154,7 @@ pub fn resolve_agent_power_policy(input: AgentPowerPolicyInput<'_>) -> ResolvedA
 }
 
 fn parse_reasoning_effort(value: &str) -> Option<ReasoningEffort> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "none" => Some(ReasoningEffort::None),
-        "minimal" => Some(ReasoningEffort::Minimal),
-        "low" => Some(ReasoningEffort::Low),
-        "medium" => Some(ReasoningEffort::Medium),
-        "high" => Some(ReasoningEffort::High),
-        "max" => Some(ReasoningEffort::Max),
-        "xhigh" => Some(ReasoningEffort::XHigh),
-        _ => None,
-    }
+    ReasoningEffort::from_wire(value)
 }
 
 #[cfg(test)]
