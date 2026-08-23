@@ -2012,7 +2012,13 @@ impl LlmProvider for AnthropicProvider {
         let transport = Arc::clone(&self.transport);
         let search_mode = anthropic_search_mode(request);
         tokio::spawn(async move {
-            if let Err(e) = parse_anthropic_stream(response, tx.clone(), search_mode).await {
+            let parser_tx = tx.clone();
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = parse_anthropic_stream(response, parser_tx, search_mode) => result,
+            };
+            if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());
                 error!("Anthropic SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;

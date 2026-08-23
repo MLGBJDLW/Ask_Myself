@@ -104,6 +104,8 @@ fn takeover_script_uses_an_unforgeable_all_frame_navigation_signal() {
     assert!(script.contains("window.top"));
     assert!(script.contains("stopImmediatePropagation"));
     assert!(script.contains("nexa-user-input://takeover-secret"));
+    assert!(script.contains("'wheel'"));
+    assert!(script.contains("'touchstart'"));
     assert!(!script.contains("document.title"));
     assert!(!BROWSER_INIT_SCRIPT.contains("__NEXA_USER_TAKEOVER__"));
 }
@@ -171,6 +173,7 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(BROWSER_INIT_SCRIPT.contains("event.source === window.parent"));
     assert!(BROWSER_INIT_SCRIPT.contains("target === event.source"));
     assert!(BROWSER_INIT_SCRIPT.contains("event.isTrusted"));
+    assert!(BROWSER_INIT_SCRIPT.contains("`${location.href}|${scrollX}|${scrollY}|"));
 }
 
 #[test]

@@ -219,23 +219,31 @@ export function AgentConfigForm({
   const [subagentInputContextLimit, setSubagentInputContextLimit] = useState<number | null>(
     config?.delegationLimitsV2?.inputContextLimit ?? null,
   );
+  const [subagentHandoffContextTokens, setSubagentHandoffContextTokens] = useState<number | null>(
+    config?.delegationLimitsV2?.handoffContextTokensPerWorker ?? null,
+  );
   const [subagentMaxOutputTokens, setSubagentMaxOutputTokens] = useState<number | null>(
-    config?.delegationLimitsV2?.maxOutputTokensPerWorker ?? null,
+    config?.delegationLimitsV2?.maxOutputTokensPerStep
+      ?? config?.delegationLimitsV2?.maxOutputTokensPerWorker
+      ?? null,
+  );
+  const [subagentMaxActualTokens, setSubagentMaxActualTokens] = useState<number | null>(
+    config?.delegationLimitsV2?.maxActualTokensPerWorker ?? null,
   );
   const [subagentCostLimitMicros, setSubagentCostLimitMicros] = useState<number | null>(
     config?.delegationLimitsV2?.totalCostSoftLimitMicros ?? null,
   );
   const [subagentQueueDeadlineMs, setSubagentQueueDeadlineMs] = useState<number | null>(
-    config?.delegationLimitsV2?.queueDeadlineMs ?? 15000,
+    config?.delegationLimitsV2?.queueDeadlineMs ?? null,
   );
   const [subagentConnectDeadlineMs, setSubagentConnectDeadlineMs] = useState<number | null>(
-    config?.delegationLimitsV2?.connectDeadlineMs ?? 15000,
+    config?.delegationLimitsV2?.connectDeadlineMs ?? null,
   );
   const [subagentFirstTokenDeadlineMs, setSubagentFirstTokenDeadlineMs] = useState<number | null>(
-    config?.delegationLimitsV2?.firstTokenDeadlineMs ?? 45000,
+    config?.delegationLimitsV2?.firstTokenDeadlineMs ?? null,
   );
   const [subagentRunDeadlineMs, setSubagentRunDeadlineMs] = useState<number | null>(
-    config?.delegationLimitsV2?.runDeadlineMs ?? 180000,
+    config?.delegationLimitsV2?.runDeadlineMs ?? null,
   );
   const [enabledSkills, setEnabledSkills] = useState<Skill[]>([]);
   const [mcpToolDescriptors, setMcpToolDescriptors] = useState<
@@ -299,8 +307,16 @@ export function AgentConfigForm({
       ?? 32000,
     delegationLimitsV2: {
       inputContextLimit: config?.delegationLimitsV2?.inputContextLimit ?? null,
+      handoffContextTokensPerWorker:
+        config?.delegationLimitsV2?.handoffContextTokensPerWorker ?? null,
+      maxOutputTokensPerStep:
+        config?.delegationLimitsV2?.maxOutputTokensPerStep
+        ?? config?.delegationLimitsV2?.maxOutputTokensPerWorker
+        ?? null,
       maxOutputTokensPerWorker:
         config?.delegationLimitsV2?.maxOutputTokensPerWorker ?? null,
+      maxActualTokensPerWorker:
+        config?.delegationLimitsV2?.maxActualTokensPerWorker ?? null,
       totalActualTokensSoftLimit:
         config?.delegationLimitsV2?.totalActualTokensSoftLimit
         ?? config?.subagentTokenBudget
@@ -313,11 +329,11 @@ export function AgentConfigForm({
         config?.delegationLimitsV2?.maxCallsPerTurn
         ?? config?.subagentMaxCallsPerTurn
         ?? 6,
-      queueDeadlineMs: config?.delegationLimitsV2?.queueDeadlineMs ?? 15000,
-      connectDeadlineMs: config?.delegationLimitsV2?.connectDeadlineMs ?? 15000,
+      queueDeadlineMs: config?.delegationLimitsV2?.queueDeadlineMs ?? null,
+      connectDeadlineMs: config?.delegationLimitsV2?.connectDeadlineMs ?? null,
       firstTokenDeadlineMs:
-        config?.delegationLimitsV2?.firstTokenDeadlineMs ?? 45000,
-      runDeadlineMs: config?.delegationLimitsV2?.runDeadlineMs ?? 180000,
+        config?.delegationLimitsV2?.firstTokenDeadlineMs ?? null,
+      runDeadlineMs: config?.delegationLimitsV2?.runDeadlineMs ?? null,
     },
   });
 
@@ -686,7 +702,10 @@ export function AgentConfigForm({
         subagentTokenBudget,
         delegationLimitsV2: {
           inputContextLimit: subagentInputContextLimit,
-          maxOutputTokensPerWorker: subagentMaxOutputTokens,
+          handoffContextTokensPerWorker: subagentHandoffContextTokens,
+          maxOutputTokensPerStep: subagentMaxOutputTokens,
+          maxOutputTokensPerWorker: null,
+          maxActualTokensPerWorker: subagentMaxActualTokens,
           totalActualTokensSoftLimit: subagentTokenBudget,
           totalCostSoftLimitMicros: subagentCostLimitMicros,
           maxParallel: subagentMaxParallel,
@@ -729,7 +748,9 @@ export function AgentConfigForm({
       subagentMaxCallsPerTurn,
       subagentTokenBudget,
       subagentInputContextLimit,
+      subagentHandoffContextTokens,
       subagentMaxOutputTokens,
+      subagentMaxActualTokens,
       subagentCostLimitMicros,
       subagentQueueDeadlineMs,
       subagentConnectDeadlineMs,
@@ -1342,7 +1363,7 @@ export function AgentConfigForm({
           <div className="grid gap-4 md:grid-cols-3">
             {[
               {
-                label: "Per-agent input context",
+                label: "Worker model context capacity",
                 value: subagentInputContextLimit,
                 setValue: setSubagentInputContextLimit,
                 min: 1024,
@@ -1350,12 +1371,28 @@ export function AgentConfigForm({
                 placeholder: "Auto from model catalog",
               },
               {
-                label: "Per-agent max output",
+                label: "Parent-history handoff per worker",
+                value: subagentHandoffContextTokens,
+                setValue: setSubagentHandoffContextTokens,
+                min: 1024,
+                step: 1024,
+                placeholder: "Auto fair-share allocation",
+              },
+              {
+                label: "Max output per model step",
                 value: subagentMaxOutputTokens,
                 setValue: setSubagentMaxOutputTokens,
                 min: 256,
                 step: 256,
-                placeholder: "Auto from model catalog",
+                placeholder: "Auto: profile/fair share, catalog ceiling",
+              },
+              {
+                label: "Max actual tokens per worker",
+                value: subagentMaxActualTokens,
+                setValue: setSubagentMaxActualTokens,
+                min: 1024,
+                step: 1024,
+                placeholder: "Auto from Nexus fair share",
               },
               {
                 label: "Total cost soft limit (µUSD)",
@@ -1371,7 +1408,7 @@ export function AgentConfigForm({
                 setValue: setSubagentQueueDeadlineMs,
                 min: 100,
                 step: 100,
-                placeholder: "15000",
+                placeholder: "Auto: 15000",
               },
               {
                 label: "Provider connect deadline (ms)",
@@ -1379,7 +1416,7 @@ export function AgentConfigForm({
                 setValue: setSubagentConnectDeadlineMs,
                 min: 100,
                 step: 100,
-                placeholder: "15000",
+                placeholder: "Auto: 15000 / long model 90000",
               },
               {
                 label: "First token deadline (ms)",
@@ -1387,7 +1424,7 @@ export function AgentConfigForm({
                 setValue: setSubagentFirstTokenDeadlineMs,
                 min: 100,
                 step: 100,
-                placeholder: "45000",
+                placeholder: "Auto: 45000 / long model 150000",
               },
               {
                 label: "Worker run deadline (ms)",
@@ -1395,7 +1432,7 @@ export function AgentConfigForm({
                 setValue: setSubagentRunDeadlineMs,
                 min: 1000,
                 step: 1000,
-                placeholder: "180000",
+                placeholder: "Auto: 180000 / long model 360000",
               },
             ].map(({ label, value, setValue, min, step, placeholder }) => (
               <div key={label} className="space-y-2">

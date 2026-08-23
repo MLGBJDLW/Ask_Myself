@@ -1921,7 +1921,13 @@ impl LlmProvider for GeminiProvider {
 
         let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
-            if let Err(e) = parse_gemini_stream(response, tx.clone()).await {
+            let parser_tx = tx.clone();
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = parse_gemini_stream(response, parser_tx) => result,
+            };
+            if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());
                 error!("Gemini SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;

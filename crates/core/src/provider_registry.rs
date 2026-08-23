@@ -159,16 +159,6 @@ pub fn provider_type_for_parts(provider: &str, base_url: Option<&str>) -> Provid
                         == normalized_base_url
                 })
                 .collect::<Vec<_>>();
-            // The unified catalog intentionally groups Qwen Token Plan and
-            // Model Studio under one model namespace, while the runtime keeps
-            // their credential contracts as distinct adapter identities.
-            if provider_type_from_key(provider) == Some(ProviderType::Qwen)
-                && exact_endpoints
-                    .iter()
-                    .any(|endpoint| endpoint.id.contains("qwen-token-plan"))
-            {
-                return ProviderType::Qwen;
-            }
             let matches = exact_endpoints
                 .into_iter()
                 .filter_map(|endpoint| provider_type_from_key(&endpoint.provider_id))

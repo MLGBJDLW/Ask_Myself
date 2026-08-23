@@ -164,7 +164,9 @@ pub(super) fn append_persisted_trace_tool(
             tool_name: tool_name.to_string(),
             owner: tools.plugin_info(tool_name),
             provider_executed: false,
-            arguments: arguments.to_string(),
+            arguments: crate::tool_argument_projection::audit_safe_arguments_string(
+                tool_name, arguments,
+            ),
             status: status.to_string(),
             render_kind: capabilities.render_kind,
             capabilities,

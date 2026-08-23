@@ -944,10 +944,11 @@ pub fn create_provider(mut config: ProviderConfig) -> Result<Box<dyn LlmProvider
 /// Whether the adapter must obtain the complete response before it can expose
 /// a synthetic stream. Streaming-only deadlines must not wrap this mode.
 pub fn provider_uses_non_streaming_fallback(provider_type: ProviderType, model: &str) -> bool {
-    matches!(
-        provider_adapter_for_type(provider_type),
-        ProviderAdapterKind::OpenAiCompatible
-    ) && openai::requires_non_streaming_fallback(model)
+    (provider_type == ProviderType::OpenRouter)
+        || (matches!(
+            provider_adapter_for_type(provider_type),
+            ProviderAdapterKind::OpenAiCompatible
+        ) && openai::requires_non_streaming_fallback(model))
 }
 
 /// Determines whether a model is expected to support vision/image inputs.
@@ -1103,6 +1104,14 @@ mod tests {
         assert!(provider_uses_non_streaming_fallback(
             ProviderType::OpenRouter,
             "gpt-5.5-pro-preview"
+        ));
+        assert!(provider_uses_non_streaming_fallback(
+            ProviderType::OpenRouter,
+            "moonshotai/kimi-k3"
+        ));
+        assert!(provider_uses_non_streaming_fallback(
+            ProviderType::OpenRouter,
+            "x-ai/grok-4.6"
         ));
         assert!(!provider_uses_non_streaming_fallback(
             ProviderType::OpenAi,

@@ -139,15 +139,31 @@ pub fn context_safety_buffer(max_tokens: u32) -> u32 {
 /// IMPORTANT: Only verified model IDs are listed here. For unlisted models,
 /// users can set context_window in AgentConfig. Update this list by checking
 /// provider API documentation.
+fn canonical_model_id_for_context(model: &str) -> String {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .split([':', '~'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 pub fn model_context_window(model: &str) -> u32 {
+    let canonical_model = canonical_model_id_for_context(model);
     if let Some(context_tokens) =
         crate::provider_catalog::model_context_tokens_from_shared_catalog(model)
+            .or_else(|| {
+                crate::provider_catalog::model_context_tokens_from_shared_catalog(&canonical_model)
+            })
             .and_then(|tokens| u32::try_from(tokens).ok())
     {
         return context_tokens;
     }
-    let m = model.to_lowercase();
-    let m = m.as_str();
+    let m = canonical_model.as_str();
 
     // ── Exact matches for verified model IDs (highest priority) ────
     match m {
@@ -801,6 +817,18 @@ mod tests {
         assert_eq!(model_context_window("codex-future"), 200_000);
         assert_eq!(model_context_window("custom-model-256k"), 256_000);
         assert_eq!(model_context_window("custom-model-1m-preview"), 1_000_000);
+    }
+
+    #[test]
+    fn routed_provider_slugs_and_variants_use_the_underlying_model_capacity() {
+        assert_eq!(model_context_window("openai/gpt-5.6"), 1_050_000);
+        assert_eq!(
+            model_context_window("deepseek/deepseek-v4-pro:free"),
+            1_000_000
+        );
+        assert_eq!(model_context_window("qwen/qwen3.7-plus~nitro"), 1_000_000);
+        assert_eq!(model_context_window("z-ai/glm-5.2"), 1_000_000);
+        assert_eq!(model_context_window("x-ai/grok-4.6"), 500_000);
     }
 
     #[test]

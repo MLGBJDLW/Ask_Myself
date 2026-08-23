@@ -39,6 +39,8 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
   );
 
   if (!request) return null;
+  const oneShotOnly = request.toolName === 'computer_control'
+    || request.targetKind === 'screen_disclosure';
 
   return (
     <div
@@ -104,14 +106,16 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
           >
             {t('chat.approvalDeny')}
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => decide('allow_session')}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-600 dark:hover:bg-zinc-800"
-          >
-            {t('chat.approvalAllowSession')}
-          </button>
+          {!oneShotOnly && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => decide('allow_session')}
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-600 dark:hover:bg-zinc-800"
+            >
+              {t('chat.approvalAllowSession')}
+            </button>
+          )}
           <button
             type="button"
             disabled={busy}
@@ -122,6 +126,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
           </button>
         </div>
 
+        {!oneShotOnly && (
         <div className="border-t border-zinc-200 px-5 py-2 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
           <button
             type="button"
@@ -143,6 +148,7 @@ export function ApprovalDialog({ request, onResolved }: ApprovalDialogProps) {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

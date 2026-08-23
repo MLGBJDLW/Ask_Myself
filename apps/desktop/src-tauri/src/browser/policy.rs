@@ -6,6 +6,8 @@ pub use nexa_core::browser_runtime::{
 };
 use url::{Host, Url};
 
+const AGENT_DNS_RESOLUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigationActor {
     User,
@@ -130,9 +132,13 @@ pub async fn validate_agent_network_url(url: &Url) -> Result<(), String> {
         .host_str()
         .ok_or_else(|| "Browser address has no host".to_string())?;
     let port = url.port_or_known_default().unwrap_or(443);
-    let resolved = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|_| "Could not resolve the browser address".to_string())?;
+    let resolved = tokio::time::timeout(
+        AGENT_DNS_RESOLUTION_TIMEOUT,
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| "Browser address resolution timed out".to_string())?
+    .map_err(|_| "Could not resolve the browser address".to_string())?;
     let mut resolved_any = false;
     for address in resolved {
         resolved_any = true;

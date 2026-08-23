@@ -36,6 +36,7 @@ import {
   Sparkles,
   Volume2,
   CircleHelp,
+  Monitor,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
@@ -482,6 +483,8 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   list_sources: BookOpen,
   compile_document: ClipboardList,
   desktop_automation: Globe,
+  computer_observe: Monitor,
+  computer_control: Monitor,
   project_tool: Wrench,
   playbook: BookOpen,
   multi_edit: PenLine,
@@ -531,6 +534,8 @@ const TOOL_LABELS: Record<string, string> = {
   list_sources: 'List sources',
   compile_document: 'Compile document',
   desktop_automation: 'Use desktop',
+  computer_observe: 'Observe computer',
+  computer_control: 'Control computer',
   project_tool: 'Project tool',
   playbook: 'Run playbook',
   multi_edit: 'Edit files',

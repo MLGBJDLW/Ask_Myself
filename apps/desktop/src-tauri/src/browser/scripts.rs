@@ -30,7 +30,7 @@ pub fn browser_takeover_script(token: &str) -> String {
     }, true);
   }
 
-  for (const type of ['pointerdown', 'keydown', 'input']) {
+  for (const type of ['pointerdown', 'keydown', 'input', 'wheel', 'touchstart']) {
     addEventListener(type, (event) => {
       if (event.isTrusted) navigateSignal();
     }, true);
@@ -194,7 +194,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const visualLength = Array.from(document.querySelectorAll('[data-nexa-agent-cursor],[data-nexa-agent-click]'))
       .reduce((total, element) => total + element.outerHTML.length, 0);
     const markupLength = Math.max(0, (document.documentElement?.outerHTML.length || 0) - visualLength);
-    return `${location.href}|${markupLength}|${document.body?.innerText.slice(0, 20000) || ''}`;
+    return `${location.href}|${scrollX}|${scrollY}|${markupLength}|${document.body?.innerText.slice(0, 20000) || ''}`;
   };
   runtime.observe = () => {
     runtime.observationSeq += 1;
@@ -614,6 +614,11 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     if (event.key === 'Escape' && runtime.pickMode) { runtime.cancelPick(); event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
   addEventListener('input', (event) => {
+    if (!runtime.synthetic && event.isTrusted) {
+      runtime.userEpoch += 1;
+    }
+  }, true);
+  addEventListener('wheel', (event) => {
     if (!runtime.synthetic && event.isTrusted) {
       runtime.userEpoch += 1;
     }

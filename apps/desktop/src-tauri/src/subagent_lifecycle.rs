@@ -45,7 +45,8 @@ pub enum SubagentLifecycleEventKind {
     ToolStarted,
     Progress,
     OutputDelta,
-    InputAccepted,
+    InputQueued,
+    InputApplied,
     Completed,
     Failed,
     Cancelled,
@@ -54,7 +55,7 @@ pub enum SubagentLifecycleEventKind {
 impl SubagentLifecycleEventKind {
     fn activity_kind(self) -> ActivityEventKind {
         match self {
-            Self::Spawned | Self::Connected | Self::InputAccepted => {
+            Self::Spawned | Self::Connected | Self::InputQueued | Self::InputApplied => {
                 ActivityEventKind::StateChanged
             }
             Self::Queued | Self::ThinkingDelta | Self::Progress => ActivityEventKind::Progress,

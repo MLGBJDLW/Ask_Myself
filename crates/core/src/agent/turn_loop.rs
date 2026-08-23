@@ -44,6 +44,42 @@ fn awaiting_user_input_interaction_id(
     })
 }
 
+fn successful_action_reconciliation_observation(
+    calls: &[ToolCallRequest],
+    summaries: &[tool_dispatch::ToolDispatchSummary],
+) -> bool {
+    calls.iter().any(|call| {
+        let action = serde_json::from_str::<serde_json::Value>(&call.arguments)
+            .ok()
+            .and_then(|args| {
+                args.get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|action| action.trim().to_ascii_lowercase())
+            });
+        let is_observation = call.name == "computer_observe"
+            || (call.name == "browser_session" && action.as_deref() == Some("observe"));
+        is_observation
+            && summaries
+                .iter()
+                .find(|summary| summary.call_id == call.id)
+                .is_some_and(|summary| !summary.is_error)
+    })
+}
+
+fn cumulative_run_step_output_budget(
+    configured_step_max: u32,
+    actual_run_limit: Option<u32>,
+    actual_spent: u32,
+    estimated_prompt: u32,
+) -> Option<u32> {
+    let Some(limit) = actual_run_limit else {
+        return Some(configured_step_max);
+    };
+    let remaining = limit.saturating_sub(actual_spent);
+    (remaining > estimated_prompt.saturating_add(255))
+        .then(|| configured_step_max.min(remaining.saturating_sub(estimated_prompt).max(256)))
+}
+
 async fn emit_tool_dispatch_failure(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -149,7 +185,7 @@ impl AgentExecutor {
         // --- 0b. Pre-summarize evicted history if context is getting full -----
         turn_state.transition_to(TurnPhase::PreparingContext);
         let history_before_summarization = prompt_cache::message_sequence_fingerprint(&history);
-        let history = self
+        let (history, pre_summarization_usage) = self
             .summarize_if_needed(
                 history,
                 model,
@@ -157,8 +193,9 @@ impl AgentExecutor {
                 db,
                 conversation_id,
                 turn_id,
+                self.config.max_actual_tokens_per_run,
             )
-            .await;
+            .await?;
         let history_was_compacted =
             history_before_summarization != prompt_cache::message_sequence_fingerprint(&history);
 
@@ -173,6 +210,8 @@ impl AgentExecutor {
             })
             .collect::<Vec<_>>()
             .join(" ");
+        let mut pending_action_reconciliation = user_query_text_for_tools
+            .contains("Checkpoint reason: user_stop_requires_action_reconciliation:");
 
         let skills = self.skills_override.clone().unwrap_or_else(|| {
             crate::skills::get_available_skills_for_query(db, &user_query_text_for_tools)
@@ -442,7 +481,11 @@ impl AgentExecutor {
             }
         }
 
-        let mut total_usage = Usage::default();
+        // Compaction is a real model action. Seed the run ledger with its
+        // provider usage (or a conservative estimate for unreported attempts)
+        // so delegated-worker hard caps cover every LLM request, not only the
+        // visible ReAct samples.
+        let mut total_usage = pre_summarization_usage;
         let mut last_prompt_tokens: u32 = 0;
         let mut last_context_breakdown: Option<context::ContextUsageBreakdown> = None;
         let mut sort_order = next_sort_order;
@@ -567,22 +610,23 @@ impl AgentExecutor {
         // Eagerly execute search_knowledge_base so the LLM already has evidence
         // in context instead of depending on it to call the tool itself.
         turn_state.transition_to(TurnPhase::PreSearch);
-        self.prefetch_knowledge_results(
-            route_plan.kind,
-            user_query_text,
-            db,
-            &source_scope,
-            &tx,
-            conversation_id,
-            turn_id,
-            model,
-            &mut sort_order,
-            &mut persisted_replayable_system_contents,
-            &mut messages,
-            &mut persisted_trace_items,
-            &mut task_plan,
-        )
-        .await;
+        let prefetch_observed = self
+            .prefetch_knowledge_results(
+                route_plan.kind,
+                user_query_text,
+                db,
+                &source_scope,
+                &tx,
+                conversation_id,
+                turn_id,
+                model,
+                &mut sort_order,
+                &mut persisted_replayable_system_contents,
+                &mut messages,
+                &mut persisted_trace_items,
+                &mut task_plan,
+            )
+            .await;
 
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
@@ -591,8 +635,12 @@ impl AgentExecutor {
             ContextPipeline::new(model, self.config.context_window, max_response_tokens);
         let mut loop_guard = AgentLoopGuard::new();
         let mut long_task_state = LongTaskState::new();
-        let mut force_non_streaming_llm = llm_streaming_disabled_by_env();
+        let mut force_non_streaming_llm = llm_streaming_disabled_by_env()
+            || self.config.provider_type.is_some_and(|provider| {
+                crate::llm::provider_uses_non_streaming_fallback(provider, model)
+            });
         let mut reasoning_disabled_for_tool_loop = false;
+        let mut model_action_observed = prefetch_observed;
         let mut prompt_was_compacted = history_was_compacted;
 
         // Nexus owns reconnaissance waves at runtime. This is a deterministic
@@ -723,6 +771,7 @@ impl AgentExecutor {
                             loop_guard: &mut loop_guard,
                             trace: &mut trace,
                             sort_order: &mut sort_order,
+                            pending_action_reconciliation,
                         },
                         &verified_call,
                         None,
@@ -748,6 +797,9 @@ impl AgentExecutor {
                     }
                 };
                 let summary = summaries.iter().find(|summary| summary.call_id == call.id);
+                if summary.is_some_and(|summary| !summary.is_error) {
+                    model_action_observed = true;
+                }
                 workflow_ir.apply_reconnaissance_batch_result(
                     &node_ids,
                     summary.and_then(|summary| summary.artifacts.as_ref()),
@@ -900,6 +952,7 @@ impl AgentExecutor {
                     turn_state: &mut turn_state,
                     loop_recorder: &mut loop_recorder,
                     persisted_trace_items: &mut persisted_trace_items,
+                    total_usage: &mut total_usage,
                 })
                 .await;
             self.persist_unpersisted_replayable_system_messages(
@@ -922,6 +975,48 @@ impl AgentExecutor {
             }
 
             let force_answer_only = output_recovery.reserves_answer_channel();
+            let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
+                let estimated_prompt = context::estimate_context_usage_breakdown_for_model(
+                    model, &messages, &tool_defs, None,
+                )
+                .total_tokens;
+                estimated_prompt
+            } else {
+                0
+            };
+            let Some(model_step_max_response_tokens) = cumulative_run_step_output_budget(
+                max_response_tokens,
+                self.config.max_actual_tokens_per_run,
+                total_usage.total_tokens,
+                estimated_prompt,
+            ) else {
+                let actual_limit = self.config.max_actual_tokens_per_run.unwrap_or_default();
+                let remaining = actual_limit.saturating_sub(total_usage.total_tokens);
+                let trace_message = format!(
+                    "agent actual token limit exhausted before model step: spent={}, remaining={}, estimated_prompt={}, limit={actual_limit}",
+                    total_usage.total_tokens, remaining, estimated_prompt,
+                );
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &trace_message,
+                    "error",
+                );
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: "The delegated worker reached its cumulative token limit before another safe model step. Return the evidence already gathered or start a new worker with an explicit larger budget.".to_string(),
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
+            };
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -930,7 +1025,7 @@ impl AgentExecutor {
                     turn_id,
                     route_kind: route_plan.kind,
                     model,
-                    max_response_tokens,
+                    max_response_tokens: model_step_max_response_tokens,
                     has_sources,
                     privacy_cfg: &privacy_cfg,
                     messages: &mut messages,
@@ -943,6 +1038,8 @@ impl AgentExecutor {
                     force_non_streaming_llm: &mut force_non_streaming_llm,
                     reasoning_disabled_for_tool_loop: &mut reasoning_disabled_for_tool_loop,
                     force_answer_only,
+                    requires_first_action: !model_action_observed,
+                    total_usage: &mut total_usage,
                 })
                 .await;
             let model_step = match model_step_result {
@@ -977,6 +1074,7 @@ impl AgentExecutor {
                 sample_id,
                 route_snapshot,
                 reasoning_was_requested,
+                discarded_sample_tokens,
             } = match model_step {
                 model_step::ModelStepOutcome::Completed(output) => *output,
                 model_step::ModelStepOutcome::Restart {
@@ -986,6 +1084,7 @@ impl AgentExecutor {
                     continue 'react_loop;
                 }
             };
+            model_action_observed |= !tool_calls.is_empty() || !tool_run_started_ids.is_empty();
             if let Some(isolation) = workspace_isolation.as_mut() {
                 isolation.rewrite_tool_calls(&mut tool_calls)?;
             }
@@ -995,6 +1094,21 @@ impl AgentExecutor {
                 .map(|reason| format!("{reason:?}").to_lowercase());
             last_finish_reason = step_finish_reason.clone();
             let request_was_compacted = prompt_was_compacted;
+            if discarded_sample_tokens > 0 {
+                total_usage.prompt_tokens = total_usage
+                    .prompt_tokens
+                    .saturating_add(discarded_sample_tokens);
+                total_usage.total_tokens = total_usage
+                    .total_tokens
+                    .saturating_add(discarded_sample_tokens);
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &format!(
+                        "discarded physical model sample accounted conservatively: estimated_tokens={discarded_sample_tokens}"
+                    ),
+                    "warning",
+                );
+            }
             // -- 4b. Accumulate usage ------------------------------------------
             let usage_report = self
                 .record_model_step_usage(
@@ -1037,6 +1151,43 @@ impl AgentExecutor {
                 }
             }
             prompt_was_compacted = usage_report.compacted_after_step;
+
+            if self.config.max_actual_tokens_per_run.is_some_and(|limit| {
+                total_usage.total_tokens > limit
+                    || (total_usage.total_tokens == limit && !tool_calls.is_empty())
+            }) {
+                let limit = self.config.max_actual_tokens_per_run.unwrap_or_default();
+                let trace_message = format!(
+                    "agent actual token limit reached before tool dispatch: spent={}, limit={limit}",
+                    total_usage.total_tokens,
+                );
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &trace_message,
+                    "error",
+                );
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: if tool_calls.is_empty() {
+                            "The delegated worker exceeded its cumulative token limit; the over-budget final sample was rejected."
+                                .to_string()
+                        } else {
+                            "The delegated worker reached its cumulative token limit. Its pending tool calls were not executed."
+                                .to_string()
+                        },
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
+            }
 
             let recovery_decision = output_recovery.observe(
                 step_finish_reason_kind.as_ref(),
@@ -1604,6 +1755,7 @@ impl AgentExecutor {
                         loop_guard: &mut loop_guard,
                         trace: &mut trace,
                         sort_order: &mut sort_order,
+                        pending_action_reconciliation,
                     },
                     &verified_tool_calls,
                     tool_dispatch_block,
@@ -1628,6 +1780,27 @@ impl AgentExecutor {
                     return Err(error);
                 }
             };
+            if pending_action_reconciliation
+                && successful_action_reconciliation_observation(&tool_calls, &dispatch_summaries)
+            {
+                pending_action_reconciliation = false;
+                let status = "Fresh interactive state was observed after the stop checkpoint. The reconciliation fence is cleared; re-plan from this observation and request one-shot approval before any new input.";
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    status,
+                    "warning",
+                );
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "action_reconciliation_observed".to_string(),
+                        content: status.to_string(),
+                        tone: Some("warning".to_string()),
+                    })
+                    .await;
+                if let Some(message) = prompt_ir::controller_state_message(status) {
+                    messages.push(message);
+                }
+            }
             for call in &tool_calls {
                 if let Some(summary) = dispatch_summaries
                     .iter()
@@ -1851,6 +2024,26 @@ mod awaiting_user_input_tests {
             })),
         };
         assert_eq!(awaiting_user_input_interaction_id(&[answered]), None);
+    }
+
+    #[test]
+    fn cumulative_worker_budget_shrinks_each_physical_model_step() {
+        assert_eq!(
+            cumulative_run_step_output_budget(32_000, Some(40_000), 0, 10_000),
+            Some(30_000)
+        );
+        assert_eq!(
+            cumulative_run_step_output_budget(32_000, Some(40_000), 20_000, 5_000),
+            Some(15_000)
+        );
+        assert_eq!(
+            cumulative_run_step_output_budget(32_000, Some(40_000), 40_000, 0),
+            None
+        );
+        assert_eq!(
+            cumulative_run_step_output_budget(8_192, None, 999_999, 999_999),
+            Some(8_192)
+        );
     }
 }
 

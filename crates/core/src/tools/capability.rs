@@ -532,25 +532,39 @@ pub fn infer_tool_access_profile(
             ApprovalRisk::High,
             "Can open or reveal source-scoped local paths in a desktop application.",
         ),
-        "computer_observe" => (
-            "automation",
-            true,
-            false,
-            false,
-            false,
-            false,
-            ApprovalRisk::Medium,
-            "Reads fresh local window metadata or pixels without injecting input.",
-        ),
+        "computer_observe" => {
+            let discloses_window_content = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .is_some_and(|action| {
+                    action.eq_ignore_ascii_case("capture_window")
+                        || action.eq_ignore_ascii_case("wait_for_change")
+                });
+            (
+                "automation",
+                true,
+                false,
+                false,
+                discloses_window_content,
+                discloses_window_content,
+                ApprovalRisk::Medium,
+                if discloses_window_content {
+                    "Captures local window pixels and accessibility text that may be disclosed to the configured model provider."
+                } else {
+                    "Reads bounded local window metadata without injecting input."
+                },
+            )
+        }
         "computer_control" => (
             "automation",
             true,
             true,
             true,
-            false,
+            true,
             true,
             ApprovalRisk::High,
-            "Injects mouse or keyboard input into a fresh, observation-scoped Windows window.",
+            "Acts on a fresh Windows observation and returns post-action screen evidence to the configured model context.",
         ),
         "get_document_info" | "compare_documents" | "summarize_document" => (
             "document_analysis",

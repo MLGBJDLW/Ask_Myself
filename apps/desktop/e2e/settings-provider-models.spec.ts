@@ -876,8 +876,8 @@ test("provider output limit is automatic when the explicit cap is cleared", asyn
   const input = maxTokensField.getByRole("spinbutton");
   await expect(input).toHaveValue("4096");
   await input.fill("");
-  await expect(input).toHaveAttribute("placeholder", "Auto (provider default)");
-  await expect(maxTokensField).toContainText("provider's native output limit");
+  await expect(input).toHaveAttribute("placeholder", "Auto (agent-safe reserve)");
+  await expect(maxTokensField).toContainText("currently 4096 for the main agent");
 
   await maxTokensField
     .locator("xpath=ancestor::form")

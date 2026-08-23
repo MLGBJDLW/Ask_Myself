@@ -75,6 +75,10 @@ impl ActivityRuntime {
         }
     }
 
+    pub fn is_persistent(&self) -> bool {
+        self.inner.database.is_some()
+    }
+
     pub fn with_database(database: Database) -> Result<Self, CoreError> {
         let runtime_key = persistent_runtime_key(&database);
         let mut runtime_cache = runtime_key
@@ -129,6 +133,10 @@ impl ActivityRuntime {
                 "state": record.state,
                 "surface": record.surface,
                 "ownerTool": record.owner_tool,
+                "sessionId": record.session_id,
+                "conversationId": record.conversation_id,
+                "turnId": record.turn_id,
+                "taskRunId": record.task_run_id,
             }),
         };
         let mut entry = ActivityEntry::new(record.clone());

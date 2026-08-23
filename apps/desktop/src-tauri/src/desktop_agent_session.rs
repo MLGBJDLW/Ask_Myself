@@ -82,7 +82,6 @@ use crate::subagent_tool::{
 };
 use crate::terminal_agent_tool::TerminalAgentTool;
 
-const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const REQUIRED_ACTIVITY_RUNTIME_TOOLS: &[&str] = &[
     "activity_observe",
@@ -303,11 +302,9 @@ pub struct DesktopRunningAgentStopRequest {
 
 struct DesktopApprovalCallbackInput {
     db: Arc<Database>,
-    conversation_id: String,
     task_run_id: String,
-    turn_id: String,
-    event_seq: Arc<AgentRunEventOutbox>,
     approval_runtime: DesktopAgentApprovalRuntime,
+    cancellation: CancellationToken,
 }
 
 pub fn execution_mode_artifact(execution_mode: AgentExecutionMode) -> serde_json::Value {
@@ -334,6 +331,14 @@ pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
             "verificationReservePercent": config.subagent_verification_reserve_percent,
         },
     })
+}
+
+fn automatic_delegated_worker_cap(total: u32, parallel: u32) -> u64 {
+    u64::from(total)
+        .div_ceil(u64::from(parallel.max(1)))
+        .saturating_mul(2)
+        .max(8_192)
+        .min(u64::from(total))
 }
 
 pub fn collaboration_mode_artifact(config: &AgentConfig) -> serde_json::Value {
@@ -435,8 +440,40 @@ async fn fence_and_checkpoint_desktop_agent_turn(
     )
     .await?;
 
+    let action_receipts = match nexa_core::activity::ActivityRuntime::with_database(db.clone()) {
+        Ok(runtime) => runtime
+            .list()
+            .into_iter()
+            .filter(|record| {
+                record.turn_id.as_deref() == Some(turn_id.as_str())
+                    && matches!(
+                        record.surface,
+                        nexa_core::activity::ActivitySurface::Desktop
+                            | nexa_core::activity::ActivitySurface::Browser
+                    )
+                    && matches!(
+                        record.owner_tool.as_str(),
+                        "computer_control" | "browser_session"
+                    )
+            })
+            .map(|record| record.activity_id)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            warn!("Could not read action receipts while stopping; forcing reconciliation: {error}");
+            vec!["activity_registry_unavailable".to_string()]
+        }
+    };
+    let checkpoint_reason = if action_receipts.is_empty() {
+        "user_stop".to_string()
+    } else {
+        format!(
+            "user_stop_requires_action_reconciliation:{}",
+            action_receipts.join(",")
+        )
+    };
+
     event_outbox
-        .pause_with_checkpoint(&turn_id, "user_stop")
+        .pause_with_checkpoint(&turn_id, &checkpoint_reason)
         .await
         .map(|_| ())
 }
@@ -1752,14 +1789,28 @@ pub fn build_desktop_agent_turn_config(
     } else {
         Some(orchestration_policy.delegated_token_budget)
     };
-    let delegation_limits_v2 = db_config.delegation_limits_v2.clone().map(|mut limits| {
-        if profile_overrides_persisted_delegation {
+    let had_saved_v2_limits = db_config.delegation_limits_v2.is_some();
+    let delegation_limits_v2 = {
+        let mut limits = db_config.delegation_limits_v2.clone().unwrap_or_default();
+        if profile_overrides_persisted_delegation || !had_saved_v2_limits {
             limits.max_parallel = subagent_max_parallel;
             limits.max_calls_per_turn = subagent_max_calls_per_turn;
             limits.total_actual_tokens_soft_limit = subagent_token_budget.map(u64::from);
         }
-        limits
-    });
+        let automatic_worker_cap = limits
+            .total_actual_tokens_soft_limit
+            .and_then(|total| u32::try_from(total).ok())
+            .zip(limits.max_parallel)
+            .map(|(total, parallel)| automatic_delegated_worker_cap(total, parallel));
+        if limits.max_actual_tokens_per_worker.is_none() {
+            limits.max_actual_tokens_per_worker = automatic_worker_cap;
+        }
+        // Every runtime uses the independent V2 contract. Auto context resolves
+        // the selected model's real catalog capacity. Auto per-step output uses
+        // a verified catalog ceiling (or safe 8K fallback) and is then bounded
+        // by the cumulative worker allocation.
+        Some(limits)
+    };
     let orchestration_profile_section = orchestration_policy.prompt_section();
     let collaboration_mode_section = if collaboration_mode.is_moa() {
         format!(
@@ -2001,6 +2052,7 @@ pub fn build_desktop_agent_turn_config(
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
         max_tokens: db_config.max_tokens.map(|t| t as u32),
+        max_actual_tokens_per_run: None,
         context_window: db_config.context_window.map(|w| w as u32),
         reasoning_enabled: power_policy.reasoning_enabled,
         thinking_budget: power_policy.thinking_budget,
@@ -2029,8 +2081,15 @@ pub fn build_desktop_agent_turn_config(
             Some(orchestration_policy.verification_reserve_percent)
         },
         delegation_limits_v2,
-        tool_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
-        agent_timeout_secs: Some(UNLIMITED_EXECUTOR_TIMEOUT_SECS),
+        // Preserve the saved liveness policy. `0` remains an explicit user
+        // choice for unlimited execution; missing or invalid values fall back
+        // to the core runtime defaults instead of silently forcing unlimited.
+        tool_timeout_secs: db_config
+            .tool_timeout_secs
+            .and_then(|value| u32::try_from(value).ok()),
+        agent_timeout_secs: db_config
+            .agent_timeout_secs
+            .and_then(|value| u32::try_from(value).ok()),
         cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
         trace_enabled: app_cfg.trace_enabled,
@@ -2433,14 +2492,27 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn requires_explicit_desktop_approval(req: &ApprovalRequest) -> bool {
+    req.tool_name == "computer_control"
+        || req.target_kind == "screen_disclosure"
+        || req.target_kind == "browser_action"
+}
+
+fn desktop_approval_mode_decision(
+    approval_mode: ToolApprovalMode,
+    req: &ApprovalRequest,
+) -> Option<ApprovalDecision> {
+    approval_mode.short_circuit().and_then(|decision| {
+        (!requires_explicit_desktop_approval(req) || !decision.is_allowed()).then_some(decision)
+    })
+}
+
 fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> ApprovalCallback {
     let DesktopApprovalCallbackInput {
         db,
-        conversation_id,
         task_run_id,
-        turn_id,
-        event_seq,
         approval_runtime,
+        cancellation,
     } = input;
     let pending = approval_runtime.pending;
     let session_store = approval_runtime.session_store;
@@ -2450,26 +2522,27 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
         let db = Arc::clone(&db);
         let pending = Arc::clone(&pending);
         let store = session_store.clone();
-        let conv = conversation_id.clone();
-        let event_seq = Arc::clone(&event_seq);
         let task_run_id = task_run_id.clone();
-        let turn_id = turn_id.clone();
+        let cancellation = cancellation.clone();
         Box::pin(async move {
-            if let Some(decision) = approval_mode.short_circuit() {
+            let permission_key = ToolPermissionKey::from_request(&req);
+            let hard_confirmation = requires_explicit_desktop_approval(&req);
+            if let Some(decision) = desktop_approval_mode_decision(approval_mode, &req) {
                 return decision;
             }
 
-            let permission_key = ToolPermissionKey::from_request(&req);
             if let Ok(Some(policy)) = db.resolve_tool_permission_policy(&permission_key) {
                 if policy == "never" {
                     return ApprovalDecision::Deny;
                 }
             }
 
-            if matches!(
-                store.resolve(&permission_key),
-                Some(ApprovalDecision::AllowSession)
-            ) {
+            if !hard_confirmation
+                && matches!(
+                    store.resolve(&permission_key),
+                    Some(ApprovalDecision::AllowSession)
+                )
+            {
                 return ApprovalDecision::AllowOnce;
             }
 
@@ -2481,28 +2554,24 @@ fn build_desktop_approval_callback(input: DesktopApprovalCallbackInput) -> Appro
                     sender: tx,
                 },
             );
-            emit_agent_frontend_event(
-                event_seq.as_ref(),
-                &conv,
-                &task_run_id,
-                Some(&turn_id),
-                AgentEvent::ApprovalRequested {
-                    request: req.clone(),
-                },
-            );
-
-            let decision = match tokio::time::timeout(Duration::from_secs(60), rx).await {
-                Ok(Ok(decision)) => decision,
-                _ => {
-                    pending.lock().await.remove(&req.id);
-                    ApprovalDecision::Deny
-                }
+            let decision = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => ApprovalDecision::Deny,
+                decision = rx => decision.unwrap_or(ApprovalDecision::Deny),
+                _ = tokio::time::sleep(Duration::from_secs(60)) => ApprovalDecision::Deny,
             };
+            pending.lock().await.remove(&req.id);
             match decision {
                 ApprovalDecision::AllowSession => {
+                    if hard_confirmation {
+                        return ApprovalDecision::AllowOnce;
+                    }
                     store.set(&req.permission_key, ApprovalDecision::AllowSession);
                 }
                 ApprovalDecision::Never => {
+                    if hard_confirmation {
+                        return ApprovalDecision::Deny;
+                    }
                     let key = ToolPermissionKey::from_request(&req);
                     let _ = db.save_tool_permission_policy(&key, "never");
                 }
@@ -2534,11 +2603,9 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
 
     let approval_cb = build_desktop_approval_callback(DesktopApprovalCallbackInput {
         db: Arc::clone(&db),
-        conversation_id: conversation_id.clone(),
         task_run_id: stream.task_run_id.clone(),
-        turn_id: turn_id.clone(),
-        event_seq: Arc::clone(&stream.event_seq),
         approval_runtime,
+        cancellation: cancel_token.clone(),
     });
 
     let executor_cancel_token = cancel_token.clone();
@@ -2596,6 +2663,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
 
         let (result, timed_out) = loop {
             tokio::select! {
+                biased;
                 run_result = &mut run_future => break (Some(run_result), false),
                 _ = async {
                     if let Some(timeout) = turn_timeout.as_mut() {
@@ -2619,7 +2687,20 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         };
 
         if timed_out {
+            let _ = stream.event_seq.submit(AgentRunEvent::terminal_error(
+                &stream.task_run_id,
+                Some(&turn_id),
+                0,
+                "Agent execution timed out.",
+                "timed_out",
+                Some(&serde_json::json!({ "reason": "agent_timeout" })),
+            ));
             cancel_token.cancel();
+            // Drive cooperative cancellation to its tool/model boundary before
+            // dropping the executor. Browser receipt guards then persist an
+            // uncertain terminal, while computer workers retain ownership and
+            // finish their worker-owned receipts independently.
+            let _ = tokio::time::timeout(Duration::from_secs(5), &mut run_future).await;
         }
 
         drop(run_future);
@@ -3142,6 +3223,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn automatic_worker_cap_never_exceeds_small_aggregate_budget() {
+        assert_eq!(automatic_delegated_worker_cap(96_000, 6), 32_000);
+        assert_eq!(automatic_delegated_worker_cap(500, 6), 500);
+        assert_eq!(automatic_delegated_worker_cap(256, 1), 256);
+    }
+
+    #[test]
+    fn desktop_allow_all_never_bypasses_computer_or_screen_disclosure_approval() {
+        let control = ApprovalRequest::new(
+            "control",
+            "computer_control",
+            &serde_json::json!({
+                "action": "click",
+                "observation_id": "observation",
+                "window_id": 42,
+                "x": 1,
+                "y": 1
+            }),
+            ApprovalRisk::High,
+            "control",
+        );
+        let capture = ApprovalRequest::new(
+            "capture",
+            "computer_observe",
+            &serde_json::json!({
+                "action": " CAPTURE_WINDOW ",
+                "observation_id": "observation",
+                "window_id": 42
+            }),
+            ApprovalRisk::Medium,
+            "capture",
+        );
+        let browser = ApprovalRequest::new(
+            "browser",
+            "browser_session",
+            &serde_json::json!({
+                "action": "click",
+                "sessionId": "browser-a",
+                "observationId": "obs-a",
+                "targetRef": "e1"
+            }),
+            ApprovalRisk::High,
+            "browser action",
+        );
+        assert!(requires_explicit_desktop_approval(&control));
+        assert!(requires_explicit_desktop_approval(&capture));
+        assert!(requires_explicit_desktop_approval(&browser));
+        assert_eq!(
+            desktop_approval_mode_decision(ToolApprovalMode::AllowAll, &control),
+            None
+        );
+        assert_eq!(
+            desktop_approval_mode_decision(ToolApprovalMode::AllowAll, &capture),
+            None
+        );
+        assert_eq!(
+            desktop_approval_mode_decision(ToolApprovalMode::AllowAll, &browser),
+            None
+        );
+        assert_eq!(
+            desktop_approval_mode_decision(ToolApprovalMode::DenyAll, &control),
+            Some(ApprovalDecision::Deny)
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stop_fences_execution_and_resolves_approval_before_checkpoint() {
         let db = Database::open_memory().expect("open memory database");
@@ -3185,6 +3332,26 @@ mod tests {
             .expect("create run");
         db.mark_agent_task_run_started(&run.id, "approval")
             .expect("start run");
+        let activity_runtime =
+            nexa_core::activity::ActivityRuntime::with_database(db.clone()).unwrap();
+        activity_runtime
+            .start(
+                nexa_core::activity::ActivitySpec::new(
+                    nexa_core::activity::ActivitySurface::Desktop,
+                    "computer_control",
+                )
+                .with_activity_id("computer_control:turn:call_0")
+                .with_conversation_id(&conversation.id)
+                .with_turn_id(&turn.id),
+            )
+            .expect("start interactive action receipt");
+        activity_runtime
+            .transition(
+                "computer_control:turn:call_0",
+                nexa_core::activity::ActivityState::Completed,
+                serde_json::json!({"stage": "observed"}),
+            )
+            .expect("complete interactive action receipt");
 
         let delivery_entered = Arc::new(AtomicBool::new(false));
         let executor = DatabaseExecutor::new(db.clone(), 8).expect("database executor");
@@ -3292,6 +3459,19 @@ mod tests {
             db.get_agent_task_run(&run.id).expect("paused task").status,
             "paused"
         );
+        let checkpoint = db
+            .latest_task_resume_checkpoint(&run.id)
+            .expect("load stop checkpoint")
+            .expect("stop checkpoint");
+        assert!(checkpoint
+            .reason
+            .starts_with("user_stop_requires_action_reconciliation:"));
+        assert!(checkpoint
+            .resume_prompt
+            .contains("SAFETY FENCE: interactive action receipt"));
+        assert!(checkpoint
+            .resume_prompt
+            .contains("Never redispatch the prior action"));
     }
 
     #[test]
@@ -3894,6 +4074,9 @@ mod tests {
             "builtin-evidence-first".to_string(),
             "explicit-skill".to_string(),
         ];
+        let mut db_config = test_agent_config();
+        db_config.tool_timeout_secs = Some(37);
+        db_config.agent_timeout_secs = Some(91);
         let turn_config = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
             db: &db,
             conversation: &conversation,
@@ -3901,7 +4084,7 @@ mod tests {
             message: "Summarize runtime evidence",
             persona_id: None,
             explicit_skill_ids: &explicit_skill_ids,
-            db_config: &test_agent_config(),
+            db_config: &db_config,
             app_cfg: &app_cfg,
             execution_mode: AgentExecutionMode::Plan,
             power_mode: AgentPowerMode::Standard,
@@ -3943,6 +4126,8 @@ mod tests {
         assert_eq!(executor.subagent_max_parallel, Some(2));
         assert_eq!(executor.subagent_max_calls_per_turn, Some(3));
         assert_eq!(executor.subagent_token_budget, Some(4096));
+        assert_eq!(executor.tool_timeout_secs, Some(37));
+        assert_eq!(executor.agent_timeout_secs, Some(91));
         assert_eq!(executor.subagent_verification_reserve_percent, None);
         assert_eq!(executor.cache_ttl_hours, Some(9));
         assert!(!executor.dynamic_tool_visibility);
@@ -3952,6 +4137,13 @@ mod tests {
         assert_eq!(executor.tool_approval_mode, ToolApprovalMode::DenyAll);
         assert_eq!(executor.execution_mode, AgentExecutionMode::Plan);
         assert_eq!(executor.power_mode, AgentPowerMode::Standard);
+        let standard_limits = executor
+            .delegation_limits_v2
+            .as_ref()
+            .expect("legacy/empty desktop configs are upgraded to independent V2 limits");
+        assert_eq!(standard_limits.input_context_limit, None);
+        assert_eq!(standard_limits.max_output_tokens_per_step, None);
+        assert_eq!(standard_limits.max_actual_tokens_per_worker, Some(4_096));
 
         let prompt_sections = executor.volatile_system_sections.join("\n");
         assert!(prompt_sections.contains("## Current Turn Time"));
@@ -3999,12 +4191,46 @@ mod tests {
         assert_eq!(nexus_limits.max_parallel, Some(6));
         assert_eq!(nexus_limits.max_calls_per_turn, Some(12));
         assert_eq!(nexus_limits.total_actual_tokens_soft_limit, Some(96_000));
+        assert_eq!(nexus_limits.max_output_tokens_per_step, None);
+        assert_eq!(nexus_limits.max_actual_tokens_per_worker, Some(32_000));
         assert_eq!(nexus_limits.queue_deadline_ms, Some(9_000));
         assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
         assert!(nexus
             .volatile_system_sections
             .join("\n")
             .contains("## Nexus Execution Policy"));
+
+        let mut nexus_auto_db_config = test_agent_config();
+        nexus_auto_db_config.model = "qwen3.8-max".to_string();
+        nexus_auto_db_config.delegation_limits_v2 = None;
+        let nexus_auto = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+            db: &db,
+            conversation: &conversation,
+            turn_id: "turn-nexus-auto",
+            message: "Run a deep parallel review",
+            persona_id: None,
+            explicit_skill_ids: &[],
+            db_config: &nexus_auto_db_config,
+            app_cfg: &app_cfg,
+            execution_mode: AgentExecutionMode::Normal,
+            power_mode: AgentPowerMode::Nexus,
+            collaboration_mode: AgentCollaborationMode::Direct,
+            moa_preset: MoaPresetId::FastReview,
+            orchestration_profile: OrchestrationProfile::Balanced,
+            custom_orchestration: None,
+        })
+        .executor_config;
+        let nexus_auto_limits = nexus_auto
+            .delegation_limits_v2
+            .expect("Nexus creates independent auto limits even without saved V2 settings");
+        assert_eq!(nexus_auto_limits.input_context_limit, None);
+        assert_eq!(nexus_auto_limits.max_output_tokens_per_worker, None);
+        assert_eq!(
+            nexus_auto_limits.total_actual_tokens_soft_limit,
+            Some(96_000)
+        );
+        assert_eq!(nexus_auto_limits.max_output_tokens_per_step, None);
+        assert_eq!(nexus_auto_limits.max_actual_tokens_per_worker, Some(32_000));
 
         let mut unlimited_db_config = test_agent_config();
         unlimited_db_config.max_iterations = None;

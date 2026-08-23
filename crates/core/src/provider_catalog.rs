@@ -115,6 +115,10 @@ pub struct ProviderModelPreset {
     pub supports_structured_output: Option<bool>,
     #[serde(default)]
     pub native_web_search: Option<NativeWebSearchCapability>,
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -560,6 +564,31 @@ pub fn model_limits_from_catalog(provider_type: ProviderType, model: &str) -> Op
     if normalized_model.is_empty() {
         return None;
     }
+    if let Some(limits) = load_provider_presets()
+        .ok()?
+        .into_iter()
+        .find_map(|preset| {
+            (provider_type_from_key(&preset.provider) == Some(provider_type))
+                .then_some(preset)
+                .and_then(|preset| {
+                    preset
+                        .models
+                        .into_iter()
+                        .find(|candidate| normalize_model_id(&candidate.id) == normalized_model)
+                })
+                .and_then(|model| {
+                    (model.context_tokens.is_some() || model.max_output_tokens.is_some()).then_some(
+                        ModelLimits {
+                            context_tokens: model.context_tokens,
+                            max_output_tokens: model.max_output_tokens,
+                            ..ModelLimits::default()
+                        },
+                    )
+                })
+        })
+    {
+        return Some(limits);
+    }
     let catalog = load_builtin_catalog().ok()?;
     catalog.models.into_iter().find_map(|descriptor| {
         let model_matches = normalize_model_id(&descriptor.id) == normalized_model
@@ -876,7 +905,7 @@ mod tests {
             .expect("qwen3.8-max should expose endpoint-scoped reasoning");
         assert_eq!(qwen38_reasoning.mode.as_deref(), Some("optional"));
         assert!(qwen38_reasoning.effort_budget_exclusive);
-        assert_eq!(qwen38_reasoning.default_effort.as_deref(), Some("xhigh"));
+        assert_eq!(qwen38_reasoning.default_effort.as_deref(), Some("low"));
         assert_eq!(
             qwen38_reasoning
                 .thinking_budget
@@ -1252,6 +1281,71 @@ mod tests {
             model_supports_reasoning_from_catalog(ProviderType::LmStudio, "custom-reasoner"),
             None
         );
+    }
+
+    #[test]
+    fn qwen_token_plan_runtime_identity_resolves_full_qwen38_limits() {
+        let limits = model_limits_from_catalog(ProviderType::Qwen, "qwen3.8-max")
+            .expect("Token Plan Qwen identity should resolve canonical catalog limits");
+        assert_eq!(limits.context_tokens, Some(1_000_000));
+        assert_eq!(limits.max_output_tokens, Some(131_000));
+        assert!(
+            model_limits_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.8-max-preview")
+                .is_none(),
+            "Token Plan preview limits must not leak into Model Studio"
+        );
+
+        let builtin = load_builtin_catalog().expect("built-in catalog");
+        for endpoint_id in ["text:qwen-token-plan-cn", "text:qwen-token-plan-global"] {
+            let endpoint = builtin
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == endpoint_id)
+                .expect("Token Plan endpoint");
+            assert_eq!(endpoint.provider_id, "qwen");
+        }
+
+        let openrouter_qwen =
+            model_limits_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.8-max")
+                .expect("OpenRouter Qwen3.8 should expose its real window");
+        assert_eq!(openrouter_qwen.context_tokens, Some(1_000_000));
+
+        let openrouter_kimi =
+            model_limits_from_catalog(ProviderType::OpenRouter, "moonshotai/kimi-k3")
+                .expect("OpenRouter Kimi K3 should expose its real window");
+        assert_eq!(openrouter_kimi.context_tokens, Some(1_048_576));
+
+        let routed_kimi =
+            model_limits_from_catalog(ProviderType::AlibabaModelStudio, "kimi/kimi-k3")
+                .expect("Alibaba Kimi K3 should expose its real window");
+        assert_eq!(routed_kimi.context_tokens, Some(1_048_576));
+    }
+
+    #[test]
+    fn delegated_worker_limit_lookup_covers_representative_verified_families() {
+        for (provider, model) in [
+            (ProviderType::OpenAi, "gpt-5.6"),
+            (ProviderType::Anthropic, "claude-fable-5"),
+            (ProviderType::Google, "gemini-3.7-flash"),
+            (ProviderType::DeepSeek, "deepseek-v4-pro"),
+            (ProviderType::Moonshot, "kimi-k3"),
+            (ProviderType::Qwen, "qwen3.8-max"),
+            (ProviderType::AlibabaModelStudio, "qwen3.8-max"),
+            (ProviderType::Zhipu, "glm-5.3"),
+            (ProviderType::OpenRouter, "moonshotai/kimi-k3"),
+        ] {
+            let limits = model_limits_from_catalog(provider, model).unwrap_or_else(|| {
+                panic!("missing delegated worker limits for {provider:?}:{model}")
+            });
+            assert!(
+                limits.context_tokens.is_some_and(|tokens| tokens > 0),
+                "missing context limit for {provider:?}:{model}"
+            );
+            assert!(
+                limits.max_output_tokens.is_some_and(|tokens| tokens > 0),
+                "missing output limit for {provider:?}:{model}"
+            );
+        }
     }
 
     #[test]

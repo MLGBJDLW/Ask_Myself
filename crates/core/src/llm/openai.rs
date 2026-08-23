@@ -108,6 +108,8 @@ struct OaiMessage {
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_details: Option<serde_json::Value>,
 }
 
 /// OpenAI content: either a plain string or an array of content parts.
@@ -731,6 +733,7 @@ fn convert_message(
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        reasoning_details: None,
     };
 
     // Assistant messages may carry tool-call requests.
@@ -762,6 +765,14 @@ fn convert_message(
     }
 
     if include_reasoning_content && msg.role == Role::Assistant {
+        if let Some(envelope) = msg.provider_turn() {
+            if let super::provider_turn::ProviderReplayPayload::OpenRouterReasoningDetails(
+                details,
+            ) = &envelope.replay_payload
+            {
+                oai.reasoning_details = Some(serde_json::Value::Array(details.clone()));
+            }
+        }
         let reasoning = msg
             .reasoning_content
             .as_deref()
@@ -838,11 +849,22 @@ fn build_request_body_with_config(
     );
     let reasoning_supported = reasoning_profile.id != "openai-reasoning-v1"
         || is_reasoning_model(&request.model, Some(&provider_type));
-    let requested_reasoning_mode = reasoning_profile.requested_mode(
-        request.reasoning_enabled,
-        request.reasoning_effort.as_ref(),
-        request.thinking_budget,
-    );
+    let requested_reasoning_mode = reasoning_profile
+        .requested_mode(
+            request.reasoning_enabled,
+            request.reasoning_effort.as_ref(),
+            request.thinking_budget,
+        )
+        .or_else(|| {
+            // The trusted Qwen3.8 Chat profile is thinking-enabled at the
+            // provider by default. Make Nexa's interactive `low` default
+            // explicit even for headless/legacy configs whose three controls
+            // are all absent; an explicit false above still wins.
+            (reasoning_profile.id == "alibaba-qwen3.8-chat-v1"
+                || (reasoning_profile.id == "openrouter-normalized-reasoning-v1"
+                    && reasoning_profile.default_effort.is_some()))
+            .then_some(true)
+        });
     let effort_can_encode_disabled =
         reasoning_profile.mode_control == ThinkingModeControl::ProviderDefault;
     let requested_effort = request.reasoning_effort.as_ref().or_else(|| {
@@ -2633,9 +2655,13 @@ impl OpenAiProvider {
         let (tx, rx) = mpsc::channel(64);
         let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
-            if let Err(error) =
-                parse_responses_sse_stream(response, tx.clone(), dialect, capability).await
-            {
+            let parser_tx = tx.clone();
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = parse_responses_sse_stream(response, parser_tx, dialect, capability) => result,
+            };
+            if let Err(error) = result {
                 transport.record_transport_failure(&error.to_string());
                 let event = match error {
                     CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message) => {
@@ -2876,6 +2902,18 @@ impl LlmProvider for OpenAiProvider {
             })
             .unwrap_or_default();
 
+        let openrouter_reasoning_details = (self.config.provider_type == ProviderType::OpenRouter)
+            .then(|| {
+                choice
+                    .message
+                    .reasoning_details
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            })
+            .flatten()
+            .filter(|details| !details.is_empty());
+
         let (content, content_thinking) = choice
             .message
             .content
@@ -2902,7 +2940,8 @@ impl LlmProvider for OpenAiProvider {
             finish_reason,
             usage,
             thinking,
-            provider_replay: None,
+            provider_replay: openrouter_reasoning_details
+                .map(super::provider_turn::ProviderReplayPayload::OpenRouterReasoningDetails),
         })
     }
 
@@ -3003,7 +3042,13 @@ impl LlmProvider for OpenAiProvider {
 
         let transport = Arc::clone(&self.transport);
         tokio::spawn(async move {
-            if let Err(e) = parse_sse_stream(response, tx.clone()).await {
+            let parser_tx = tx.clone();
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = parse_sse_stream(response, parser_tx) => result,
+            };
+            if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());
                 error!("SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
@@ -3352,7 +3397,7 @@ data: [DONE]
     }
 
     #[test]
-    fn moonshot_k3_defaults_to_max_and_never_invents_a_token_budget() {
+    fn moonshot_k3_uses_the_interactive_low_default_and_never_invents_a_token_budget() {
         let request = endpoint_reasoning_request("kimi-k3");
         let config = endpoint_config(ProviderType::Moonshot, "https://api.moonshot.ai/v1");
 
@@ -3363,7 +3408,7 @@ data: [DONE]
         ))
         .unwrap();
 
-        assert_eq!(body["reasoning_effort"], "max");
+        assert_eq!(body["reasoning_effort"], "low");
         assert!(body.get("thinking_budget").is_none());
         assert!(body.get("enable_thinking").is_none());
         assert!(body.get("thinking").is_none());
@@ -3452,8 +3497,28 @@ data: [DONE]
             Some(&config),
         ))
         .unwrap();
-        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert_eq!(body["reasoning_effort"], "low");
         assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn qwen38_headless_defaults_explicitly_to_low_instead_of_provider_xhigh() {
+        let request = endpoint_reasoning_request("qwen3.8-max");
+        let config = endpoint_config(
+            ProviderType::Qwen,
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        );
+
+        let body = serde_json::to_value(build_request_body_with_config(
+            &request,
+            false,
+            Some(&config),
+        ))
+        .unwrap();
+
+        assert_eq!(body["enable_thinking"], true);
+        assert_eq!(body["reasoning_effort"], "low");
+        assert!(body.get("thinking_budget").is_none());
     }
 
     #[test]
@@ -4820,6 +4885,93 @@ data: [DONE]
         assert_eq!(body["max_tokens"], 100);
         assert!(body.get("max_completion_tokens").is_none());
         assert!(body.get("temperature").is_some());
+    }
+
+    #[test]
+    fn openrouter_kimi_k3_headless_defaults_to_nested_low_effort() {
+        let request = CompletionRequest {
+            model: "moonshotai/kimi-k3".to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: None,
+            reasoning_effort: None,
+            provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn openrouter_kimi_k3_replays_raw_reasoning_details_without_text_rewrite() {
+        let details = vec![
+            serde_json::json!({"type": "reasoning.text", "text": "inspect"}),
+            serde_json::json!({"type": "reasoning.summary", "summary": "act"}),
+        ];
+        let tool_call = ToolCallRequest {
+            id: "call_0".to_string(),
+            name: "read_file".to_string(),
+            arguments: "{\"path\":\"README.md\"}".to_string(),
+            thought_signature: None,
+        };
+        let mut assistant = Message::text(Role::Assistant, "");
+        assistant.tool_calls = Some(vec![tool_call.clone()]);
+        assistant.set_provider_turn(
+            super::super::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                "turn-item",
+                "sample",
+                super::super::provider_turn::RouteSnapshot {
+                    provider_endpoint_id: "openrouter-public".to_string(),
+                    provider_family: "openrouter".to_string(),
+                    api_style: ReasoningApiStyle::OpenAiChatCompletions,
+                    model_id: "moonshotai/kimi-k3".to_string(),
+                    reasoning_profile_id: "openrouter-normalized-reasoning-v1".to_string(),
+                    reasoning_profile_version: 1,
+                    replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                },
+                "",
+                Some("display only"),
+                None,
+                vec![tool_call],
+                true,
+                Some(
+                    super::super::provider_turn::ProviderReplayPayload::OpenRouterReasoningDetails(
+                        details.clone(),
+                    ),
+                ),
+            ),
+        );
+        let request = CompletionRequest {
+            model: "moonshotai/kimi-k3".to_string(),
+            messages: vec![
+                assistant,
+                Message::text_with_name(Role::Tool, "contents", "call_0"),
+            ],
+            temperature: None,
+            max_tokens: Some(100),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::Low),
+            provider_type: Some(ProviderType::OpenRouter),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
+        assert_eq!(
+            body["messages"][0]["reasoning_details"],
+            serde_json::Value::Array(details)
+        );
     }
 
     #[test]

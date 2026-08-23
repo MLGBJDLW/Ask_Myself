@@ -285,7 +285,8 @@ impl ContextCompactionService {
                 max_retries: job.request.policy.max_retries,
             },
         )
-        .await?;
+        .await
+        .map_err(CoreError::from)?;
         ensure_not_cancelled(&cancellation)?;
         let (summary_kind, fallback_reason) = match &summary.control {
             ControlledSummarization::Abstractive => ("abstractive", None),

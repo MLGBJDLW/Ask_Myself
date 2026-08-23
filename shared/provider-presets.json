@@ -38,6 +38,8 @@
         "source": "curated",
         "productReadiness": "known",
         "recommended": true,
+        "contextTokens": 1050000,
+        "maxOutputTokens": 128000,
         "capabilities": {
           "reasoning": {
             "effortLevels": [
@@ -440,6 +442,8 @@
         "source": "curated",
         "productReadiness": "known",
         "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 128000,
         "capabilities": {
           "vision": true,
           "reasoning": {
@@ -708,17 +712,43 @@
         "id": "moonshotai/kimi-k3",
         "name": "MoonshotAI: Kimi K3",
         "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 974842,
         "capabilities": {
           "vision": true,
           "reasoning": {
+            "mode": "always",
             "effortLevels": [
               "low",
               "high",
               "max"
             ],
-            "defaultEffort": "max",
+            "defaultEffort": "low",
             "thinkingBudget": {
               "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-max",
+        "name": "Qwen: Qwen3.8 Max",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131000,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "low", "medium", "xhigh"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
             }
           }
         }
@@ -6399,6 +6429,8 @@
         "source": "curated",
         "productReadiness": "known",
         "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 128000,
         "capabilities": {
           "reasoning": {
             "effortLevels": [
@@ -7723,7 +7755,7 @@
               "high",
               "max"
             ],
-            "defaultEffort": "max",
+            "defaultEffort": "low",
             "thinkingBudget": {
               "enabled": false
             }
@@ -7907,7 +7939,7 @@
           "reasoning": {
             "mode": "optional",
             "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -7943,7 +7975,7 @@
           "reasoning": {
             "mode": "always",
             "effortLevels": ["minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -7993,7 +8025,7 @@
           "reasoning": {
             "mode": "optional",
             "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -8029,7 +8061,7 @@
           "reasoning": {
             "mode": "always",
             "effortLevels": ["minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -8078,7 +8110,7 @@
           "reasoning": {
             "mode": "optional",
             "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -8180,7 +8212,7 @@
           "reasoning": {
             "mode": "optional",
             "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-            "defaultEffort": "xhigh",
+            "defaultEffort": "low",
             "effortBudgetExclusive": true,
             "thinkingBudget": {
               "enabled": true,
@@ -8356,6 +8388,8 @@
         "lastVerifiedAt": "2026-08-04",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 1048576,
         "capabilities": {
           "vision": true,
           "videoInput": true,

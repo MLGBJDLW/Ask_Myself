@@ -16,6 +16,35 @@ struct SummarizationUsageContext<'a> {
     provider_type: Option<ProviderType>,
 }
 
+fn summarization_fits_run_budget(per_attempt: u32, actual_tokens_remaining: Option<u32>) -> bool {
+    let worst_case = per_attempt.saturating_mul(summarizer::maximum_summarization_attempts());
+    actual_tokens_remaining.is_none_or(|remaining| worst_case <= remaining)
+}
+
+fn summarization_ledger_usage(
+    result: &summarizer::SummarizationResult,
+    per_attempt_reservation: u32,
+) -> Usage {
+    let mut usage = result.usage.clone().unwrap_or_default();
+    let reported_attempts = u32::from(result.usage.is_some());
+    let unreported_attempts = result.attempts.saturating_sub(reported_attempts);
+    let unreported_tokens = per_attempt_reservation.saturating_mul(unreported_attempts);
+    usage.prompt_tokens = usage.prompt_tokens.saturating_add(unreported_tokens);
+    usage.total_tokens = usage
+        .total_tokens
+        .max(usage.prompt_tokens.saturating_add(usage.completion_tokens));
+    usage
+}
+
+fn unreported_summarization_usage(attempts: u32, per_attempt_reservation: u32) -> Usage {
+    let tokens = per_attempt_reservation.saturating_mul(attempts);
+    Usage {
+        prompt_tokens: tokens,
+        total_tokens: tokens,
+        ..Usage::default()
+    }
+}
+
 fn system_prefix_end(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -88,11 +117,53 @@ fn reference_summary_message(summary: &str, evicted_count: usize, reason: &str) 
 }
 
 impl AgentExecutor {
+    async fn summarize_for_compaction(
+        &self,
+        provider: &dyn LlmProvider,
+        model: &str,
+        provider_type: Option<ProviderType>,
+        evicted: &[Message],
+        extractive_fallback: &str,
+        actual_tokens_remaining: Option<u32>,
+    ) -> Result<(summarizer::SummarizationResult, u32), summarizer::SummarizationFailure> {
+        let per_attempt_reservation = summarizer::summarization_attempt_token_reservation(evicted);
+        if per_attempt_reservation > 0
+            && !summarization_fits_run_budget(per_attempt_reservation, actual_tokens_remaining)
+        {
+            return Ok((
+                summarizer::SummarizationResult {
+                    summary: extractive_fallback.to_string(),
+                    usage: None,
+                    attempts: 0,
+                    control: summarizer::ControlledSummarization::ExtractiveFallback {
+                        reason: "cumulative_run_token_budget_insufficient".to_string(),
+                    },
+                },
+                per_attempt_reservation,
+            ));
+        }
+
+        let result = summarizer::summarize_evicted_messages_with_controls(
+            provider,
+            model,
+            provider_type,
+            evicted,
+            extractive_fallback,
+            &self.cancel_token,
+            std::time::Instant::now() + Duration::from_secs(75),
+            summarizer::SummarizationControlPolicy::default(),
+        )
+        .await?;
+        Ok((result, per_attempt_reservation))
+    }
+
     fn record_summarization_usage(
         &self,
         ctx: SummarizationUsageContext<'_>,
         evicted: &[Message],
         usage: &Usage,
+        usage_source: &str,
+        request_status: &str,
     ) {
         let SummarizationUsageContext {
             db,
@@ -146,8 +217,8 @@ impl AgentExecutor {
             cache_read_tokens: u64::from(usage.cache_read_tokens.unwrap_or(0)),
             cache_miss_tokens: u64::from(usage.cache_miss_tokens.unwrap_or(0)),
             cache_creation_tokens: u64::from(usage.cache_creation_tokens.unwrap_or(0)),
-            usage_source: "provider",
-            request_status: "success",
+            usage_source,
+            request_status,
             latency_ms: None,
             time_to_first_token_ms: None,
             upstream_provider_id: None,
@@ -159,6 +230,25 @@ impl AgentExecutor {
         }) {
             warn!("Failed to persist summarization usage: {error}");
         }
+    }
+
+    fn record_unreported_summarization_failure(
+        &self,
+        ctx: SummarizationUsageContext<'_>,
+        evicted: &[Message],
+        failure: &summarizer::SummarizationFailure,
+        per_attempt_reservation: u32,
+    ) {
+        if failure.attempts == 0 || per_attempt_reservation == 0 {
+            return;
+        }
+        let usage = unreported_summarization_usage(failure.attempts, per_attempt_reservation);
+        let request_status = if matches!(failure.error, CoreError::Cancelled(_)) {
+            "cancelled"
+        } else {
+            "error"
+        };
+        self.record_summarization_usage(ctx, evicted, &usage, "estimated", request_status);
     }
 
     // -----------------------------------------------------------------------
@@ -181,15 +271,16 @@ impl AgentExecutor {
         db: &Database,
         conversation_id: Option<&str>,
         turn_id: Option<&str>,
-    ) -> Vec<Message> {
+        actual_tokens_remaining: Option<u32>,
+    ) -> Result<(Vec<Message>, Usage), CoreError> {
         if history.is_empty() {
-            return history;
+            return Ok((history, Usage::default()));
         }
 
         let pipeline = ContextPipeline::new(model, self.config.context_window, max_response_tokens);
         let budget = pipeline.context_budget();
         if budget == 0 {
-            return history;
+            return Ok((history, Usage::default()));
         }
 
         // Estimate total tokens across the history.
@@ -199,7 +290,7 @@ impl AgentExecutor {
             .sum();
 
         if !pipeline.budget_decision(total_tokens).should_compact {
-            return history;
+            return Ok((history, Usage::default()));
         }
 
         let prefix_end = system_prefix_end(&history);
@@ -207,7 +298,7 @@ impl AgentExecutor {
         let Some(evict_end) =
             compaction_boundary(&history, model, target_tail_tokens, MIN_RECENT_TURNS)
         else {
-            return history;
+            return Ok((history, Usage::default()));
         };
 
         // Include any earlier compacted summary after the stable system prefix
@@ -230,14 +321,35 @@ impl AgentExecutor {
         } else {
             self.config.provider_type
         };
-        let result = summarizer::summarize_evicted_messages_with_usage(
-            summ_provider,
-            summ_model,
-            summ_provider_type,
-            evicted,
-            &extractive_fallback,
-        )
-        .await;
+        let summarization = self
+            .summarize_for_compaction(
+                summ_provider,
+                summ_model,
+                summ_provider_type,
+                evicted,
+                &extractive_fallback,
+                actual_tokens_remaining,
+            )
+            .await;
+        let (result, per_attempt_reservation) = match summarization {
+            Ok(result) => result,
+            Err(failure) => {
+                let reservation = summarizer::summarization_attempt_token_reservation(evicted);
+                self.record_unreported_summarization_failure(
+                    SummarizationUsageContext {
+                        db,
+                        conversation_id,
+                        turn_id,
+                        model: summ_model,
+                        provider_type: summ_provider_type,
+                    },
+                    evicted,
+                    &failure,
+                    reservation,
+                );
+                return Err(failure.into());
+            }
+        };
         if let Some(usage) = result.usage.as_ref() {
             self.record_summarization_usage(
                 SummarizationUsageContext {
@@ -249,8 +361,11 @@ impl AgentExecutor {
                 },
                 evicted,
                 usage,
+                "provider",
+                "success",
             );
         }
+        let ledger_usage = summarization_ledger_usage(&result, per_attempt_reservation);
 
         let mut new_history = Vec::with_capacity(prefix_end + 1 + history.len() - evict_end);
         new_history.extend_from_slice(&history[..prefix_end]);
@@ -260,7 +375,7 @@ impl AgentExecutor {
             "automatic headroom compaction",
         ));
         new_history.extend_from_slice(&history[evict_end..]);
-        new_history
+        Ok((new_history, ledger_usage))
     }
 
     pub(super) async fn recover_context_overflow(
@@ -271,6 +386,7 @@ impl AgentExecutor {
         db: &Database,
         conversation_id: Option<&str>,
         turn_id: Option<&str>,
+        total_usage: &mut Usage,
     ) -> Result<bool, CoreError> {
         let before_tokens: u32 = messages
             .iter()
@@ -278,8 +394,33 @@ impl AgentExecutor {
             .sum();
         let before_len = messages.len();
 
-        self.aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+        let actual_tokens_remaining = self
+            .config
+            .max_actual_tokens_per_run
+            .map(|limit| limit.saturating_sub(total_usage.total_tokens));
+        let compaction_usage = self
+            .aggressive_compact(
+                messages,
+                model,
+                tx,
+                db,
+                conversation_id,
+                turn_id,
+                actual_tokens_remaining,
+            )
             .await?;
+        super::usage_accounting::accumulate_usage(total_usage, &compaction_usage);
+        if self
+            .config
+            .max_actual_tokens_per_run
+            .is_some_and(|limit| total_usage.total_tokens >= limit)
+        {
+            return Err(CoreError::Agent(format!(
+                "agent actual token limit exhausted by context recovery: spent={}, limit={}",
+                total_usage.total_tokens,
+                self.config.max_actual_tokens_per_run.unwrap_or_default()
+            )));
+        }
 
         let pipeline = ContextPipeline::new(
             model,
@@ -309,7 +450,8 @@ impl AgentExecutor {
         db: &Database,
         conversation_id: Option<&str>,
         turn_id: Option<&str>,
-    ) -> Result<(), CoreError> {
+        actual_tokens_remaining: Option<u32>,
+    ) -> Result<Usage, CoreError> {
         let non_system_start = system_prefix_end(messages);
         let pipeline = ContextPipeline::new(
             model,
@@ -318,7 +460,7 @@ impl AgentExecutor {
         );
         let target = (pipeline.context_budget() as f32 * COMPACTION_TARGET_USAGE) as u32;
         let Some(evict_end) = compaction_boundary(messages, model, target, MIN_RECENT_TURNS) else {
-            return Ok(());
+            return Ok(Usage::default());
         };
 
         let evicted = &messages[non_system_start..evict_end];
@@ -335,14 +477,35 @@ impl AgentExecutor {
         } else {
             self.config.provider_type
         };
-        let result = summarizer::summarize_evicted_messages_with_usage(
-            summ_provider,
-            summ_model,
-            summ_provider_type,
-            evicted,
-            &extractive_fallback,
-        )
-        .await;
+        let summarization = self
+            .summarize_for_compaction(
+                summ_provider,
+                summ_model,
+                summ_provider_type,
+                evicted,
+                &extractive_fallback,
+                actual_tokens_remaining,
+            )
+            .await;
+        let (result, per_attempt_reservation) = match summarization {
+            Ok(result) => result,
+            Err(failure) => {
+                let reservation = summarizer::summarization_attempt_token_reservation(evicted);
+                self.record_unreported_summarization_failure(
+                    SummarizationUsageContext {
+                        db,
+                        conversation_id,
+                        turn_id,
+                        model: summ_model,
+                        provider_type: summ_provider_type,
+                    },
+                    evicted,
+                    &failure,
+                    reservation,
+                );
+                return Err(failure.into());
+            }
+        };
         if let Some(usage) = result.usage.as_ref() {
             self.record_summarization_usage(
                 SummarizationUsageContext {
@@ -354,8 +517,11 @@ impl AgentExecutor {
                 },
                 evicted,
                 usage,
+                "provider",
+                "success",
             );
         }
+        let ledger_usage = summarization_ledger_usage(&result, per_attempt_reservation);
 
         let evicted_count = evict_end - non_system_start;
 
@@ -372,7 +538,7 @@ impl AgentExecutor {
 
         let _ = tx.send(AgentEvent::AutoCompacted { evicted_count }).await;
 
-        Ok(())
+        Ok(ledger_usage)
     }
 }
 
@@ -438,5 +604,40 @@ mod tests {
             Message::text(Role::User, "continue"),
         ];
         assert_eq!(system_prefix_end(&messages), 1);
+    }
+
+    #[test]
+    fn summarization_admission_reserves_every_possible_physical_attempt() {
+        assert!(summarization_fits_run_budget(1_000, None));
+        assert!(summarization_fits_run_budget(1_000, Some(2_000)));
+        assert!(!summarization_fits_run_budget(1_001, Some(2_000)));
+    }
+
+    #[test]
+    fn summarization_ledger_counts_unreported_failed_attempts() {
+        let result = summarizer::SummarizationResult {
+            summary: "checkpoint".to_string(),
+            usage: Some(Usage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                total_tokens: 120,
+                ..Usage::default()
+            }),
+            attempts: 2,
+            control: summarizer::ControlledSummarization::Abstractive,
+        };
+
+        let usage = summarization_ledger_usage(&result, 1_000);
+        assert_eq!(usage.prompt_tokens, 1_100);
+        assert_eq!(usage.completion_tokens, 20);
+        assert_eq!(usage.total_tokens, 1_120);
+    }
+
+    #[test]
+    fn cancelled_summarization_attempt_gets_a_conservative_usage_record() {
+        let usage = unreported_summarization_usage(1, 1_234);
+        assert_eq!(usage.prompt_tokens, 1_234);
+        assert_eq!(usage.completion_tokens, 0);
+        assert_eq!(usage.total_tokens, 1_234);
     }
 }

@@ -3,6 +3,13 @@ use std::time::Duration;
 use super::{ActivityEventKind, ActivityRuntime, ActivitySpec, ActivityState, ActivitySurface};
 use crate::db::Database;
 
+#[test]
+fn action_receipts_can_distinguish_persistent_from_ephemeral_runtimes() {
+    assert!(!ActivityRuntime::new().is_persistent());
+    let persistent = ActivityRuntime::with_database(Database::open_memory().unwrap()).unwrap();
+    assert!(persistent.is_persistent());
+}
+
 #[tokio::test]
 async fn activity_journal_uses_strictly_increasing_incremental_cursors() {
     let runtime = ActivityRuntime::new();

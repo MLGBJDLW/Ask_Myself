@@ -42,10 +42,12 @@ pub(super) fn build_tool_run_item(
     let artifacts =
         artifacts_for_tool_run(artifacts, &invocation, &status, &parsed_args, arguments);
     let displayed_arguments = arguments.map(|arguments| {
+        let audit_safe =
+            crate::tool_argument_projection::audit_safe_arguments_string(tool_name, arguments);
         if matches!(status, ToolRunStatus::Preparing) {
-            truncate_utf8_prefix(arguments, MAX_PREPARING_ARGUMENT_PREVIEW_BYTES)
+            truncate_utf8_prefix(&audit_safe, MAX_PREPARING_ARGUMENT_PREVIEW_BYTES)
         } else {
-            arguments.to_string()
+            audit_safe
         }
     });
 
@@ -816,5 +818,33 @@ mod tests {
         );
 
         assert_eq!(run.artifacts.unwrap()["kind"], "searchResults");
+    }
+
+    #[test]
+    fn computer_control_tool_run_never_exposes_typed_text() {
+        let tools = default_tool_registry();
+        let sentinel = "tool-run-secret-f231";
+        let arguments = serde_json::json!({
+            "action": "type_text",
+            "observation_id": "observation",
+            "window_id": 42,
+            "text": sentinel
+        })
+        .to_string();
+        let run = build_tool_run_item(
+            &tools,
+            "call-sensitive",
+            "computer_control",
+            ToolRunStatus::Running,
+            Some(&arguments),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let displayed = run.arguments.expect("audit-safe arguments");
+        assert!(!displayed.contains(sentinel));
+        assert!(displayed.contains("charCount"));
     }
 }

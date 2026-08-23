@@ -8,6 +8,11 @@
 
 use crate::llm::FinishReason;
 
+/// A bounded continuation budget prevents an always-on reasoner from ending
+/// every physical sample at `length` forever when the surrounding agent turn
+/// intentionally has no iteration cap.
+const MAX_OUTPUT_LIMIT_CONTINUATIONS: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OutputRecoveryCause {
     OutputLimit,
@@ -51,16 +56,16 @@ pub(super) enum OutputRecoveryDecision {
 
 /// Tracks one recovery episode across as many tool and model steps as it needs.
 ///
-/// Output-limit continuations are progress-based and are not assigned an
-/// arbitrary retry count. Empty successful terminals are different: they are a
-/// provider protocol anomaly, so one corrective continuation is allowed before
-/// the anomaly is surfaced. The surrounding turn still owns cancellation,
-/// configured iteration limits, context compaction, and tool-loop protection.
+/// Output-limit continuations are bounded independently from the surrounding
+/// turn's iteration limit. This matters for active goals, whose model/tool loop
+/// can intentionally be open-ended. Empty successful terminals get one
+/// corrective continuation before the anomaly is surfaced.
 #[derive(Debug, Default)]
 pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
     empty_terminal_retried: bool,
+    output_limit_continuations: u8,
 }
 
 impl OutputRecovery {
@@ -80,6 +85,10 @@ impl OutputRecovery {
 
         let has_visible_content = !content.trim().is_empty();
         if matches!(finish_reason, Some(FinishReason::Length)) {
+            if self.output_limit_continuations >= MAX_OUTPUT_LIMIT_CONTINUATIONS {
+                return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
+            }
+            self.output_limit_continuations += 1;
             self.active = true;
             if has_visible_content {
                 self.visible_prefix.push_str(content);
@@ -102,6 +111,7 @@ impl OutputRecovery {
             final_content.push_str(content);
             self.active = false;
             self.empty_terminal_retried = false;
+            self.output_limit_continuations = 0;
             return OutputRecoveryDecision::Final(final_content);
         }
 
@@ -160,9 +170,9 @@ mod tests {
     }
 
     #[test]
-    fn repeated_output_limits_join_visible_continuations_without_a_retry_cap() {
+    fn output_limit_continuations_are_joined_but_bounded() {
         let mut recovery = OutputRecovery::default();
-        for fragment in ["one ", "two ", "three "] {
+        for fragment in ["one ", "two "] {
             assert!(matches!(
                 recovery.observe(Some(&FinishReason::Length), fragment, false),
                 OutputRecoveryDecision::Continue {
@@ -172,8 +182,18 @@ mod tests {
             ));
         }
         assert_eq!(
-            recovery.observe(Some(&FinishReason::Stop), "four", false),
-            OutputRecoveryDecision::Final("one two three four".to_string())
+            recovery.observe(Some(&FinishReason::Length), "three ", false),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit)
+        );
+
+        let mut completed = OutputRecovery::default();
+        assert!(matches!(
+            completed.observe(Some(&FinishReason::Length), "one ", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        assert_eq!(
+            completed.observe(Some(&FinishReason::Stop), "two", false),
+            OutputRecoveryDecision::Final("one two".to_string())
         );
     }
 

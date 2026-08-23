@@ -143,7 +143,6 @@ pub use watcher::*;
 pub use workflows::*;
 
 const DEFAULT_MCP_CALL_TIMEOUT_SECS: u64 = 300;
-const UNLIMITED_EXECUTOR_TIMEOUT_SECS: u32 = 0;
 
 /// Application state holding the database connection.
 pub struct AppState {

@@ -21,7 +21,7 @@ use nexa_core::agent::{
     llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
     AgentSteeringMessage, CancellationToken,
 };
-use nexa_core::conversation::memory::estimate_tokens_for_model;
+use nexa_core::conversation::memory::{estimate_tokens_for_model, model_context_window};
 use nexa_core::conversation::{
     conversation_message_llm_context_content, conversation_message_provider_turn,
 };
@@ -33,9 +33,9 @@ use nexa_core::llm::message_validation::{
 };
 use nexa_core::llm::{
     create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart, Message,
-    ProviderConfig, Role, Usage,
+    ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
-use nexa_core::provider_catalog::model_limits_from_catalog;
+use nexa_core::provider_catalog::{model_capabilities_from_catalog, model_limits_from_catalog};
 use nexa_core::search;
 use nexa_core::skills::Skill;
 use nexa_core::task_run::AgentTaskRuntime;
@@ -59,6 +59,12 @@ const JUDGE_SUBAGENT_RESULTS_JSON: &str =
 const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
 const DEFAULT_SUBAGENT_MAX_TOKENS: u32 = 8_192;
 const CONSERVATIVE_SUBAGENT_MAX_TOKENS: u32 = 65_536;
+const SUBAGENT_INTERACTIVE_SURFACE_TOOLS: &[&str] = &[
+    "browser_session",
+    "computer_observe",
+    "computer_control",
+    "desktop_automation",
+];
 
 struct DelegationToolDef {
     description: String,
@@ -444,10 +450,9 @@ const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
     SubagentRoleProfile {
         id: "desktop_operator",
         label: "Desktop Operator",
-        instructions: "Plan and perform only narrow user-visible browser or desktop actions. Prefer one small approved action at a time, report what was launched, and never infer private screen state you cannot observe.",
+        instructions: "Plan a narrow user-visible browser or desktop action for the supervisor to perform. Delegated workers do not receive interactive surface control or approval authority; inspect only supplied evidence, state the exact proposed action, and never infer private screen state you cannot observe.",
         default_sections: ROLE_DESKTOP_OPERATOR_SECTIONS,
         recommended_tools: &[
-            "desktop_automation",
             "fetch_url",
             "read_file",
             "list_dir",
@@ -725,8 +730,9 @@ impl DelegationRuntime {
         db: &Database,
         model: &str,
         context_limit: u32,
+        handoff_token_budget: u32,
     ) -> Arc<DelegationContextSnapshot> {
-        let key = format!("{model}:{context_limit}");
+        let key = format!("{model}:{context_limit}:{handoff_token_budget}");
         if let Some(snapshot) = self
             .context_snapshots
             .lock()
@@ -740,6 +746,7 @@ impl DelegationRuntime {
             self.parent_conversation_id.as_deref(),
             model,
             context_limit,
+            handoff_token_budget,
         ));
         if let Ok(mut snapshots) = self.context_snapshots.lock() {
             return snapshots
@@ -977,6 +984,7 @@ struct DelegationContextSnapshot {
     messages: Arc<[Message]>,
     token_estimate: u32,
     context_limit: u32,
+    handoff_token_budget: u32,
     dropped_invalid_messages: usize,
 }
 
@@ -1312,8 +1320,11 @@ fn load_delegation_context_snapshot(
     conversation_id: Option<&str>,
     model: &str,
     context_limit: u32,
+    handoff_token_budget: u32,
 ) -> DelegationContextSnapshot {
-    let token_budget = context_limit.saturating_mul(60) / 100;
+    // `context_limit` is model capacity; handoff is a separate parent-history
+    // allocation. Never report the smaller allocation as the model window.
+    let token_budget = handoff_token_budget.min(context_limit);
     let mut selected = Vec::new();
     let mut token_estimate = 0u32;
     let mut dropped_invalid_messages = 0usize;
@@ -1328,6 +1339,10 @@ fn load_delegation_context_snapshot(
                 }
                 let content = conversation_message_llm_context_content(&message).to_string();
                 let message_tokens = estimate_tokens_for_model(model, &content);
+                if message_tokens > token_budget {
+                    dropped_invalid_messages = dropped_invalid_messages.saturating_add(1);
+                    continue;
+                }
                 if !selected.is_empty()
                     && token_estimate.saturating_add(message_tokens) > token_budget
                 {
@@ -1366,6 +1381,7 @@ fn load_delegation_context_snapshot(
     let mut hasher = blake3::Hasher::new();
     hasher.update(model.as_bytes());
     hasher.update(&context_limit.to_le_bytes());
+    hasher.update(&handoff_token_budget.to_le_bytes());
     for (id, message) in &selected {
         hasher.update(id.as_bytes());
         hasher.update(message.text_content().as_bytes());
@@ -1380,6 +1396,7 @@ fn load_delegation_context_snapshot(
         messages: Arc::from(messages),
         token_estimate,
         context_limit,
+        handoff_token_budget: token_budget,
         dropped_invalid_messages,
     }
 }
@@ -1772,6 +1789,22 @@ fn validate_subagent_preflight(
     })?;
 
     if let Some(requested) = args.allowed_tools.as_deref() {
+        let interactive: Vec<&str> = requested
+            .iter()
+            .map(String::as_str)
+            .filter(|name| is_interactive_surface_tool(name))
+            .collect();
+        if !interactive.is_empty() {
+            return Err(subagent_preflight_failure(
+                SubagentPreflightStage::Policy,
+                "interactive_tool_requires_parent_proxy",
+                false,
+                format!(
+                    "Delegated workers cannot directly control interactive browser or desktop surfaces: {}. Ask the parent agent to perform the approved action.",
+                    interactive.join(", ")
+                ),
+            ));
+        }
         let inherited: BTreeSet<&str> = baseline_allowed_tools.iter().map(String::as_str).collect();
         let denied: Vec<&str> = requested
             .iter()
@@ -1857,14 +1890,6 @@ fn finalize_subagent_preflight(
             "call_budget_exhausted",
             false,
             "No delegated call budget remains for this turn.",
-        ));
-    }
-    if budget.remaining_tokens == 0 {
-        return Err(subagent_preflight_failure(
-            SubagentPreflightStage::Budget,
-            "token_budget_exhausted",
-            false,
-            "No delegated token budget remains for this turn.",
         ));
     }
     report.reserved_tokens = reserved_tokens;
@@ -2209,6 +2234,7 @@ async fn run_subagent_once(
         &runtime.provider_config,
         args.model_policy.as_ref(),
     );
+    apply_nexus_worker_reasoning_policy(&mut config, role_profile);
     let effective_model = config.model.clone();
     let effective_model_id = effective_model
         .as_deref()
@@ -2251,20 +2277,61 @@ async fn run_subagent_once(
         .as_ref()
         .and_then(|limits| limits.context_tokens)
         .and_then(|limit| u32::try_from(limit).ok());
+    let resolved_context_limit = catalog_context_limit.or_else(|| {
+        effective_model
+            .as_deref()
+            .map(model_context_window)
+            .filter(|limit| *limit > 0)
+    });
     apply_delegated_model_limits(
         &mut config,
         delegation_limits.input_context_policy,
         delegation_limits.max_output_tokens_per_worker,
-        catalog_context_limit,
+        resolved_context_limit,
         catalog_limits
             .as_ref()
             .and_then(|limits| limits.max_output_tokens),
         runtime.base_config.delegation_limits_v2.is_some(),
     );
+    if let Some(worker_limit) = delegation_limits
+        .max_actual_tokens_per_worker
+        .and_then(|limit| u32::try_from(limit).ok())
+    {
+        config.max_tokens = Some(config.max_tokens.unwrap_or(worker_limit).min(worker_limit));
+        config.max_actual_tokens_per_run = Some(worker_limit);
+    }
+    let model_context_limit = config.context_window.unwrap_or(128_000);
+    let handoff_budget_snapshot = runtime.budget.snapshot().await;
+    let fair_share_divisor = handoff_budget_snapshot
+        .max_parallel
+        .min(handoff_budget_snapshot.remaining_calls)
+        .max(1);
+    let fair_share = handoff_budget_snapshot.remaining_tokens / fair_share_divisor;
+    let control_lane_role = matches!(
+        role_profile.map(|profile| profile.id),
+        Some("verifier" | "critic")
+    );
+    let automatic_handoff_budget = if control_lane_role {
+        delegation_limits
+            .max_actual_tokens_per_worker
+            .and_then(|limit| u32::try_from(limit).ok())
+            .unwrap_or(fair_share)
+            .saturating_mul(3)
+            / 5
+    } else {
+        fair_share.saturating_mul(3) / 5
+    };
+    let handoff_token_budget = delegation_limits
+        .handoff_context_tokens_per_worker
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(automatic_handoff_budget)
+        .min(model_context_limit.saturating_mul(3) / 5)
+        .max(1.min(model_context_limit));
     let context_snapshot = runtime.context_snapshot(
         &db,
         effective_model.as_deref().unwrap_or("default"),
-        config.context_window.unwrap_or(128_000),
+        model_context_limit,
+        handoff_token_budget,
     );
     let context_build_ms = instant_elapsed_ms(context_build_started);
     let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
@@ -2304,6 +2371,10 @@ async fn run_subagent_once(
     if !runtime.can_delegate_further() {
         effective_allowed_tools.retain(|name| !is_subagent_tool_name(name));
     }
+    // Interactive browser/computer control is parent-scoped until delegated
+    // workers have a parent approval proxy and a surface capability lease.
+    // `conversation_id=None` must never become a shared tenant key.
+    effective_allowed_tools.retain(|name| !is_interactive_surface_tool(name));
     let effective_source_scope =
         resolve_source_scope(&inherited_source_scope, args.source_ids.as_deref());
     let mut preflight = validate_subagent_preflight(
@@ -2356,8 +2427,20 @@ async fn run_subagent_once(
     );
     let request_build_ms = instant_elapsed_ms(request_build_started);
     let initial_output_credit = initial_output_credit(role_profile, &args, &config);
-    let reserved_tokens =
-        estimate_reserved_tokens(&config, &request_text, &tools, initial_output_credit);
+    let inherited_skill_tokens = enabled_skills.iter().fold(0_u32, |total, skill| {
+        total.saturating_add(estimate_tokens_for_model(
+            &effective_model_id,
+            &skill.content,
+        ))
+    });
+    let reserved_tokens = estimate_reserved_tokens(
+        &config,
+        &request_text,
+        &tools,
+        context_snapshot.token_estimate,
+        inherited_skill_tokens,
+        initial_output_credit,
+    );
     let budget_snapshot = runtime.budget.snapshot().await;
     finalize_subagent_preflight(
         &mut preflight,
@@ -2380,6 +2463,7 @@ async fn run_subagent_once(
     subtask_input["delegationLimitsV2"] =
         serde_json::to_value(&delegation_limits).unwrap_or_else(|_| serde_json::json!({}));
     subtask_input["initialOutputCredit"] = serde_json::json!(initial_output_credit);
+    subtask_input["inheritedSkillTokens"] = serde_json::json!(inherited_skill_tokens);
     subtask_input["skillIndexGeneration"] = serde_json::json!(&skill_index.generation);
     subtask_input["preflight"] =
         serde_json::to_value(&preflight).unwrap_or_else(|_| serde_json::json!({}));
@@ -2388,7 +2472,17 @@ async fn run_subagent_once(
         "selectedMessageIds": &context_snapshot.selected_message_ids,
         "tokenEstimate": context_snapshot.token_estimate,
         "contextLimit": context_snapshot.context_limit,
+        "contextLimitSource": if catalog_context_limit.is_some() { "catalog" } else { "model_fallback" },
+        "handoffTokenBudget": context_snapshot.handoff_token_budget,
         "droppedInvalidMessages": context_snapshot.dropped_invalid_messages,
+    });
+    subtask_input["effectiveModelBudgets"] = serde_json::json!({
+        "contextCapacity": config.context_window,
+        "parentHistoryHandoff": context_snapshot.handoff_token_budget,
+        "maxOutputPerStep": config.max_tokens,
+        "maxActualTokensPerWorker": config.max_actual_tokens_per_run,
+        "contextAuthority": if catalog_context_limit.is_some() { "catalog" } else { "model_fallback" },
+        "outputAuthority": if catalog_limits.as_ref().and_then(|limits| limits.max_output_tokens).is_some() { "catalog_ceiling" } else { "safe_8k_fallback" },
     });
     let parent_task_run_id = runtime.parent_task_run_id.clone();
     let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
@@ -2599,6 +2693,9 @@ async fn run_subagent_once(
     let (provider_connected_tx, mut provider_connected_rx) = mpsc::channel::<()>(1);
     let (first_response_tx, mut first_response_rx) = mpsc::channel::<()>(1);
     let capture_cancel_token = worker_cancel_token.clone();
+    let worker_actual_token_limit = delegation_limits
+        .max_actual_tokens_per_worker
+        .and_then(|limit| u32::try_from(limit).ok());
     let telemetry_db = db.clone();
     let telemetry_identity = parent_task_run_id.clone().zip(subtask_run_id.clone());
     let telemetry_call_label = call_label.clone();
@@ -2612,6 +2709,7 @@ async fn run_subagent_once(
         let mut pending_thinking = String::new();
         let mut pending_output = String::new();
         let mut last_delta_flush = Instant::now();
+        let mut worker_token_limit_exceeded = false;
 
         loop {
             let event =
@@ -2842,10 +2940,31 @@ async fn run_subagent_once(
                             "phase": "steering",
                             "content": content,
                         }));
+                        emit_subagent_lifecycle_event(
+                            lifecycle_capture.as_ref(),
+                            SubagentLifecycleEventKind::InputApplied,
+                            serde_json::json!({
+                                "bytes": content.len(),
+                                "state": "applied_at_model_boundary",
+                            }),
+                        )
+                        .await;
                     }
                 }
                 AgentEvent::UsageUpdate { usage_total, .. } => {
                     capture.usage_total = usage_total;
+                    if !worker_token_limit_exceeded
+                        && worker_actual_token_limit
+                            .is_some_and(|limit| capture.usage_total.total_tokens > limit)
+                    {
+                        worker_token_limit_exceeded = true;
+                        capture_cancel_token.cancel();
+                        let _ = fatal_error_tx.send(format!(
+                            "worker actual token limit exceeded: {} > {}",
+                            capture.usage_total.total_tokens,
+                            worker_actual_token_limit.unwrap_or_default(),
+                        ));
+                    }
                 }
                 AgentEvent::Done {
                     usage_total,
@@ -2859,6 +2978,18 @@ async fn run_subagent_once(
                     )
                     .await;
                     capture.usage_total = usage_total;
+                    if !worker_token_limit_exceeded
+                        && worker_actual_token_limit
+                            .is_some_and(|limit| capture.usage_total.total_tokens > limit)
+                    {
+                        worker_token_limit_exceeded = true;
+                        capture_cancel_token.cancel();
+                        let _ = fatal_error_tx.send(format!(
+                            "worker actual token limit exceeded: {} > {}",
+                            capture.usage_total.total_tokens,
+                            worker_actual_token_limit.unwrap_or_default(),
+                        ));
+                    }
                     capture.finish_reason = finish_reason;
                 }
                 AgentEvent::Error { message } => {
@@ -3131,7 +3262,8 @@ async fn run_subagent_once(
         },
     };
 
-    let capture = match tokio::time::timeout(Duration::from_millis(500), &mut event_task).await {
+    let mut capture = match tokio::time::timeout(Duration::from_millis(500), &mut event_task).await
+    {
         Ok(Ok(capture)) => capture,
         Ok(Err(error)) => {
             warn!("Subagent event collector failed for {call_label}: {error}");
@@ -3144,6 +3276,13 @@ async fn run_subagent_once(
             EventCapture::default()
         }
     };
+    if final_result.is_err() && capture.usage_total.total_tokens == 0 {
+        // Providers commonly omit usage when a long reasoning sample is
+        // cancelled. Charge a conservative prompt/reservation floor so
+        // repeated timeouts cannot bypass the aggregate soft budget.
+        capture.usage_total.prompt_tokens = reserved_tokens.saturating_sub(initial_output_credit);
+        capture.usage_total.total_tokens = reserved_tokens;
+    }
     runtime
         .budget
         .finish_call(reserved_tokens, &capture.usage_total, estimated_cost_micros)
@@ -3692,6 +3831,10 @@ fn is_subagent_tool_name(name: &str) -> bool {
     )
 }
 
+fn is_interactive_surface_tool(name: &str) -> bool {
+    SUBAGENT_INTERACTIVE_SURFACE_TOOLS.contains(&name)
+}
+
 fn compatible_auxiliary_model(
     config: &AgentConfig,
     provider_config: &ProviderConfig,
@@ -3726,6 +3869,129 @@ fn apply_delegated_model_policy(
     } else {
         true
     }
+}
+
+fn apply_nexus_worker_reasoning_policy(
+    config: &mut AgentConfig,
+    role_profile: Option<&SubagentRoleProfile>,
+) {
+    if !config.power_mode.is_nexus() {
+        return;
+    }
+    let (Some(provider), Some(model)) = (config.provider_type, config.model.as_deref()) else {
+        return;
+    };
+    let desired = if matches!(
+        role_profile.map(|profile| profile.id),
+        Some("verifier" | "critic")
+    ) {
+        ReasoningEffort::Medium
+    } else {
+        ReasoningEffort::Low
+    };
+    let desired_budget: u32 = if matches!(
+        role_profile.map(|profile| profile.id),
+        Some("verifier" | "critic")
+    ) {
+        16_384
+    } else {
+        4_096
+    };
+    let Some(reasoning) = model_capabilities_from_catalog(provider, model)
+        .and_then(|capabilities| capabilities.reasoning)
+    else {
+        // Unknown/local/custom endpoints must not inherit an unbounded parent
+        // reasoning contract. Preserve an explicit off setting; otherwise
+        // clamp only the control family already in use. Provider adapters still
+        // decide whether that family is valid on the wire.
+        if config.reasoning_enabled == Some(false)
+            || config.reasoning_effort == Some(ReasoningEffort::None)
+        {
+            config.reasoning_enabled = Some(false);
+            config.reasoning_effort = Some(ReasoningEffort::None);
+            config.thinking_budget = None;
+        } else if let Some(current_budget) = config.thinking_budget {
+            let bounded = current_budget.min(desired_budget);
+            config.reasoning_enabled = Some(bounded > 0);
+            config.reasoning_effort = None;
+            config.thinking_budget = Some(bounded);
+        } else if config.reasoning_effort.is_some() || config.reasoning_enabled == Some(true) {
+            config.reasoning_enabled = Some(true);
+            config.reasoning_effort = Some(desired);
+            config.thinking_budget = None;
+        }
+        return;
+    };
+    let effort_rank = |effort: &ReasoningEffort| match effort {
+        ReasoningEffort::None => 0,
+        ReasoningEffort::Minimal => 1,
+        ReasoningEffort::Low => 2,
+        ReasoningEffort::Medium => 3,
+        ReasoningEffort::High => 4,
+        ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Max => 6,
+    };
+    let supported = reasoning
+        .effort_levels
+        .iter()
+        .filter_map(|level| ReasoningEffort::from_wire(level))
+        .filter(|effort| *effort != ReasoningEffort::None)
+        .collect::<Vec<_>>();
+    let selected = supported
+        .iter()
+        .filter(|effort| effort_rank(effort) >= effort_rank(&desired))
+        .min_by_key(|effort| effort_rank(effort))
+        .cloned()
+        .or_else(|| {
+            supported
+                .iter()
+                .max_by_key(|effort| effort_rank(effort))
+                .cloned()
+        });
+    if let Some(selected) = selected {
+        config.reasoning_enabled = Some(true);
+        config.reasoning_effort = Some(selected);
+        config.thinking_budget = None;
+    } else if let Some(budget) = reasoning.thinking_budget.filter(|budget| budget.enabled) {
+        let bounded = desired_budget
+            .max(budget.min_tokens.unwrap_or_default())
+            .min(budget.max_tokens.unwrap_or(desired_budget));
+        config.reasoning_enabled = Some(bounded > 0 || reasoning.mode.as_deref() == Some("always"));
+        config.reasoning_effort = None;
+        config.thinking_budget = Some(bounded);
+    }
+}
+
+fn apply_judge_recovery_controls(request: &mut CompletionRequest) {
+    let Some(provider) = request.provider_type else {
+        request.reasoning_enabled = Some(false);
+        request.reasoning_effort = None;
+        request.thinking_budget = None;
+        return;
+    };
+    let reasoning = model_capabilities_from_catalog(provider, &request.model)
+        .and_then(|capabilities| capabilities.reasoning);
+    if reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.mode.as_deref())
+        != Some("always")
+    {
+        request.reasoning_enabled = Some(false);
+        request.reasoning_effort = (provider == ProviderType::OpenRouter
+            && reasoning.as_ref().is_some_and(|reasoning| {
+                reasoning.effort_levels.iter().any(|level| level == "none")
+            }))
+        .then_some(ReasoningEffort::None);
+        request.thinking_budget = None;
+        return;
+    }
+    request.reasoning_enabled = Some(true);
+    request.reasoning_effort = reasoning
+        .into_iter()
+        .flat_map(|reasoning| reasoning.effort_levels)
+        .filter_map(|level| ReasoningEffort::from_wire(&level))
+        .find(|effort| *effort != ReasoningEffort::None);
+    request.thinking_budget = None;
 }
 
 fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
@@ -3794,12 +4060,16 @@ fn estimate_reserved_tokens(
     config: &AgentConfig,
     request_text: &str,
     tools: &ToolRegistry,
+    inherited_context_tokens: u32,
+    inherited_skill_tokens: u32,
     initial_output_credit: u32,
 ) -> u32 {
     let model = config.model.as_deref().unwrap_or("gpt-4o-mini");
     estimate_tokens_for_model(model, &config.system_prompt)
         .saturating_add(estimate_tokens_for_model(model, request_text))
         .saturating_add(estimate_tool_tokens_for_model(model, &tools.definitions()))
+        .saturating_add(inherited_context_tokens)
+        .saturating_add(inherited_skill_tokens)
         .saturating_add(initial_output_credit)
 }
 
@@ -3840,14 +4110,24 @@ fn apply_delegated_model_limits(
         DelegationLimitPolicy::Auto if independent_v2_limits => {
             config.max_tokens = Some(
                 catalog_output_limit
-                    .map(|limit| limit.min(u64::from(u32::MAX)) as u32)
-                    .unwrap_or(CONSERVATIVE_SUBAGENT_MAX_TOKENS),
+                    .map(|limit| {
+                        limit
+                            .min(u64::from(CONSERVATIVE_SUBAGENT_MAX_TOKENS))
+                            .min(u64::from(u32::MAX)) as u32
+                    })
+                    .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS),
             );
         }
         DelegationLimitPolicy::Auto => {}
     }
 
-    config.max_tokens = Some(resolve_delegated_max_output(config, catalog_output_limit));
+    let mut resolved_output = resolve_delegated_max_output(config, catalog_output_limit);
+    if let Some(context_window) = config.context_window {
+        let prompt_reserve = (context_window / 10).max(1_024).min(context_window);
+        resolved_output =
+            resolved_output.min(context_window.saturating_sub(prompt_reserve).max(256));
+    }
+    config.max_tokens = Some(resolved_output);
 }
 
 fn initial_output_credit(
@@ -3881,6 +4161,7 @@ fn build_subagent_executor_tools(
     let filtered = runtime
         .get_tool_registry()?
         .filtered(allowed_tool_names)
+        .without_names(SUBAGENT_INTERACTIVE_SURFACE_TOOLS)
         .without_names(&[
             "spawn_subagent",
             "spawn_subagent_batch",
@@ -4403,8 +4684,8 @@ impl Tool for ObserveSubagentBatchTool {
                 "waitMs": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 120000,
-                    "description": "Wait up to this duration for another supplemental result"
+                    "maximum": 2500,
+                    "description": "One steering-friendly wait quantum for another supplemental result"
                 },
                 "cancelRemaining": {
                     "type": "boolean",
@@ -4441,7 +4722,7 @@ impl Tool for ObserveSubagentBatchTool {
             self.runtime.cancel_batch(batch_id);
         }
 
-        let wait_ms = args.wait_ms.unwrap_or(0).min(120_000);
+        let wait_ms = args.wait_ms.unwrap_or(0).min(2_500);
         let baseline_count = self
             .runtime
             .batch_snapshot(batch_id)
@@ -4569,9 +4850,9 @@ impl Tool for SubagentLifecycleTool {
                 properties["waitMs"] = serde_json::json!({
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 120000,
-                    "default": 120000,
-                    "description": "Maximum time to wait for terminal state"
+                    "maximum": 2500,
+                    "default": 2500,
+                    "description": "One steering-friendly wait quantum for terminal state"
                 });
             }
             vec!["agentId"]
@@ -4638,7 +4919,7 @@ impl Tool for SubagentLifecycleTool {
                     .lifecycle
                     .wait(
                         agent_id,
-                        Duration::from_millis(args.wait_ms.unwrap_or(120_000).min(120_000)),
+                        Duration::from_millis(args.wait_ms.unwrap_or(2_500).min(2_500)),
                     )
                     .await?;
                 let result_text = wait_result
@@ -4685,15 +4966,20 @@ impl Tool for SubagentLifecycleTool {
                     .send_input(agent_id, input.to_string())?;
                 bridge
                     .emit(
-                        SubagentLifecycleEventKind::InputAccepted,
-                        serde_json::json!({ "bytes": input.len() }),
+                        SubagentLifecycleEventKind::InputQueued,
+                        serde_json::json!({
+                            "bytes": input.len(),
+                            "state": "queued",
+                            "acknowledgement": "channel_enqueue_only",
+                        }),
                     )
                     .await?;
                 (
-                    format!("Input accepted for subagent {agent_id}."),
+                    format!("Input queued for subagent {agent_id}; wait for an inputApplied lifecycle event to confirm it reached a model boundary."),
                     serde_json::json!({
-                        "kind": "subagent_input_accepted",
+                        "kind": "subagent_input_queued",
                         "agentId": agent_id,
+                        "state": "queued",
                     }),
                 )
             }
@@ -4788,6 +5074,9 @@ impl Tool for JudgeSubagentResultsTool {
             compatible_auxiliary_model(&self.runtime.base_config, &self.runtime.provider_config)
                 .or_else(|| self.runtime.base_config.model.clone())
                 .unwrap_or_else(|| "gpt-4o-mini".to_string());
+        let mut judge_config = self.runtime.base_config.clone();
+        judge_config.model = Some(model.clone());
+        apply_nexus_worker_reasoning_policy(&mut judge_config, role_profile_by_id("verifier"));
         let system_prompt = build_judge_system_prompt(&self.runtime.base_config.system_prompt);
         let user_prompt = build_judge_request(&args);
         let reserved_tokens = estimate_tokens_for_model(&model, &system_prompt)
@@ -4925,7 +5214,7 @@ impl Tool for JudgeSubagentResultsTool {
                 return Err(err);
             }
         };
-        let request = CompletionRequest {
+        let mut request = CompletionRequest {
             model: model.clone(),
             messages: vec![
                 nexa_core::llm::Message::text(nexa_core::llm::Role::System, system_prompt),
@@ -4943,18 +5232,10 @@ impl Tool for JudgeSubagentResultsTool {
             }),
             tools: None,
             stop: None,
-            thinking_budget: if self.runtime.base_config.power_mode.is_nexus() {
-                self.runtime.base_config.thinking_budget
-            } else {
-                None
-            },
-            reasoning_enabled: self.runtime.base_config.reasoning_enabled,
-            reasoning_effort: if self.runtime.base_config.power_mode.is_nexus() {
-                self.runtime.base_config.reasoning_effort.clone()
-            } else {
-                None
-            },
-            provider_type: self.runtime.base_config.provider_type,
+            thinking_budget: judge_config.thinking_budget,
+            reasoning_enabled: judge_config.reasoning_enabled,
+            reasoning_effort: judge_config.reasoning_effort.clone(),
+            provider_type: judge_config.provider_type,
             routing_session_id: None,
             parallel_tool_calls: true,
         };
@@ -4979,9 +5260,59 @@ impl Tool for JudgeSubagentResultsTool {
                 .unwrap_or("detached"),
             call_id
         );
+        let judge_sample_deadline_ms = judge_limits
+            .first_token_deadline_ms
+            .min(judge_timeout_ms)
+            .max(1_000);
+        let judge_deadline = tokio::time::Instant::now() + Duration::from_millis(judge_timeout_ms);
+        let judge_response = async {
+            let first = tokio::time::timeout(
+                Duration::from_millis(judge_sample_deadline_ms),
+                provider.complete(&request),
+            )
+            .await;
+            match first {
+                Ok(result) => result.map(|response| (response, 0_u32)),
+                Err(_) => {
+                    let remaining =
+                        judge_deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(CoreError::Agent(format!(
+                            "Delegated adjudication timed out after {judge_timeout_ms}ms."
+                        )));
+                    }
+                    apply_judge_recovery_controls(&mut request);
+                    request.messages.push(Message::text(
+                        Role::System,
+                        "The previous adjudication sample exceeded its progress deadline. Do not continue private analysis. Return the requested compact judgement JSON now.",
+                    ));
+                    tokio::time::timeout(
+                        remaining.min(Duration::from_millis(60_000)),
+                        provider.complete(&request),
+                    )
+                    .await
+                    .map_err(|_| {
+                        CoreError::Agent(
+                            "Delegated adjudication remained reasoning-only after one bounded recovery."
+                                .to_string(),
+                        )
+                    })?
+                    .map(|response| (response, reserved_tokens))
+                }
+            }
+        };
+        tokio::pin!(judge_response);
+        let judge_failure_usage = Usage {
+            prompt_tokens: reserved_tokens.saturating_sub(1_200),
+            total_tokens: reserved_tokens,
+            ..Usage::default()
+        };
         let response = tokio::select! {
             _ = judge_cancel_token.cancelled() => {
-                self.runtime.budget.release_reservation(reserved_tokens).await;
+                self.runtime
+                    .budget
+                    .finish_call(reserved_tokens, &judge_failure_usage, judge_cost_micros)
+                    .await;
                 let err = CoreError::Agent(
                     "Delegated adjudication was cancelled by the parent turn.".into()
                 );
@@ -5008,45 +5339,26 @@ impl Tool for JudgeSubagentResultsTool {
                 }
                 return Err(err);
             }
-            result = tokio::time::timeout(Duration::from_millis(judge_timeout_ms), provider.complete(&request)) => match result {
-                Ok(Ok(response)) => {
+            result = &mut judge_response => match result {
+                Ok((response, discarded_tokens)) => {
+                    let mut accounted_usage = response.usage.clone();
+                    accounted_usage.prompt_tokens = accounted_usage
+                        .prompt_tokens
+                        .saturating_add(discarded_tokens);
+                    accounted_usage.total_tokens = accounted_usage
+                        .total_tokens
+                        .saturating_add(discarded_tokens);
                     self.runtime
                         .budget
-                        .finish_call(reserved_tokens, &response.usage, judge_cost_micros)
+                        .finish_call(reserved_tokens, &accounted_usage, judge_cost_micros)
                         .await;
                     response
                 }
-                Ok(Err(err)) => {
-                    self.runtime.budget.release_reservation(reserved_tokens).await;
-                    let output = serde_json::json!({
-                        "kind": "subagent_judgement_error",
-                        "callLabel": call_id,
-                        "error": err.to_string(),
-                    });
-                    finish_subtask_run_best_effort(
-                        db,
-                        subtask_run_id.as_deref(),
-                        "failed",
-                        Some(&output),
-                        Some(&err.to_string()),
-                    );
-                    if let Some(parent_run_id) = parent_task_run_id.as_deref() {
-                        record_subtask_event(
-                            db,
-                            parent_run_id,
-                            &format!("Subagent judge failed: {call_id}"),
-                            "failed",
-                            Some(&output),
-                        );
-                    }
-                    return Err(err);
-                }
-                Err(_) => {
-                    judge_cancel_token.cancel();
-                    self.runtime.budget.release_reservation(reserved_tokens).await;
-                    let err = CoreError::Agent(format!(
-                        "Delegated adjudication timed out after {judge_timeout_ms}ms."
-                    ));
+                Err(err) => {
+                    self.runtime
+                        .budget
+                        .finish_call(reserved_tokens, &judge_failure_usage, judge_cost_micros)
+                        .await;
                     let output = serde_json::json!({
                         "kind": "subagent_judgement_error",
                         "callLabel": call_id,
@@ -5541,7 +5853,7 @@ mod tests {
             acceptance_criteria: None,
             evidence_chunk_ids: None,
             source_ids: None,
-            allowed_tools: Some(vec!["desktop_automation".into()]),
+            allowed_tools: Some(vec!["edit_file".into()]),
             parallel_group: None,
             deliverable_style: None,
             return_sections: None,
@@ -5552,6 +5864,7 @@ mod tests {
             messages: Arc::from(Vec::<Message>::new()),
             token_estimate: 0,
             context_limit: 128_000,
+            handoff_token_budget: 64_000,
             dropped_invalid_messages: 0,
         };
         let error = validate_subagent_preflight(
@@ -5571,7 +5884,54 @@ mod tests {
         assert_eq!(failure.stage, SubagentPreflightStage::Policy);
         assert_eq!(failure.code, "tool_scope_widening");
         assert!(!failure.retryable);
-        assert!(error.to_string().contains("desktop_automation"));
+        assert!(error.to_string().contains("edit_file"));
+    }
+
+    #[test]
+    fn test_preflight_rejects_interactive_surface_tools_even_when_parent_has_them() {
+        let args = SpawnSubagentArgs {
+            task: "Click the visible button".into(),
+            task_id: None,
+            role_id: Some("desktop_operator".into()),
+            role: None,
+            model_policy: None,
+            context: None,
+            expected_output: None,
+            max_iterations: None,
+            timeout_secs: None,
+            acceptance_criteria: None,
+            evidence_chunk_ids: None,
+            source_ids: None,
+            allowed_tools: Some(vec!["computer_control".into(), "browser_session".into()]),
+            parallel_group: None,
+            deliverable_style: None,
+            return_sections: None,
+        };
+        let snapshot = DelegationContextSnapshot {
+            id: "snapshot".into(),
+            selected_message_ids: Arc::from(Vec::<String>::new()),
+            messages: Arc::from(Vec::<Message>::new()),
+            token_estimate: 0,
+            context_limit: 128_000,
+            handoff_token_budget: 64_000,
+            dropped_invalid_messages: 0,
+        };
+        let error = validate_subagent_preflight(
+            &args,
+            "test-model",
+            "openai",
+            &["computer_control".into(), "browser_session".into()],
+            &[],
+            &[],
+            &[],
+            &snapshot,
+        )
+        .unwrap_err();
+
+        let failure = subagent_preflight_failure_from_error(&error).unwrap();
+        assert_eq!(failure.stage, SubagentPreflightStage::Policy);
+        assert_eq!(failure.code, "interactive_tool_requires_parent_proxy");
+        assert!(error.to_string().contains("parent agent"));
     }
 
     #[test]
@@ -5608,6 +5968,7 @@ mod tests {
             messages: Arc::from(vec![invalid_assistant]),
             token_estimate: 1,
             context_limit: 128_000,
+            handoff_token_budget: 64_000,
             dropped_invalid_messages: 0,
         };
 
@@ -5875,7 +6236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delegated_output_is_not_hard_clamped_to_32k() {
+    fn delegated_output_helper_honors_explicit_value_and_catalog_ceiling() {
         let config = AgentConfig {
             max_tokens: Some(50_000),
             ..Default::default()
@@ -6080,6 +6441,48 @@ mod tests {
         drop(residual);
     }
 
+    #[tokio::test]
+    async fn nexus_control_lanes_remain_admissible_after_exploration_soft_limit() {
+        let config = AgentConfig {
+            delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
+                total_actual_tokens_soft_limit: Some(256),
+                max_parallel: Some(3),
+                max_calls_per_turn: Some(4),
+                ..Default::default()
+            }),
+            subagent_verification_reserve_percent: Some(25),
+            ..Default::default()
+        };
+        let budget = SubagentBudgetController::new(&config);
+        let cancel = CancellationToken::new();
+        let explorer = budget
+            .begin_call("explorer", 100, false, &cancel)
+            .await
+            .unwrap();
+        budget
+            .finish_call(
+                100,
+                &Usage {
+                    total_tokens: 300,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        drop(explorer);
+
+        let verifier = budget
+            .begin_call("verifier", 32, true, &cancel)
+            .await
+            .expect("verification lane survives exploration token exhaustion");
+        let judge = budget
+            .begin_judge_call("judge", 32, &cancel)
+            .await
+            .expect("judge lane survives exploration token exhaustion");
+        drop(verifier);
+        drop(judge);
+    }
+
     #[test]
     fn independent_auto_limits_prefer_model_catalog_over_parent_limits() {
         let mut config = AgentConfig {
@@ -6102,7 +6505,163 @@ mod tests {
     }
 
     #[test]
-    fn independent_auto_output_uses_conservative_fallback_without_catalog_data() {
+    fn nexus_long_reasoning_workers_use_interactive_effort_instead_of_parent_max() {
+        let mut qwen = AgentConfig {
+            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+            provider_type: Some(ProviderType::Qwen),
+            model: Some("qwen3.8-max".to_string()),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..Default::default()
+        };
+        apply_nexus_worker_reasoning_policy(&mut qwen, role_profile_by_id("researcher"));
+        assert_eq!(qwen.reasoning_effort, Some(ReasoningEffort::Low));
+        assert_eq!(qwen.thinking_budget, None);
+
+        apply_nexus_worker_reasoning_policy(&mut qwen, role_profile_by_id("verifier"));
+        assert_eq!(qwen.reasoning_effort, Some(ReasoningEffort::Medium));
+
+        let mut direct_kimi = AgentConfig {
+            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+            provider_type: Some(ProviderType::Moonshot),
+            model: Some("kimi-k3".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..Default::default()
+        };
+        apply_nexus_worker_reasoning_policy(&mut direct_kimi, role_profile_by_id("verifier"));
+        assert_eq!(direct_kimi.reasoning_effort, Some(ReasoningEffort::High));
+
+        let mut routed_kimi = AgentConfig {
+            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+            provider_type: Some(ProviderType::AlibabaModelStudio),
+            model: Some("kimi/kimi-k3".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..Default::default()
+        };
+        apply_nexus_worker_reasoning_policy(&mut routed_kimi, role_profile_by_id("researcher"));
+        assert_eq!(routed_kimi.reasoning_effort, Some(ReasoningEffort::Max));
+
+        let mut qwen_request = CompletionRequest {
+            model: "qwen3.8-max".to_string(),
+            messages: Vec::new(),
+            temperature: None,
+            max_tokens: Some(4_000),
+            tools: None,
+            stop: None,
+            thinking_budget: None,
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            provider_type: Some(ProviderType::Qwen),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+        apply_judge_recovery_controls(&mut qwen_request);
+        assert_eq!(qwen_request.reasoning_enabled, Some(false));
+
+        let mut kimi_request = CompletionRequest {
+            model: "kimi-k3".to_string(),
+            provider_type: Some(ProviderType::Moonshot),
+            ..qwen_request
+        };
+        apply_judge_recovery_controls(&mut kimi_request);
+        assert_eq!(kimi_request.reasoning_enabled, Some(true));
+        assert_eq!(kimi_request.reasoning_effort, Some(ReasoningEffort::Low));
+    }
+
+    #[test]
+    fn nexus_reasoning_policy_is_catalog_driven_across_provider_families() {
+        for (provider, model) in [
+            (ProviderType::OpenAi, "gpt-5.6"),
+            (ProviderType::Anthropic, "claude-fable-5"),
+            (ProviderType::Google, "gemini-3.7-flash"),
+            (ProviderType::DeepSeek, "deepseek-v4-pro"),
+            (ProviderType::Moonshot, "kimi-k3"),
+            (ProviderType::Qwen, "qwen3.8-max"),
+            (ProviderType::AlibabaModelStudio, "qwen3.8-max"),
+            (ProviderType::Zhipu, "glm-5.3"),
+            (ProviderType::OpenRouter, "moonshotai/kimi-k3"),
+        ] {
+            let reasoning = model_capabilities_from_catalog(provider, model)
+                .and_then(|capabilities| capabilities.reasoning)
+                .unwrap_or_else(|| panic!("missing reasoning profile for {provider:?}:{model}"));
+            let mut config = AgentConfig {
+                power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+                provider_type: Some(provider),
+                model: Some(model.to_string()),
+                reasoning_enabled: Some(true),
+                reasoning_effort: Some(ReasoningEffort::Max),
+                thinking_budget: Some(262_144),
+                ..Default::default()
+            };
+            apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("researcher"));
+            if reasoning.effort_levels.is_empty() {
+                assert!(config.thinking_budget.is_some_and(|budget| budget <= 4_096));
+            } else if reasoning.effort_levels.iter().any(|level| level == "low") {
+                assert_eq!(config.reasoning_effort, Some(ReasoningEffort::Low));
+                assert_eq!(config.thinking_budget, None);
+            } else {
+                assert!(config.reasoning_effort.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn nexus_unknown_model_reasoning_is_bounded_for_every_provider_type() {
+        for provider in [
+            ProviderType::OpenAi,
+            ProviderType::OpenRouter,
+            ProviderType::Anthropic,
+            ProviderType::Google,
+            ProviderType::DeepSeek,
+            ProviderType::Ollama,
+            ProviderType::LmStudio,
+            ProviderType::AzureOpenAi,
+            ProviderType::Zhipu,
+            ProviderType::Moonshot,
+            ProviderType::Qwen,
+            ProviderType::AlibabaModelStudio,
+            ProviderType::SiliconFlow,
+            ProviderType::Doubao,
+            ProviderType::Yi,
+            ProviderType::Baichuan,
+            ProviderType::Custom,
+        ] {
+            let mut config = AgentConfig {
+                power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+                provider_type: Some(provider),
+                model: Some("private-unknown-reasoner".to_string()),
+                reasoning_enabled: Some(true),
+                reasoning_effort: Some(ReasoningEffort::Max),
+                ..Default::default()
+            };
+            apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("researcher"));
+            assert_eq!(
+                config.reasoning_effort,
+                Some(ReasoningEffort::Low),
+                "unknown model inherited parent max for {provider:?}"
+            );
+            apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("verifier"));
+            assert_eq!(config.reasoning_effort, Some(ReasoningEffort::Medium));
+        }
+
+        let mut budget_controlled = AgentConfig {
+            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
+            provider_type: Some(ProviderType::Custom),
+            model: Some("private-budget-reasoner".to_string()),
+            reasoning_enabled: Some(true),
+            thinking_budget: Some(262_144),
+            ..Default::default()
+        };
+        apply_nexus_worker_reasoning_policy(
+            &mut budget_controlled,
+            role_profile_by_id("researcher"),
+        );
+        assert_eq!(budget_controlled.thinking_budget, Some(4_096));
+        assert_eq!(budget_controlled.reasoning_effort, None);
+    }
+
+    #[test]
+    fn independent_auto_output_uses_safe_8k_fallback_without_catalog_data() {
         let mut config = AgentConfig {
             max_tokens: Some(8_192),
             ..Default::default()
@@ -6117,7 +6676,70 @@ mod tests {
             true,
         );
 
+        assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
+    }
+
+    #[test]
+    fn independent_auto_output_uses_catalog_as_ceiling_not_kimi_allocation() {
+        let mut config = AgentConfig {
+            context_window: Some(128_000),
+            max_tokens: Some(8_192),
+            ..Default::default()
+        };
+
+        apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Auto,
+            DelegationLimitPolicy::Auto,
+            Some(1_048_576),
+            Some(1_048_576),
+            true,
+        );
+
+        assert_eq!(config.context_window, Some(1_048_576));
         assert_eq!(config.max_tokens, Some(CONSERVATIVE_SUBAGENT_MAX_TOKENS));
+        assert!(config.max_tokens.unwrap() < config.context_window.unwrap());
+        assert_eq!(model_context_window("moonshotai/kimi-k3:free"), 1_048_576);
+        assert_eq!(model_context_window("qwen3.8-max-latest"), 1_000_000);
+    }
+
+    #[test]
+    fn delegated_fallback_contract_covers_local_compatible_and_unknown_providers() {
+        for (provider, model, expected_context) in [
+            (ProviderType::Ollama, "qwen3.8-max", 1_000_000),
+            (ProviderType::LmStudio, "openai/gpt-5.6", 1_050_000),
+            (
+                ProviderType::SiliconFlow,
+                "deepseek/deepseek-v4-pro",
+                1_000_000,
+            ),
+            (ProviderType::Doubao, "doubao-seed-1-6-thinking", 256_000),
+            (ProviderType::Yi, "yi-large", 128_000),
+            (ProviderType::Baichuan, "baichuan-m3", 32_000),
+            (ProviderType::Custom, "unknown-private-model", 32_000),
+        ] {
+            let mut config = AgentConfig {
+                provider_type: Some(provider),
+                model: Some(model.to_string()),
+                context_window: None,
+                max_tokens: None,
+                ..Default::default()
+            };
+            apply_delegated_model_limits(
+                &mut config,
+                DelegationLimitPolicy::Auto,
+                DelegationLimitPolicy::Auto,
+                Some(model_context_window(model)),
+                None,
+                true,
+            );
+            assert_eq!(
+                config.context_window,
+                Some(expected_context),
+                "fallback context mismatch for {provider:?}:{model}"
+            );
+            assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
+        }
     }
 
     #[test]
@@ -6178,6 +6800,49 @@ mod tests {
 
         assert!(limits.connect_deadline_ms > 0);
         assert!(limits.first_token_deadline_ms > limits.connect_deadline_ms);
+
+        let ordinary = SubagentBudgetController::new(&AgentConfig {
+            model: Some("ordinary-model".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            ..Default::default()
+        })
+        .limits()
+        .await;
+        assert_eq!(ordinary.connect_deadline_ms, 15_000);
+        assert_eq!(ordinary.first_token_deadline_ms, 45_000);
+        assert_eq!(ordinary.run_deadline_ms, 180_000);
+
+        let qwen = SubagentBudgetController::new(&AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            ..Default::default()
+        })
+        .limits()
+        .await;
+        assert_eq!(qwen.connect_deadline_ms, 90_000);
+        assert_eq!(qwen.first_token_deadline_ms, 150_000);
+        assert_eq!(qwen.run_deadline_ms, 360_000);
+
+        for (provider, model) in [
+            (ProviderType::OpenAi, "gpt-5.6"),
+            (ProviderType::Anthropic, "claude-fable-5"),
+            (ProviderType::Google, "gemini-3.7-flash"),
+            (ProviderType::DeepSeek, "deepseek-v4-pro"),
+            (ProviderType::Zhipu, "glm-5.3"),
+        ] {
+            let profiled = SubagentBudgetController::new(&AgentConfig {
+                model: Some(model.to_string()),
+                provider_type: Some(provider),
+                ..Default::default()
+            })
+            .limits()
+            .await;
+            assert_eq!(
+                profiled.connect_deadline_ms, 90_000,
+                "catalog long-prefill profile missing for {provider:?}:{model}"
+            );
+            assert_eq!(profiled.first_token_deadline_ms, 150_000);
+        }
     }
 
     #[tokio::test]
@@ -6188,7 +6853,10 @@ mod tests {
             subagent_token_budget: Some(12_000),
             delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
                 input_context_limit: Some(1_000_000),
+                handoff_context_tokens_per_worker: Some(40_000),
+                max_output_tokens_per_step: None,
                 max_output_tokens_per_worker: Some(65_536),
+                max_actual_tokens_per_worker: Some(96_000),
                 total_actual_tokens_soft_limit: Some(240_000),
                 total_cost_soft_limit_micros: Some(1_000),
                 max_parallel: Some(6),
@@ -6256,12 +6924,14 @@ mod tests {
             Some(&conversation.id),
             "gemini-2.5-pro",
             1_048_576,
+            64_000,
         );
         let second = load_delegation_context_snapshot(
             &db,
             Some(&conversation.id),
             "gemini-2.5-pro",
             1_048_576,
+            64_000,
         );
 
         assert_eq!(first.id, second.id);
@@ -6271,6 +6941,49 @@ mod tests {
             "Parent context that the delegated worker needs"
         );
         assert_eq!(first.context_limit, 1_048_576);
+        assert_eq!(first.handoff_token_budget, 64_000);
+    }
+
+    #[test]
+    fn oversized_parent_message_cannot_overrun_worker_handoff_budget() {
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "qwen".to_string(),
+                model: "qwen3.8-max".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        db.add_message(&ConversationMessage {
+            id: "oversized-parent".to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "large parent context ".repeat(20_000),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 100_000,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        })
+        .unwrap();
+
+        let snapshot = load_delegation_context_snapshot(
+            &db,
+            Some(&conversation.id),
+            "qwen3.8-max",
+            1_000_000,
+            10_000,
+        );
+        assert!(snapshot.token_estimate <= 10_000);
+        assert!(snapshot.messages.is_empty());
+        assert_eq!(snapshot.dropped_invalid_messages, 1);
+        assert_eq!(snapshot.context_limit, 1_000_000);
     }
 
     #[test]

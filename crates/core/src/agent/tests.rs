@@ -3124,6 +3124,8 @@ impl Tool for ResourceLockedTool {
 
 struct ApprovalRequiredProvider {
     stream_calls: Arc<AtomicUsize>,
+    tool_name: &'static str,
+    arguments: &'static str,
 }
 
 #[async_trait]
@@ -3153,8 +3155,8 @@ impl LlmProvider for ApprovalRequiredProvider {
                 delta: String::new(),
                 tool_call_delta: Some(ToolCallDelta {
                     id: "approval_call_1".to_string(),
-                    name: Some("locked_write".to_string()),
-                    arguments_delta: r#"{"path":"notes/a.md"}"#.to_string(),
+                    name: Some(self.tool_name.to_string()),
+                    arguments_delta: self.arguments.to_string(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -3196,6 +3198,8 @@ async fn test_allow_all_tool_approval_does_not_emit_approval_request() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let provider = ApprovalRequiredProvider {
         stream_calls: Arc::clone(&stream_calls),
+        tool_name: "locked_write",
+        arguments: r#"{"path":"notes/a.md"}"#,
     };
     let approval_calls = Arc::new(AtomicUsize::new(0));
     let approval_calls_for_cb = Arc::clone(&approval_calls);
@@ -3257,6 +3261,66 @@ async fn test_allow_all_tool_approval_does_not_emit_approval_request() {
     assert_eq!(approval_requested, 0);
     assert_eq!(approval_resolved, 0);
     assert_eq!(approval_pending_updates, 0);
+    assert_eq!(final_msg.text_content(), "final answer");
+}
+
+#[tokio::test]
+async fn test_allow_all_cannot_bypass_computer_control_approval() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(
+        crate::tools::computer_use_tool::ComputerControlTool,
+    ));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ApprovalRequiredProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        tool_name: "computer_control",
+        arguments: r#"{"action":"focus_window","observation_id":"missing","window_id":42}"#,
+    };
+    let approval_calls = Arc::new(AtomicUsize::new(0));
+    let approval_calls_for_cb = Arc::clone(&approval_calls);
+    let approval_cb: ApprovalCallback = Arc::new(move |_request| {
+        approval_calls_for_cb.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { ApprovalDecision::AllowOnce })
+    });
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            tool_approval_mode: ToolApprovalMode::AllowAll,
+            ..AgentConfig::default()
+        },
+    )
+    .with_approval_callback(approval_cb);
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "focus an app".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent should recover from the expected missing observation");
+
+    let mut approval_requested = 0;
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            Some(AgentEvent::ApprovalRequested { .. }) => approval_requested += 1,
+            Some(AgentEvent::Done { .. }) | None => break,
+            Some(_) => {}
+        }
+    }
+    assert_eq!(approval_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(approval_requested, 1);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
     assert_eq!(final_msg.text_content(), "final answer");
 }
 
@@ -7194,4 +7258,460 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     .take(requests[1].len())
     .collect::<Vec<_>>();
     assert_eq!(requests[1], replay_prefix);
+}
+
+#[derive(Clone, Copy)]
+enum ModelProgressScript {
+    ThinkingUntilRecovery,
+    PendingStreamOpen,
+}
+
+struct ModelProgressScriptedProvider {
+    script: ModelProgressScript,
+    stream_calls: Arc<AtomicUsize>,
+    thinking_chunks: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<CompletionRequest>>>,
+    invocation_started: Arc<Notify>,
+}
+
+#[async_trait]
+impl LlmProvider for ModelProgressScriptedProvider {
+    fn name(&self) -> &str {
+        "model-progress-scripted-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["qwen3.8-max".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "model-progress tests must remain on the streaming seam".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        self.invocation_started.notify_one();
+
+        match (self.script, call_no) {
+            (ModelProgressScript::PendingStreamOpen, 0) => {
+                std::future::pending::<Result<BoxStream<'_, ProviderStreamEvent>, CoreError>>()
+                    .await
+            }
+            (ModelProgressScript::ThinkingUntilRecovery, 0) => {
+                let thinking_chunks = Arc::clone(&self.thinking_chunks);
+                crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
+                    0_u64,
+                    move |tick| {
+                        let thinking_chunks = Arc::clone(&thinking_chunks);
+                        async move {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            thinking_chunks.fetch_add(1, Ordering::SeqCst);
+                            Some((
+                                Ok(StreamChunk {
+                                    delta: String::new(),
+                                    tool_call_delta: None,
+                                    finish_reason: None,
+                                    usage: None,
+                                    thinking_delta: Some(format!("thinking tick {tick}")),
+                                }),
+                                tick + 1,
+                            ))
+                        }
+                    },
+                )))
+            }
+            _ => crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+                StreamChunk {
+                    delta: "recovered answer".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                },
+            )]))),
+        }
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ModelProgressEventCounts {
+    thinking: usize,
+    recoveries: usize,
+    resets: usize,
+    errors: usize,
+    done: usize,
+}
+
+async fn drain_model_progress_events(
+    mut rx: mpsc::Receiver<AgentEvent>,
+) -> ModelProgressEventCounts {
+    let mut counts = ModelProgressEventCounts::default();
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::Thinking { .. } => counts.thinking += 1,
+            AgentEvent::ControllerStatus { ref code, .. } if code == "model_progress_recovery" => {
+                counts.recoveries += 1;
+            }
+            AgentEvent::StreamReset { .. } => counts.resets += 1,
+            AgentEvent::Error { .. } => counts.errors += 1,
+            AgentEvent::Done { .. } => counts.done += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
+async fn settle_paused_runtime() {
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_progress_qwen_thinking_stream_recovers_exactly_once() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::ThinkingUntilRecovery,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks: Arc::clone(&thinking_chunks),
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::XHigh),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "Inspect this codebase with recording_tool and report the result."
+                        .to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the first provider stream must open");
+    for _ in 0..89 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        settle_paused_runtime().await;
+    }
+
+    assert!(!run.is_finished(), "the 90 second deadline fired too early");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        thinking_chunks.load(Ordering::SeqCst) >= 80,
+        "the scripted stream must stay active with thinking-only chunks"
+    );
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settle_paused_runtime().await;
+    let final_message = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("the recovery sample must complete immediately")
+        .expect("agent run task")
+        .expect("one bounded recovery should succeed");
+    let event_counts = event_drain.await.expect("agent event drain");
+
+    assert_eq!(final_message.text_content(), "recovered answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(event_counts.recoveries, 1);
+    assert_eq!(event_counts.resets, 1);
+    assert_eq!(event_counts.errors, 0);
+    assert_eq!(event_counts.done, 1);
+    assert!(event_counts.thinking >= 80);
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2, "only one physical retry is permitted");
+    let recovery = &captured[1];
+    assert_eq!(recovery.max_tokens, Some(4096));
+    assert_eq!(recovery.reasoning_enabled, Some(false));
+    assert_eq!(recovery.reasoning_effort, None);
+    assert!(recovery.messages.iter().any(|message| {
+        message.role == Role::System
+            && message
+                .text_content()
+                .contains("## Model Progress Recovery")
+    }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_progress_pending_stream_open_stops_without_executing_tools() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::PendingStreamOpen,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks,
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let started_at = tokio::time::Instant::now();
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "Inspect this codebase with recording_tool.".to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the provider stream-open future must start");
+    tokio::time::advance(Duration::from_secs(89)).await;
+    settle_paused_runtime().await;
+    assert!(
+        !run.is_finished(),
+        "connect timeout fired before 90 seconds"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settle_paused_runtime().await;
+    let error = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("connect deadline must terminalize the run")
+        .expect("agent run task")
+        .expect_err("a stream that never opens must fail");
+    let event_counts = event_drain.await.expect("agent event drain");
+    let elapsed = tokio::time::Instant::now().duration_since(started_at);
+
+    assert!(matches!(
+        error,
+        CoreError::Agent(ref message) if message.contains("provider did not establish a model stream")
+    ));
+    assert!(elapsed >= Duration::from_secs(90));
+    assert!(elapsed <= Duration::from_secs(91));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(event_counts.recoveries, 0);
+    assert_eq!(event_counts.resets, 0);
+    assert_eq!(event_counts.errors, 1);
+    assert_eq!(event_counts.done, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_progress_direct_kimi_k3_recovery_uses_low_effort() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::ThinkingUntilRecovery,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks,
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("kimi-k3".to_string()),
+            provider_type: Some(ProviderType::Moonshot),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::Max),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。".to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the first Kimi stream must open");
+    for _ in 0..150 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        settle_paused_runtime().await;
+    }
+    let final_message = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("the low-effort recovery must complete immediately")
+        .expect("agent run task")
+        .expect("Kimi recovery should succeed");
+    let event_counts = event_drain.await.expect("agent event drain");
+
+    assert_eq!(final_message.text_content(), "recovered answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(event_counts.recoveries, 1);
+    assert_eq!(event_counts.resets, 1);
+    assert_eq!(event_counts.errors, 0);
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2, "Kimi also gets at most one recovery");
+    let recovery = &captured[1];
+    assert_eq!(recovery.max_tokens, Some(4096));
+    assert_eq!(recovery.reasoning_enabled, Some(true));
+    assert_eq!(recovery.reasoning_effort, Some(ReasoningEffort::Low));
+    assert!(recovery.messages.iter().any(|message| {
+        message.role == Role::System
+            && message
+                .text_content()
+                .contains("## Model Progress Recovery")
+    }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_progress_cancellation_wins_the_deadline_race() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let cancel_token = CancellationToken::new();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::ThinkingUntilRecovery,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks,
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            reasoning_enabled: Some(true),
+            ..AgentConfig::default()
+        },
+    )
+    .with_cancel_token(cancel_token.clone());
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "Inspect this codebase with recording_tool.".to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the provider stream must open");
+    for _ in 0..89 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        settle_paused_runtime().await;
+    }
+    assert!(!run.is_finished());
+
+    // Cancellation becomes ready before `advance` yields. The paused clock is
+    // then moved onto the semantic deadline, so model_step observes both
+    // branches ready in the same biased select poll.
+    cancel_token.cancel();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settle_paused_runtime().await;
+    let error = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("cancellation must terminalize the deadline race")
+        .expect("agent run task")
+        .expect_err("the run should be cancelled");
+    let event_counts = event_drain.await.expect("agent event drain");
+
+    assert!(matches!(error, CoreError::Cancelled(_)));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(event_counts.recoveries, 0);
+    assert_eq!(event_counts.resets, 0);
+    assert_eq!(event_counts.errors, 1);
+    assert_eq!(event_counts.done, 0);
 }

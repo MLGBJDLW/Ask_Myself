@@ -22,9 +22,9 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         persisted_trace_items: &mut Vec<PersistedTraceItem>,
         task_plan: &mut AgentTaskPlan,
-    ) {
+    ) -> bool {
         if route_kind != AgentRouteKind::KnowledgeRetrieval || user_query_text.is_empty() {
-            return;
+            return false;
         }
 
         let mut prefetched_contexts = Vec::new();
@@ -190,6 +190,7 @@ impl AgentExecutor {
                 Err(err) => warn!("Failed to persist pre-search evidence context: {err}"),
             }
         }
+        evidence_message.is_some()
     }
 }
 

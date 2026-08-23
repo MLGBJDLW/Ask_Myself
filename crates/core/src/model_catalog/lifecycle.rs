@@ -136,7 +136,8 @@ fn canonical_provider_id(value: &str) -> String {
         "open_ai" => "openai".into(),
         "deep_seek" => "deepseek".into(),
         "lm_studio" => "lmstudio".into(),
-        "qwen" | "dashscope" | "alibaba" => "alibaba_model_studio".into(),
+        "qwen" => "qwen".into(),
+        "dashscope" | "alibaba" => "alibaba_model_studio".into(),
         other => other.to_string(),
     }
 }
