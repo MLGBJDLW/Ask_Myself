@@ -43,6 +43,7 @@ struct VisualDifference {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 struct ScreenshotGuard {
     width: u32,
     height: u32,
@@ -79,6 +80,7 @@ struct ElementBounds {
 }
 
 impl ElementBounds {
+    #[cfg(any(target_os = "windows", test))]
     fn center(self) -> (i32, i32) {
         (
             self.x.saturating_add((self.width / 2) as i32),
@@ -146,6 +148,7 @@ fn screenshot_guard(png: &[u8]) -> Option<ScreenshotGuard> {
     })
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn screenshot_guard_patch_matches(
     expected: &ScreenshotGuard,
     current: &ScreenshotGuard,
@@ -524,6 +527,7 @@ impl CaptureMode {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 struct CaptureOptions {
     include_elements: bool,
     max_elements: usize,
@@ -547,6 +551,7 @@ impl CaptureOptions {
         })
     }
 
+    #[cfg(any(target_os = "windows", test))]
     fn pixels_only() -> Self {
         Self {
             include_elements: false,
