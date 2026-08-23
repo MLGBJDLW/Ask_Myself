@@ -32,6 +32,57 @@ fn take_ephemeral_tool_attachments(
     serde_json::from_value(raw).unwrap_or_default()
 }
 
+fn strip_ephemeral_computer_artifacts(tool_name: &str, artifacts: &mut Option<serde_json::Value>) {
+    if tool_name != "computer_observe" && tool_name != "computer_control" {
+        return;
+    }
+    let Some(root) = artifacts
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    let source = root.get("data").cloned().unwrap_or(serde_json::Value::Null);
+    let element_count = source
+        .get("elements")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .or_else(|| {
+            source
+                .pointer("/observation/elements")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+        })
+        .unwrap_or(0);
+    let audit = serde_json::json!({
+        "schemaVersion": source.get("schemaVersion").and_then(serde_json::Value::as_u64).unwrap_or(2),
+        "kind": if tool_name == "computer_control" { "computerControlReceipt" } else { "computerObservationReceipt" },
+        "action": source.get("action").and_then(serde_json::Value::as_str),
+        "route": source.get("route").and_then(serde_json::Value::as_str),
+        "delivery": source.get("delivery").and_then(serde_json::Value::as_str),
+        "effect": source.get("effect").and_then(serde_json::Value::as_str),
+        "stateChanged": source.get("stateChanged").and_then(serde_json::Value::as_bool),
+        "screenshotHash": source.get("screenshotHash").and_then(serde_json::Value::as_str)
+            .or_else(|| source.pointer("/observation/screenshotHash").and_then(serde_json::Value::as_str)),
+        "semanticHash": source.get("semanticHash").and_then(serde_json::Value::as_str)
+            .or_else(|| source.pointer("/observation/semanticHash").and_then(serde_json::Value::as_str)),
+        "semanticElementCount": element_count,
+        "screenContentPersistence": "removed"
+    });
+    root.insert("data".to_string(), audit.clone());
+    if let Some(tool_output) = root
+        .get_mut("toolOutput")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let display = tool_output
+            .get("displayContent")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::String("Computer result".to_string()));
+        tool_output.insert("llmContent".to_string(), display);
+        tool_output.insert("data".to_string(), audit);
+    }
+}
+
 fn visual_context_message(
     tool_name: &str,
     attachments: Vec<ToolOutputAttachment>,
@@ -88,6 +139,48 @@ pub(super) struct ToolDispatchContext<'a> {
     pub(super) loop_guard: &'a mut AgentLoopGuard,
     pub(super) trace: &'a mut Option<AgentTrace>,
     pub(super) sort_order: &'a mut i64,
+    pub(super) pending_action_reconciliation: bool,
+}
+
+fn action_reconciliation_blocks(tool_name: &str, args: &serde_json::Value) -> bool {
+    match tool_name {
+        "computer_control" | "desktop_automation" => true,
+        "browser_session" => !args
+            .get("action")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|action| {
+                matches!(
+                    action.trim().to_ascii_lowercase().as_str(),
+                    "list_sessions" | "list_tabs" | "observe" | "wait_for"
+                )
+            }),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod action_reconciliation_tests {
+    use super::action_reconciliation_blocks;
+
+    #[test]
+    fn resumed_action_fence_allows_observation_but_blocks_interactive_mutation() {
+        assert!(!action_reconciliation_blocks(
+            "computer_observe",
+            &serde_json::json!({"action": "capture_window"}),
+        ));
+        assert!(action_reconciliation_blocks(
+            "computer_control",
+            &serde_json::json!({"action": "click"}),
+        ));
+        assert!(!action_reconciliation_blocks(
+            "browser_session",
+            &serde_json::json!({"action": "observe"}),
+        ));
+        assert!(action_reconciliation_blocks(
+            "browser_session",
+            &serde_json::json!({"action": "go_back"}),
+        ));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +238,7 @@ impl AgentExecutor {
             loop_guard,
             trace,
             sort_order,
+            pending_action_reconciliation,
         } = ctx;
 
         // -- 4e. Execute tool calls in parallel ------------------------------
@@ -174,7 +268,10 @@ impl AgentExecutor {
                     .send(AgentEvent::ToolCallStart {
                         call_id: tc.id.clone(),
                         tool_name: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
+                        arguments: crate::tool_argument_projection::audit_safe_arguments_string(
+                            &tc.name,
+                            &tc.arguments,
+                        ),
                     })
                     .await;
             }
@@ -259,6 +356,7 @@ impl AgentExecutor {
         struct CompletedToolForContext {
             call: ToolCallRequest,
             content: String,
+            persisted_content: String,
             duration_ms: u64,
             artifacts: Option<serde_json::Value>,
             attachments: Vec<ToolOutputAttachment>,
@@ -292,6 +390,30 @@ impl AgentExecutor {
                         let parsed_args = invocation.arguments.clone();
                         let tool_timeout = scheduling.timeout;
                         let capabilities = invocation.capabilities.clone();
+                        if pending_action_reconciliation
+                            && action_reconciliation_blocks(&tc.name, &parsed_args)
+                        {
+                            let blocked = crate::tools::ToolResult {
+                                call_id: tc.id.clone(),
+                                content: "Interactive input is blocked by the resumed action-reconciliation fence. Obtain a fresh computer_observe or browser_session observe result first; then re-plan from the visible state."
+                                    .to_string(),
+                                is_error: true,
+                                artifacts: Some(serde_json::json!({
+                                    "kind": "actionReconciliationRequired",
+                                    "retryable": true,
+                                })),
+                            };
+                            return FinishedToolExecution {
+                                index,
+                                call: tc,
+                                timeout: tool_timeout,
+                                outcome: ToolExecutionOutcome::Result(
+                                    blocked,
+                                    ToolRunStatus::Declined,
+                                ),
+                                elapsed: Duration::ZERO,
+                            };
+                        }
                         if let Some(block) = tool_dispatch_block.as_ref() {
                             let blocked = block.result(&tc);
                             return FinishedToolExecution {
@@ -317,8 +439,21 @@ impl AgentExecutor {
                                 elapsed: Duration::ZERO,
                             };
                         }
-                        let tool_requires_confirm =
-                            self.tools.requires_confirmation(&tc.name, &parsed_args);
+                        let tool_requires_confirm = self
+                            .tools
+                            .requires_confirmation(&tc.name, &parsed_args)
+                            || invocation.access_profile.needs_approval;
+                        let hard_confirmation = tc.name == "computer_control"
+                            || (tc.name == "browser_session" && tool_requires_confirm)
+                            || (tc.name == "computer_observe"
+                                && parsed_args
+                                    .get("action")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::trim)
+                                    .is_some_and(|action| {
+                                        action.eq_ignore_ascii_case("capture_window")
+                                            || action.eq_ignore_ascii_case("wait_for_change")
+                                    }));
                         let shell_requires_confirm = tc.name == "run_shell"
                             && self.config.shell_access_mode.requires_confirmation();
                         if let Some(ref approval_cb) = self.approval_callback {
@@ -360,7 +495,14 @@ impl AgentExecutor {
                                 };
                             }
                             if policy_decision.needs_approval {
-                                if let Some(decision) = self.config.tool_approval_mode.short_circuit() {
+                                let short_circuit = self
+                                    .config
+                                    .tool_approval_mode
+                                    .short_circuit()
+                                    .filter(|decision| {
+                                        !(hard_confirmation && decision.is_allowed())
+                                    });
+                                if let Some(decision) = short_circuit {
                                     if !decision.is_allowed() {
                                         let denied = crate::tools::ToolResult {
                                             call_id: tc.id.clone(),
@@ -463,7 +605,9 @@ impl AgentExecutor {
                                 }
                             }
                         } else {
-                            let baseline_requires_confirmation = if tc.name == "run_shell" {
+                            let baseline_requires_confirmation = if hard_confirmation {
+                                true
+                            } else if tc.name == "run_shell" {
                                 shell_requires_confirm
                             } else {
                                 self.config.require_tool_confirmation && tool_requires_confirm
@@ -506,7 +650,14 @@ impl AgentExecutor {
                                 };
                             }
                             if policy_decision.needs_approval {
-                                if let Some(decision) = self.config.tool_approval_mode.short_circuit() {
+                                let short_circuit = self
+                                    .config
+                                    .tool_approval_mode
+                                    .short_circuit()
+                                    .filter(|decision| {
+                                        !(hard_confirmation && decision.is_allowed())
+                                    });
+                                if let Some(decision) = short_circuit {
                                     if !decision.is_allowed() {
                                         let declined = crate::tools::ToolResult {
                                             call_id: tc.id.clone(),
@@ -551,6 +702,26 @@ impl AgentExecutor {
                                             elapsed: Duration::ZERO,
                                         };
                                     }
+                                } else if hard_confirmation {
+                                    let declined = crate::tools::ToolResult {
+                                        call_id: tc.id.clone(),
+                                        content: format!(
+                                            "{} requires an interactive approval surface.",
+                                            tc.name
+                                        ),
+                                        is_error: true,
+                                        artifacts: None,
+                                    };
+                                    return FinishedToolExecution {
+                                        index,
+                                        call: tc,
+                                        timeout: tool_timeout,
+                                        outcome: ToolExecutionOutcome::Result(
+                                            declined,
+                                            ToolRunStatus::Declined,
+                                        ),
+                                        elapsed: Duration::ZERO,
+                                    };
                                 }
                             }
                         }
@@ -574,6 +745,7 @@ impl AgentExecutor {
                             );
                             tokio::pin!(exec_fut);
                             let mut activity_events = self.activity_runtime.subscribe();
+                            let mut scoped_activity_id: Option<String> = None;
                             let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
                             heartbeat
                                 .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -584,8 +756,24 @@ impl AgentExecutor {
                                     r = &mut exec_fut => break r,
                                     event = activity_events.recv() => {
                                         let Ok(event) = event else { continue; };
-                                        if event.activity_id != progress_call_id {
+                                        let starts_scoped_activity = event.kind
+                                            == crate::activity::ActivityEventKind::Started
+                                            && event
+                                                .payload
+                                                .get("sessionId")
+                                                .and_then(serde_json::Value::as_str)
+                                                == Some(progress_call_id.as_str());
+                                        let matches_scoped_activity = scoped_activity_id
+                                            .as_deref()
+                                            == Some(event.activity_id.as_str());
+                                        if event.activity_id != progress_call_id
+                                            && !starts_scoped_activity
+                                            && !matches_scoped_activity
+                                        {
                                             continue;
+                                        }
+                                        if starts_scoped_activity {
+                                            scoped_activity_id = Some(event.activity_id.clone());
                                         }
                                         let note = format!(
                                             "{} activity {:?} (event #{})",
@@ -702,6 +890,7 @@ impl AgentExecutor {
                         let context_content = result.llm_context_content();
                         let mut artifacts = result.artifacts;
                         let attachments = take_ephemeral_tool_attachments(&mut artifacts);
+                        strip_ephemeral_computer_artifacts(&tc.name, &mut artifacts);
                         (
                             result.content,
                             context_content,
@@ -712,16 +901,30 @@ impl AgentExecutor {
                         )
                     }
                     ToolExecutionOutcome::ExecutionError(e) => {
+                        let computer_control_error = tc.name == "computer_control";
                         let structured = crate::tools::structured_tool_error_result(
                             &tc.id,
-                            "tool_execution_failed",
-                            format!("{} failed: {e}", tc.name),
+                            if computer_control_error {
+                                "computer_action_uncertain"
+                            } else {
+                                "tool_execution_failed"
+                            },
+                            if computer_control_error {
+                                "Computer action runtime failed after dispatch; effect is uncertain and sensitive details were omitted."
+                                    .to_string()
+                            } else {
+                                format!("{} failed: {e}", tc.name)
+                            },
                             serde_json::json!({
                                 "tool": &tc.name,
                                 "arguments": "must match this tool's JSON schema exactly",
-                                "recovery": "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
+                                "recovery": if computer_control_error {
+                                    "the OS action may have been partially delivered; inspect fresh state or ask the user and do not blindly retry"
+                                } else {
+                                    "inspect the error, adjust only the invalid fields, and retry if the request still needs this tool"
+                                }
                             }),
-                            true,
+                            !computer_control_error,
                         );
                         let err_content = structured.content.clone();
                         (
@@ -757,21 +960,37 @@ impl AgentExecutor {
                     ToolExecutionOutcome::Timeout => {
                         let timeout_secs = finished_tool.timeout.map(|d| d.as_secs()).unwrap_or(0);
                         warn!("Tool '{}' timed out after {}s", tc.name, timeout_secs);
+                        let computer_control_timeout = tc.name == "computer_control";
                         let structured = crate::tools::structured_tool_error_result(
-                                    &tc.id,
-                                    "tool_timeout",
-                                    format!(
+                            &tc.id,
+                            if computer_control_timeout {
+                                "computer_action_timeout_uncertain"
+                            } else {
+                                "tool_timeout"
+                            },
+                            if computer_control_timeout {
+                                format!(
+                                            "computer control exceeded {} seconds. Its OS worker may already have started and can still finish; effect is uncertain. Do not retry blindly.",
+                                            timeout_secs
+                                        )
+                            } else {
+                                format!(
                                         "tool '{}' timed out after {} seconds. Try a simpler query or different approach.",
                                         tc.name,
                                         timeout_secs
-                                    ),
-                                    serde_json::json!({
-                                        "tool": &tc.name,
-                                        "timeoutSeconds": timeout_secs,
-                                        "recovery": "retry with narrower arguments, fewer files, or a smaller limit"
-                                    }),
-                                    true,
-                                );
+                                    )
+                            },
+                            serde_json::json!({
+                                "tool": &tc.name,
+                                "timeoutSeconds": timeout_secs,
+                                "recovery": if computer_control_timeout {
+                                    "inspect the target manually or wait for fresh observation evidence; do not issue the same action again"
+                                } else {
+                                    "retry with narrower arguments, fewer files, or a smaller limit"
+                                }
+                            }),
+                            !computer_control_timeout,
+                        );
                         let err_content = structured.content.clone();
                         (
                             err_content.clone(),
@@ -949,6 +1168,7 @@ impl AgentExecutor {
                 completed_for_context[finished_tool.index] = Some(CompletedToolForContext {
                     call: tc,
                     content: context_content,
+                    persisted_content: content,
                     duration_ms: tool_elapsed.as_millis() as u64,
                     artifacts: tool_artifacts,
                     attachments: tool_attachments,
@@ -1031,7 +1251,8 @@ impl AgentExecutor {
                 append_persisted_trace_loop_event(persisted_trace_items, finished);
                 *completed = Some(CompletedToolForContext {
                     call: tc,
-                    content,
+                    content: content.clone(),
+                    persisted_content: content,
                     duration_ms: 0,
                     artifacts,
                     attachments: Vec::new(),
@@ -1044,12 +1265,14 @@ impl AgentExecutor {
         for completed in completed_for_context.into_iter().flatten() {
             let tc = completed.call;
             let content = compact_tool_result_for_context(&tc.name, &completed.content);
+            let persisted_content =
+                compact_tool_result_for_context(&tc.name, &completed.persisted_content);
             let duration_ms = completed.duration_ms;
             let tool_artifacts = completed.artifacts;
             let tool_attachments = completed.attachments;
             summaries.push(ToolDispatchSummary {
                 call_id: tc.id.clone(),
-                content: content.clone(),
+                content: persisted_content.clone(),
                 is_error: completed.is_error,
                 artifacts: tool_artifacts.clone(),
             });
@@ -1062,11 +1285,11 @@ impl AgentExecutor {
                     id: Uuid::new_v4().to_string(),
                     conversation_id: cid.to_string(),
                     role: Role::Tool,
-                    content: content.clone(),
+                    content: persisted_content.clone(),
                     tool_call_id: Some(tc.id.clone()),
                     tool_calls: vec![],
                     artifacts: tool_artifacts.clone(),
-                    token_count: estimate_tokens_for_model(model, &content),
+                    token_count: estimate_tokens_for_model(model, &persisted_content),
                     created_at: String::new(),
                     sort_order: *sort_order,
                     thinking: None,
@@ -1155,6 +1378,33 @@ mod visual_attachment_tests {
             }],
         )
         .is_none());
+    }
+
+    #[test]
+    fn computer_screen_semantics_are_removed_from_durable_artifacts() {
+        let sentinel = "screen-reflected-secret-46bf";
+        let mut artifacts = Some(serde_json::json!({
+            "data": {
+                "schemaVersion": 2,
+                "action": "set_value",
+                "route": "value_pattern",
+                "effect": "observed_change",
+                "observation": {
+                    "screenshotHash": "abc",
+                    "elements": [{ "id": "e1", "name": sentinel }]
+                }
+            },
+            "toolOutput": {
+                "llmContent": format!("semantic name: {sentinel}"),
+                "displayContent": "Set 12 characters.",
+                "data": { "elements": [{ "name": sentinel }] }
+            }
+        }));
+        strip_ephemeral_computer_artifacts("computer_control", &mut artifacts);
+        let serialized = artifacts.unwrap().to_string();
+        assert!(!serialized.contains(sentinel));
+        assert!(serialized.contains("screenContentPersistence"));
+        assert!(serialized.contains("Set 12 characters"));
     }
 
     #[test]

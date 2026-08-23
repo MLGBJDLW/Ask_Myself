@@ -533,6 +533,8 @@ pub fn resolve_reasoning_profile(
     }
 
     if provider == ProviderType::OpenRouter && is_openrouter_public_endpoint(provider, base_url) {
+        let catalog_default = catalog_reasoning_effort_policy(provider, &model)
+            .and_then(|(_, default_effort)| default_effort);
         let mut value = profile(
             key,
             "openrouter-normalized-reasoning-v1",
@@ -549,12 +551,16 @@ pub fn resolve_reasoning_profile(
                     ReasoningEffort::Max,
                     ReasoningEffort::XHigh,
                 ],
-                None,
+                catalog_default,
             ),
             ReasoningBudgetField::NestedReasoning,
         );
         value.effort_budget_exclusive = true;
         value.confidence = CapabilityConfidence::CuratedCompatibility;
+        if model == "moonshotai/kimi-k3" {
+            value.preserve_reasoning_history = true;
+            value.replay_policy = ReasoningReplayPolicy::RequiredOnToolCall;
+        }
         return value;
     }
 
@@ -592,7 +598,7 @@ pub fn resolve_reasoning_profile(
                         ReasoningEffort::High,
                         ReasoningEffort::Max,
                     ],
-                    Some(ReasoningEffort::Max),
+                    Some(ReasoningEffort::Low),
                 ),
                 ReasoningBudgetField::None,
             ),
@@ -674,7 +680,7 @@ pub fn resolve_reasoning_profile(
                         ReasoningEffort::Medium,
                         ReasoningEffort::XHigh,
                     ],
-                    Some(ReasoningEffort::XHigh),
+                    Some(ReasoningEffort::Low),
                 ),
                 ReasoningBudgetField::ThinkingBudget,
             );

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use nexa_core::activity::{
+    ActivityEventKind, ActivityRuntime, ActivitySpec, ActivityState, ActivitySurface,
+};
 use nexa_core::error::CoreError;
 use nexa_core::tools::{Tool, ToolCategory, ToolExecutionContext, ToolOutput, ToolResult};
 
@@ -10,6 +13,104 @@ use super::state::{BrowserActRequest, BrowserState};
 #[derive(Clone)]
 pub struct NativeBrowserSessionTool {
     state: BrowserState,
+}
+
+fn browser_action_activity_id(
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
+    call_id: &str,
+    observation_id: &str,
+) -> String {
+    let scope = turn_id
+        .or(conversation_id)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("detached-{}", uuid::Uuid::new_v4()));
+    format!("browser_action:{scope}:{call_id}:{observation_id}")
+}
+
+fn browser_mutation_token(arguments: &str) -> String {
+    let hash = blake3::hash(arguments.as_bytes()).to_hex();
+    format!("args-{}", &hash.as_str()[..24])
+}
+
+struct BrowserActionReceipt {
+    runtime: ActivityRuntime,
+    activity_id: String,
+    terminal: bool,
+}
+
+impl BrowserActionReceipt {
+    fn start(
+        context: &ToolExecutionContext<'_>,
+        session_id: &str,
+        observation_id: &str,
+        action: &str,
+    ) -> Result<Self, CoreError> {
+        let runtime = context.activity_runtime.cloned().ok_or_else(|| {
+            CoreError::Internal(
+                "Native browser actions require the persistent Activity Runtime".to_string(),
+            )
+        })?;
+        if !runtime.is_persistent() {
+            return Err(CoreError::Internal(
+                "Native browser actions require persistent action receipts; no browser action was dispatched."
+                    .to_string(),
+            ));
+        }
+        let activity_id = browser_action_activity_id(
+            context.conversation_id,
+            context.turn_id,
+            context.call_id,
+            observation_id,
+        );
+        let mut spec = ActivitySpec::new(ActivitySurface::Browser, "browser_session")
+            .with_activity_id(&activity_id)
+            .with_session_id(context.call_id);
+        if let Some(conversation_id) = context.conversation_id {
+            spec = spec.with_conversation_id(conversation_id);
+        }
+        if let Some(turn_id) = context.turn_id {
+            spec = spec.with_turn_id(turn_id);
+        }
+        runtime.start(spec)?;
+        runtime.append(
+            &activity_id,
+            ActivityEventKind::Progress,
+            serde_json::json!({
+                "stage": "authorized",
+                "action": action,
+                "browserSessionId": session_id,
+                "observationId": observation_id,
+            }),
+        )?;
+        Ok(Self {
+            runtime,
+            activity_id,
+            terminal: false,
+        })
+    }
+
+    fn finish(&mut self, state: ActivityState, detail: serde_json::Value) -> Result<(), CoreError> {
+        self.runtime.transition(&self.activity_id, state, detail)?;
+        self.terminal = true;
+        Ok(())
+    }
+}
+
+impl Drop for BrowserActionReceipt {
+    fn drop(&mut self) {
+        if !self.terminal {
+            let _ = self.runtime.transition(
+                &self.activity_id,
+                ActivityState::Orphaned,
+                serde_json::json!({
+                    "stage": "uncertain",
+                    "effectMayHaveOccurred": true,
+                    "reason": "browser action future ended before a verified result",
+                }),
+            );
+        }
+    }
 }
 
 impl NativeBrowserSessionTool {
@@ -226,7 +327,7 @@ impl Tool for NativeBrowserSessionTool {
                 "scrollX": { "type": "integer", "default": 0 },
                 "scrollY": { "type": "integer", "default": 0 },
                 "condition": { "type": "object", "description": "Condition type: page_loaded, text_present, text_absent, url_matches, element_present, or element_absent. Element conditions accept ref/targetRef, name, and role." },
-                "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000, "default": 15000 }
+                "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2500, "default": 2500, "description": "One steering-friendly wait quantum. Repeat wait_for with a fresh observation if the condition is still pending." }
             },
             "required": ["action"],
             "additionalProperties": false
@@ -327,12 +428,23 @@ impl Tool for NativeBrowserSessionTool {
             self.resolve_session_id(args.session_id.as_deref(), conversation_id)?;
         let session_id = resolved_session_id.as_str();
         if action == "close_session" {
+            let token = browser_mutation_token(context.arguments);
+            let mut receipt = BrowserActionReceipt::start(&context, session_id, &token, &action)?;
             self.state
                 .acquire_agent_control(session_id, context.call_id)
                 .map_err(Self::invalid)?;
             self.state
                 .close_session_as_agent(session_id, context.call_id)
                 .map_err(Self::invalid)?;
+            receipt.finish(
+                ActivityState::Completed,
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": action,
+                    "browserSessionId": session_id,
+                    "sessionClosed": true,
+                }),
+            )?;
             return success(
                 context.call_id,
                 "Closed shared browser session.",
@@ -348,6 +460,8 @@ impl Tool for NativeBrowserSessionTool {
             );
         }
         if action == "open_tab" {
+            let token = browser_mutation_token(context.arguments);
+            let mut receipt = BrowserActionReceipt::start(&context, session_id, &token, &action)?;
             self.state
                 .acquire_agent_control(session_id, context.call_id)
                 .map_err(Self::invalid)?;
@@ -361,6 +475,15 @@ impl Tool for NativeBrowserSessionTool {
                 )
                 .await
                 .map_err(Self::invalid)?;
+            receipt.finish(
+                ActivityState::Completed,
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": action,
+                    "browserSessionId": session_id,
+                    "tabId": &tab.id,
+                }),
+            )?;
             return success(
                 context.call_id,
                 "Opened a shared browser tab.",
@@ -376,12 +499,24 @@ impl Tool for NativeBrowserSessionTool {
             .ok_or_else(|| Self::invalid("browser_session requires tabId"))?;
         match action.as_str() {
             "activate_tab" => {
+                let token = browser_mutation_token(context.arguments);
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
                 self.state
                     .activate_tab_as_agent(session_id, tab_id, context.call_id)
                     .map_err(Self::invalid)?;
+                receipt.finish(
+                    ActivityState::Completed,
+                    serde_json::json!({
+                        "stage": "observed",
+                        "action": action,
+                        "browserSessionId": session_id,
+                        "tabId": tab_id,
+                    }),
+                )?;
                 success(
                     context.call_id,
                     "Activated shared browser tab.",
@@ -389,6 +524,9 @@ impl Tool for NativeBrowserSessionTool {
                 )
             }
             "navigate" => {
+                let token = browser_mutation_token(context.arguments);
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
@@ -406,9 +544,21 @@ impl Tool for NativeBrowserSessionTool {
                     .observe(session_id, tab_id, context.call_id)
                     .await
                     .map_err(Self::invalid)?;
+                receipt.finish(
+                    ActivityState::Completed,
+                    serde_json::json!({
+                        "stage": "observed",
+                        "action": action,
+                        "browserSessionId": session_id,
+                        "observationId": &observation.observation_id,
+                    }),
+                )?;
                 observation_result(context.call_id, observation)
             }
             "go_back" | "go_forward" => {
+                let token = browser_mutation_token(context.arguments);
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
@@ -429,9 +579,21 @@ impl Tool for NativeBrowserSessionTool {
                     .observe(session_id, tab_id, context.call_id)
                     .await
                     .map_err(Self::invalid)?;
+                receipt.finish(
+                    ActivityState::Completed,
+                    serde_json::json!({
+                        "stage": "observed",
+                        "action": action,
+                        "browserSessionId": session_id,
+                        "observationId": &observation.observation_id,
+                    }),
+                )?;
                 observation_result(context.call_id, observation)
             }
             "reload" => {
+                let token = browser_mutation_token(context.arguments);
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
@@ -445,6 +607,15 @@ impl Tool for NativeBrowserSessionTool {
                     .observe(session_id, tab_id, context.call_id)
                     .await
                     .map_err(Self::invalid)?;
+                receipt.finish(
+                    ActivityState::Completed,
+                    serde_json::json!({
+                        "stage": "observed",
+                        "action": action,
+                        "browserSessionId": session_id,
+                        "observationId": &observation.observation_id,
+                    }),
+                )?;
                 observation_result(context.call_id, observation)
             }
             "observe" => {
@@ -483,7 +654,9 @@ impl Tool for NativeBrowserSessionTool {
                 } else {
                     args.key.as_deref()
                 };
-                let observation = self
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, observation_id, &action)?;
+                let action_result = self
                     .state
                     .act(BrowserActRequest {
                         call_id: context.call_id,
@@ -501,8 +674,34 @@ impl Tool for NativeBrowserSessionTool {
                         scroll_x: args.scroll_x.unwrap_or(0),
                         scroll_y: args.scroll_y.unwrap_or(0),
                     })
-                    .await
-                    .map_err(Self::invalid)?;
+                    .await;
+                let observation = match action_result {
+                    Ok(observation) => {
+                        receipt.finish(
+                            ActivityState::Completed,
+                            serde_json::json!({
+                                "stage": "observed",
+                                "action": action,
+                                "browserSessionId": session_id,
+                                "observationId": observation.observation_id,
+                            }),
+                        )?;
+                        observation
+                    }
+                    Err(error) => {
+                        let _ = receipt.finish(
+                            ActivityState::Failed,
+                            serde_json::json!({
+                                "stage": "uncertain",
+                                "action": action,
+                                "browserSessionId": session_id,
+                                "effectMayHaveOccurred": true,
+                                "error": &error,
+                            }),
+                        );
+                        return Err(Self::invalid(error));
+                    }
+                };
                 observation_result(context.call_id, observation)
             }
             "wait_for" => {
@@ -511,7 +710,7 @@ impl Tool for NativeBrowserSessionTool {
                     .as_ref()
                     .ok_or_else(|| Self::invalid("browser_session wait_for requires condition"))?;
                 let timeout = std::time::Duration::from_millis(
-                    args.timeout_ms.unwrap_or(15_000).clamp(1, 120_000),
+                    args.timeout_ms.unwrap_or(2_500).clamp(1, 2_500),
                 );
                 let started = std::time::Instant::now();
                 loop {
@@ -535,12 +734,25 @@ impl Tool for NativeBrowserSessionTool {
                 }
             }
             "close_tab" => {
+                let token = browser_mutation_token(context.arguments);
+                let mut receipt =
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
                 self.state
                     .acquire_agent_control(session_id, context.call_id)
                     .map_err(Self::invalid)?;
                 self.state
                     .close_tab_as_agent(session_id, tab_id, context.call_id)
                     .map_err(Self::invalid)?;
+                receipt.finish(
+                    ActivityState::Completed,
+                    serde_json::json!({
+                        "stage": "observed",
+                        "action": action,
+                        "browserSessionId": session_id,
+                        "tabId": tab_id,
+                        "tabClosed": true,
+                    }),
+                )?;
                 success(
                     context.call_id,
                     "Closed shared browser tab.",
@@ -593,7 +805,48 @@ fn observation_result(
 
 #[cfg(test)]
 mod tests {
-    use super::condition_matches;
+    use super::{
+        browser_action_activity_id, browser_mutation_token, condition_matches, BrowserActionReceipt,
+    };
+
+    #[test]
+    fn browser_mutation_tokens_are_stable_and_argument_scoped() {
+        assert_eq!(
+            browser_mutation_token(r#"{"action":"go_back"}"#),
+            browser_mutation_token(r#"{"action":"go_back"}"#)
+        );
+        assert_ne!(
+            browser_mutation_token(r#"{"action":"go_back"}"#),
+            browser_mutation_token(r#"{"action":"go_forward"}"#)
+        );
+    }
+
+    #[test]
+    fn browser_actions_fail_closed_without_persistent_receipts() {
+        let db = nexa_core::db::Database::open_memory().unwrap();
+        let runtime = nexa_core::activity::ActivityRuntime::new();
+        let source_scope = Vec::new();
+        let context = nexa_core::tools::ToolExecutionContext::new("call", "{}", &db, &source_scope)
+            .with_activity_runtime(&runtime);
+        let error = match BrowserActionReceipt::start(&context, "browser", "obs", "click") {
+            Err(error) => error,
+            Ok(_) => panic!("ephemeral receipts must block browser side effects"),
+        };
+        assert!(error.to_string().contains("persistent action receipts"));
+    }
+
+    #[test]
+    fn repeated_provider_call_ids_are_scoped_by_browser_observation() {
+        let first =
+            browser_action_activity_id(Some("conversation"), Some("turn"), "call_0", "obs-a");
+        let next_round =
+            browser_action_activity_id(Some("conversation"), Some("turn"), "call_0", "obs-b");
+        let retry =
+            browser_action_activity_id(Some("conversation"), Some("turn"), "call_0", "obs-a");
+
+        assert_ne!(first, next_round);
+        assert_eq!(first, retry);
+    }
 
     #[test]
     fn wait_conditions_cover_text_absence_and_semantic_elements() {

@@ -15,11 +15,14 @@
 //!     denies the matching tool target until the user clears the rule.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::db::Database;
 use crate::error::CoreError;
@@ -72,8 +75,10 @@ impl ApprovalRequest {
     ) -> Self {
         let tool_name = tool_name.into();
         let permission = permission_key_for_tool(&tool_name, arguments);
-        let preview =
-            serde_json::to_string_pretty(arguments).unwrap_or_else(|_| arguments.to_string());
+        let audit_arguments =
+            crate::tool_argument_projection::audit_safe_arguments(&tool_name, arguments);
+        let preview = serde_json::to_string_pretty(&audit_arguments)
+            .unwrap_or_else(|_| audit_arguments.to_string());
         let preview = if preview.len() > ARGUMENTS_PREVIEW_LIMIT {
             let mut cut = ARGUMENTS_PREVIEW_LIMIT;
             while !preview.is_char_boundary(cut) {
@@ -218,6 +223,33 @@ impl ToolPermissionKey {
             return Self::new(&invocation.tool_name, "project_tool_catalog", action);
         }
 
+        if invocation.tool_name == "computer_observe" {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .unwrap_or("<unknown>");
+            if action.eq_ignore_ascii_case("capture_window")
+                || action.eq_ignore_ascii_case("wait_for_change")
+            {
+                let window_id = args
+                    .get("window_id")
+                    .or_else(|| args.get("windowId"))
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                return Self::new(
+                    &invocation.tool_name,
+                    "screen_disclosure",
+                    format!(
+                        "{window_id}:{}:{}",
+                        action.to_ascii_lowercase(),
+                        computer_constraint_hmac(args)
+                    ),
+                );
+            }
+        }
+
         if invocation.tool_name == "computer_control" {
             let action = args
                 .get("action")
@@ -233,8 +265,39 @@ impl ToolPermissionKey {
                 .unwrap_or_else(|| "<unknown>".to_string());
             return Self::new(
                 &invocation.tool_name,
-                "desktop_window",
-                format!("{window_id}:{action}"),
+                "desktop_action",
+                format!("{window_id}:{action}:{}", computer_constraint_hmac(args)),
+            );
+        }
+
+        if invocation.tool_name == "browser_session" {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let session_id = args
+                .get("sessionId")
+                .or_else(|| args.get("session_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let target_ref = args
+                .get("targetRef")
+                .or_else(|| args.get("target_ref"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<none>");
+            return Self::new(
+                &invocation.tool_name,
+                "browser_action",
+                format!(
+                    "{session_id}:{action}:{target_ref}:{}",
+                    computer_constraint_hmac(args)
+                ),
             );
         }
 
@@ -273,6 +336,23 @@ impl ToolPermissionKey {
 
         Self::new(&invocation.tool_name, "tool", "*")
     }
+}
+
+fn computer_constraint_hmac(arguments: &serde_json::Value) -> String {
+    static SESSION_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
+    let secret = SESSION_SECRET.get_or_init(|| {
+        let nonce = uuid::Uuid::new_v4();
+        *blake3::hash(nonce.as_bytes()).as_bytes()
+    });
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts a 32-byte key");
+    let canonical = serde_json::to_vec(arguments).unwrap_or_default();
+    mac.update(&canonical);
+    let digest = mac.finalize().into_bytes();
+    let mut encoded = String::with_capacity(24);
+    for byte in digest.iter().take(12) {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 pub fn permission_key_for_tool(tool_name: &str, args: &serde_json::Value) -> ToolPermissionKey {
@@ -918,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_key_scopes_computer_control_to_window_and_action() {
+    fn permission_key_scopes_computer_control_to_exact_observation_and_constraints() {
         let click = permission_key_for_tool(
             "computer_control",
             &serde_json::json!({
@@ -938,14 +1018,98 @@ mod tests {
                 "text": "hello"
             }),
         );
+        let other_click = permission_key_for_tool(
+            "computer_control",
+            &serde_json::json!({
+                "action": "click",
+                "observation_id": "observation-a",
+                "window_id": 42,
+                "x": 121,
+                "y": 80
+            }),
+        );
 
         assert_ne!(click.permission_key(), type_text.permission_key());
-        assert_eq!(click.target_kind, "desktop_window");
-        assert_eq!(click.target_value, "42:click");
-        assert_eq!(
-            type_text.permission_key(),
-            "computer_control|desktop_window|42:type_text"
+        assert_ne!(click.permission_key(), other_click.permission_key());
+        assert_eq!(click.target_kind, "desktop_action");
+        assert!(click.target_value.starts_with("42:click:"));
+        assert!(type_text.target_value.starts_with("42:type_text:"));
+        assert!(!type_text.permission_key().contains("hello"));
+        assert_eq!(click.target_value.rsplit(':').next().unwrap().len(), 24);
+    }
+
+    #[test]
+    fn browser_permission_keys_are_action_and_session_scoped() {
+        let first = permission_key_for_tool(
+            "browser_session",
+            &serde_json::json!({
+                "action": "click",
+                "sessionId": "browser-a",
+                "observationId": "obs-a",
+                "targetRef": "e7"
+            }),
         );
+        let other_session = permission_key_for_tool(
+            "browser_session",
+            &serde_json::json!({
+                "action": "click",
+                "sessionId": "browser-b",
+                "observationId": "obs-a",
+                "targetRef": "e7"
+            }),
+        );
+        let other_action = permission_key_for_tool(
+            "browser_session",
+            &serde_json::json!({
+                "action": "type",
+                "sessionId": "browser-a",
+                "observationId": "obs-a",
+                "targetRef": "e7",
+                "text": "secret"
+            }),
+        );
+
+        assert_eq!(first.target_kind, "browser_action");
+        assert!(first.target_value.starts_with("browser-a:click:e7:"));
+        assert_ne!(first.permission_key(), other_session.permission_key());
+        assert_ne!(first.permission_key(), other_action.permission_key());
+        assert!(!other_action.permission_key().contains("secret"));
+    }
+
+    #[test]
+    fn computer_control_approval_preview_redacts_sensitive_input() {
+        let sentinel = "approval-secret-79cc";
+        let request = ApprovalRequest::new(
+            "req",
+            "computer_control",
+            &serde_json::json!({
+                "action": "type_text",
+                "observation_id": "observation-a",
+                "window_id": 42,
+                "text": sentinel,
+                "key_sequence": "ctrl+x"
+            }),
+            ApprovalRisk::High,
+            "test",
+        );
+        assert!(!request.arguments_preview.contains(sentinel));
+        assert!(!request.permission_key.contains(sentinel));
+        assert!(request.arguments_preview.contains("charCount"));
+    }
+
+    #[test]
+    fn computer_capture_permission_is_a_non_persistent_screen_disclosure_scope() {
+        let permission = permission_key_for_tool(
+            "computer_observe",
+            &serde_json::json!({
+                "action": " CAPTURE_WINDOW ",
+                "observation_id": "observation-a",
+                "window_id": 42
+            }),
+        );
+        assert_eq!(permission.target_kind, "screen_disclosure");
+        assert!(permission.target_value.starts_with("42:capture_window:"));
+        assert!(!permission.target_value.contains("observation-a"));
     }
 
     #[test]

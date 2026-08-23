@@ -20,9 +20,10 @@ impl AgentExecutor {
         turn_id: Option<&str>,
         envelope: &crate::llm::provider_turn::ProviderTurnEnvelope,
     ) -> Result<(), CoreError> {
+        let persistence_envelope = envelope.audit_safe_for_persistence();
         db.persist_provider_turn(
             None,
-            envelope,
+            &persistence_envelope,
             ProviderTurnPersistenceScope {
                 scope_id: turn_id
                     .or(conversation_id)
@@ -262,15 +263,6 @@ impl AgentExecutor {
             sort_order,
         } = ctx;
 
-        append_persisted_trace_thinking(persisted_trace_items, iteration_thinking);
-        if let Some(tid) = turn_id {
-            let trace = build_turn_trace(route_kind, persisted_trace_items);
-            let _ = db.update_conversation_turn_progress(
-                tid,
-                Some(&format!("{:?}", route_kind)),
-                Some(&trace),
-            );
-        }
         let envelope = assistant_msg.provider_turn().cloned().ok_or_else(|| {
             CoreError::Internal(
                 "tool-call assistant message is missing its provider turn envelope".into(),
@@ -281,12 +273,30 @@ impl AgentExecutor {
                 "provider turn tool ledger differs from assistant tool calls".into(),
             ));
         }
-        let reasoning_envelope = self.reasoning_envelope_for_persistence(
-            model,
-            Some(iteration_thinking),
-            assistant_reasoning_content.as_deref(),
-            true,
-        );
+        let sensitive_computer_turn = envelope.contains_sensitive_computer_control();
+        let persistence_envelope = envelope.audit_safe_for_persistence();
+        let persistence_tool_calls = persistence_envelope.tool_calls.clone();
+        if !sensitive_computer_turn {
+            append_persisted_trace_thinking(persisted_trace_items, iteration_thinking);
+        }
+        if let Some(tid) = turn_id {
+            let trace = build_turn_trace(route_kind, persisted_trace_items);
+            let _ = db.update_conversation_turn_progress(
+                tid,
+                Some(&format!("{:?}", route_kind)),
+                Some(&trace),
+            );
+        }
+        let reasoning_envelope = if sensitive_computer_turn {
+            None
+        } else {
+            self.reasoning_envelope_for_persistence(
+                model,
+                Some(iteration_thinking),
+                assistant_reasoning_content.as_deref(),
+                true,
+            )
+        };
         let display_thinking = reasoning_envelope
             .as_ref()
             .and_then(|envelope| envelope.display_text.clone());
@@ -296,10 +306,10 @@ impl AgentExecutor {
                 id: Uuid::new_v4().to_string(),
                 conversation_id: cid.to_string(),
                 role: Role::Assistant,
-                content: assistant_msg.text_content(),
+                content: persistence_envelope.visible_content.clone(),
                 tool_call_id: None,
-                tool_calls: tool_calls.to_vec(),
-                artifacts: merge_provider_turn_envelope_artifact(artifacts, &envelope),
+                tool_calls: persistence_tool_calls.clone(),
+                artifacts: merge_provider_turn_envelope_artifact(artifacts, &persistence_envelope),
                 token_count: estimate_message_tokens_for_model(model, assistant_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
@@ -312,7 +322,7 @@ impl AgentExecutor {
             .unwrap_or(self.usage_scope_id.as_str());
         db.persist_provider_turn(
             message.as_ref(),
-            &envelope,
+            &persistence_envelope,
             ProviderTurnPersistenceScope {
                 scope_id,
                 conversation_id,

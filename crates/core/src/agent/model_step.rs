@@ -51,24 +51,34 @@ fn effective_sample_replay_policy(
 }
 
 fn stream_chunk_has_semantic_output(chunk: &crate::llm::StreamChunk) -> bool {
-    !chunk.delta.is_empty()
-        || chunk
-            .thinking_delta
-            .as_deref()
-            .is_some_and(|thinking| !thinking.is_empty())
-        || chunk.tool_call_delta.is_some()
+    !chunk.delta.is_empty() || chunk.tool_call_delta.is_some()
 }
 
 fn completion_has_semantic_output(response: &crate::llm::CompletionResponse) -> bool {
     !response.content.is_empty()
         || response
-            .thinking
-            .as_deref()
-            .is_some_and(|thinking| !thinking.is_empty())
-        || response
             .tool_calls
             .as_ref()
             .is_some_and(|tool_calls| !tool_calls.is_empty())
+}
+
+fn request_reasoning_was_requested(request: &CompletionRequest) -> bool {
+    request.reasoning_enabled != Some(false)
+        && request.reasoning_effort != Some(ReasoningEffort::None)
+}
+
+enum ModelStepWaitSignal {
+    Progress(Box<model_attempt::ModelAttemptProgress>),
+    Steering(Option<AgentSteeringMessage>),
+    Cancellation,
+    ProgressDeadline,
+}
+
+async fn wait_for_model_progress_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
+    }
 }
 
 pub(super) struct ModelStepContext<'a> {
@@ -91,6 +101,8 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) force_non_streaming_llm: &'a mut bool,
     pub(super) reasoning_disabled_for_tool_loop: &'a mut bool,
     pub(super) force_answer_only: bool,
+    pub(super) requires_first_action: bool,
+    pub(super) total_usage: &'a mut Usage,
 }
 
 pub(super) enum ModelStepOutcome {
@@ -116,6 +128,7 @@ pub(super) struct ModelStepOutput {
     pub(super) sample_id: String,
     pub(super) route_snapshot: crate::llm::provider_turn::RouteSnapshot,
     pub(super) reasoning_was_requested: bool,
+    pub(super) discarded_sample_tokens: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -221,44 +234,77 @@ impl AgentExecutor {
             force_non_streaming_llm,
             reasoning_disabled_for_tool_loop,
             force_answer_only,
+            requires_first_action,
+            total_usage,
         } = ctx;
 
         // -- 4a. Project one model attempt -----------------------------------
         let context_recovery_policy = StreamRecoveryPolicy::default();
         let request_tools =
             request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
+        let has_executable_tools = !request_tools.is_empty();
+        let cumulative_budget_requires_low_reasoning =
+            self.config.max_actual_tokens_per_run.is_some() && max_response_tokens <= 4_096;
+        let forced_progress_controls = (force_answer_only
+            || *reasoning_disabled_for_tool_loop
+            || cumulative_budget_requires_low_reasoning)
+            .then(|| model_progress_watchdog::recovery_controls(self.config.provider_type, model));
+        let mut configured_thinking_budget = self
+            .config
+            .reasoning_enabled
+            .unwrap_or(false)
+            .then_some(self.config.thinking_budget)
+            .flatten();
+        let configured_reasoning_effort = self
+            .config
+            .reasoning_enabled
+            .unwrap_or(false)
+            .then(|| self.config.reasoning_effort.clone())
+            .flatten();
+        let effort_budget_exclusive = self
+            .config
+            .provider_type
+            .and_then(|provider| {
+                crate::provider_catalog::model_capabilities_from_catalog(provider, model)
+            })
+            .and_then(|capabilities| capabilities.reasoning)
+            .is_some_and(|reasoning| reasoning.effort_budget_exclusive);
+        if effort_budget_exclusive && configured_reasoning_effort.is_some() {
+            configured_thinking_budget = None;
+        }
+        if self.config.max_actual_tokens_per_run.is_some() {
+            configured_thinking_budget = configured_thinking_budget
+                .map(|budget| budget.min(max_response_tokens.saturating_sub(4_096)));
+        }
         let mut current_request = CompletionRequest {
             model: model.to_string(),
             messages: messages.to_vec(),
             temperature: self.config.temperature,
-            max_tokens: self.config.max_tokens,
+            // Always send the same bounded output budget used by local
+            // context accounting. Leaving this as `None` lets long-reasoning
+            // providers consume their native 100k-1M output allowance before
+            // the agent can act.
+            max_tokens: Some(max_response_tokens),
             tools: if request_tools.is_empty() {
                 None
             } else {
                 Some(request_tools)
             },
             stop: None,
-            thinking_budget: if !force_answer_only
-                && !*reasoning_disabled_for_tool_loop
-                && self.config.reasoning_enabled.unwrap_or(false)
-            {
-                self.config.thinking_budget
-            } else {
-                None
-            },
-            reasoning_enabled: if force_answer_only || *reasoning_disabled_for_tool_loop {
-                Some(false)
-            } else {
-                self.config.reasoning_enabled
-            },
-            reasoning_effort: if !force_answer_only
-                && !*reasoning_disabled_for_tool_loop
-                && self.config.reasoning_enabled.unwrap_or(false)
-            {
-                self.config.reasoning_effort.clone()
-            } else {
-                None
-            },
+            thinking_budget: forced_progress_controls
+                .as_ref()
+                .map_or(configured_thinking_budget, |controls| {
+                    controls.thinking_budget
+                }),
+            reasoning_enabled: forced_progress_controls
+                .as_ref()
+                .map_or(self.config.reasoning_enabled, |controls| {
+                    controls.reasoning_enabled
+                }),
+            reasoning_effort: forced_progress_controls.as_ref().map_or_else(
+                || configured_reasoning_effort,
+                |controls| controls.reasoning_effort.clone(),
+            ),
             provider_type: self.config.provider_type,
             routing_session_id: conversation_id
                 .and_then(crate::llm::prompt_cache::privacy_preserving_routing_session_id),
@@ -267,8 +313,7 @@ impl AgentExecutor {
         // The attempt seam owns route-specific replay projection. Keep this
         // request unprojected so an automatic fallback can select a concrete
         // route without inheriting a lossy primary-route projection.
-        let reasoning_was_requested = current_request.reasoning_enabled != Some(false)
-            && current_request.reasoning_effort != Some(ReasoningEffort::None);
+        let mut reasoning_was_requested = request_reasoning_was_requested(&current_request);
         let mut accepted_attempt: Option<model_attempt::AcceptedModelAttempt> = None;
         self.begin_prompt_cache_observation(model, messages, tool_defs);
         let accumulated_len_before_iteration = accumulated_content.len();
@@ -285,6 +330,7 @@ impl AgentExecutor {
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
         let mut chunk_count: usize = 0;
+        let mut discarded_sample_tokens = 0_u32;
         let mut stream_interrupted_by_steering: Option<AgentSteeringMessage> = None;
         let mut steering_closed = false;
 
@@ -295,6 +341,16 @@ impl AgentExecutor {
             *force_non_streaming_llm,
         )
         .with_cancel_token(self.cancel_token.clone());
+        let mut progress_watchdog = model_progress_watchdog::ModelProgressWatchdog::new(
+            self.config.provider_type,
+            model,
+            route_kind,
+            has_executable_tools && requires_first_action && !force_answer_only,
+        );
+        if *force_non_streaming_llm {
+            progress_watchdog.arm();
+        }
+        let mut progress_recovery_active = false;
 
         macro_rules! bind_accepted_attempt {
             ($next:expr, $first_for_sample:expr) => {{
@@ -339,31 +395,216 @@ impl AgentExecutor {
         }
 
         let attempt_timing = 'model_attempt: loop {
-            let progress = if model_attempt.accepts_stream_steering()
+            let signal = if model_attempt.accepts_stream_steering()
                 && self.steering_rx.is_some()
                 && !steering_closed
             {
                 tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => ModelStepWaitSignal::Cancellation,
                     maybe_steering = self.wait_for_steering_message() => {
-                        match maybe_steering {
-                            Some(steering) => {
-                                stream_interrupted_by_steering = Some(steering);
-                                break 'model_attempt None;
-                            }
-                            None => {
-                                steering_closed = true;
-                                continue 'model_attempt;
-                            }
-                        }
+                        ModelStepWaitSignal::Steering(maybe_steering)
                     }
-                    progress = model_attempt.next() => progress,
+                    _ = wait_for_model_progress_deadline(progress_watchdog.deadline()) => {
+                        ModelStepWaitSignal::ProgressDeadline
+                    }
+                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(Box::new(progress)),
                 }
             } else {
-                model_attempt.next().await
+                tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => ModelStepWaitSignal::Cancellation,
+                    _ = wait_for_model_progress_deadline(progress_watchdog.deadline()) => {
+                        ModelStepWaitSignal::ProgressDeadline
+                    }
+                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(Box::new(progress)),
+                }
+            };
+
+            let progress = match signal {
+                ModelStepWaitSignal::Steering(Some(steering)) => {
+                    stream_interrupted_by_steering = Some(steering);
+                    break 'model_attempt None;
+                }
+                ModelStepWaitSignal::Steering(None) => {
+                    steering_closed = true;
+                    continue 'model_attempt;
+                }
+                ModelStepWaitSignal::Cancellation => model_attempt.next().await,
+                ModelStepWaitSignal::Progress(progress) => *progress,
+                ModelStepWaitSignal::ProgressDeadline => {
+                    match progress_watchdog.on_deadline() {
+                        model_progress_watchdog::ModelProgressDeadlineAction::StopConnecting => {
+                            let trace_message = "model_progress_watchdog: provider did not establish a model stream or completion before the connect deadline".to_string();
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                &trace_message,
+                                "error",
+                            );
+                            emit_error_and_finalize_turn(
+                                tx,
+                                db,
+                                trace,
+                                turn_id,
+                                route_kind,
+                                persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: "The model provider did not start responding within 90 seconds. The turn was stopped before any action ran; check the provider connection or retry.".to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                            return Err(CoreError::Agent(trace_message));
+                        }
+                        model_progress_watchdog::ModelProgressDeadlineAction::RestartWithoutReasoning => {
+                            let discarded_prompt = context::estimate_context_usage_breakdown_for_model(
+                                model,
+                                &current_request.messages,
+                                tool_defs,
+                                None,
+                            )
+                            .total_tokens;
+                            let discarded_output = crate::conversation::memory::estimate_tokens_for_model(
+                                model,
+                                &format!("{iteration_thinking}{full_content}"),
+                            );
+                            discarded_sample_tokens = discarded_sample_tokens
+                                .saturating_add(discarded_prompt.saturating_add(discarded_output));
+                            let recovery_controls = model_progress_watchdog::recovery_controls(
+                                current_request.provider_type,
+                                &current_request.model,
+                            );
+                            let _ = tx
+                                .send(AgentEvent::ControllerStatus {
+                                    code: "model_progress_recovery".to_string(),
+                                    content: format!(
+                                        "The model produced no usable answer or complete tool call before its deadline. Restarting once with {} and an immediate-action instruction.",
+                                        recovery_controls.description
+                                    ),
+                                    tone: Some("warning".to_string()),
+                                })
+                                .await;
+                            let _ = tx
+                                .send(AgentEvent::StreamReset {
+                                    reason: format!(
+                                        "Planning deadline reached; restarting with {} before any tool ran.",
+                                        recovery_controls.description
+                                    ),
+                                })
+                                .await;
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                "model_progress_watchdog: thinking-only planning deadline reached; restarting once with bounded reasoning",
+                                "warning",
+                            );
+                            reset_iteration_capture_for_new_sample(
+                                accumulated_content,
+                                accumulated_len_before_iteration,
+                                &mut full_content,
+                                &mut tool_calls,
+                                &mut tool_call_assembly_rejected,
+                                &mut provider_replay,
+                                &mut chunk_usage,
+                                &mut iteration_thinking,
+                                &mut answer_delta_seen,
+                                &mut thinking_delta_seen,
+                                &mut finish_reason,
+                                &mut preparing_call_ids,
+                                &mut started_call_ids,
+                                &mut tool_run_started_ids,
+                                &mut chunk_count,
+                            );
+                            accepted_attempt = None;
+                            progress_recovery_active = true;
+                            *reasoning_disabled_for_tool_loop = true;
+                            current_request.reasoning_enabled = recovery_controls.reasoning_enabled;
+                            current_request.reasoning_effort = recovery_controls.reasoning_effort;
+                            current_request.thinking_budget = recovery_controls.thinking_budget;
+                            reasoning_was_requested =
+                                request_reasoning_was_requested(&current_request);
+                            current_request.messages = messages.to_vec();
+                            current_request.messages.push(Message::text(
+                                Role::System,
+                                model_progress_watchdog::TOOL_PROGRESS_RECOVERY_PROMPT,
+                            ));
+                            model_attempt = model_attempt::ModelAttempt::new(
+                                self.provider.as_ref(),
+                                current_request.clone(),
+                                tx,
+                                *force_non_streaming_llm,
+                            )
+                            .with_cancel_token(self.cancel_token.clone());
+                            continue 'model_attempt;
+                        }
+                        model_progress_watchdog::ModelProgressDeadlineAction::StopBeforeAction => {
+                            let trace_message = "model_progress_watchdog: recovery sample also produced no answer or tool call before its deadline".to_string();
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                &trace_message,
+                                "error",
+                            );
+                            emit_error_and_finalize_turn(
+                                tx,
+                                db,
+                                trace,
+                                turn_id,
+                                route_kind,
+                                persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: "The model remained stuck in reasoning after one automatic tool-progress recovery. No tools were executed; try a lower reasoning level or steer the task.".to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                            return Err(CoreError::Agent(trace_message));
+                        }
+                        model_progress_watchdog::ModelProgressDeadlineAction::StopAfterVisibleOutput => {
+                            let trace_message = "model_progress_watchdog: visible answer or provider-hosted action exceeded its bounded stream deadline; no automatic retry was attempted".to_string();
+                            if let Some(accepted) = accepted_attempt.as_ref() {
+                                self.persist_interrupted_provider_draft(
+                                    assistant_turn::AssistantTurnPersistenceContext {
+                                        db,
+                                        conversation_id,
+                                        turn_id,
+                                        model,
+                                        route_kind,
+                                        persisted_trace_items: &mut *persisted_trace_items,
+                                        sort_order: &mut *sort_order,
+                                    },
+                                    accepted,
+                                    &full_content,
+                                    &iteration_thinking,
+                                    reasoning_was_requested,
+                                );
+                            }
+                            append_developer_persisted_trace_status(
+                                persisted_trace_items,
+                                &trace_message,
+                                "error",
+                            );
+                            emit_error_and_finalize_turn(
+                                tx,
+                                db,
+                                trace,
+                                turn_id,
+                                route_kind,
+                                persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: "The model stream stopped making bounded task progress after visible output or a provider-hosted action. The partial draft was preserved; no automatic retry was attempted.".to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                            return Err(CoreError::StreamIncomplete(trace_message));
+                        }
+                    }
+                }
             };
 
             match progress {
-                model_attempt::ModelAttemptProgress::StreamOpened => {}
+                model_attempt::ModelAttemptProgress::StreamOpened => {
+                    progress_watchdog.arm();
+                }
                 model_attempt::ModelAttemptProgress::Provider(
                     model_attempt::ModelAttemptProviderEvent {
                         event: model_attempt::AcceptedProviderEvent::Chunk(chunk),
@@ -386,10 +627,20 @@ impl AgentExecutor {
                                     content: thinking.clone(),
                                 })
                                 .await;
+                            if progress_watchdog.observe_thinking() {
+                                let _ = tx
+                                    .send(AgentEvent::ControllerStatus {
+                                        code: "model_planning_slow".to_string(),
+                                        content: "The model is still reasoning but has not produced an answer or tool call. A bounded automatic recovery will intervene if this continues.".to_string(),
+                                        tone: Some("warning".to_string()),
+                                    })
+                                    .await;
+                            }
                         }
                     }
                     // Forward text deltas.
                     if !chunk.delta.is_empty() {
+                        progress_watchdog.observe_answer_progress();
                         answer_delta_seen = true;
                         full_content.push_str(&chunk.delta);
                         accumulated_content.push_str(&chunk.delta);
@@ -397,6 +648,7 @@ impl AgentExecutor {
                     }
                     // Accumulate tool-call deltas.
                     if let Some(ref tc_delta) = chunk.tool_call_delta {
+                        progress_watchdog.observe_tool_call_progress();
                         if !accumulate_tool_call(&mut tool_calls, tc_delta) {
                             tool_call_assembly_rejected = true;
                         }
@@ -485,6 +737,7 @@ impl AgentExecutor {
                     },
                 ) => {
                     bind_accepted_attempt!(accepted, first_for_sample);
+                    progress_watchdog.observe_hosted_tool_progress();
                     *context_recovery_attempts = 0;
                     let status = tool.status;
                     let run = build_provider_hosted_tool_run_item(&self.tools, &tool);
@@ -530,6 +783,7 @@ impl AgentExecutor {
                 }
                 model_attempt::ModelAttemptProgress::StreamComplete { accepted, timing } => {
                     bind_accepted_attempt!(accepted, false);
+                    progress_watchdog.complete();
                     info!(
                         "Stream complete: {chunk_count} chunks, {} chars",
                         full_content.len()
@@ -698,9 +952,12 @@ impl AgentExecutor {
                                     messages,
                                     model,
                                     tx,
-                                    db,
-                                    conversation_id,
-                                    turn_id,
+                                    context_compaction::CompactionRunContext {
+                                        db,
+                                        conversation_id,
+                                        turn_id,
+                                    },
+                                    total_usage,
                                 )
                                 .await?;
                             if !recovered {
@@ -742,6 +999,12 @@ impl AgentExecutor {
                             }
                             accepted_attempt = None;
                             current_request.messages = messages.to_vec();
+                            if progress_recovery_active {
+                                current_request.messages.push(Message::text(
+                                    Role::System,
+                                    model_progress_watchdog::TOOL_PROGRESS_RECOVERY_PROMPT,
+                                ));
+                            }
                             model_attempt = model_attempt::ModelAttempt::new(
                                 self.provider.as_ref(),
                                 current_request.clone(),
@@ -749,6 +1012,10 @@ impl AgentExecutor {
                                 *force_non_streaming_llm,
                             )
                             .with_cancel_token(self.cancel_token.clone());
+                            progress_watchdog.reset_for_context_retry();
+                            if *force_non_streaming_llm {
+                                progress_watchdog.arm();
+                            }
                             continue 'model_attempt;
                         }
                         ContextOverflowRecoveryDecision::GiveUp { user_message } => {
@@ -1019,9 +1286,14 @@ impl AgentExecutor {
 
             let required_route = current_accepted_route.clone();
             let mut safe_request = current_request.clone();
-            safe_request.reasoning_enabled = Some(false);
-            safe_request.reasoning_effort = None;
-            safe_request.thinking_budget = None;
+            let safe_controls = model_progress_watchdog::recovery_controls(
+                safe_request.provider_type,
+                &safe_request.model,
+            );
+            safe_request.reasoning_enabled = safe_controls.reasoning_enabled;
+            safe_request.reasoning_effort = safe_controls.reasoning_effort;
+            safe_request.thinking_budget = safe_controls.thinking_budget;
+            let safe_reasoning_was_requested = request_reasoning_was_requested(&safe_request);
             let safe_completion = loop {
                 let mut safe_attempt = model_attempt::ModelAttempt::new(
                     self.provider.as_ref(),
@@ -1030,7 +1302,41 @@ impl AgentExecutor {
                     true,
                 )
                 .with_cancel_token(self.cancel_token.clone());
-                match safe_attempt.next().await {
+                let mut safe_watchdog = model_progress_watchdog::ModelProgressWatchdog::new(
+                    self.config.provider_type,
+                    model,
+                    route_kind,
+                    has_executable_tools && requires_first_action && !force_answer_only,
+                );
+                safe_watchdog.arm();
+                let safe_progress = tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => safe_attempt.next().await,
+                    _ = wait_for_model_progress_deadline(safe_watchdog.deadline()) => {
+                        let trace_message = "reasoning_replay_safe_restart_progress_deadline: provider produced no replay-safe answer or tool call before the bounded deadline".to_string();
+                        append_developer_persisted_trace_status(
+                            persisted_trace_items,
+                            &trace_message,
+                            "error",
+                        );
+                        emit_error_and_finalize_turn(
+                            tx,
+                            db,
+                            trace,
+                            turn_id,
+                            route_kind,
+                            persisted_trace_items,
+                            TurnErrorMessages {
+                                frontend_message: "The provider did not complete the replay-safe restart within its bounded deadline. No tools were executed.".to_string(),
+                                trace_message: trace_message.clone(),
+                            },
+                        )
+                        .await;
+                        return Err(CoreError::Agent(trace_message));
+                    }
+                    progress = safe_attempt.next() => progress,
+                };
+                match safe_progress {
                     model_attempt::ModelAttemptProgress::Completion(completion) => {
                         break completion;
                     }
@@ -1058,9 +1364,12 @@ impl AgentExecutor {
                                         messages,
                                         model,
                                         tx,
-                                        db,
-                                        conversation_id,
-                                        turn_id,
+                                        context_compaction::CompactionRunContext {
+                                            db,
+                                            conversation_id,
+                                            turn_id,
+                                        },
+                                        total_usage,
                                     )
                                     .await
                                 {
@@ -1250,7 +1559,7 @@ impl AgentExecutor {
                         response.thinking.as_deref(),
                         response.thinking.as_deref(),
                         response.tool_calls.clone().unwrap_or_default(),
-                        false,
+                        safe_reasoning_was_requested,
                         response.provider_replay.clone(),
                     );
                 self.persist_provider_sample_without_message(
@@ -1307,7 +1616,7 @@ impl AgentExecutor {
                         response.thinking.as_deref(),
                         None,
                         safe_tool_calls.to_vec(),
-                        false,
+                        safe_reasoning_was_requested,
                     );
                 self.persist_provider_sample_without_message(
                     db,
@@ -1355,7 +1664,11 @@ impl AgentExecutor {
                 *context_recovery_attempts = 0;
             }
             *reasoning_disabled_for_tool_loop = true;
-            let reset_reason = "The provider omitted required replay state, so Nexa safely restarted the same route with reasoning disabled before any tool ran.".to_string();
+            reasoning_was_requested = safe_reasoning_was_requested;
+            let reset_reason = format!(
+                "The provider omitted required replay state, so Nexa safely restarted the same route with {} before any tool ran.",
+                safe_controls.description
+            );
 
             provider_replay = response.provider_replay;
             let recovered_tool_calls = response.tool_calls.unwrap_or_default();
@@ -1428,6 +1741,7 @@ impl AgentExecutor {
             sample_id: accepted_sample_id,
             route_snapshot: accepted_route_snapshot,
             reasoning_was_requested,
+            discarded_sample_tokens,
         })))
     }
 }

@@ -104,6 +104,7 @@ pub mod task_run;
 pub mod task_timeline;
 pub mod theme_resource_plugin;
 pub mod tool_access;
+pub mod tool_argument_projection;
 pub mod tool_visibility_policy;
 pub mod tools;
 pub mod trace;

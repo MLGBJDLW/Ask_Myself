@@ -130,6 +130,10 @@ pub struct SummarizationResult {
     /// Present only when an LLM request completed. Extractive fallbacks do not
     /// pretend to have consumed provider tokens.
     pub usage: Option<Usage>,
+    /// Number of physical provider attempts started for this logical summary.
+    /// Failed or timed-out attempts often have no provider usage payload, so
+    /// the caller uses this count for conservative run-budget accounting.
+    pub attempts: u32,
     pub control: ControlledSummarization,
 }
 
@@ -145,6 +149,27 @@ pub struct SummarizationControlPolicy {
     pub max_retries: u32,
 }
 
+#[derive(Debug)]
+pub struct SummarizationFailure {
+    pub error: CoreError,
+    /// Physical provider attempts already started before cancellation/error.
+    pub attempts: u32,
+}
+
+impl std::fmt::Display for SummarizationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SummarizationFailure {}
+
+impl From<SummarizationFailure> for CoreError {
+    fn from(failure: SummarizationFailure) -> Self {
+        failure.error
+    }
+}
+
 impl Default for SummarizationControlPolicy {
     fn default() -> Self {
         Self {
@@ -152,6 +177,27 @@ impl Default for SummarizationControlPolicy {
             max_retries: MAX_SUMMARY_RETRIES,
         }
     }
+}
+
+/// Conservative token reservation for one physical summarization request.
+/// This lets delegated workers admit compaction through the same cumulative
+/// token ledger as their normal model steps instead of spending off-ledger.
+pub fn summarization_attempt_token_reservation(evicted_messages: &[Message]) -> u32 {
+    let entries = build_conversation_entries(evicted_messages);
+    if entries.is_empty() {
+        return 0;
+    }
+    let input = fit_entries_to_budget(&entries, MAX_INPUT_FOR_SUMMARY);
+    if estimate_tokens(&input) < MIN_TOKENS_FOR_LLM {
+        return 0;
+    }
+    estimate_tokens(SUMMARIZE_SYSTEM_PROMPT)
+        .saturating_add(estimate_tokens(&input))
+        .saturating_add(MAX_SUMMARY_TOKENS)
+}
+
+pub const fn maximum_summarization_attempts() -> u32 {
+    MAX_SUMMARY_RETRIES + 1
 }
 
 /// Summarise evicted messages and retain the invocation-level provider usage.
@@ -177,6 +223,7 @@ pub async fn summarize_evicted_messages_with_usage(
     .unwrap_or_else(|error| SummarizationResult {
         summary: extractive_fallback.to_string(),
         usage: None,
+        attempts: 0,
         control: ControlledSummarization::ExtractiveFallback {
             reason: error.to_string(),
         },
@@ -196,12 +243,13 @@ pub async fn summarize_evicted_messages_with_controls(
     cancellation: &CancellationToken,
     deadline: Instant,
     policy: SummarizationControlPolicy,
-) -> Result<SummarizationResult, CoreError> {
+) -> Result<SummarizationResult, SummarizationFailure> {
     let entries = build_conversation_entries(evicted_messages);
     if entries.is_empty() {
         return Ok(SummarizationResult {
             summary: extractive_fallback.to_string(),
             usage: None,
+            attempts: 0,
             control: ControlledSummarization::ExtractiveFallback {
                 reason: "empty_summary_input".to_string(),
             },
@@ -212,6 +260,7 @@ pub async fn summarize_evicted_messages_with_controls(
         return Ok(SummarizationResult {
             summary: extractive_fallback.to_string(),
             usage: None,
+            attempts: 0,
             control: ControlledSummarization::ExtractiveFallback {
                 reason: "input_below_threshold".to_string(),
             },
@@ -243,29 +292,45 @@ pub async fn summarize_evicted_messages_with_controls(
     };
 
     let mut retry_count = 0u32;
+    let mut attempts = 0u32;
     let max_retries = policy.max_retries.min(1);
     loop {
         if cancellation.is_cancelled() {
-            return Err(CoreError::Cancelled(
-                "Context summarization was cancelled".to_string(),
-            ));
+            return Err(SummarizationFailure {
+                error: CoreError::Cancelled("Context summarization was cancelled".to_string()),
+                attempts,
+            });
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Ok(fallback(extractive_fallback, "total_deadline_exceeded"));
+            return Ok(fallback(
+                extractive_fallback,
+                "total_deadline_exceeded",
+                attempts,
+            ));
         }
         let attempt_timeout = policy.attempt_timeout.min(remaining);
+        attempts = attempts.saturating_add(1);
         let attempt = tokio::select! {
             _ = cancellation.cancelled() => {
-                return Err(CoreError::Cancelled(
-                    "Context summarization was cancelled".to_string(),
-                ));
+                return Err(SummarizationFailure {
+                    error: CoreError::Cancelled(
+                        "Context summarization was cancelled".to_string(),
+                    ),
+                    attempts,
+                });
             }
             result = tokio::time::timeout(attempt_timeout, provider.complete(&request)) => result,
         };
         let response = match attempt {
             Ok(response) => response,
-            Err(_) => return Ok(fallback(extractive_fallback, "provider_attempt_timed_out")),
+            Err(_) => {
+                return Ok(fallback(
+                    extractive_fallback,
+                    "provider_attempt_timed_out",
+                    attempts,
+                ));
+            }
         };
         match response {
             Ok(response) => {
@@ -278,6 +343,7 @@ pub async fn summarize_evicted_messages_with_controls(
                 return Ok(SummarizationResult {
                     summary,
                     usage: Some(response.usage),
+                    attempts,
                     control: ControlledSummarization::Abstractive,
                 });
             }
@@ -288,7 +354,7 @@ pub async fn summarize_evicted_messages_with_controls(
                         "Summarizer: rate limited after {} retries, falling back to extractive recap",
                         max_retries
                     );
-                    return Ok(fallback(extractive_fallback, "rate_limited"));
+                    return Ok(fallback(extractive_fallback, "rate_limited", attempts));
                 }
                 let wait = if retry_after_secs > 0 {
                     retry_after_secs
@@ -299,8 +365,15 @@ pub async fn summarize_evicted_messages_with_controls(
                     "Summarizer: rate limited, retry {}/{} after {}s",
                     retry_count, max_retries, wait
                 );
-                if !controlled_wait(cancellation, deadline, Duration::from_secs(wait)).await? {
-                    return Ok(fallback(extractive_fallback, "total_deadline_exceeded"));
+                if !controlled_wait(cancellation, deadline, Duration::from_secs(wait))
+                    .await
+                    .map_err(|error| SummarizationFailure { error, attempts })?
+                {
+                    return Ok(fallback(
+                        extractive_fallback,
+                        "total_deadline_exceeded",
+                        attempts,
+                    ));
                 }
             }
             Err(CoreError::TransientLlm(msg)) => {
@@ -310,15 +383,26 @@ pub async fn summarize_evicted_messages_with_controls(
                         "Summarizer: transient error after {} retries: {}, falling back to extractive recap",
                         max_retries, msg
                     );
-                    return Ok(fallback(extractive_fallback, "transient_provider_error"));
+                    return Ok(fallback(
+                        extractive_fallback,
+                        "transient_provider_error",
+                        attempts,
+                    ));
                 }
                 let wait = 2u64.pow(retry_count - 1); // 1s, 2s
                 warn!(
                     "Summarizer: transient error (retry {}/{}): {}. Retrying after {}s",
                     retry_count, max_retries, msg, wait
                 );
-                if !controlled_wait(cancellation, deadline, Duration::from_secs(wait)).await? {
-                    return Ok(fallback(extractive_fallback, "total_deadline_exceeded"));
+                if !controlled_wait(cancellation, deadline, Duration::from_secs(wait))
+                    .await
+                    .map_err(|error| SummarizationFailure { error, attempts })?
+                {
+                    return Ok(fallback(
+                        extractive_fallback,
+                        "total_deadline_exceeded",
+                        attempts,
+                    ));
                 }
             }
             Err(e) => {
@@ -327,16 +411,18 @@ pub async fn summarize_evicted_messages_with_controls(
                 return Ok(fallback(
                     extractive_fallback,
                     "non_retryable_provider_error",
+                    attempts,
                 ));
             }
         }
     }
 }
 
-fn fallback(summary: &str, reason: &str) -> SummarizationResult {
+fn fallback(summary: &str, reason: &str, attempts: u32) -> SummarizationResult {
     SummarizationResult {
         summary: summary.to_string(),
         usage: None,
+        attempts,
         control: ControlledSummarization::ExtractiveFallback {
             reason: reason.to_string(),
         },
@@ -575,6 +661,7 @@ mod tests {
             }
         );
         assert!(result.usage.is_none());
+        assert_eq!(result.attempts, 1);
     }
 
     #[tokio::test]
@@ -598,6 +685,36 @@ mod tests {
         .await
         .expect_err("cancellation must win");
 
-        assert!(matches!(error, CoreError::Cancelled(_)));
+        assert!(matches!(error.error, CoreError::Cancelled(_)));
+        assert_eq!(error.attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_request_start_reports_the_unbilled_attempt() {
+        let cancellation = CancellationToken::new();
+        let cancel_after_start = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_after_start.cancel();
+        });
+        let messages = vec![Message::text(Role::User, "important context ".repeat(500))];
+        let error = summarize_evicted_messages_with_controls(
+            &HangingProvider,
+            "test-model",
+            None,
+            &messages,
+            "deterministic fallback",
+            &cancellation,
+            Instant::now() + Duration::from_secs(1),
+            SummarizationControlPolicy {
+                attempt_timeout: Duration::from_secs(1),
+                max_retries: 0,
+            },
+        )
+        .await
+        .expect_err("in-flight cancellation must remain terminal");
+
+        assert!(matches!(error.error, CoreError::Cancelled(_)));
+        assert_eq!(error.attempts, 1);
     }
 }

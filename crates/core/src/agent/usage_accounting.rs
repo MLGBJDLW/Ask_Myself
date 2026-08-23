@@ -40,6 +40,36 @@ pub(super) struct ModelStepUsageObservation<'a> {
     pub(super) cache_outcome_reason: Option<&'a str>,
 }
 
+pub(super) fn accumulate_usage(target: &mut Usage, added: &Usage) {
+    target.prompt_tokens = target.prompt_tokens.saturating_add(added.prompt_tokens);
+    target.completion_tokens = target
+        .completion_tokens
+        .saturating_add(added.completion_tokens);
+    let added_total = added
+        .total_tokens
+        .max(added.prompt_tokens.saturating_add(added.completion_tokens));
+    target.total_tokens = target.total_tokens.saturating_add(added_total);
+    target.thinking_tokens = add_optional_usage(target.thinking_tokens, added.thinking_tokens);
+    target.tool_prompt_tokens =
+        add_optional_usage(target.tool_prompt_tokens, added.tool_prompt_tokens);
+    target.cache_read_tokens =
+        add_optional_usage(target.cache_read_tokens, added.cache_read_tokens);
+    target.cache_miss_tokens =
+        add_optional_usage(target.cache_miss_tokens, added.cache_miss_tokens);
+    target.cache_creation_tokens =
+        add_optional_usage(target.cache_creation_tokens, added.cache_creation_tokens);
+}
+
+fn add_optional_usage(left: Option<u32>, right: Option<u32>) -> Option<u32> {
+    match (left, right) {
+        (None, None) => None,
+        (left, right) => Some(
+            left.unwrap_or_default()
+                .saturating_add(right.unwrap_or_default()),
+        ),
+    }
+}
+
 impl AgentExecutor {
     pub(super) fn record_model_step_failure(
         &self,
@@ -174,10 +204,20 @@ impl AgentExecutor {
         }
         *last_prompt_tokens = prompt_tokens;
         *last_context_breakdown = Some(context_breakdown.clone());
+        total_usage.prompt_tokens = total_usage.prompt_tokens.saturating_add(prompt_tokens);
+        total_usage.completion_tokens = total_usage
+            .completion_tokens
+            .saturating_add(completion_tokens);
+        let step_total_tokens = chunk_usage.as_ref().map_or_else(
+            || prompt_tokens.saturating_add(completion_tokens),
+            |usage| {
+                usage
+                    .total_tokens
+                    .max(prompt_tokens.saturating_add(completion_tokens))
+            },
+        );
+        total_usage.total_tokens = total_usage.total_tokens.saturating_add(step_total_tokens);
         if let Some(u) = chunk_usage.as_ref() {
-            total_usage.prompt_tokens += u.prompt_tokens;
-            total_usage.completion_tokens += u.completion_tokens;
-            total_usage.total_tokens += u.total_tokens;
             if let Some(t) = u.thinking_tokens {
                 *total_usage.thinking_tokens.get_or_insert(0) += t;
             }
@@ -217,22 +257,47 @@ impl AgentExecutor {
             loop_recorder.record(started.clone());
             append_persisted_trace_loop_event(persisted_trace_items, started);
             turn_state.transition_to(TurnPhase::Compacting);
-            if let Err(e) = self
-                .aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+            let actual_tokens_remaining = self
+                .config
+                .max_actual_tokens_per_run
+                .map(|limit| limit.saturating_sub(total_usage.total_tokens));
+            match self
+                .aggressive_compact(
+                    messages,
+                    model,
+                    tx,
+                    context_compaction::CompactionRunContext {
+                        db,
+                        conversation_id,
+                        turn_id,
+                    },
+                    actual_tokens_remaining,
+                )
                 .await
             {
-                warn!("Auto-compact failed: {e}");
-            } else {
-                let after_messages = prompt_cache::message_sequence_fingerprint(messages);
-                iteration_compacted = before_messages != after_messages;
-                let evicted_count = before_message_count.saturating_sub(messages.len());
-                let ended = TurnLoopEvent::CompactionEnded {
-                    reason: "auto".to_string(),
-                    evicted_count,
-                    message_count: messages.len(),
-                };
-                loop_recorder.record(ended.clone());
-                append_persisted_trace_loop_event(persisted_trace_items, ended);
+                Err(e) => warn!("Auto-compact failed: {e}"),
+                Ok(compaction_usage) => {
+                    accumulate_usage(total_usage, &compaction_usage);
+                    let after_messages = prompt_cache::message_sequence_fingerprint(messages);
+                    iteration_compacted = before_messages != after_messages;
+                    let evicted_count = before_message_count.saturating_sub(messages.len());
+                    let ended = TurnLoopEvent::CompactionEnded {
+                        reason: "auto".to_string(),
+                        evicted_count,
+                        message_count: messages.len(),
+                    };
+                    loop_recorder.record(ended.clone());
+                    append_persisted_trace_loop_event(persisted_trace_items, ended);
+                    if compaction_usage.total_tokens > 0 {
+                        let _ = tx
+                            .send(AgentEvent::UsageUpdate {
+                                usage_total: total_usage.clone(),
+                                last_prompt_tokens: *last_prompt_tokens,
+                                context_breakdown: Some(context_breakdown.clone()),
+                            })
+                            .await;
+                    }
+                }
             }
             turn_state.transition_to(TurnPhase::ModelStep);
         }

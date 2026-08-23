@@ -1,12 +1,12 @@
 {
   "name": "computer_control",
-  "description": "Control a previously observed Windows window with approval-gated mouse or keyboard input. Every call requires the fresh observation_id and window_id returned by computer_observe (or the preceding computer_control result), verifies that the same process/title still owns the handle, focuses that window, performs one bounded action, and returns a new screenshot observation when possible. Coordinates are relative to the captured image and are scaled to the current window bounds.",
+  "description": "Perform one approval-gated action against a fresh Windows observation. Visual actions can target captured-image coordinates or observation-scoped UI Automation element ids. invoke and set_value use semantic Windows UI Automation patterns without moving the user's pointer; pointer/keyboard actions use foreground input. Each observation is single-use for control, process/title and visual freshness are revalidated, and the result includes a new hybrid observation plus perceptual change verification.",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["focus_window", "move_mouse", "click", "drag", "scroll", "type_text", "key"],
+        "enum": ["focus_window", "move_mouse", "click", "drag", "scroll", "type_text", "key", "invoke", "set_value"],
         "description": "Approved desktop input action to perform."
       },
       "observation_id": {
@@ -17,6 +17,21 @@
         "type": "integer",
         "minimum": 1,
         "description": "Window id from the referenced observation."
+      },
+      "element_id": {
+        "type": "string",
+        "pattern": "^e[1-9][0-9]{0,3}$",
+        "description": "Observation-scoped semantic element id. Preferred over x/y for click, move_mouse, scroll, invoke, set_value, and exact-target type_text."
+      },
+      "to_element_id": {
+        "type": "string",
+        "pattern": "^e[1-9][0-9]{0,3}$",
+        "description": "Observation-scoped destination element id for drag."
+      },
+      "coordinate_space": {
+        "type": "string",
+        "enum": ["captured_image_pixels", "normalized_0_1"],
+        "description": "How x/y/to_x/to_y are interpreted. Defaults to captured_image_pixels."
       },
       "x": {
         "type": "number",
@@ -63,17 +78,35 @@
       },
       "text": {
         "type": "string",
-        "maxLength": 4000,
-        "description": "Text for type_text. Never place secrets in tool arguments."
+        "minLength": 1,
+        "maxLength": 1000,
+        "description": "Text for type_text or set_value. Maximum 1000 characters and 32 newline/tab controls. Never place secrets in tool arguments."
       },
       "key_sequence": {
         "type": "string",
-        "description": "Shortcut such as ctrl+s, shift+tab, escape, or f5. Required for key."
+        "minLength": 1,
+        "maxLength": 120,
+        "description": "One chord such as ctrl+s, shift+tab, escape, or f5. Non-final keys must be modifiers; bare text-producing keys are rejected. Required for key."
       },
       "reason": {
         "type": "string",
         "maxLength": 240,
-        "description": "Brief user-facing reason shown in the approval request."
+        "description": "Optional reason, summarized by character count in approval and audit output rather than persisted verbatim."
+      },
+      "include_elements": {
+        "type": "boolean",
+        "description": "Include semantic elements in the fresh post-action observation. Defaults to true."
+      },
+      "max_elements": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300,
+        "description": "Maximum semantic elements in the post-action observation. Defaults to 120."
+      },
+      "capture_mode": {
+        "type": "string",
+        "enum": ["raw", "som"],
+        "description": "raw returns the normal post-action screenshot; som overlays semantic element ids. Defaults to raw."
       }
     },
     "required": ["action", "observation_id", "window_id"],

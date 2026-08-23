@@ -67,6 +67,7 @@ mod finalization;
 mod long_task;
 pub mod loop_guard;
 mod model_attempt;
+mod model_progress_watchdog;
 mod model_step;
 mod output_recovery;
 pub mod power_mode;
@@ -233,6 +234,9 @@ pub struct AgentConfig {
     pub temperature: Option<f32>,
     /// Maximum tokens for the LLM response.
     pub max_tokens: Option<u32>,
+    /// Optional cumulative prompt+completion ceiling for one executor run.
+    /// Delegated workers use this independently from per-step `max_tokens`.
+    pub max_actual_tokens_per_run: Option<u32>,
     /// Override context window size (auto-detected from model when `None`).
     pub context_window: Option<u32>,
     /// Whether to enable reasoning/thinking for models that support it.
@@ -386,10 +390,12 @@ impl Default for AgentConfig {
             volatile_system_sections: Vec::new(),
             model: None,
             temperature: Some(0.3),
-            // `None` lets providers use their native per-request output limit.
-            // Context planning keeps its own conservative response reserve, so
-            // this wire-level option does not need to impose a global cap.
+            // `None` selects the agent's conservative response reserve (4096
+            // tokens today). Model steps always send that resolved cap on the
+            // wire so provider-native 100k-1M reasoning limits cannot swallow
+            // an interactive tool round.
             max_tokens: None,
+            max_actual_tokens_per_run: None,
             context_window: None,
             reasoning_enabled: None,
             thinking_budget: None,
@@ -427,7 +433,16 @@ impl Default for AgentConfig {
 #[serde(rename_all = "camelCase")]
 pub struct DelegationLimitsConfig {
     pub input_context_limit: Option<u64>,
+    /// Parent-history handoff allocation per worker. This is distinct from
+    /// the selected model's context-window capability.
+    pub handoff_context_tokens_per_worker: Option<u64>,
+    /// Per physical model request/step. The legacy
+    /// `max_output_tokens_per_worker` field is accepted as an alias in the
+    /// desktop resolver for backward compatibility.
+    pub max_output_tokens_per_step: Option<u64>,
     pub max_output_tokens_per_worker: Option<u64>,
+    /// Hard cumulative actual-token ceiling for one delegated worker run.
+    pub max_actual_tokens_per_worker: Option<u64>,
     pub total_actual_tokens_soft_limit: Option<u64>,
     pub total_cost_soft_limit_micros: Option<u64>,
     pub max_parallel: Option<u32>,

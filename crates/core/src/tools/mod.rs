@@ -1342,6 +1342,47 @@ fn core_error_contract(error: &CoreError) -> (&'static str, bool) {
     }
 }
 
+fn computer_control_error_contract(error: &CoreError) -> (&'static str, bool) {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("already used")
+        || message.contains("observation expired")
+        || message.contains("unknown computer observation")
+        || message.contains("observation is stale")
+        || message.contains("observe it again")
+        || message.contains("capture the window again")
+        || message.contains("moved or resized")
+        || message.contains("changed materially")
+    {
+        return ("computer_observation_stale", true);
+    }
+    if message.contains("protected from computer control")
+        || message.contains("password element")
+        || message.contains("secrets must never")
+    {
+        return ("computer_action_refused", false);
+    }
+    if message.contains("user takeover")
+        || message.contains("cursor moved during")
+        || message.contains("keyboard focus left")
+    {
+        return ("computer_user_takeover", false);
+    }
+    if message.contains("effect is uncertain")
+        || matches!(error, CoreError::Internal(_) | CoreError::Io(_))
+        || message.contains("click mouse")
+        || message.contains("drag mouse")
+        || message.contains("scroll vertically")
+        || message.contains("scroll horizontally")
+        || message.contains("type text")
+        || message.contains("send key")
+        || message.contains("ui automation value")
+        || message.contains("invoke ui automation")
+    {
+        return ("computer_action_uncertain", false);
+    }
+    ("invalid_computer_action", true)
+}
+
 fn normalize_tool_execution_result(
     call_id: &str,
     tool_name: &str,
@@ -1350,11 +1391,21 @@ fn normalize_tool_execution_result(
 ) -> ToolResult {
     match result {
         Ok(result) if result.is_error && result.artifacts.is_none() => {
-            let (code, retryable) = classify_tool_result_error(&result.content);
+            let computer_control_error = tool_name == "computer_control";
+            let (code, retryable) = if computer_control_error {
+                ("computer_action_uncertain", false)
+            } else {
+                classify_tool_result_error(&result.content)
+            };
             structured_tool_error_result(
                 call_id,
                 code,
-                result.content,
+                if computer_control_error {
+                    "Computer action returned an unstructured failure. Effect is uncertain; sensitive details were omitted and the action must not be blindly retried."
+                        .to_string()
+                } else {
+                    result.content
+                },
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
@@ -1369,15 +1420,34 @@ fn normalize_tool_execution_result(
         }
         Ok(result) => result,
         Err(error) => {
-            let (code, retryable) = core_error_contract(&error);
+            let (code, retryable) = if tool_name == "computer_control" {
+                computer_control_error_contract(&error)
+            } else {
+                core_error_contract(&error)
+            };
+            let message = if tool_name == "computer_control" {
+                match code {
+                    "computer_observation_stale" => "Computer observation is stale, consumed, or no longer matches the target. Re-observe before acting.".to_string(),
+                    "computer_action_refused" => "Computer action was refused by a protected-target or sensitive-input safety rule.".to_string(),
+                    "computer_user_takeover" => "Computer action stopped because user input or focus takeover was detected.".to_string(),
+                    "computer_action_uncertain" => "Computer action may have been partially delivered. Effect is uncertain; inspect fresh state and do not blindly retry.".to_string(),
+                    _ => "Computer action arguments or preconditions were invalid. Review the schema and fresh observation without reusing sensitive values.".to_string(),
+                }
+            } else {
+                format!("{tool_name} failed: {error}")
+            };
             structured_tool_error_result(
                 call_id,
                 code,
-                format!("{tool_name} failed: {error}"),
+                message,
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
-                    "recovery": if retryable {
+                    "recovery": if code == "computer_observation_stale" {
+                        "re-observe the target window and choose a target from the fresh observation; never reuse the consumed or stale token"
+                    } else if code == "computer_action_uncertain" {
+                        "the action may have been partially delivered; inspect fresh state or ask the user, and do not blindly retry"
+                    } else if retryable {
                         "inspect the structured code, repair arguments or runtime preconditions, and retry once with a materially corrected call"
                     } else {
                         "stop and wait for user intent or permissions to change"
@@ -2552,5 +2622,40 @@ mod tests {
         assert_eq!(result.content, "full display output");
         assert_eq!(result.llm_context_content(), "context-only summary");
         assert_eq!(result.output_channels(), output);
+    }
+
+    #[test]
+    fn computer_control_errors_distinguish_reobserve_from_uncertain_delivery() {
+        assert_eq!(
+            computer_control_error_contract(&CoreError::InvalidInput(
+                "Desktop observation is stale; observe it again".to_string()
+            )),
+            ("computer_observation_stale", true)
+        );
+        assert_eq!(
+            computer_control_error_contract(&CoreError::Internal(
+                "click mouse: input driver disconnected".to_string()
+            )),
+            ("computer_action_uncertain", false)
+        );
+        assert_eq!(
+            computer_control_error_contract(&CoreError::InvalidInput(
+                "Cursor moved during click preparation, indicating user takeover".to_string()
+            )),
+            ("computer_user_takeover", false)
+        );
+
+        let sentinel = "error-path-secret-73df";
+        let projected = normalize_tool_execution_result(
+            "call-sensitive",
+            "computer_control",
+            serde_json::json!({ "type": "object" }),
+            Err(CoreError::InvalidInput(format!(
+                "unsupported key {sentinel}"
+            ))),
+        );
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(serialized.contains("invalid_computer_action"));
     }
 }

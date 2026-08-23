@@ -82,6 +82,7 @@ struct StoredObservation {
     user_epoch: u64,
     lease_generation: u64,
     elements: Vec<BrowserElement>,
+    claimed_for_action: bool,
 }
 
 pub type BrowserTabInfo = CoreBrowserTab;
@@ -122,6 +123,47 @@ pub struct BrowserState {
     profile_root: Arc<PathBuf>,
     inner: Arc<Mutex<BrowserRuntimeState>>,
     creation_locks: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+}
+
+struct AgentNavigationPermitGuard {
+    state: BrowserState,
+    session_id: String,
+    tab_id: String,
+    url: Url,
+    form_navigation: bool,
+}
+
+impl Drop for AgentNavigationPermitGuard {
+    fn drop(&mut self) {
+        self.state.revoke_agent_action_url(
+            &self.session_id,
+            &self.tab_id,
+            &self.url,
+            self.form_navigation,
+        );
+    }
+}
+
+struct InitializingSessionGuard {
+    state: BrowserState,
+    session_id: String,
+    armed: bool,
+}
+
+impl InitializingSessionGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for InitializingSessionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Ok(mut runtime) = self.state.inner.lock() {
+                runtime.sessions.remove(&self.session_id);
+            }
+        }
+    }
 }
 
 impl BrowserState {
@@ -319,6 +361,11 @@ impl BrowserState {
                 },
             );
         }
+        let mut initialization_guard = InitializingSessionGuard {
+            state: self.clone(),
+            session_id: session_id.clone(),
+            armed: true,
+        };
         let target = initial_url.unwrap_or("https://www.google.com");
         if let Err(error) = self.open_tab(&session_id, target, actor, bounds).await {
             if let Ok(mut runtime) = self.inner.lock() {
@@ -337,6 +384,7 @@ impl BrowserState {
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
             session.initializing = false;
         }
+        initialization_guard.disarm();
         self.emit(
             "sessionCreated",
             serde_json::json!({ "sessionId": session_id }),
@@ -966,6 +1014,7 @@ impl BrowserState {
                 user_epoch: snapshot.user_epoch,
                 lease_generation,
                 elements: snapshot.elements.clone(),
+                claimed_for_action: false,
             };
             session.observations.insert(observation_id.clone(), stored);
             if session.observations.len() > MAX_OBSERVATIONS {
@@ -1030,6 +1079,12 @@ impl BrowserState {
                 .get(request.observation_id)
                 .cloned()
                 .ok_or_else(|| "stale observation: observe the tab again".to_string())?;
+            if observation.claimed_for_action {
+                return Err(
+                    "stale observation: this browser observation was already consumed by an action"
+                        .to_string(),
+                );
+            }
             if observation.created_at.elapsed() > Duration::from_secs(120)
                 || observation.tab_id != request.tab_id
                 || observation.lease_generation != session.control_lease.generation()
@@ -1068,6 +1123,14 @@ impl BrowserState {
                         .to_string(),
                 );
             }
+            // Claim while holding the session mutex, before the first await or
+            // WebView/native side effect. A dropped callback or aborted turn
+            // can no longer reuse the same pre-action state.
+            session
+                .observations
+                .get_mut(request.observation_id)
+                .expect("observation remained present under the session lock")
+                .claimed_for_action = true;
             (observation, expected, expected_end)
         };
         let is_form_submitter = expected.as_ref().is_some_and(|element| {
@@ -1154,6 +1217,15 @@ impl BrowserState {
             tokio::time::sleep(Duration::from_millis(duration_ms)).await;
         }
         if matches!(request.action, "move" | "hover") {
+            // Acquire before the native preparation so a queued computer
+            // action cannot make the returned element bounds stale while this
+            // pointer commit waits for desktop ownership.
+            let _desktop_input_guard = nexa_core::browser_runtime::acquire_desktop_input_permit()
+                .await
+                .map_err(|error| error.to_string())?;
+            let _cross_process_guard =
+                nexa_core::browser_runtime::try_acquire_cross_process_input()
+                    .map_err(|error| error.to_string())?;
             let prepare_expression = format!(
                 "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.prepareNativePointer({action_input}); }})()"
             );
@@ -1182,7 +1254,15 @@ impl BrowserState {
                 .map_err(|error| {
                     format!("Browser pointer preparation returned invalid bounds: {error}")
                 })?;
+            self.revalidate_native_pointer_commit(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                observation.lease_generation,
+            )?;
             self.move_native_pointer_to_target(request.session_id, request.tab_id, &target_bounds)?;
+            drop(_desktop_input_guard);
             tokio::time::sleep(Duration::from_millis(80)).await;
             let observation = self
                 .observe(request.session_id, request.tab_id, request.call_id)
@@ -1199,6 +1279,7 @@ impl BrowserState {
             );
             return Ok(observation);
         }
+        let mut navigation_permit_guard = None;
         if let Some((target, form_navigation)) = navigation_approval.as_ref() {
             self.approve_agent_action_url(
                 request.session_id,
@@ -1208,6 +1289,13 @@ impl BrowserState {
                 target,
                 *form_navigation,
             )?;
+            navigation_permit_guard = Some(AgentNavigationPermitGuard {
+                state: self.clone(),
+                session_id: request.session_id.to_string(),
+                tab_id: request.tab_id.to_string(),
+                url: target.clone(),
+                form_navigation: *form_navigation,
+            });
         }
         let expression = format!(
             "(() => {{ const bridge = window.__NEXA_BROWSER_RUNTIME__; if (!bridge) throw new Error('Browser interaction runtime is unavailable'); return bridge.act({action_input}); }})()"
@@ -1257,6 +1345,7 @@ impl BrowserState {
         let observation = self
             .observe(request.session_id, request.tab_id, request.call_id)
             .await?;
+        drop(navigation_permit_guard);
         self.emit(
             "agentAction",
             serde_json::json!({
@@ -1640,6 +1729,60 @@ impl BrowserState {
         }
     }
 
+    fn revalidate_native_pointer_commit(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        observation_id: &str,
+        call_id: &str,
+        lease_generation: u64,
+    ) -> Result<(), String> {
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if session.active_tab_id.as_deref() != Some(tab_id)
+            || session.control_lease.generation() != lease_generation
+            || !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        {
+            return Err(
+                "Browser pointer commit was cancelled because control or the active tab changed"
+                    .to_string(),
+            );
+        }
+        let observation = session
+            .observations
+            .get(observation_id)
+            .filter(|observation| {
+                observation.claimed_for_action
+                    && observation.created_at.elapsed() <= Duration::from_secs(120)
+                    && observation.tab_id == tab_id
+                    && observation.lease_generation == lease_generation
+            })
+            .ok_or_else(|| "Browser pointer commit lost its claimed observation".to_string())?;
+        let tab = session
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        let current_url = tab
+            .webview
+            .url()
+            .map_err(|error| format!("Could not read browser address: {error}"))?;
+        if current_url.as_str() != observation.url {
+            return Err(
+                "Browser pointer commit was cancelled because the page changed".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     fn move_native_pointer_to_target(
         &self,
         session_id: &str,
@@ -1673,6 +1816,15 @@ impl BrowserState {
                 "Browser pointer movement requires the visible, restored Nexa window".to_string(),
             );
         }
+        if !window
+            .is_focused()
+            .map_err(|error| format!("Could not read main window focus: {error}"))?
+        {
+            return Err(
+                "Browser pointer movement was cancelled because the user focused another application"
+                    .to_string(),
+            );
+        }
         let origin = window
             .outer_position()
             .map_err(|error| format!("Could not read main window position: {error}"))?;
@@ -1681,12 +1833,7 @@ impl BrowserState {
             .map_err(|error| format!("Could not read main window scale: {error}"))?;
         let (x, y) =
             browser_target_screen_point((origin.x, origin.y), scale_factor, bounds, target)?;
-        window
-            .set_focus()
-            .map_err(|error| format!("Could not focus Nexa before pointer movement: {error}"))?;
-        webview
-            .set_focus()
-            .map_err(|error| format!("Could not focus browser before pointer movement: {error}"))?;
+        let _ = webview;
         nexa_core::browser_runtime::move_native_pointer(x, y).map_err(|error| error.to_string())
     }
 

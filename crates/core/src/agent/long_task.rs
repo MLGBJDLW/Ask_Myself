@@ -25,6 +25,7 @@ pub(super) struct LongTaskCompactionContext<'a> {
     pub(super) turn_state: &'a mut TurnStateMachine,
     pub(super) loop_recorder: &'a mut TurnLoopRecorder,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
+    pub(super) total_usage: &'a mut Usage,
 }
 
 impl LongTaskState {
@@ -164,6 +165,7 @@ impl AgentExecutor {
             turn_state,
             loop_recorder,
             persisted_trace_items,
+            total_usage,
         } = ctx;
 
         let estimated =
@@ -188,11 +190,26 @@ impl AgentExecutor {
         );
         turn_state.transition_to(TurnPhase::Compacting);
 
+        let actual_tokens_remaining = self
+            .config
+            .max_actual_tokens_per_run
+            .map(|limit| limit.saturating_sub(total_usage.total_tokens));
         let compacted = match self
-            .aggressive_compact(messages, model, tx, db, conversation_id, turn_id)
+            .aggressive_compact(
+                messages,
+                model,
+                tx,
+                context_compaction::CompactionRunContext {
+                    db,
+                    conversation_id,
+                    turn_id,
+                },
+                actual_tokens_remaining,
+            )
             .await
         {
-            Ok(()) => {
+            Ok(compaction_usage) => {
+                super::usage_accounting::accumulate_usage(total_usage, &compaction_usage);
                 let after_messages = prompt_cache::message_sequence_fingerprint(messages);
                 let compacted = before_messages != after_messages;
                 let evicted_count = before_message_count.saturating_sub(messages.len());

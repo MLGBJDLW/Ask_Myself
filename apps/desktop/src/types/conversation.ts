@@ -462,7 +462,11 @@ export interface VisionObservation {
 
 export interface DelegationLimitsConfig {
   inputContextLimit?: number | null;
+  handoffContextTokensPerWorker?: number | null;
+  maxOutputTokensPerStep?: number | null;
+  /** @deprecated Legacy name; interpreted as a per-step cap. */
   maxOutputTokensPerWorker?: number | null;
+  maxActualTokensPerWorker?: number | null;
   totalActualTokensSoftLimit?: number | null;
   totalCostSoftLimitMicros?: number | null;
   maxParallel?: number | null;

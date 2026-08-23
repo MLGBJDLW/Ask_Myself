@@ -12,6 +12,9 @@ const DEFAULT_QUEUE_DEADLINE_MS: u64 = 15_000;
 const DEFAULT_CONNECT_DEADLINE_MS: u64 = 15_000;
 const DEFAULT_FIRST_TOKEN_DEADLINE_MS: u64 = 45_000;
 const DEFAULT_RUN_DEADLINE_MS: u64 = 180_000;
+const LONG_REASONER_CONNECT_DEADLINE_MS: u64 = 90_000;
+const LONG_REASONER_FIRST_TOKEN_DEADLINE_MS: u64 = 150_000;
+const LONG_REASONER_RUN_DEADLINE_MS: u64 = 360_000;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +27,9 @@ pub(crate) enum DelegationLimitPolicy {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DelegationLimitsV2 {
     pub input_context_policy: DelegationLimitPolicy,
+    pub handoff_context_tokens_per_worker: Option<u64>,
     pub max_output_tokens_per_worker: DelegationLimitPolicy,
+    pub max_actual_tokens_per_worker: Option<u64>,
     pub total_actual_tokens_soft_limit: Option<u64>,
     pub total_cost_soft_limit_micros: Option<u64>,
     pub cost_accounting_available: bool,
@@ -42,6 +47,61 @@ pub(crate) struct DelegationLimitsV2 {
 impl DelegationLimitsV2 {
     pub(crate) fn resolve(config: &AgentConfig) -> Self {
         let configured = config.delegation_limits_v2.as_ref();
+        let catalog_limits = config.provider_type.and_then(|provider| {
+            config.model.as_deref().and_then(|model| {
+                nexa_core::provider_catalog::model_limits_from_catalog(provider, model)
+            })
+        });
+        let catalog_reasoning = config.provider_type.and_then(|provider| {
+            config.model.as_deref().and_then(|model| {
+                nexa_core::provider_catalog::model_capabilities_from_catalog(provider, model)
+                    .and_then(|capabilities| capabilities.reasoning)
+            })
+        });
+        let inferred_context_tokens =
+            config.model.as_deref().map(|model| {
+                u64::from(config.context_window.unwrap_or_else(|| {
+                    nexa_core::conversation::memory::model_context_window(model)
+                }))
+            });
+        let capability_needs_long_prefill = catalog_limits.as_ref().is_some_and(|limits| {
+            limits
+                .context_tokens
+                .is_some_and(|tokens| tokens >= 500_000)
+                || limits
+                    .max_output_tokens
+                    .is_some_and(|tokens| tokens >= 65_536)
+        }) || inferred_context_tokens
+            .is_some_and(|tokens| tokens >= 500_000)
+            || config.max_tokens.is_some_and(|tokens| tokens >= 65_536)
+            || catalog_reasoning.as_ref().is_some_and(|reasoning| {
+                matches!(reasoning.default_effort.as_deref(), Some("xhigh" | "max"))
+                    || reasoning
+                        .thinking_budget
+                        .as_ref()
+                        .and_then(|budget| budget.max_tokens)
+                        .is_some_and(|tokens| tokens >= 65_536)
+            });
+        let long_prefill_profile = capability_needs_long_prefill
+            || matches!(
+                config.provider_type,
+                Some(nexa_core::llm::ProviderType::Ollama | nexa_core::llm::ProviderType::LmStudio)
+            );
+        let default_connect_deadline_ms = if long_prefill_profile {
+            LONG_REASONER_CONNECT_DEADLINE_MS
+        } else {
+            DEFAULT_CONNECT_DEADLINE_MS
+        };
+        let default_first_token_deadline_ms = if long_prefill_profile {
+            LONG_REASONER_FIRST_TOKEN_DEADLINE_MS
+        } else {
+            DEFAULT_FIRST_TOKEN_DEADLINE_MS
+        };
+        let default_run_deadline_ms = if long_prefill_profile {
+            LONG_REASONER_RUN_DEADLINE_MS
+        } else {
+            DEFAULT_RUN_DEADLINE_MS
+        };
         let max_parallel = configured
             .and_then(|limits| limits.max_parallel)
             .or(config.subagent_max_parallel)
@@ -66,7 +126,7 @@ impl DelegationLimitsV2 {
         };
         let run_deadline_ms = configured
             .and_then(|limits| limits.run_deadline_ms)
-            .unwrap_or(DEFAULT_RUN_DEADLINE_MS)
+            .unwrap_or(default_run_deadline_ms)
             .clamp(1_000, 3_600_000);
         Self {
             input_context_policy: configured
@@ -79,8 +139,15 @@ impl DelegationLimitsV2 {
                 })
                 .map(|value| DelegationLimitPolicy::Explicit(value.clamp(1_024, 10_000_000)))
                 .unwrap_or(DelegationLimitPolicy::Auto),
+            handoff_context_tokens_per_worker: configured
+                .and_then(|limits| limits.handoff_context_tokens_per_worker)
+                .map(|value| value.clamp(1_024, 10_000_000)),
             max_output_tokens_per_worker: configured
-                .and_then(|limits| limits.max_output_tokens_per_worker)
+                .and_then(|limits| {
+                    limits
+                        .max_output_tokens_per_step
+                        .or(limits.max_output_tokens_per_worker)
+                })
                 .or_else(|| {
                     configured
                         .is_none()
@@ -89,6 +156,9 @@ impl DelegationLimitsV2 {
                 })
                 .map(|value| DelegationLimitPolicy::Explicit(value.clamp(256, 1_000_000)))
                 .unwrap_or(DelegationLimitPolicy::Auto),
+            max_actual_tokens_per_worker: configured
+                .and_then(|limits| limits.max_actual_tokens_per_worker)
+                .map(|value| value.clamp(256, 10_000_000)),
             total_actual_tokens_soft_limit: match configured {
                 Some(limits) => limits
                     .total_actual_tokens_soft_limit
@@ -118,11 +188,11 @@ impl DelegationLimitsV2 {
                 .clamp(100, run_deadline_ms),
             connect_deadline_ms: configured
                 .and_then(|limits| limits.connect_deadline_ms)
-                .unwrap_or(DEFAULT_CONNECT_DEADLINE_MS)
+                .unwrap_or(default_connect_deadline_ms)
                 .clamp(100, run_deadline_ms),
             first_token_deadline_ms: configured
                 .and_then(|limits| limits.first_token_deadline_ms)
-                .unwrap_or(DEFAULT_FIRST_TOKEN_DEADLINE_MS)
+                .unwrap_or(default_first_token_deadline_ms)
                 .clamp(100, run_deadline_ms),
             run_deadline_ms,
         }
@@ -318,7 +388,7 @@ impl DelegationScheduler {
             .limits
             .total_actual_tokens_soft_limit
             .unwrap_or(u64::MAX);
-        if u64::from(state.tokens_spent) >= token_budget {
+        if lane == DelegationLane::Exploration && u64::from(state.tokens_spent) >= token_budget {
             return Err(CoreError::InvalidInput(format!(
                 "Delegated execution token soft limit exhausted before starting {label}. Spent: {} of {token_budget} tokens.",
                 state.tokens_spent,
@@ -372,6 +442,7 @@ impl DelegationScheduler {
             .saturating_add(estimated_cost_micros.unwrap_or(0));
     }
 
+    #[cfg(test)]
     pub(crate) async fn release_reservation(&self, reserved_tokens: u32) {
         let mut state = self.state.lock().await;
         state.tokens_reserved = state.tokens_reserved.saturating_sub(reserved_tokens);

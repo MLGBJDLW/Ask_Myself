@@ -711,7 +711,12 @@ fn partial_assistant_output(events: &[AgentRunEvent]) -> Option<Value> {
     }))
 }
 
-fn build_resume_prompt(run: &AgentTaskRun, checkpoint_id: &str, state: &Value) -> String {
+fn build_resume_prompt(
+    run: &AgentTaskRun,
+    checkpoint_id: &str,
+    reason: &str,
+    state: &Value,
+) -> String {
     let partial_output = state
         .get("partialAssistantOutput")
         .and_then(|value| value.get("text"))
@@ -723,16 +728,26 @@ fn build_resume_prompt(run: &AgentTaskRun, checkpoint_id: &str, state: &Value) -
             )
         })
         .unwrap_or_default();
+    let reconciliation = reason
+        .strip_prefix("user_stop_requires_action_reconciliation:")
+        .map(|activity_ids| {
+            format!(
+                "\n- SAFETY FENCE: interactive action receipt(s) {activity_ids} may have executed while the turn was stopping. Before any further browser/computer input, obtain a fresh observation and reconcile the visible state. Never redispatch the prior action merely because its tool result is absent."
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}{}\n\nInstructions:\n- Start by naming the resumed checkpoint and the next unfinished phase.\n- Prefer liveTurnState.taskPlan when present; it is the freshest in-memory execution state captured at the checkpoint boundary.\n- Continue after partialAssistantOutput exactly where it stopped; do not repeat text already shown.\n- Continue from the checkpoint state instead of restarting completed work.\n- Do not redo completed tool work unless the checkpoint shows stale, failed, missing, or contradictory evidence.\n- Treat recentEvents and artifacts as durable pointers; inspect only the files, sources, or records needed for the next decision.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Run verification before the final answer, then say what was resumed and what still needs verification.\n\nCheckpoint state:\n{}",
+        "Resume this Nexa task from a durable checkpoint.\n\nTask: {}\nRun ID: {}\nCheckpoint ID: {}\nCheckpoint reason: {}\nPrevious status: {}\nPrevious phase: {}\nRoute: {}\nSummary: {}{}\n\nInstructions:\n- Start by naming the resumed checkpoint and the next unfinished phase.\n- Prefer liveTurnState.taskPlan when present; it is the freshest in-memory execution state captured at the checkpoint boundary.\n- Continue after partialAssistantOutput exactly where it stopped; do not repeat text already shown.\n- Continue from the checkpoint state instead of restarting completed work.\n- Do not redo completed tool work unless the checkpoint shows stale, failed, missing, or contradictory evidence.\n- Treat recentEvents and artifacts as durable pointers; inspect only the files, sources, or records needed for the next decision.\n- Reuse existing evidence and artifacts when they are still valid.\n- Re-check stale or missing evidence before making final claims.\n- Preserve the user's source scope and approval boundaries.\n- Run verification before the final answer, then say what was resumed and what still needs verification.{}\n\nCheckpoint state:\n{}",
         run.title,
         run.id,
         checkpoint_id,
+        reason,
         run.status,
         run.phase,
         run.route_kind.as_deref().unwrap_or("unknown"),
         run.summary.as_deref().unwrap_or("No summary yet."),
         partial_output,
+        reconciliation,
         compact_json(state, RESUME_PROMPT_MAX_STATE_CHARS)
     )
 }
@@ -1756,7 +1771,7 @@ impl Database {
         }
         let run = self.get_agent_task_run(run_id)?;
         let checkpoint_id = new_id();
-        let resume_prompt = build_resume_prompt(&run, &checkpoint_id, &state);
+        let resume_prompt = build_resume_prompt(&run, &checkpoint_id, reason, &state);
         Ok(TaskResumeCheckpoint {
             id: checkpoint_id,
             run_id: run_id.to_string(),

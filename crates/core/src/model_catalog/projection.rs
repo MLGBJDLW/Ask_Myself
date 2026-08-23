@@ -492,7 +492,15 @@ fn canonical_provider_id(preset_id: &str, adapter_provider: &str) -> String {
         "openai".into()
     } else if id.starts_with("google") {
         "google".into()
-    } else if id.starts_with("qwen") || id.starts_with("alibaba") || id.starts_with("dashscope") {
+    } else if adapter_provider.eq_ignore_ascii_case("qwen") {
+        // Token Plan has a distinct endpoint and credential contract. Keep it
+        // separate from pay-as-you-go Model Studio so capabilities and limits
+        // cannot leak between identically named models on different products.
+        "qwen".into()
+    } else if adapter_provider.eq_ignore_ascii_case("alibaba_model_studio")
+        || id.starts_with("alibaba")
+        || id.starts_with("dashscope")
+    {
         "alibaba_model_studio".into()
     } else if id.starts_with("custom") {
         "custom".into()
@@ -523,7 +531,7 @@ fn provider_aliases(provider_id: &str) -> Vec<String> {
         "openai" => vec!["open_ai".into()],
         "deepseek" => vec!["deep_seek".into()],
         "lmstudio" => vec!["lm_studio".into()],
-        "alibaba_model_studio" => vec!["qwen".into(), "dashscope".into()],
+        "alibaba_model_studio" => vec!["dashscope".into(), "alibaba".into()],
         _ => Vec::new(),
     }
 }
@@ -553,6 +561,7 @@ pub fn normalize_endpoint_url(value: Option<&str>) -> String {
 
 fn documentation_ref(provider_id: &str) -> Option<String> {
     match provider_id {
+        "qwen" => Some("https://help.aliyun.com/en/model-studio/".into()),
         "alibaba_model_studio" => Some("https://help.aliyun.com/en/model-studio/".into()),
         "doubao" => Some("https://www.volcengine.com/docs/82379".into()),
         _ => None,

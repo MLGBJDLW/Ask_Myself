@@ -324,6 +324,7 @@ pub enum ProviderReplayPayload {
         source_field: String,
         content: String,
     },
+    OpenRouterReasoningDetails(Vec<serde_json::Value>),
     #[default]
     None,
 }
@@ -334,6 +335,7 @@ impl ProviderReplayPayload {
             Self::DeepSeekReasoningContent(content)
             | Self::OpenAiCompatibleReasoningContent { content, .. } => !content.trim().is_empty(),
             Self::AnthropicThinkingBlocks(blocks) => !blocks.is_empty(),
+            Self::OpenRouterReasoningDetails(details) => !details.is_empty(),
             Self::DeepSeekResponseItems(payload) => payload.is_structurally_complete(false),
             Self::OpenAiResponseItems(payload) => payload.is_structurally_complete(true),
             Self::GeminiThoughtSignatures(payload) => {
@@ -465,6 +467,7 @@ pub enum ProviderReplayItem {
         source_field: String,
         content: String,
     },
+    OpenRouterReasoningDetail(serde_json::Value),
 }
 
 impl ProviderReplayItem {
@@ -503,6 +506,11 @@ impl ProviderReplayItem {
                 source_field: source_field.clone(),
                 content: content.clone(),
             }],
+            ProviderReplayPayload::OpenRouterReasoningDetails(details) => details
+                .iter()
+                .cloned()
+                .map(Self::OpenRouterReasoningDetail)
+                .collect(),
             ProviderReplayPayload::None => Vec::new(),
         }
     }
@@ -623,6 +631,79 @@ impl ProviderTurnEnvelope {
             return payload_valid;
         }
         self.route.replay_policy.authorizes_tool_call(payload_valid)
+    }
+
+    pub fn contains_sensitive_computer_control(&self) -> bool {
+        let ledger_sensitive = self.tool_calls.iter().any(|call| {
+            crate::tool_argument_projection::is_sensitive_computer_control_name(&call.name)
+        });
+        let payload_sensitive = match &self.replay_payload {
+            ProviderReplayPayload::DeepSeekResponseItems(payload)
+            | ProviderReplayPayload::OpenAiResponseItems(payload) => {
+                payload.items.iter().any(|item| {
+                    item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+                        && item
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(
+                                crate::tool_argument_projection::is_sensitive_computer_control_name,
+                            )
+                })
+            }
+            ProviderReplayPayload::GeminiThoughtSignatures(payload) => payload
+                .content_parts
+                .iter()
+                .filter_map(|part| part.get("functionCall"))
+                .filter_map(|call| call.get("name").and_then(serde_json::Value::as_str))
+                .any(crate::tool_argument_projection::is_sensitive_computer_control_name),
+            _ => false,
+        };
+        ledger_sensitive || payload_sensitive
+    }
+
+    /// Produce a privacy-safe envelope for durable storage without raw
+    /// computer-control text, reasons, unknown fields, or thought signatures
+    /// that can embed those arguments. Signed or encrypted provider parts are
+    /// never rewritten: every sensitive unit becomes explicitly non-replayable.
+    pub fn audit_safe_for_persistence(&self) -> Self {
+        if !self.contains_sensitive_computer_control() {
+            return self.clone();
+        }
+        let mut tool_calls =
+            crate::tool_argument_projection::audit_safe_tool_calls(&self.tool_calls);
+        for call in &mut tool_calls {
+            call.thought_signature = None;
+        }
+        // Provider replay units can be signed, encrypted, ordinally coupled,
+        // or carried on a different call in the same batch. Rewriting them is
+        // not provably valid; persisting them can retain sensitive arguments.
+        // Keep the live envelope for current dispatch, but persist a compact,
+        // explicitly non-replayable boundary for every sensitive control turn.
+        let replay_payload = ProviderReplayPayload::None;
+        let provider_items = Vec::new();
+        let visible_content =
+            "[Sensitive computer-control assistant text omitted from persistence]".to_string();
+        let digest_input = serde_json::json!({
+            "route": &self.route,
+            "visibleContent": &visible_content,
+            "providerItems": &provider_items,
+            "toolCalls": &tool_calls,
+        });
+        let raw_response_digest = blake3::hash(
+            serde_json::to_vec(&digest_input)
+                .unwrap_or_default()
+                .as_slice(),
+        )
+        .to_hex()
+        .to_string();
+        let mut projected = self.clone();
+        projected.provider_items = provider_items;
+        projected.replay_payload = replay_payload;
+        projected.tool_calls = tool_calls;
+        projected.visible_content = visible_content;
+        projected.capture_status = ReasoningCaptureStatus::Redacted;
+        projected.raw_response_digest = raw_response_digest;
+        projected
     }
 
     pub fn is_compatible_with(&self, route: &RouteSnapshot) -> bool {
@@ -929,6 +1010,7 @@ mod tests {
             true,
         );
         assert!(envelope.authorizes_tool_dispatch());
+        assert!(!envelope.contains_sensitive_computer_control());
 
         let ProviderReplayPayload::GeminiThoughtSignatures(mut moved) =
             envelope.replay_payload.clone()
@@ -1080,5 +1162,193 @@ mod tests {
             rejected.replay_payload = ProviderReplayPayload::OpenAiResponseItems(invalid);
             assert!(!rejected.authorizes_tool_dispatch());
         }
+    }
+
+    #[test]
+    fn responses_persistence_projection_redacts_computer_input_and_drops_replay() {
+        let sentinel = "provider-envelope-secret-a931";
+        let arguments = serde_json::json!({
+            "action": "type_text",
+            "observation_id": "observation",
+            "window_id": 42,
+            "text": sentinel
+        })
+        .to_string();
+        let payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-sensitive",
+                    "status": "completed",
+                    "encrypted_content": "opaque"
+                }),
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": "fc-sensitive",
+                    "status": "completed",
+                    "call_id": "call-sensitive",
+                    "name": "computer_control",
+                    "arguments": arguments
+                }),
+            ],
+        };
+        let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+            "responses-item-sensitive",
+            "responses-sample-sensitive",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                ..route(ReasoningApiStyle::OpenAiResponses, "openai")
+            },
+            "[Sensitive computer-control assistant text omitted from persistence]",
+            None,
+            None,
+            vec![ToolCallRequest {
+                id: "call-sensitive".to_string(),
+                name: "computer_control".to_string(),
+                arguments,
+                thought_signature: Some(format!("embedded-{sentinel}")),
+            }],
+            true,
+            Some(ProviderReplayPayload::OpenAiResponseItems(payload)),
+        );
+        assert!(envelope.authorizes_tool_dispatch());
+        assert!(envelope.contains_sensitive_computer_control());
+
+        let projected = envelope.audit_safe_for_persistence();
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(serialized.contains("charCount"));
+        assert!(matches!(
+            projected.replay_payload,
+            ProviderReplayPayload::None
+        ));
+        assert_eq!(projected.capture_status, ReasoningCaptureStatus::Redacted);
+        assert!(!projected.authorizes_tool_dispatch());
+    }
+
+    #[test]
+    fn mismatched_responses_sensitive_ledger_becomes_non_replayable_without_leaking() {
+        let sentinel = "mismatched-response-secret-129a";
+        let payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-mismatch",
+                    "status": "completed",
+                    "encrypted_content": "opaque"
+                }),
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": "fc-mismatch",
+                    "status": "completed",
+                    "call_id": "call-sensitive",
+                    "name": "read_file",
+                    "arguments": serde_json::json!({ "path": sentinel }).to_string()
+                }),
+            ],
+        };
+        let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+            "item-mismatch",
+            "sample-mismatch",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                ..route(ReasoningApiStyle::OpenAiResponses, "openai")
+            },
+            "",
+            None,
+            None,
+            vec![ToolCallRequest {
+                id: "call-sensitive".to_string(),
+                name: " computer_control ".to_string(),
+                arguments: serde_json::Value::String(format!(
+                    r#"{{"action":"type_text","text":"{sentinel}"}}"#
+                ))
+                .to_string(),
+                thought_signature: Some(format!("carrier-{sentinel}")),
+            }],
+            true,
+            Some(ProviderReplayPayload::OpenAiResponseItems(payload)),
+        );
+        let projected = envelope.audit_safe_for_persistence();
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(matches!(
+            projected.replay_payload,
+            ProviderReplayPayload::None
+        ));
+        assert_eq!(projected.capture_status, ReasoningCaptureStatus::Redacted);
+        assert!(projected
+            .tool_calls
+            .iter()
+            .all(|call| call.thought_signature.is_none()));
+    }
+
+    #[test]
+    fn gemini_parallel_sensitive_carrier_is_removed_instead_of_rewritten() {
+        let sentinel = "gemini-carrier-secret-7bb1";
+        let payload = GeminiThoughtSignatureSet {
+            signatures: vec![GeminiThoughtSignature {
+                tool_call_id: "call-read".to_string(),
+                model_part_index: Some(0),
+                signature: format!("signed-{sentinel}"),
+            }],
+            content_parts: vec![
+                serde_json::json!({
+                    "thoughtSignature": format!("signed-{sentinel}"),
+                    "functionCall": { "name": "read_file", "args": { "path": "a" } }
+                }),
+                serde_json::json!({
+                    "functionCall": {
+                        "name": "computer_control",
+                        "args": { "action": "type_text", "text": sentinel }
+                    }
+                }),
+            ],
+        };
+        let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+            "item-gemini-sensitive",
+            "sample-gemini-sensitive",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                ..route(ReasoningApiStyle::GeminiGenerateContent, "google")
+            },
+            "",
+            None,
+            None,
+            vec![
+                ToolCallRequest {
+                    id: "call-read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"a"}"#.to_string(),
+                    thought_signature: Some(format!("batch-carrier-{sentinel}")),
+                },
+                ToolCallRequest {
+                    id: "call-sensitive".to_string(),
+                    name: "computer_control".to_string(),
+                    arguments: serde_json::json!({
+                        "action": "type_text",
+                        "text": sentinel
+                    })
+                    .to_string(),
+                    thought_signature: None,
+                },
+            ],
+            true,
+            Some(ProviderReplayPayload::GeminiThoughtSignatures(payload)),
+        );
+        let projected = envelope.audit_safe_for_persistence();
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(matches!(
+            projected.replay_payload,
+            ProviderReplayPayload::None
+        ));
+        assert_eq!(projected.capture_status, ReasoningCaptureStatus::Redacted);
+        assert!(projected
+            .tool_calls
+            .iter()
+            .all(|call| call.thought_signature.is_none()));
     }
 }

@@ -6815,7 +6815,10 @@ mod tests {
         let db = Database::open_memory().unwrap();
         let delegation_limits_v2 = crate::agent::DelegationLimitsConfig {
             input_context_limit: Some(1_000_000),
+            handoff_context_tokens_per_worker: Some(40_000),
+            max_output_tokens_per_step: Some(32_000),
             max_output_tokens_per_worker: Some(65_536),
+            max_actual_tokens_per_worker: Some(96_000),
             total_actual_tokens_soft_limit: Some(240_000),
             total_cost_soft_limit_micros: Some(5_000_000),
             max_parallel: Some(6),
