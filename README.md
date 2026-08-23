@@ -201,9 +201,14 @@ The runtime exposes a catalog of built-in tools, with additional tools available
 - Source management tools
 - Statistics and verification tools
 - Conversation-linked terminal inspection and approval-gated interaction
+- Structured `browser_session` interaction plus hybrid Windows computer use
+  (`computer_observe` / `computer_control`) with UIA elements, one-shot
+  approvals, post-action verification, and ephemeral screen evidence
 - MCP connector tools exposed by enabled connectors
 
-See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
+See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference and
+[Computer Use Integration](docs/computer-use-integration.md) for the desktop
+security boundary.
 
 ## Getting Started
 
