@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.26](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.25...nexa-monorepo-v0.12.26) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** bind release checks to repository context ([cce394f](https://github.com/MLGBJDLW/Nexa/commit/cce394fd10db2f566d5a7edc5c61a30690a2e5c2))
+* **ci:** Bind release checks to repository context ([1025b60](https://github.com/MLGBJDLW/Nexa/commit/1025b608aeb83527566c2232012616f4d65b61a6))
+* **ci:** dispatch release PR checks without checkout ([e65f324](https://github.com/MLGBJDLW/Nexa/commit/e65f32420df83d920113cec7b79543d5d5d03bdd))
+* **ci:** Dispatch release PR checks without checkout ([edc519e](https://github.com/MLGBJDLW/Nexa/commit/edc519ef0fe8ed3c66a902c22fffbf9b5f7688aa))
+* **ci:** make release acceptance recoverable ([ab0afd6](https://github.com/MLGBJDLW/Nexa/commit/ab0afd6ab91fb515302a6976ada370c9052cd2f1))
+* **ci:** match release pull request branch ([1ec84c0](https://github.com/MLGBJDLW/Nexa/commit/1ec84c08927f89c2125482fe35e12714b96e3dc2))
+* **ci:** Match release pull request branch ([0255f7a](https://github.com/MLGBJDLW/Nexa/commit/0255f7ae4233e51eb9a4478cdc0c51aac45a45d9))
+* **ci:** Unblock release artifact publishing ([f694a67](https://github.com/MLGBJDLW/Nexa/commit/f694a67d1bea5740f8e9511dcc360b159eb39ba3))
+
 ## [0.12.25](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.24...nexa-monorepo-v0.12.25) (2026-08-22)
 
 
