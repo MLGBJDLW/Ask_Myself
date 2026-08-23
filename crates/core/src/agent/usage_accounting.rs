@@ -266,9 +266,11 @@ impl AgentExecutor {
                     messages,
                     model,
                     tx,
-                    db,
-                    conversation_id,
-                    turn_id,
+                    context_compaction::CompactionRunContext {
+                        db,
+                        conversation_id,
+                        turn_id,
+                    },
                     actual_tokens_remaining,
                 )
                 .await

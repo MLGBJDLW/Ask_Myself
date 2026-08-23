@@ -190,9 +190,11 @@ impl AgentExecutor {
                 history,
                 model,
                 max_response_tokens,
-                db,
-                conversation_id,
-                turn_id,
+                context_compaction::CompactionRunContext {
+                    db,
+                    conversation_id,
+                    turn_id,
+                },
                 self.config.max_actual_tokens_per_run,
             )
             .await?;
@@ -976,11 +978,10 @@ impl AgentExecutor {
 
             let force_answer_only = output_recovery.reserves_answer_channel();
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
-                let estimated_prompt = context::estimate_context_usage_breakdown_for_model(
+                context::estimate_context_usage_breakdown_for_model(
                     model, &messages, &tool_defs, None,
                 )
-                .total_tokens;
-                estimated_prompt
+                .total_tokens
             } else {
                 0
             };

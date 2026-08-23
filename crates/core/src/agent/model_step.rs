@@ -68,7 +68,7 @@ fn request_reasoning_was_requested(request: &CompletionRequest) -> bool {
 }
 
 enum ModelStepWaitSignal {
-    Progress(model_attempt::ModelAttemptProgress),
+    Progress(Box<model_attempt::ModelAttemptProgress>),
     Steering(Option<AgentSteeringMessage>),
     Cancellation,
     ProgressDeadline,
@@ -408,7 +408,7 @@ impl AgentExecutor {
                     _ = wait_for_model_progress_deadline(progress_watchdog.deadline()) => {
                         ModelStepWaitSignal::ProgressDeadline
                     }
-                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(progress),
+                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(Box::new(progress)),
                 }
             } else {
                 tokio::select! {
@@ -417,7 +417,7 @@ impl AgentExecutor {
                     _ = wait_for_model_progress_deadline(progress_watchdog.deadline()) => {
                         ModelStepWaitSignal::ProgressDeadline
                     }
-                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(progress),
+                    progress = model_attempt.next() => ModelStepWaitSignal::Progress(Box::new(progress)),
                 }
             };
 
@@ -431,7 +431,7 @@ impl AgentExecutor {
                     continue 'model_attempt;
                 }
                 ModelStepWaitSignal::Cancellation => model_attempt.next().await,
-                ModelStepWaitSignal::Progress(progress) => progress,
+                ModelStepWaitSignal::Progress(progress) => *progress,
                 ModelStepWaitSignal::ProgressDeadline => {
                     match progress_watchdog.on_deadline() {
                         model_progress_watchdog::ModelProgressDeadlineAction::StopConnecting => {
@@ -952,9 +952,11 @@ impl AgentExecutor {
                                     messages,
                                     model,
                                     tx,
-                                    db,
-                                    conversation_id,
-                                    turn_id,
+                                    context_compaction::CompactionRunContext {
+                                        db,
+                                        conversation_id,
+                                        turn_id,
+                                    },
                                     total_usage,
                                 )
                                 .await?;
@@ -1362,9 +1364,11 @@ impl AgentExecutor {
                                         messages,
                                         model,
                                         tx,
-                                        db,
-                                        conversation_id,
-                                        turn_id,
+                                        context_compaction::CompactionRunContext {
+                                            db,
+                                            conversation_id,
+                                            turn_id,
+                                        },
                                         total_usage,
                                     )
                                     .await

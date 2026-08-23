@@ -16,6 +16,13 @@ struct SummarizationUsageContext<'a> {
     provider_type: Option<ProviderType>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct CompactionRunContext<'a> {
+    pub(super) db: &'a Database,
+    pub(super) conversation_id: Option<&'a str>,
+    pub(super) turn_id: Option<&'a str>,
+}
+
 fn summarization_fits_run_budget(per_attempt: u32, actual_tokens_remaining: Option<u32>) -> bool {
     let worst_case = per_attempt.saturating_mul(summarizer::maximum_summarization_attempts());
     actual_tokens_remaining.is_none_or(|remaining| worst_case <= remaining)
@@ -268,11 +275,14 @@ impl AgentExecutor {
         history: Vec<Message>,
         model: &str,
         max_response_tokens: u32,
-        db: &Database,
-        conversation_id: Option<&str>,
-        turn_id: Option<&str>,
+        run: CompactionRunContext<'_>,
         actual_tokens_remaining: Option<u32>,
     ) -> Result<(Vec<Message>, Usage), CoreError> {
+        let CompactionRunContext {
+            db,
+            conversation_id,
+            turn_id,
+        } = run;
         if history.is_empty() {
             return Ok((history, Usage::default()));
         }
@@ -383,9 +393,7 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         model: &str,
         tx: &mpsc::Sender<AgentEvent>,
-        db: &Database,
-        conversation_id: Option<&str>,
-        turn_id: Option<&str>,
+        run: CompactionRunContext<'_>,
         total_usage: &mut Usage,
     ) -> Result<bool, CoreError> {
         let before_tokens: u32 = messages
@@ -399,15 +407,7 @@ impl AgentExecutor {
             .max_actual_tokens_per_run
             .map(|limit| limit.saturating_sub(total_usage.total_tokens));
         let compaction_usage = self
-            .aggressive_compact(
-                messages,
-                model,
-                tx,
-                db,
-                conversation_id,
-                turn_id,
-                actual_tokens_remaining,
-            )
+            .aggressive_compact(messages, model, tx, run, actual_tokens_remaining)
             .await?;
         super::usage_accounting::accumulate_usage(total_usage, &compaction_usage);
         if self
@@ -447,11 +447,14 @@ impl AgentExecutor {
         messages: &mut Vec<Message>,
         model: &str,
         tx: &mpsc::Sender<AgentEvent>,
-        db: &Database,
-        conversation_id: Option<&str>,
-        turn_id: Option<&str>,
+        run: CompactionRunContext<'_>,
         actual_tokens_remaining: Option<u32>,
     ) -> Result<Usage, CoreError> {
+        let CompactionRunContext {
+            db,
+            conversation_id,
+            turn_id,
+        } = run;
         let non_system_start = system_prefix_end(messages);
         let pipeline = ContextPipeline::new(
             model,

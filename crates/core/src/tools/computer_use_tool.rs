@@ -2973,10 +2973,9 @@ mod platform {
         let elements =
             unsafe { root.FindAllBuildCache(TreeScope_Descendants, &condition, &request) }
                 .map_err(|error| platform_error("resolve UI Automation target", error))?;
-        let length = unsafe { elements.Length() }
-            .map_err(|error| platform_error("count UI Automation action targets", error))?
-            .max(0)
-            .min(2_000);
+        let length = (unsafe { elements.Length() }
+            .map_err(|error| platform_error("count UI Automation action targets", error))?)
+        .clamp(0, 2_000);
         let mut matched = None;
         for index in 0..length {
             let Ok(element) = (unsafe { elements.GetElement(index) }) else {
@@ -3611,7 +3610,7 @@ mod platform {
             Default::default()
         };
         if key_up {
-            flags = flags | KEYEVENTF_KEYUP;
+            flags |= KEYEVENTF_KEYUP;
         }
         INPUT {
             r#type: INPUT_KEYBOARD,
