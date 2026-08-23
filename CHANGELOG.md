@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.27](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.26...nexa-monorepo-v0.12.27) (2026-08-23)
+
+
+### Features
+
+* **core:** Harden agent liveness and computer use ([69d5d38](https://github.com/MLGBJDLW/Nexa/commit/69d5d38280e2df6445c588bc1f603171e2c79d22))
+* **core:** Harden agent liveness and computer use ([36fcb0f](https://github.com/MLGBJDLW/Nexa/commit/36fcb0f73526043e7880253347f0ec1d9e360bdf))
+
+
+### Bug Fixes
+
+* **core:** Gate Windows computer use helpers ([f471f84](https://github.com/MLGBJDLW/Nexa/commit/f471f848467cf37c67b38e65d07eff4813aa3f76))
+* **core:** Resolve strict Clippy regressions ([6089430](https://github.com/MLGBJDLW/Nexa/commit/6089430a52d788f83dcfc7e79ab4fb8c9eca6aef))
+
 ## [0.12.26](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.25...nexa-monorepo-v0.12.26) (2026-08-22)
 
 
