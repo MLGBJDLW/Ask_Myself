@@ -3713,7 +3713,9 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
     );
     tokio::pin!(run);
 
-    let first_result = tokio::time::timeout(Duration::from_secs(3), async {
+    // The full core suite runs thousands of tests in parallel; keep this a
+    // deadlock guard without turning host scheduling pressure into a failure.
+    let first_result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
                 biased;

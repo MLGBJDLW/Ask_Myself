@@ -77,7 +77,7 @@ impl WorkspaceIsolationRuntime {
 
         ensure_process_sandbox_available()?;
 
-        let original_source_root = std::fs::canonicalize(&roots[0])?;
+        let original_source_root = canonicalize_host_path(&roots[0])?;
         let repo_output = run_git(&original_source_root, &["rev-parse", "--show-toplevel"])?;
         let original_repo_root = canonicalize_git_path(&repo_output.stdout)?;
         if !original_source_root.starts_with(&original_repo_root) {
@@ -527,7 +527,39 @@ fn canonicalize_git_path(stdout: &[u8]) -> Result<PathBuf, CoreError> {
             "Git did not return a repository root for Code Ultra isolation.".to_string(),
         ));
     }
-    std::fs::canonicalize(path).map_err(CoreError::Io)
+    canonicalize_host_path(Path::new(&path))
+}
+
+fn canonicalize_host_path(path: &Path) -> Result<PathBuf, CoreError> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Prefix;
+
+        let mut components = canonical.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return Ok(canonical);
+        };
+        match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => {
+                let mut normalized = PathBuf::from(format!("{}:", char::from(drive)));
+                normalized.extend(components);
+                Ok(normalized)
+            }
+            Prefix::VerbatimUNC(server, share) => {
+                let mut normalized = PathBuf::from(r"\\");
+                normalized.push(server);
+                normalized.push(share);
+                normalized.extend(components);
+                Ok(normalized)
+            }
+            _ => Ok(canonical),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(canonical)
+    }
 }
 
 fn run_background_output(command: &mut Command) -> std::io::Result<Output> {
@@ -694,6 +726,7 @@ mod tests {
         git(repo.path(), &["init"]);
         git(repo.path(), &["config", "user.email", "nexa@example.test"]);
         git(repo.path(), &["config", "user.name", "Nexa Test"]);
+        git(repo.path(), &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
         git(repo.path(), &["add", "tracked.txt"]);
         git(repo.path(), &["commit", "-m", "fixture"]);

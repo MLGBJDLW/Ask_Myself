@@ -36,6 +36,7 @@ interface RuntimeProfile {
   provider: string;
   model: string;
   contextWindow: number;
+  contextAuthority: 'user_override' | 'catalog' | 'model_profile' | 'provider_managed';
   reasoningEnabled: boolean;
   reasoningDetail: string;
   sourceAuthority: string;
@@ -161,11 +162,20 @@ export function ContextCockpit({
     : usage
       ? formatTokens(usage.contextWindow)
       : '';
+  const runtimeContextAuthorityLabel = runtimeProfile
+    ? runtimeProfile.contextAuthority === 'user_override'
+      ? t('chat.contextAuthorityUserOverride')
+      : runtimeProfile.contextAuthority === 'catalog'
+        ? t('chat.contextAuthorityCatalog')
+        : runtimeProfile.contextAuthority === 'model_profile'
+          ? t('chat.contextAuthorityModelProfile')
+          : t('chat.contextAuthorityProviderManaged')
+    : '';
 
   return (
-    <div className="shrink-0 border-b border-border/60 bg-surface-1/70 px-3 py-2 backdrop-blur">
+    <div data-testid="context-cockpit" className="shrink-0 border-b border-border/60 bg-surface-1/70 px-3 py-2 backdrop-blur">
       <details className="group rounded-xl border border-border/60 bg-surface-0/75">
-        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 text-sm text-text-secondary [&::-webkit-details-marker]:hidden">
+        <summary data-testid="context-cockpit-toggle" className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 text-sm text-text-secondary [&::-webkit-details-marker]:hidden">
           {(() => {
             const pct = usage && usage.contextWindow > 0
               ? usage.promptTokens / usage.contextWindow
@@ -292,8 +302,10 @@ export function ContextCockpit({
               </div>
               <div className="mt-1 text-[11px] text-text-secondary">
                 {runtimeContextLabel
-                  ? t('chat.contextWindowValue', { value: runtimeContextLabel })
-                  : t('chat.contextWindowPending')}
+                  ? `${t('chat.contextWindowValue', { value: runtimeContextLabel })} · ${runtimeContextAuthorityLabel}`
+                  : runtimeProfile?.contextAuthority === 'provider_managed'
+                    ? runtimeContextAuthorityLabel
+                    : t('chat.contextWindowPending')}
               </div>
             </div>
 

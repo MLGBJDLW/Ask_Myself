@@ -836,6 +836,106 @@ pub fn validate_agent_config_credential_contract(
     Ok(())
 }
 
+fn validate_positive_u32_override(field: &str, value: Option<i64>) -> Result<(), CoreError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value <= 0 || value > i64::from(u32::MAX) {
+        return Err(CoreError::InvalidInput(format!(
+            "{field} must be between 1 and {} when set; received {value}",
+            u32::MAX
+        )));
+    }
+    Ok(())
+}
+
+fn validate_nonnegative_u32_override(field: &str, value: Option<i64>) -> Result<(), CoreError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value < 0 || value > i64::from(u32::MAX) {
+        return Err(CoreError::InvalidInput(format!(
+            "{field} must be between 0 and {} when set; received {value}",
+            u32::MAX
+        )));
+    }
+    Ok(())
+}
+
+fn validate_agent_config_numeric_overrides(input: &SaveAgentConfigInput) -> Result<(), CoreError> {
+    for (field, value) in [
+        ("maxTokens", input.max_tokens),
+        ("contextWindow", input.context_window),
+        ("maxIterations", input.max_iterations),
+        ("subagentMaxParallel", input.subagent_max_parallel),
+        ("subagentMaxCallsPerTurn", input.subagent_max_calls_per_turn),
+        ("subagentTokenBudget", input.subagent_token_budget),
+    ] {
+        validate_positive_u32_override(field, value)?;
+    }
+    // Zero intentionally disables the corresponding outer timeout.
+    validate_nonnegative_u32_override("toolTimeoutSecs", input.tool_timeout_secs)?;
+    validate_nonnegative_u32_override("agentTimeoutSecs", input.agent_timeout_secs)?;
+    if let Some(thinking_budget) = input.thinking_budget {
+        if thinking_budget < 0 || thinking_budget > i64::from(u32::MAX) {
+            return Err(CoreError::InvalidInput(format!(
+                "thinkingBudget must be between 0 and {} when set; received {thinking_budget}",
+                u32::MAX
+            )));
+        }
+    }
+    if let Some(temperature) = input.temperature {
+        if !temperature.is_finite() || !(0.0..=2.0).contains(&temperature) {
+            return Err(CoreError::InvalidInput(format!(
+                "temperature must be a finite value between 0 and 2; received {temperature}"
+            )));
+        }
+    }
+
+    if let Some(limits) = input.delegation_limits_v2.as_ref() {
+        for (field, value) in [
+            (
+                "delegationLimitsV2.inputContextLimit",
+                limits.input_context_limit,
+            ),
+            (
+                "delegationLimitsV2.handoffContextTokensPerWorker",
+                limits.handoff_context_tokens_per_worker,
+            ),
+            (
+                "delegationLimitsV2.maxOutputTokensPerStep",
+                limits.max_output_tokens_per_step,
+            ),
+            (
+                "delegationLimitsV2.maxOutputTokensPerWorker",
+                limits.max_output_tokens_per_worker,
+            ),
+            (
+                "delegationLimitsV2.maxActualTokensPerWorker",
+                limits.max_actual_tokens_per_worker,
+            ),
+            (
+                "delegationLimitsV2.totalActualTokensSoftLimit",
+                limits.total_actual_tokens_soft_limit,
+            ),
+        ] {
+            if value.is_some_and(|value| value == 0 || value > u64::from(u32::MAX)) {
+                return Err(CoreError::InvalidInput(format!(
+                    "{field} must be between 1 and {} when set",
+                    u32::MAX
+                )));
+            }
+        }
+        if limits.max_parallel == Some(0) || limits.max_calls_per_turn == Some(0) {
+            return Err(CoreError::InvalidInput(
+                "delegationLimitsV2 maxParallel and maxCallsPerTurn must be positive when set"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn role_to_str(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
@@ -4388,6 +4488,7 @@ impl Database {
         input: &SaveAgentConfigInput,
     ) -> Result<AgentConfig, CoreError> {
         validate_agent_config_credential_contract(input)?;
+        validate_agent_config_numeric_overrides(input)?;
         let id = input.id.clone().unwrap_or_else(new_id);
         let normalized_base_url = normalize_optional_url(input.base_url.as_deref());
         let provider_endpoint_id = resolve_agent_config_endpoint_id(
@@ -5163,6 +5264,48 @@ mod tests {
 
         let custom = credential_contract_input("https://tenant.example.test/v1", "sk-sp-test");
         assert!(validate_agent_config_credential_contract(&custom).is_ok());
+    }
+
+    #[test]
+    fn agent_config_rejects_negative_and_overflowing_numeric_overrides() {
+        let db = Database::open_memory().unwrap();
+        let mut input = credential_contract_input("https://example.com/v1", "sk-test");
+        input.provider = "custom".into();
+        input.model = "private-model".into();
+
+        input.context_window = Some(-1);
+        assert!(matches!(
+            db.save_agent_config(&input),
+            Err(CoreError::InvalidInput(message)) if message.contains("contextWindow")
+        ));
+
+        input.context_window = Some(i64::from(u32::MAX) + 1);
+        assert!(matches!(
+            db.save_agent_config(&input),
+            Err(CoreError::InvalidInput(message)) if message.contains("contextWindow")
+        ));
+
+        input.context_window = Some(750_000);
+        input.tool_timeout_secs = Some(0);
+        input.agent_timeout_secs = Some(0);
+        input.delegation_limits_v2 = Some(crate::agent::DelegationLimitsConfig {
+            input_context_limit: Some(u64::from(u32::MAX) + 1),
+            ..Default::default()
+        });
+        assert!(matches!(
+            db.save_agent_config(&input),
+            Err(CoreError::InvalidInput(message))
+                if message.contains("delegationLimitsV2.inputContextLimit")
+        ));
+
+        input.delegation_limits_v2 = None;
+        assert!(db.save_agent_config(&input).is_ok());
+
+        input.tool_timeout_secs = Some(-1);
+        assert!(matches!(
+            db.save_agent_config(&input),
+            Err(CoreError::InvalidInput(message)) if message.contains("toolTimeoutSecs")
+        ));
     }
 
     #[test]

@@ -287,8 +287,17 @@ impl AgentExecutor {
             return Ok((history, Usage::default()));
         }
 
-        let pipeline = ContextPipeline::new(model, self.config.context_window, max_response_tokens);
-        let budget = pipeline.context_budget();
+        let pipeline = ContextPipeline::new_with_resolution(
+            model,
+            self.config.context_window,
+            self.config.context_window_resolution,
+            max_response_tokens,
+        );
+        let Some(budget) = pipeline.context_budget() else {
+            // An unknown/custom provider owns its capacity. Do not trigger
+            // speculative compaction from a fabricated local fallback.
+            return Ok((history, Usage::default()));
+        };
         if budget == 0 {
             return Ok((history, Usage::default()));
         }
@@ -422,9 +431,10 @@ impl AgentExecutor {
             )));
         }
 
-        let pipeline = ContextPipeline::new(
+        let pipeline = ContextPipeline::new_with_resolution(
             model,
             self.config.context_window,
+            self.config.context_window_resolution,
             self.config.max_tokens.unwrap_or(4096),
         );
         *messages = pipeline.trim_after_overflow_recovery(messages);
@@ -456,12 +466,26 @@ impl AgentExecutor {
             turn_id,
         } = run;
         let non_system_start = system_prefix_end(messages);
-        let pipeline = ContextPipeline::new(
+        let pipeline = ContextPipeline::new_with_resolution(
             model,
             self.config.context_window,
+            self.config.context_window_resolution,
             self.config.max_tokens.unwrap_or(4096),
         );
-        let target = (pipeline.context_budget() as f32 * COMPACTION_TARGET_USAGE) as u32;
+        let target = pipeline
+            .context_budget()
+            .map(|budget| (budget as f32 * COMPACTION_TARGET_USAGE) as u32)
+            // This path is also used after a real provider overflow. When the
+            // provider owns an unknown capacity, recover by summarizing roughly
+            // half of the currently observed prompt instead of pretending the
+            // model has a 32K window.
+            .unwrap_or_else(|| {
+                messages
+                    .iter()
+                    .map(|message| estimate_message_tokens_for_model(model, message))
+                    .sum::<u32>()
+                    .saturating_div(2)
+            });
         let Some(evict_end) = compaction_boundary(messages, model, target, MIN_RECENT_TURNS) else {
             return Ok(Usage::default());
         };

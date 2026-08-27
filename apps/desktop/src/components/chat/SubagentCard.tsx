@@ -60,6 +60,21 @@ function truncate(value: string, max = 220) {
   return `${text.slice(0, max).trimEnd()}...`;
 }
 
+function formatTokens(value: number | null | undefined, unknownLabel: string) {
+  if (value == null) return unknownLabel;
+  return value.toLocaleString();
+}
+
+function contextAuthorityCopy(
+  authority: NonNullable<SubagentRun['effectiveModelBudgets']>['contextAuthority'],
+  t: TranslateFn,
+) {
+  if (authority === 'user_override') return t('chat.contextAuthorityUserOverride');
+  if (authority === 'catalog') return t('chat.contextAuthorityCatalog');
+  if (authority === 'model_profile') return t('chat.contextAuthorityModelProfile');
+  return t('chat.contextAuthorityProviderManaged');
+}
+
 export function SubagentCard({
   run,
   compact = false,
@@ -207,6 +222,39 @@ export function SubagentCard({
               </span>
             )}
           </div>
+
+          {run.effectiveModelBudgets && (
+            <div className="mt-3 rounded-lg border border-border/60 bg-surface-1/70 p-2.5" data-testid="subagent-model-budgets">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
+                <span>{t('chat.subagentResolvedBudgets')}</span>
+                <span>{contextAuthorityCopy(run.effectiveModelBudgets.contextAuthority, t)}</span>
+              </div>
+              <div className="grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-4">
+                <div>{t('chat.subagentContextCapacity')}: {formatTokens(run.effectiveModelBudgets.contextCapacity, t('chat.subagentProviderManaged'))}</div>
+                <div>{t('chat.subagentParentHandoff')}: {formatTokens(run.effectiveModelBudgets.parentHistoryHandoff, '0')}</div>
+                <div>{t('chat.subagentStepOutput')}: {formatTokens(run.effectiveModelBudgets.maxOutputPerStep, t('chat.subagentProviderManaged'))}</div>
+                <div>{t('chat.subagentWorkerActual')}: {formatTokens(run.effectiveModelBudgets.maxActualTokensPerWorker, t('chat.subagentProviderManaged'))}</div>
+              </div>
+              {run.preflight && (
+                <div className="mt-2 text-[11px] text-text-tertiary" data-testid="subagent-preflight">
+                  {t('chat.subagentPreflightPassed', {
+                    stages: String(run.preflight.completedStages.length),
+                    messages: String(run.preflight.contextMessageCount),
+                  })}
+                  {run.preflight.droppedInvalidContextMessages > 0
+                    ? ` · ${t('chat.subagentDroppedContext', { count: String(run.preflight.droppedInvalidContextMessages) })}`
+                    : ''}
+                </div>
+              )}
+            </div>
+          )}
+
+          {run.preflightFailure && (
+            <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger" data-testid="subagent-preflight-failure">
+              <div className="font-medium">{t('chat.subagentError')} · {run.preflightFailure.stage} / {run.preflightFailure.code}</div>
+              <div className="mt-1 opacity-90">{run.preflightFailure.message}</div>
+            </div>
+          )}
 
           {run.acceptanceCriteria && run.acceptanceCriteria.length > 0 && (
             <div className="mt-3">

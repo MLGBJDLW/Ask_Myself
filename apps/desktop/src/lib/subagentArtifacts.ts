@@ -41,6 +41,46 @@ export interface SubagentBudgetSnapshot {
   remainingTokens: number;
 }
 
+export interface SubagentContextSnapshot {
+  id?: string;
+  selectedMessageIds?: string[];
+  tokenEstimate: number;
+  contextCapacity: number | null;
+  contextAuthority: 'user_override' | 'catalog' | 'model_profile' | 'provider_managed';
+  handoffTokenBudget: number;
+  droppedInvalidMessages: number;
+}
+
+export interface SubagentEffectiveModelBudgets {
+  contextCapacity: number | null;
+  parentHistoryHandoff: number;
+  maxOutputPerStep: number | null;
+  maxActualTokensPerWorker: number | null;
+  contextAuthority: SubagentContextSnapshot['contextAuthority'];
+  outputAuthority: 'user_override' | 'catalog_ceiling' | 'safe_default';
+}
+
+export interface SubagentPreflightReport {
+  schemaVersion: number;
+  completedStages: string[];
+  providerId: string;
+  effectiveModel: string;
+  contextMessageCount: number;
+  droppedInvalidContextMessages: number;
+  reservedTokens: number;
+  remainingTokenBudget: number;
+  remainingCallBudget: number;
+  runDeadlineMs: number;
+}
+
+export interface SubagentPreflightFailure {
+  schemaVersion: number;
+  stage: string;
+  code: string;
+  retryable: boolean;
+  message: string;
+}
+
 export interface SubagentArtifact {
   kind: 'subagent_result';
   id?: string | null;
@@ -67,6 +107,10 @@ export interface SubagentArtifact {
   thinking?: string[] | null;
   sourceScopeApplied?: boolean;
   allowedTools?: string[] | null;
+  preflight?: SubagentPreflightReport | null;
+  preflightFailure?: SubagentPreflightFailure | null;
+  contextSnapshot?: SubagentContextSnapshot | null;
+  effectiveModelBudgets?: SubagentEffectiveModelBudgets | null;
 }
 
 export interface SubagentBatchArtifact {
@@ -159,6 +203,10 @@ export interface SubagentRun {
   argumentsText?: string;
   isError?: boolean;
   content?: string;
+  preflight?: SubagentPreflightReport | null;
+  preflightFailure?: SubagentPreflightFailure | null;
+  contextSnapshot?: SubagentContextSnapshot | null;
+  effectiveModelBudgets?: SubagentEffectiveModelBudgets | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -341,6 +389,118 @@ function parseBudgetSnapshot(value: unknown): SubagentBudgetSnapshot | null {
   };
 }
 
+function parseContextAuthority(
+  value: unknown,
+): SubagentContextSnapshot['contextAuthority'] | null {
+  return value === 'user_override'
+    || value === 'catalog'
+    || value === 'model_profile'
+    || value === 'provider_managed'
+    ? value
+    : null;
+}
+
+function parseContextSnapshot(value: unknown): SubagentContextSnapshot | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const tokenEstimate = asNumber(record.tokenEstimate);
+  const handoffTokenBudget = asNumber(record.handoffTokenBudget);
+  const droppedInvalidMessages = asNumber(record.droppedInvalidMessages);
+  const contextAuthority = parseContextAuthority(record.contextAuthority);
+  if (
+    tokenEstimate == null
+    || handoffTokenBudget == null
+    || droppedInvalidMessages == null
+    || !contextAuthority
+  ) return null;
+  return {
+    id: typeof record.id === 'string' ? record.id : undefined,
+    selectedMessageIds: asStringArray(record.selectedMessageIds) ?? undefined,
+    tokenEstimate,
+    contextCapacity: asNumber(record.contextCapacity),
+    contextAuthority,
+    handoffTokenBudget,
+    droppedInvalidMessages,
+  };
+}
+
+function parseEffectiveModelBudgets(value: unknown): SubagentEffectiveModelBudgets | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const contextAuthority = parseContextAuthority(record.contextAuthority);
+  const parentHistoryHandoff = asNumber(record.parentHistoryHandoff);
+  const outputAuthority = record.outputAuthority;
+  if (
+    !contextAuthority
+    || parentHistoryHandoff == null
+    || (outputAuthority !== 'user_override'
+      && outputAuthority !== 'catalog_ceiling'
+      && outputAuthority !== 'safe_default')
+  ) return null;
+  return {
+    contextCapacity: asNumber(record.contextCapacity),
+    parentHistoryHandoff,
+    maxOutputPerStep: asNumber(record.maxOutputPerStep),
+    maxActualTokensPerWorker: asNumber(record.maxActualTokensPerWorker),
+    contextAuthority,
+    outputAuthority,
+  };
+}
+
+function parsePreflightReport(value: unknown): SubagentPreflightReport | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const schemaVersion = asNumber(record.schemaVersion);
+  const contextMessageCount = asNumber(record.contextMessageCount);
+  const droppedInvalidContextMessages = asNumber(record.droppedInvalidContextMessages);
+  const reservedTokens = asNumber(record.reservedTokens);
+  const remainingTokenBudget = asNumber(record.remainingTokenBudget);
+  const remainingCallBudget = asNumber(record.remainingCallBudget);
+  const runDeadlineMs = asNumber(record.runDeadlineMs);
+  const providerId = typeof record.providerId === 'string' ? record.providerId : '';
+  const effectiveModel = typeof record.effectiveModel === 'string' ? record.effectiveModel : '';
+  if (
+    schemaVersion == null
+    || contextMessageCount == null
+    || droppedInvalidContextMessages == null
+    || reservedTokens == null
+    || remainingTokenBudget == null
+    || remainingCallBudget == null
+    || runDeadlineMs == null
+    || !providerId
+    || !effectiveModel
+  ) return null;
+  return {
+    schemaVersion,
+    completedStages: asStringArray(record.completedStages) ?? [],
+    providerId,
+    effectiveModel,
+    contextMessageCount,
+    droppedInvalidContextMessages,
+    reservedTokens,
+    remainingTokenBudget,
+    remainingCallBudget,
+    runDeadlineMs,
+  };
+}
+
+function parsePreflightFailure(value: unknown): SubagentPreflightFailure | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const schemaVersion = asNumber(record.schemaVersion);
+  const stage = typeof record.stage === 'string' ? record.stage : '';
+  const code = typeof record.code === 'string' ? record.code : '';
+  const message = typeof record.message === 'string' ? record.message : '';
+  if (schemaVersion == null || !stage || !code || !message) return null;
+  return {
+    schemaVersion,
+    stage,
+    code,
+    retryable: record.retryable === true,
+    message,
+  };
+}
+
 export function parseSubagentArguments(raw?: string): PendingSubagentArgs | null {
   if (!raw) return null;
   try {
@@ -417,6 +577,10 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
       return { chunkId, path, title, excerpt };
     })
     .filter((item): item is SubagentEvidenceHandoff => Boolean(item));
+  const preflight = parsePreflightReport(record.preflight);
+  const preflightFailure = parsePreflightFailure(record.preflightFailure);
+  const contextSnapshot = parseContextSnapshot(record.contextSnapshot);
+  const effectiveModelBudgets = parseEffectiveModelBudgets(record.effectiveModelBudgets);
 
   return {
     kind: 'subagent_result',
@@ -452,6 +616,10 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
     thinking,
     sourceScopeApplied: record.sourceScopeApplied === true,
     allowedTools,
+    preflight,
+    preflightFailure,
+    contextSnapshot,
+    effectiveModelBudgets,
   };
 }
 
@@ -487,6 +655,10 @@ function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: 
     thinking: artifact.thinking ?? null,
     sourceScopeApplied: artifact.sourceScopeApplied ?? false,
     allowedTools: artifact.allowedTools ?? null,
+    preflight: artifact.preflight ?? null,
+    preflightFailure: artifact.preflightFailure ?? null,
+    contextSnapshot: artifact.contextSnapshot ?? null,
+    effectiveModelBudgets: artifact.effectiveModelBudgets ?? null,
     content,
   };
 }
@@ -643,6 +815,10 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
     thinking: artifact?.thinking ?? (lifecycle.thinking.length > 0 ? lifecycle.thinking : null),
     sourceScopeApplied: artifact?.sourceScopeApplied ?? false,
     allowedTools: artifact?.allowedTools ?? null,
+    preflight: artifact?.preflight ?? null,
+    preflightFailure: artifact?.preflightFailure ?? null,
+    contextSnapshot: artifact?.contextSnapshot ?? null,
+    effectiveModelBudgets: artifact?.effectiveModelBudgets ?? null,
     argumentsText: toolCall.arguments,
     isError: lifecycle.status === 'error' ? true : toolCall.isError,
     content: lifecycle.errorMessage ?? toolCall.content,

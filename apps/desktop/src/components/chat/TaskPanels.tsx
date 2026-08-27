@@ -81,6 +81,7 @@ function getSubtaskCounts(subtasks: SubtaskRunArtifact[]) {
     failed: subtasks.filter(subtask => subtask.status === 'failed').length,
     running: subtasks.filter(subtask => subtask.status === 'running').length,
     queued: subtasks.filter(subtask => subtask.status === 'queued').length,
+    cancelled: subtasks.filter(subtask => subtask.status === 'cancelled').length,
   };
 }
 
@@ -94,6 +95,8 @@ function subtaskStatusLabel(status: string, t: ReturnType<typeof useTranslation>
       return t('chat.taskRunFailed');
     case 'completed':
       return t('chat.taskRunCompleted');
+    case 'cancelled':
+      return t('chat.taskRunCancelled');
     default:
       return status;
   }
@@ -263,9 +266,20 @@ export function PlanProgressPanel({
   const current = plan ? getCurrentPlanStep(plan) : null;
   const percent = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0;
   const subtaskCounts = getSubtaskCounts(subtasks);
+  const panelLabel = goal
+    ? t('chat.goalStatusTitle')
+    : plan
+      ? t('chat.planLabel')
+      : t('chat.subtasksLabel');
+  const panelTitle = goal?.objective
+    ?? current?.title
+    ?? plan?.title
+    ?? t('chat.subtasksDefaultSummary');
   let currentIcon = goal
     ? <Target className="h-3 w-3 text-accent" />
-    : <Circle className="h-3 w-3 text-text-tertiary" />;
+    : plan
+      ? <Circle className="h-3 w-3 text-text-tertiary" />
+      : <GitBranch className="h-3 w-3 text-accent" />;
   if (goal?.status === 'blocked') {
     currentIcon = <AlertTriangle className="h-3 w-3 text-warning" />;
   } else if (goal?.status === 'active') {
@@ -437,11 +451,11 @@ export function PlanProgressPanel({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
-              {goal ? t('chat.goalStatusTitle') : t('chat.planLabel')}
+              {panelLabel}
             </span>
-            {(goal?.objective || current?.title) && (
+            {panelTitle && (
               <span className="max-w-44 truncate text-xs font-medium text-text-primary">
-                {goal?.objective ?? current?.title}
+                {panelTitle}
               </span>
             )}
           </div>
@@ -488,11 +502,11 @@ export function PlanProgressPanel({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
-                {goal ? t('chat.goalStatusTitle') : t('chat.planLabel')}
+                {panelLabel}
               </span>
             </div>
             <div className="mt-0.5 truncate text-xs font-semibold text-text-primary">
-              {goal?.objective ?? current?.title ?? plan?.title ?? ''}
+              {panelTitle}
             </div>
             {current?.notes && (
               <div className="mt-0.5 truncate text-[11px] text-text-tertiary">{current.notes}</div>
@@ -674,6 +688,11 @@ export function SubtaskPanel({
         {counts.failed > 0 && (
           <span className="rounded-full border border-danger/30 bg-danger/10 px-2 py-1 text-danger">
             {t('chat.subtasksFailedCount', { count: String(counts.failed) })}
+          </span>
+        )}
+        {counts.cancelled > 0 && (
+          <span className="rounded-full border border-border/70 bg-surface-0/80 px-2 py-1">
+            {t('chat.subtasksCancelledCount', { count: String(counts.cancelled) })}
           </span>
         )}
       </div>

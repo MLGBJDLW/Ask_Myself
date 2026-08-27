@@ -10,7 +10,7 @@ use super::prompt_ir::{
 };
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
-    model_context_window, trim_to_context_window,
+    resolve_context_window, trim_to_context_window,
 };
 use crate::llm::{ContentPart, Message, Role, ToolDefinition};
 use crate::skills::Skill;
@@ -65,6 +65,7 @@ pub struct PrepareMessagesOptions<'a> {
     pub evidence_sections: &'a [&'a str],
     pub controller_state_sections: &'a [&'a str],
     pub append_volatile_system_prompt_to_tail: bool,
+    pub endpoint_context_resolution: Option<crate::conversation::memory::ResolvedContextWindow>,
 }
 
 impl Default for PrepareMessagesOptions<'static> {
@@ -75,6 +76,7 @@ impl Default for PrepareMessagesOptions<'static> {
             evidence_sections: &[],
             controller_state_sections: &[],
             append_volatile_system_prompt_to_tail: false,
+            endpoint_context_resolution: None,
         }
     }
 }
@@ -117,7 +119,13 @@ pub fn prepare_messages_with_options(
     // Budget prompt layers from the model context instead of using a small
     // fixed cap. This preserves mandatory prompt and skill-index layers on
     // modern long-context models while still protecting small-context models.
-    let max_context = context_window_override.unwrap_or_else(|| model_context_window(model));
+    let resolved_context = options
+        .endpoint_context_resolution
+        .unwrap_or_else(|| resolve_context_window(model, context_window_override));
+    // Unknown/custom endpoints remain provider-managed. A moderate layout
+    // budget still bounds generated system/skill scaffolding, but it is not a
+    // claimed model capacity and must not evict conversation history.
+    let max_context = resolved_context.capacity_tokens.unwrap_or(128_000);
     let tool_overhead = estimate_tool_tokens_for_model(model, tool_definitions);
     let effective_context = max_context
         .saturating_sub(tool_overhead)
@@ -208,7 +216,11 @@ pub fn prepare_messages_with_options(
     });
 
     // Trim to fit context window, accounting for tool definition overhead.
-    let mut trimmed = trim_to_context_window(&messages, effective_context, max_tokens_response);
+    let mut trimmed = if resolved_context.capacity_tokens.is_some() {
+        trim_to_context_window(&messages, effective_context, max_tokens_response)
+    } else {
+        messages.clone()
+    };
 
     // If messages were evicted, inject an extractive recap into the system prompt
     // so the LLM retains awareness of earlier conversation topics.

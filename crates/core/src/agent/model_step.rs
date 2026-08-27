@@ -1199,16 +1199,14 @@ impl AgentExecutor {
                     Some(&trace),
                 );
             }
-            let max_ctx = self
-                .config
-                .context_window
-                .unwrap_or_else(|| model_context_window(model));
-            let before_trim = prompt_cache::message_sequence_fingerprint(messages);
-            *messages = trim_to_context_window(
-                messages,
-                max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+            let context_pipeline = ContextPipeline::new_with_resolution(
+                model,
+                self.config.context_window,
+                self.config.context_window_resolution,
                 max_response_tokens,
             );
+            let before_trim = prompt_cache::message_sequence_fingerprint(messages);
+            *messages = context_pipeline.trim_after_tool_results(messages);
             return Ok(ModelStepOutcome::Restart {
                 prompt_was_compacted: before_trim
                     != prompt_cache::message_sequence_fingerprint(messages),

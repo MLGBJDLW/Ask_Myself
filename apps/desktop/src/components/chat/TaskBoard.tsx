@@ -43,11 +43,11 @@ export function TaskBoard({
     [messages, taskEvents, taskRun?.artifacts, toolCalls],
   );
 
-  if (!plan && !goal) {
+  if (!plan && !goal && subtasks.length === 0) {
     return null;
   }
 
-  if (!goal && plan?.routeKind === 'DirectResponse') {
+  if (!goal && plan?.routeKind === 'DirectResponse' && subtasks.length === 0) {
     return null;
   }
 

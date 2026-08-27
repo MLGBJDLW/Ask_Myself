@@ -57,6 +57,11 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+    const subtaskOnlyConversation: Conversation = {
+      ...autoPlanOnlyConversation,
+      id: 'conv-subtask-only',
+      title: 'Subtask only',
+    };
     const diffMergeConversation: Conversation = {
       id: 'conv-diff-merge',
       title: 'Diff merge',
@@ -628,6 +633,12 @@ test.beforeEach(async ({ page }) => {
             role: 'Verifier',
             status: 'completed',
           },
+          {
+            id: 'subtask-3',
+            label: 'Cancelled evidence branch',
+            role: 'Critic',
+            status: 'cancelled',
+          },
         ],
         verification: {
           kind: 'verification',
@@ -658,6 +669,15 @@ test.beforeEach(async ({ page }) => {
       },
       artifacts: null,
     };
+    const subtaskOnlyTaskRun = {
+      ...taskRun,
+      id: 'task-subtask-only',
+      conversationId: subtaskOnlyConversation.id,
+      plan: null,
+      artifacts: {
+        subtasks: taskRun.artifacts.subtasks,
+      },
+    };
 
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       switch (cmd) {
@@ -682,6 +702,7 @@ test.beforeEach(async ({ page }) => {
           return [
             clone(conversation),
             clone(autoPlanOnlyConversation),
+            clone(subtaskOnlyConversation),
             clone(diffMergeConversation),
             clone(runShellDiffConversation),
             clone(mixedPathDiffConversation),
@@ -690,6 +711,9 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.id ?? '');
           if (conversationId === autoPlanOnlyConversation.id) {
             return [clone(autoPlanOnlyConversation), []];
+          }
+          if (conversationId === subtaskOnlyConversation.id) {
+            return [clone(subtaskOnlyConversation), []];
           }
           if (conversationId === diffMergeConversation.id) {
             return [clone(diffMergeConversation), clone(diffMergeMessages)];
@@ -714,7 +738,11 @@ test.beforeEach(async ({ page }) => {
             return [];
           }
           return [
-            clone(conversationId === autoPlanOnlyConversation.id ? autoPlanOnlyTaskRun : taskRun),
+            clone(conversationId === autoPlanOnlyConversation.id
+              ? autoPlanOnlyTaskRun
+              : conversationId === subtaskOnlyConversation.id
+                ? subtaskOnlyTaskRun
+                : taskRun),
           ];
         }
         case 'list_sources':
@@ -824,7 +852,8 @@ test('floating plan capsule renders only the update_plan checklist', async ({ pa
   await expect(subagentStatus).toContainText('Researcher');
   await expect(subagentStatus).toContainText('Running');
   await expect(subagentStatus).toContainText('Verify Mermaid fallback');
-  await expect(subagentStatus).toContainText('1/2');
+  await expect(subagentStatus).toContainText('1/3');
+  await expect(subagentStatus).toContainText('Cancelled evidence branch');
   await expect(expanded).not.toContainText('Verification summary that should not render');
 
   await expanded.getByRole('button').click();
@@ -832,6 +861,21 @@ test('floating plan capsule renders only the update_plan checklist', async ({ pa
   await expect(collapsed).toHaveAttribute('aria-expanded', 'false');
   await expect(expanded).toBeHidden();
   expect((await board.boundingBox())?.width).toBe(stableWidth);
+});
+
+test('subtask overview remains visible without a plan or goal and preserves cancelled state', async ({ page }) => {
+  await page.goto('/chat/conv-subtask-only');
+
+  const board = page.getByTestId('task-board');
+  await expect(board).toBeVisible();
+  const collapsed = board.getByTestId('task-board-collapsed');
+  await expect(collapsed).toContainText('Subagents');
+  await expect(collapsed).toContainText('Delegated worker runs');
+  await collapsed.click();
+  const expanded = board.getByTestId('task-board-expanded');
+  await expect(expanded).toContainText('Cancelled evidence branch');
+  await expect(expanded).toContainText('Stopped');
+  await expect(expanded).toContainText('1/3');
 });
 
 

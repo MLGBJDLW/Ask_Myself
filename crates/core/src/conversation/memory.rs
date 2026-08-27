@@ -1,6 +1,7 @@
 //! Context window management for conversation history.
 
 use crate::llm::{Message, Role};
+use serde::{Deserialize, Serialize};
 use tiktoken_rs::{bpe_for_model, bpe_for_tokenizer, tokenizer::Tokenizer};
 
 /// Approximate token count using tokenizer-backed counting with a heuristic
@@ -152,6 +153,60 @@ fn canonical_model_id_for_context(model: &str) -> String {
         .to_string()
 }
 
+/// Authority behind an effective context-window value.
+///
+/// `ProviderManaged` deliberately carries no synthetic capacity: custom
+/// endpoints may expose models whose true window cannot be inferred from the
+/// model alias alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextWindowAuthority {
+    UserOverride,
+    Catalog,
+    ModelProfile,
+    ProviderManaged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedContextWindow {
+    pub capacity_tokens: Option<u32>,
+    pub authority: ContextWindowAuthority,
+}
+
+/// Resolve context capacity without inventing a limit for an unknown model.
+pub fn resolve_model_context_window(model: &str) -> ResolvedContextWindow {
+    let canonical_model = canonical_model_id_for_context(model);
+    let m = canonical_model.as_str();
+
+    let capacity_tokens = model_profile_context_window(m);
+    ResolvedContextWindow {
+        capacity_tokens,
+        authority: if capacity_tokens.is_some() {
+            ContextWindowAuthority::ModelProfile
+        } else {
+            ContextWindowAuthority::ProviderManaged
+        },
+    }
+}
+
+/// Resolve the effective context capacity, preserving explicit user authority.
+pub fn resolve_context_window(
+    model: &str,
+    context_window_override: Option<u32>,
+) -> ResolvedContextWindow {
+    match context_window_override {
+        Some(capacity_tokens) => ResolvedContextWindow {
+            capacity_tokens: Some(capacity_tokens),
+            authority: ContextWindowAuthority::UserOverride,
+        },
+        None => resolve_model_context_window(model),
+    }
+}
+
+/// Legacy scalar projection retained for callers that cannot yet express an
+/// unknown/provider-managed window. New policy code should use
+/// [`resolve_context_window`] instead.
 pub fn model_context_window(model: &str) -> u32 {
     let canonical_model = canonical_model_id_for_context(model);
     if let Some(context_tokens) =
@@ -163,10 +218,20 @@ pub fn model_context_window(model: &str) -> u32 {
     {
         return context_tokens;
     }
-    let m = canonical_model.as_str();
+    let resolved = resolve_model_context_window(model);
+    if let Some(capacity_tokens) = resolved.capacity_tokens {
+        return capacity_tokens;
+    }
+    tracing::warn!(
+        "Unknown model '{}', using legacy context-window projection of 32000 tokens",
+        canonical_model_id_for_context(model)
+    );
+    32_000
+}
 
+fn model_profile_context_window(m: &str) -> Option<u32> {
     // ── Exact matches for verified model IDs (highest priority) ────
-    match m {
+    let context_tokens = match m {
         // OpenAI GPT-5.6 / GPT-5.5 / GPT-5.4 series (1.05M)
         "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => 1_050_000,
         "gpt-5.5" | "gpt-5.5-2026-04-23" | "gpt-5.5-pro" | "gpt-5.5-pro-2026-04-23" => 1_050_000,
@@ -301,8 +366,9 @@ pub fn model_context_window(model: &str) -> u32 {
         "codestral-2508" => 128_000,
         "devstral-2512" | "devstral-2-2512" => 256_000,
 
-        _ => prefix_model_context_window(m),
-    }
+        _ => return prefix_model_context_window(m),
+    };
+    Some(context_tokens)
 }
 
 /// Parse explicit context hints embedded in model IDs, such as `128k` or `1m`.
@@ -373,15 +439,15 @@ fn qwen_model_context_window(m: &str) -> Option<u32> {
 }
 
 /// Fallback matching for model variants not in the exact list.
-fn prefix_model_context_window(m: &str) -> u32 {
+fn prefix_model_context_window(m: &str) -> Option<u32> {
     if let Some(parsed) = parse_context_window_hint(m) {
-        return parsed;
+        return Some(parsed);
     }
     if let Some(qwen) = qwen_model_context_window(m) {
-        return qwen;
+        return Some(qwen);
     }
 
-    match m {
+    let context_tokens = match m {
         // OpenAI
         _ if m.starts_with("gpt-5.6") || m.starts_with("gpt-5.5") => 1_050_000,
         _ if m.starts_with("gpt-5.4-mini") || m.starts_with("gpt-5.4-nano") => 400_000,
@@ -455,15 +521,10 @@ fn prefix_model_context_window(m: &str) -> u32 {
         _ if m.contains("yi") => 128_000,
         _ if m.contains("starcoder") => 16_384,
 
-        // Default for completely unknown models
-        _ => {
-            tracing::warn!(
-                "Unknown model '{}', using default context window of 32000 tokens",
-                m
-            );
-            32_000
-        }
-    }
+        // Completely unknown models remain provider-managed.
+        _ => return None,
+    };
+    Some(context_tokens)
 }
 
 /// A contiguous group of messages that must be kept or dropped together.
@@ -841,6 +902,22 @@ mod tests {
 
     #[test]
     fn test_model_context_window_unknown() {
+        assert_eq!(
+            resolve_model_context_window("some-custom-model"),
+            ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: ContextWindowAuthority::ProviderManaged,
+            }
+        );
+        assert_eq!(
+            resolve_context_window("some-custom-model", Some(750_000)),
+            ResolvedContextWindow {
+                capacity_tokens: Some(750_000),
+                authority: ContextWindowAuthority::UserOverride,
+            }
+        );
+        // Scalar compatibility callers retain their old projection, while new
+        // policy callers can distinguish provider-managed capacity above.
         assert_eq!(model_context_window("some-custom-model"), 32_000);
     }
 

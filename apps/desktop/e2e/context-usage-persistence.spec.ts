@@ -177,6 +177,8 @@ test.beforeEach(async ({ page }) => {
         cacheMissTokens: sum('cacheMissTokens'),
         cacheCreationTokens: sum('cacheCreationTokens'),
         lastPromptTokens: latest.lastPromptTokens,
+        contextCapacity: 1048576,
+        contextAuthority: 'catalog',
         contextBreakdown: latest.contextBreakdown,
         providerRaw: null,
       };
@@ -550,6 +552,8 @@ test('context usage ring persists after reloading the same conversation', async 
   await page.reload();
 
   await expect(contextTrigger).toHaveAttribute('aria-label', /7% context used/);
+  await contextTrigger.click();
+  await expect(page.getByTestId('chat-context-details')).toContainText('Verified endpoint catalog');
 });
 
 test('usage cache is scoped to conversation id and does not leak to another conversation', async ({ page }) => {

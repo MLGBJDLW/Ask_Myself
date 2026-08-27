@@ -32,6 +32,7 @@ use nexa_core::context_pack::{
     ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
     ContextTrustLevel,
 };
+use nexa_core::conversation::memory::{ContextWindowAuthority, ResolvedContextWindow};
 use nexa_core::conversation::{
     AgentConfig as DbAgentConfig, AgentSubtaskRun, Conversation, ConversationMessage,
     ImageAttachment,
@@ -48,6 +49,7 @@ use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
 #[cfg(test)]
 use nexa_core::project::{CreateProjectInput, UpdateProjectInput};
+use nexa_core::provider_catalog::find_provider_preset;
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::quality_profile::{
     resolve_orchestration_profile, CustomOrchestrationOptions, OrchestrationProfile,
@@ -105,6 +107,59 @@ fn canonical_builtin_tool_registry() -> ToolRegistry {
         .builtin_tool_registry()
 }
 
+fn normalize_context_model_id(model: &str) -> String {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .split([':', '~'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn resolve_endpoint_context_window(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+    context_window_override: Option<u32>,
+) -> ResolvedContextWindow {
+    if let Some(capacity_tokens) = context_window_override {
+        return ResolvedContextWindow {
+            capacity_tokens: Some(capacity_tokens),
+            authority: ContextWindowAuthority::UserOverride,
+        };
+    }
+    let capacity_tokens = find_provider_preset(provider, base_url)
+        .and_then(|preset| {
+            let normalized_model = normalize_context_model_id(model);
+            preset
+                .models
+                .into_iter()
+                .find(|candidate| normalize_context_model_id(&candidate.id) == normalized_model)
+        })
+        .and_then(|model| model.context_tokens)
+        .and_then(|value| u32::try_from(value).ok());
+    ResolvedContextWindow {
+        capacity_tokens,
+        authority: if capacity_tokens.is_some() {
+            ContextWindowAuthority::Catalog
+        } else {
+            ContextWindowAuthority::ProviderManaged
+        },
+    }
+}
+
+fn resolve_desktop_context_window(db_config: &DbAgentConfig) -> ResolvedContextWindow {
+    resolve_endpoint_context_window(
+        &db_config.provider,
+        db_config.base_url.as_deref(),
+        &db_config.model,
+        db_config
+            .context_window
+            .and_then(|value| u32::try_from(value).ok()),
+    )
+}
+
 pub struct DesktopAgentTurnRuntime {
     pub timeout_secs: u64,
     pub keepalive_interval_secs: u64,
@@ -156,6 +211,7 @@ pub struct DesktopAgentTurnConfigRequest<'a> {
 
 pub struct DesktopAgentTurnConfig {
     pub executor_config: AgentConfig,
+    pub context_window_resolution: ResolvedContextWindow,
     pub source_scope_ids: Vec<String>,
     pub pinned_skill_ids: Vec<String>,
     pub context_pack: ContextPack,
@@ -237,6 +293,10 @@ pub struct DesktopAgentSessionDependencyRequest<'a> {
     pub pinned_skill_ids: &'a [String],
     pub provider_config: ProviderConfig,
     pub executor_config: AgentConfig,
+    /// Optional root-agent capability ceiling supplied by a host workflow.
+    /// `None` preserves the normal interactive-chat registry; `Some` may only
+    /// narrow the assembled registry and is also inherited by subagents.
+    pub root_allowed_tools: Option<Vec<String>>,
     pub subagent_allowed_tools: Option<Vec<String>>,
     pub subagent_allowed_skill_ids: Option<Vec<String>>,
     pub subagent_lifecycle: SubagentLifecycleRuntime,
@@ -1716,6 +1776,7 @@ pub fn build_desktop_agent_turn_config(
         ""
     };
     let provider_type = provider_type_for_config(db_config);
+    let context_window_resolution = resolve_desktop_context_window(db_config);
     let configured_reasoning_effort =
         db_config
             .reasoning_effort
@@ -1745,7 +1806,7 @@ pub fn build_desktop_agent_turn_config(
     } else {
         db_config
             .max_iterations
-            .map(|value| value as u32)
+            .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(u32::MAX)
     };
     let power_policy = resolve_agent_power_policy(AgentPowerPolicyInput {
@@ -1754,13 +1815,19 @@ pub fn build_desktop_agent_turn_config(
         model: &db_config.model,
         max_iterations: configured_max_iterations,
         reasoning_enabled: db_config.reasoning_enabled,
-        thinking_budget: db_config.thinking_budget.map(|value| value as u32),
+        thinking_budget: db_config
+            .thinking_budget
+            .and_then(|value| u32::try_from(value).ok()),
         reasoning_effort: configured_reasoning_effort,
-        subagent_max_parallel: db_config.subagent_max_parallel.map(|value| value as u32),
+        subagent_max_parallel: db_config
+            .subagent_max_parallel
+            .and_then(|value| u32::try_from(value).ok()),
         subagent_max_calls_per_turn: db_config
             .subagent_max_calls_per_turn
-            .map(|value| value as u32),
-        subagent_token_budget: db_config.subagent_token_budget.map(|value| value as u32),
+            .and_then(|value| u32::try_from(value).ok()),
+        subagent_token_budget: db_config
+            .subagent_token_budget
+            .and_then(|value| u32::try_from(value).ok()),
     });
     let power_mode_section = power_policy.prompt_section().to_string();
     let orchestration_policy = resolve_orchestration_profile(OrchestrationProfileInput {
@@ -1834,9 +1901,8 @@ pub fn build_desktop_agent_turn_config(
             }
         });
     let base_system_prompt = build_system_prompt(Some(&conversation_system_prompt), &[]);
-    let context_budget = db_config
-        .context_window
-        .and_then(|window| u32::try_from(window).ok())
+    let context_budget = context_window_resolution
+        .capacity_tokens
         .map(|window| window.saturating_mul(3) / 5);
     let mut context_assembler = ContextAssembler::new("agent_turn", context_budget);
     let context_items = [
@@ -2051,9 +2117,14 @@ pub fn build_desktop_agent_turn_config(
         volatile_system_sections,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
-        max_tokens: db_config.max_tokens.map(|t| t as u32),
+        max_tokens: db_config
+            .max_tokens
+            .and_then(|value| u32::try_from(value).ok()),
         max_actual_tokens_per_run: None,
-        context_window: db_config.context_window.map(|w| w as u32),
+        context_window: db_config
+            .context_window
+            .and_then(|value| u32::try_from(value).ok()),
+        context_window_resolution: Some(context_window_resolution),
         reasoning_enabled: power_policy.reasoning_enabled,
         thinking_budget: power_policy.thinking_budget,
         reasoning_effort: power_policy.reasoning_effort,
@@ -2106,6 +2177,7 @@ pub fn build_desktop_agent_turn_config(
 
     DesktopAgentTurnConfig {
         executor_config,
+        context_window_resolution,
         source_scope_ids,
         pinned_skill_ids,
         context_pack,
@@ -2123,7 +2195,10 @@ pub fn build_desktop_agent_session_config(
         provider: Some(input.db_config.provider.clone()),
         model: Some(input.db_config.model.clone()),
         reasoning_enabled: input.db_config.reasoning_enabled,
-        thinking_budget: input.db_config.thinking_budget.map(|value| value as u32),
+        thinking_budget: input
+            .db_config
+            .thinking_budget
+            .and_then(|value| u32::try_from(value).ok()),
         reasoning_effort: input.db_config.reasoning_effort.clone(),
         source_scope: nexa_core::runtime::RuntimeSourceScope {
             source_ids: input.source_scope_ids.to_vec(),
@@ -2256,6 +2331,7 @@ pub async fn build_desktop_agent_session_dependencies(
         pinned_skill_ids,
         provider_config,
         executor_config,
+        root_allowed_tools,
         subagent_allowed_tools,
         subagent_allowed_skill_ids,
         subagent_lifecycle,
@@ -2454,8 +2530,6 @@ pub async fn build_desktop_agent_session_dependencies(
             last_known_good_tools
         }
     };
-    delegation_runtime.set_tool_registry(tools.clone());
-
     if plan_mode {
         let before_count = tools.tool_names().len();
         tools = tools.plan_mode_filtered();
@@ -2476,6 +2550,18 @@ pub async fn build_desktop_agent_session_dependencies(
         );
     }
 
+    if let Some(root_allowed_tools) = root_allowed_tools.as_deref() {
+        let before_count = tools.tool_names().len();
+        tools = filter_root_tool_registry(tools, root_allowed_tools);
+        info!(
+            "Root workflow tool allowlist filtered registry from {before_count} to {} tools",
+            tools.tool_names().len()
+        );
+    }
+    // Delegated workers inherit the already-filtered root registry and can
+    // only narrow it further through their own role/tool policy.
+    delegation_runtime.set_tool_registry(tools.clone());
+
     DesktopAgentSessionDependencies {
         tools,
         selected_skills,
@@ -2486,6 +2572,16 @@ pub async fn build_desktop_agent_session_dependencies(
             tool_registry_ms: elapsed_ms(tool_registry_started),
         },
     }
+}
+
+fn filter_root_tool_registry(tools: ToolRegistry, allowed_tools: &[String]) -> ToolRegistry {
+    let normalized = allowed_tools
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    tools.filtered(&normalized)
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -3220,6 +3316,51 @@ mod tests {
         assert_eq!(
             missing_core_runtime_tools(&ToolRegistry::new()),
             REQUIRED_ACTIVITY_RUNTIME_TOOLS
+        );
+    }
+
+    #[test]
+    fn root_tool_allowlist_only_narrows_the_assembled_registry() {
+        let registry = canonical_builtin_tool_registry();
+        let original_names = registry.tool_names();
+        assert!(original_names.iter().any(|name| name == "run_shell"));
+        assert!(original_names.iter().any(|name| name == "tool_search"));
+
+        let filtered = filter_root_tool_registry(
+            registry,
+            &[
+                " run_shell ".to_string(),
+                "not_a_registered_tool".to_string(),
+            ],
+        );
+        assert_eq!(filtered.tool_names(), vec!["run_shell".to_string()]);
+    }
+
+    #[test]
+    fn edited_endpoint_cannot_borrow_a_global_model_alias_capacity() {
+        assert_eq!(
+            resolve_endpoint_context_window(
+                "open_ai",
+                Some("https://private.example/v1"),
+                "gpt-5.6",
+                None,
+            ),
+            ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: ContextWindowAuthority::ProviderManaged,
+            }
+        );
+        assert_eq!(
+            resolve_endpoint_context_window(
+                "custom",
+                Some("https://private.example/v1"),
+                "gpt-5.6",
+                Some(750_000),
+            ),
+            ResolvedContextWindow {
+                capacity_tokens: Some(750_000),
+                authority: ContextWindowAuthority::UserOverride,
+            }
         );
     }
 

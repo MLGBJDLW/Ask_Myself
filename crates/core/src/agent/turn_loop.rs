@@ -224,10 +224,12 @@ impl AgentExecutor {
         });
 
         // --- Trace: initialize ------------------------------------------------
-        let ctx_window_for_trace =
-            self.config
-                .context_window
-                .unwrap_or_else(|| model_context_window(model)) as usize;
+        let ctx_window_for_trace = self
+            .config
+            .context_window_resolution
+            .and_then(|resolved| resolved.capacity_tokens)
+            .or(self.config.context_window)
+            .unwrap_or(0) as usize;
         let mut trace = if self.config.trace_enabled {
             Some(AgentTrace::begin(
                 conversation_id.unwrap_or(""),
@@ -361,13 +363,18 @@ impl AgentExecutor {
 
         let layout =
             prompt_layout::PromptLayout::for_request(self.config.provider_type, Some(model));
+        let effective_context_capacity = self
+            .config
+            .context_window_resolution
+            .and_then(|resolved| resolved.capacity_tokens)
+            .or(self.config.context_window);
         let cache_stable_tool_surface = if layout.allow_dynamic_tool_visibility {
             None
         } else {
             Some(prompt_layout::select_cache_stable_tool_surface(
                 &self.tools,
                 model,
-                self.config.context_window,
+                effective_context_capacity,
                 max_response_tokens,
             )?)
         };
@@ -455,6 +462,7 @@ impl AgentExecutor {
                 evidence_sections: &[],
                 controller_state_sections: &controller_state_sections,
                 append_volatile_system_prompt_to_tail: layout.append_volatile_system_prompt_to_tail,
+                endpoint_context_resolution: self.config.context_window_resolution,
             },
         );
         let current_user_was_preserved = messages
@@ -633,8 +641,12 @@ impl AgentExecutor {
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
         let mut context_recovery_attempts = 0u32;
-        let context_pipeline =
-            ContextPipeline::new(model, self.config.context_window, max_response_tokens);
+        let context_pipeline = ContextPipeline::new_with_resolution(
+            model,
+            self.config.context_window,
+            self.config.context_window_resolution,
+            max_response_tokens,
+        );
         let mut loop_guard = AgentLoopGuard::new();
         let mut long_task_state = LongTaskState::new();
         let mut force_non_streaming_llm = llm_streaming_disabled_by_env()
@@ -897,16 +909,8 @@ impl AgentExecutor {
                     "Applied user steering before the next model step.",
                     "info",
                 );
-                let max_ctx = self
-                    .config
-                    .context_window
-                    .unwrap_or_else(|| model_context_window(model));
                 let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
-                messages = trim_to_context_window(
-                    &messages,
-                    max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
-                    max_response_tokens,
-                );
+                messages = context_pipeline.trim_after_tool_results(&messages);
                 prompt_was_compacted |=
                     before_trim != prompt_cache::message_sequence_fingerprint(&messages);
             }
@@ -1511,16 +1515,8 @@ impl AgentExecutor {
                         &steering_texts,
                         has_sources,
                     );
-                    let max_ctx = self
-                        .config
-                        .context_window
-                        .unwrap_or_else(|| model_context_window(model));
                     let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
-                    messages = trim_to_context_window(
-                        &messages,
-                        max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
-                        max_response_tokens,
-                    );
+                    messages = context_pipeline.trim_after_tool_results(&messages);
                     prompt_was_compacted |=
                         before_trim != prompt_cache::message_sequence_fingerprint(&messages);
                     continue;

@@ -16,7 +16,6 @@ use crate::app_settings::ShellAccessMode;
 use crate::approval::{describe_request, ApprovalCallback, ApprovalRequest, ToolApprovalMode};
 use crate::conversation::memory::{
     context_safety_buffer, estimate_message_tokens_for_model, estimate_tokens_for_model,
-    model_context_window, trim_to_context_window,
 };
 use crate::conversation::summarizer;
 use crate::conversation::{
@@ -239,6 +238,11 @@ pub struct AgentConfig {
     pub max_actual_tokens_per_run: Option<u32>,
     /// Override context window size (auto-detected from model when `None`).
     pub context_window: Option<u32>,
+    /// Endpoint-scoped resolution supplied by the host. This prevents a
+    /// custom endpoint from inheriting capacity merely because its model alias
+    /// resembles a known provider model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_resolution: Option<crate::conversation::memory::ResolvedContextWindow>,
     /// Whether to enable reasoning/thinking for models that support it.
     pub reasoning_enabled: Option<bool>,
     /// Thinking budget in tokens (Anthropic, Gemini).
@@ -397,6 +401,7 @@ impl Default for AgentConfig {
             max_tokens: None,
             max_actual_tokens_per_run: None,
             context_window: None,
+            context_window_resolution: None,
             reasoning_enabled: None,
             thinking_budget: None,
             reasoning_effort: None,

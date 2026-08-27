@@ -38,6 +38,7 @@ interface RuntimeProfile {
   provider: string;
   model: string;
   contextWindow: number;
+  contextAuthority: 'user_override' | 'catalog' | 'model_profile' | 'provider_managed';
   reasoningEnabled: boolean;
   reasoningDetail: string;
   sourceAuthority: string;
@@ -302,6 +303,15 @@ export function ChatRunOverview({
     ? `${runtimeProfile.provider} / ${runtimeProfile.model}`
     : t('chat.contextNoModel');
   const modelProvider = runtimeProfile?.provider || 'custom';
+  const contextAuthorityLabel = runtimeProfile
+    ? runtimeProfile.contextAuthority === 'user_override'
+      ? t('chat.contextAuthorityUserOverride')
+      : runtimeProfile.contextAuthority === 'catalog'
+        ? t('chat.contextAuthorityCatalog')
+        : runtimeProfile.contextAuthority === 'model_profile'
+          ? t('chat.contextAuthorityModelProfile')
+          : t('chat.contextAuthorityProviderManaged')
+    : null;
 
   const cacheDetailLabel = cacheStats
     ? cacheStats.missTokens > 0
@@ -516,7 +526,9 @@ export function ChatRunOverview({
           />
           <div className="min-w-0 flex-1">
             <div className="truncate text-xs font-semibold text-text-primary">{modelLabel}</div>
-            <div className="mt-0.5 truncate text-[10px] text-text-tertiary">{usageSourceLabel}</div>
+            <div className="mt-0.5 truncate text-[10px] text-text-tertiary">
+              {usageSourceLabel}{contextAuthorityLabel ? ` · ${contextAuthorityLabel}` : ''}
+            </div>
           </div>
           {showStatusPill && (
             <span className={`inline-flex max-w-24 shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-medium ${statusTone}`}>

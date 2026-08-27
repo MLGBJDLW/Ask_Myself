@@ -21,7 +21,11 @@ use nexa_core::agent::{
     llm_streaming_disabled_by_env, AgentConfig, AgentEvent, AgentExecutor, AgentRequestKind,
     AgentSteeringMessage, CancellationToken,
 };
-use nexa_core::conversation::memory::{estimate_tokens_for_model, model_context_window};
+use nexa_core::conversation::memory::{
+    estimate_tokens_for_model, ContextWindowAuthority, ResolvedContextWindow,
+};
+#[cfg(test)]
+use nexa_core::conversation::memory::{model_context_window, resolve_model_context_window};
 use nexa_core::conversation::{
     conversation_message_llm_context_content, conversation_message_provider_turn,
 };
@@ -35,7 +39,9 @@ use nexa_core::llm::{
     create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart, Message,
     ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
-use nexa_core::provider_catalog::{model_capabilities_from_catalog, model_limits_from_catalog};
+use nexa_core::provider_catalog::{
+    find_provider_preset, model_capabilities_from_catalog, model_limits_from_catalog,
+};
 use nexa_core::search;
 use nexa_core::skills::Skill;
 use nexa_core::task_run::AgentTaskRuntime;
@@ -65,6 +71,68 @@ const SUBAGENT_INTERACTIVE_SURFACE_TOOLS: &[&str] = &[
     "computer_control",
     "desktop_automation",
 ];
+
+fn provider_catalog_key(provider_type: ProviderType) -> &'static str {
+    match provider_type {
+        ProviderType::OpenAi => "open_ai",
+        ProviderType::OpenRouter => "openrouter",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Google => "google",
+        ProviderType::DeepSeek => "deep_seek",
+        ProviderType::Ollama => "ollama",
+        ProviderType::LmStudio => "lm_studio",
+        ProviderType::AzureOpenAi => "azure_open_ai",
+        ProviderType::Zhipu => "zhipu",
+        ProviderType::Moonshot => "moonshot",
+        ProviderType::Qwen => "qwen",
+        ProviderType::AlibabaModelStudio => "alibaba_model_studio",
+        ProviderType::SiliconFlow => "siliconflow",
+        ProviderType::Doubao => "doubao",
+        ProviderType::Yi => "yi",
+        ProviderType::Baichuan => "baichuan",
+        ProviderType::Custom => "custom",
+    }
+}
+
+fn normalize_endpoint_model_id(model: &str) -> String {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .split([':', '~'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn endpoint_scoped_context_window(
+    provider_config: &ProviderConfig,
+    model: &str,
+) -> ResolvedContextWindow {
+    let Some(preset) = find_provider_preset(
+        provider_catalog_key(provider_config.provider_type),
+        provider_config.base_url.as_deref(),
+    ) else {
+        return ResolvedContextWindow {
+            capacity_tokens: None,
+            authority: ContextWindowAuthority::ProviderManaged,
+        };
+    };
+    let normalized_model = normalize_endpoint_model_id(model);
+    let capacity_tokens = preset
+        .models
+        .iter()
+        .find(|candidate| normalize_endpoint_model_id(&candidate.id) == normalized_model)
+        .and_then(|candidate| candidate.context_tokens)
+        .and_then(|tokens| u32::try_from(tokens).ok());
+    ResolvedContextWindow {
+        capacity_tokens,
+        authority: if capacity_tokens.is_some() {
+            ContextWindowAuthority::Catalog
+        } else {
+            ContextWindowAuthority::ProviderManaged
+        },
+    }
+}
 
 struct DelegationToolDef {
     description: String,
@@ -729,10 +797,10 @@ impl DelegationRuntime {
         &self,
         db: &Database,
         model: &str,
-        context_limit: u32,
+        context_limit: Option<u32>,
         handoff_token_budget: u32,
     ) -> Arc<DelegationContextSnapshot> {
-        let key = format!("{model}:{context_limit}:{handoff_token_budget}");
+        let key = format!("{model}:{context_limit:?}:{handoff_token_budget}");
         if let Some(snapshot) = self
             .context_snapshots
             .lock()
@@ -983,7 +1051,7 @@ struct DelegationContextSnapshot {
     selected_message_ids: Arc<[String]>,
     messages: Arc<[Message]>,
     token_estimate: u32,
-    context_limit: u32,
+    context_limit: Option<u32>,
     handoff_token_budget: u32,
     dropped_invalid_messages: usize,
 }
@@ -1053,6 +1121,9 @@ struct SubagentRunArtifact {
     is_error: bool,
     error_message: Option<String>,
     preflight_failure: Option<SubagentPreflightFailure>,
+    preflight: Option<SubagentPreflightReport>,
+    context_snapshot: Option<serde_json::Value>,
+    effective_model_budgets: Option<serde_json::Value>,
 }
 
 fn subtask_role_label(
@@ -1319,12 +1390,14 @@ fn load_delegation_context_snapshot(
     db: &Database,
     conversation_id: Option<&str>,
     model: &str,
-    context_limit: u32,
+    context_limit: Option<u32>,
     handoff_token_budget: u32,
 ) -> DelegationContextSnapshot {
     // `context_limit` is model capacity; handoff is a separate parent-history
     // allocation. Never report the smaller allocation as the model window.
-    let token_budget = handoff_token_budget.min(context_limit);
+    let token_budget = context_limit.map_or(handoff_token_budget, |limit| {
+        handoff_token_budget.min(limit)
+    });
     let mut selected = Vec::new();
     let mut token_estimate = 0u32;
     let mut dropped_invalid_messages = 0usize;
@@ -1380,7 +1453,15 @@ fn load_delegation_context_snapshot(
     selected.reverse();
     let mut hasher = blake3::Hasher::new();
     hasher.update(model.as_bytes());
-    hasher.update(&context_limit.to_le_bytes());
+    match context_limit {
+        Some(limit) => {
+            hasher.update(&[1]);
+            hasher.update(&limit.to_le_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     hasher.update(&handoff_token_budget.to_le_bytes());
     for (id, message) in &selected {
         hasher.update(id.as_bytes());
@@ -2273,26 +2354,22 @@ async fn run_subagent_once(
                 .unwrap_or(3)
         })
         .clamp(1, 6);
-    let catalog_context_limit = catalog_limits
-        .as_ref()
-        .and_then(|limits| limits.context_tokens)
-        .and_then(|limit| u32::try_from(limit).ok());
-    let resolved_context_limit = catalog_context_limit.or_else(|| {
-        effective_model
-            .as_deref()
-            .map(model_context_window)
-            .filter(|limit| *limit > 0)
-    });
-    apply_delegated_model_limits(
+    let resolved_model_context =
+        endpoint_scoped_context_window(&runtime.provider_config, &effective_model_id);
+    let context_authority = apply_delegated_model_limits(
         &mut config,
         delegation_limits.input_context_policy,
         delegation_limits.max_output_tokens_per_worker,
-        resolved_context_limit,
+        resolved_model_context,
         catalog_limits
             .as_ref()
             .and_then(|limits| limits.max_output_tokens),
         runtime.base_config.delegation_limits_v2.is_some(),
     );
+    config.context_window_resolution = Some(ResolvedContextWindow {
+        capacity_tokens: config.context_window,
+        authority: context_authority,
+    });
     if let Some(worker_limit) = delegation_limits
         .max_actual_tokens_per_worker
         .and_then(|limit| u32::try_from(limit).ok())
@@ -2300,7 +2377,7 @@ async fn run_subagent_once(
         config.max_tokens = Some(config.max_tokens.unwrap_or(worker_limit).min(worker_limit));
         config.max_actual_tokens_per_run = Some(worker_limit);
     }
-    let model_context_limit = config.context_window.unwrap_or(128_000);
+    let model_context_limit = config.context_window;
     let handoff_budget_snapshot = runtime.budget.snapshot().await;
     let fair_share_divisor = handoff_budget_snapshot
         .max_parallel
@@ -2321,12 +2398,17 @@ async fn run_subagent_once(
     } else {
         fair_share.saturating_mul(3) / 5
     };
-    let handoff_token_budget = delegation_limits
+    let mut handoff_token_budget = delegation_limits
         .handoff_context_tokens_per_worker
         .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(automatic_handoff_budget)
-        .min(model_context_limit.saturating_mul(3) / 5)
-        .max(1.min(model_context_limit));
+        .unwrap_or(automatic_handoff_budget);
+    if let Some(model_context_limit) = model_context_limit {
+        handoff_token_budget = handoff_token_budget
+            .min(model_context_limit.saturating_mul(3) / 5)
+            .max(1.min(model_context_limit));
+    } else {
+        handoff_token_budget = handoff_token_budget.max(1);
+    }
     let context_snapshot = runtime.context_snapshot(
         &db,
         effective_model.as_deref().unwrap_or("default"),
@@ -2467,23 +2549,37 @@ async fn run_subagent_once(
     subtask_input["skillIndexGeneration"] = serde_json::json!(&skill_index.generation);
     subtask_input["preflight"] =
         serde_json::to_value(&preflight).unwrap_or_else(|_| serde_json::json!({}));
-    subtask_input["contextSnapshot"] = serde_json::json!({
+    let context_snapshot_artifact = serde_json::json!({
         "id": &context_snapshot.id,
         "selectedMessageIds": &context_snapshot.selected_message_ids,
         "tokenEstimate": context_snapshot.token_estimate,
-        "contextLimit": context_snapshot.context_limit,
-        "contextLimitSource": if catalog_context_limit.is_some() { "catalog" } else { "model_fallback" },
+        "contextCapacity": context_snapshot.context_limit,
+        "contextAuthority": context_authority,
         "handoffTokenBudget": context_snapshot.handoff_token_budget,
         "droppedInvalidMessages": context_snapshot.dropped_invalid_messages,
     });
-    subtask_input["effectiveModelBudgets"] = serde_json::json!({
+    let output_authority = match delegation_limits.max_output_tokens_per_worker {
+        DelegationLimitPolicy::Explicit(_) => "user_override",
+        DelegationLimitPolicy::Auto
+            if catalog_limits
+                .as_ref()
+                .and_then(|limits| limits.max_output_tokens)
+                .is_some() =>
+        {
+            "catalog_ceiling"
+        }
+        DelegationLimitPolicy::Auto => "safe_default",
+    };
+    let effective_model_budgets = serde_json::json!({
         "contextCapacity": config.context_window,
         "parentHistoryHandoff": context_snapshot.handoff_token_budget,
         "maxOutputPerStep": config.max_tokens,
         "maxActualTokensPerWorker": config.max_actual_tokens_per_run,
-        "contextAuthority": if catalog_context_limit.is_some() { "catalog" } else { "model_fallback" },
-        "outputAuthority": if catalog_limits.as_ref().and_then(|limits| limits.max_output_tokens).is_some() { "catalog_ceiling" } else { "safe_8k_fallback" },
+        "contextAuthority": context_authority,
+        "outputAuthority": output_authority,
     });
+    subtask_input["contextSnapshot"] = context_snapshot_artifact.clone();
+    subtask_input["effectiveModelBudgets"] = effective_model_budgets.clone();
     let parent_task_run_id = runtime.parent_task_run_id.clone();
     let subtask_run_id = if let Some(parent_run_id) = parent_task_run_id.as_deref() {
         let role_label = subtask_role_label(&args, role_profile, "Subagent");
@@ -3372,6 +3468,9 @@ async fn run_subagent_once(
         is_error: false,
         error_message: None,
         preflight_failure: None,
+        preflight: Some(preflight),
+        context_snapshot: Some(context_snapshot_artifact),
+        effective_model_budgets: Some(effective_model_budgets),
     };
     runtime.save_session_snapshot(SubagentSessionSnapshot {
         task_id: session_id.clone(),
@@ -3643,6 +3742,9 @@ fn failed_subagent_run_artifact(
         is_error: true,
         error_message: Some(error.to_string()),
         preflight_failure: subagent_preflight_failure_from_error(error),
+        preflight: None,
+        context_snapshot: None,
+        effective_model_budgets: None,
     }
 }
 
@@ -4089,18 +4191,26 @@ fn apply_delegated_model_limits(
     config: &mut AgentConfig,
     input_context_policy: DelegationLimitPolicy,
     max_output_policy: DelegationLimitPolicy,
-    catalog_context_limit: Option<u32>,
+    resolved_context: ResolvedContextWindow,
     catalog_output_limit: Option<u64>,
     independent_v2_limits: bool,
-) {
-    config.context_window = match input_context_policy {
-        DelegationLimitPolicy::Explicit(limit) => u32::try_from(limit)
-            .ok()
-            .map(|limit| catalog_context_limit.map_or(limit, |catalog| limit.min(catalog))),
-        DelegationLimitPolicy::Auto if independent_v2_limits => {
-            catalog_context_limit.or(config.context_window)
+) -> ContextWindowAuthority {
+    let existing_context_window = config.context_window;
+    let context_authority = match input_context_policy {
+        DelegationLimitPolicy::Explicit(_) => ContextWindowAuthority::UserOverride,
+        DelegationLimitPolicy::Auto
+            if !independent_v2_limits && existing_context_window.is_some() =>
+        {
+            ContextWindowAuthority::UserOverride
         }
-        DelegationLimitPolicy::Auto => config.context_window.or(catalog_context_limit),
+        DelegationLimitPolicy::Auto => resolved_context.authority,
+    };
+    config.context_window = match input_context_policy {
+        // An explicit delegated window is authoritative. In particular, never
+        // clamp it to an endpoint-agnostic model-name fallback.
+        DelegationLimitPolicy::Explicit(limit) => u32::try_from(limit).ok(),
+        DelegationLimitPolicy::Auto if independent_v2_limits => resolved_context.capacity_tokens,
+        DelegationLimitPolicy::Auto => config.context_window.or(resolved_context.capacity_tokens),
     };
 
     match max_output_policy {
@@ -4128,6 +4238,7 @@ fn apply_delegated_model_limits(
             resolved_output.min(context_window.saturating_sub(prompt_reserve).max(256));
     }
     config.max_tokens = Some(resolved_output);
+    context_authority
 }
 
 fn initial_output_credit(
@@ -5863,7 +5974,7 @@ mod tests {
             selected_message_ids: Arc::from(Vec::<String>::new()),
             messages: Arc::from(Vec::<Message>::new()),
             token_estimate: 0,
-            context_limit: 128_000,
+            context_limit: Some(128_000),
             handoff_token_budget: 64_000,
             dropped_invalid_messages: 0,
         };
@@ -5912,7 +6023,7 @@ mod tests {
             selected_message_ids: Arc::from(Vec::<String>::new()),
             messages: Arc::from(Vec::<Message>::new()),
             token_estimate: 0,
-            context_limit: 128_000,
+            context_limit: Some(128_000),
             handoff_token_budget: 64_000,
             dropped_invalid_messages: 0,
         };
@@ -5967,7 +6078,7 @@ mod tests {
             selected_message_ids: Arc::from(vec!["message-1".to_string()]),
             messages: Arc::from(vec![invalid_assistant]),
             token_estimate: 1,
-            context_limit: 128_000,
+            context_limit: Some(128_000),
             handoff_token_budget: 64_000,
             dropped_invalid_messages: 0,
         };
@@ -6495,7 +6606,10 @@ mod tests {
             &mut config,
             DelegationLimitPolicy::Auto,
             DelegationLimitPolicy::Auto,
-            Some(1_000_000),
+            ResolvedContextWindow {
+                capacity_tokens: Some(1_000_000),
+                authority: ContextWindowAuthority::Catalog,
+            },
             Some(65_536),
             true,
         );
@@ -6671,7 +6785,10 @@ mod tests {
             &mut config,
             DelegationLimitPolicy::Auto,
             DelegationLimitPolicy::Auto,
-            None,
+            ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: ContextWindowAuthority::ProviderManaged,
+            },
             None,
             true,
         );
@@ -6691,7 +6808,10 @@ mod tests {
             &mut config,
             DelegationLimitPolicy::Auto,
             DelegationLimitPolicy::Auto,
-            Some(1_048_576),
+            ResolvedContextWindow {
+                capacity_tokens: Some(1_048_576),
+                authority: ContextWindowAuthority::Catalog,
+            },
             Some(1_048_576),
             true,
         );
@@ -6706,17 +6826,21 @@ mod tests {
     #[test]
     fn delegated_fallback_contract_covers_local_compatible_and_unknown_providers() {
         for (provider, model, expected_context) in [
-            (ProviderType::Ollama, "qwen3.8-max", 1_000_000),
-            (ProviderType::LmStudio, "openai/gpt-5.6", 1_050_000),
+            (ProviderType::Ollama, "qwen3.8-max", Some(1_000_000)),
+            (ProviderType::LmStudio, "openai/gpt-5.6", Some(1_050_000)),
             (
                 ProviderType::SiliconFlow,
                 "deepseek/deepseek-v4-pro",
-                1_000_000,
+                Some(1_000_000),
             ),
-            (ProviderType::Doubao, "doubao-seed-1-6-thinking", 256_000),
-            (ProviderType::Yi, "yi-large", 128_000),
-            (ProviderType::Baichuan, "baichuan-m3", 32_000),
-            (ProviderType::Custom, "unknown-private-model", 32_000),
+            (
+                ProviderType::Doubao,
+                "doubao-seed-1-6-thinking",
+                Some(256_000),
+            ),
+            (ProviderType::Yi, "yi-large", Some(128_000)),
+            (ProviderType::Baichuan, "baichuan-m3", Some(32_000)),
+            (ProviderType::Custom, "unknown-private-model", None),
         ] {
             let mut config = AgentConfig {
                 provider_type: Some(provider),
@@ -6729,17 +6853,66 @@ mod tests {
                 &mut config,
                 DelegationLimitPolicy::Auto,
                 DelegationLimitPolicy::Auto,
-                Some(model_context_window(model)),
+                resolve_model_context_window(model),
                 None,
                 true,
             );
             assert_eq!(
-                config.context_window,
-                Some(expected_context),
+                config.context_window, expected_context,
                 "fallback context mismatch for {provider:?}:{model}"
             );
             assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
         }
+    }
+
+    #[test]
+    fn edited_or_custom_endpoints_do_not_inherit_global_model_alias_capacity() {
+        for provider_config in [
+            ProviderConfig {
+                provider_type: ProviderType::Custom,
+                base_url: Some("https://private.example/v1".to_string()),
+                api_key: None,
+                org_id: None,
+                timeout_secs: None,
+            },
+            ProviderConfig {
+                provider_type: ProviderType::OpenAi,
+                base_url: Some("https://private.example/v1".to_string()),
+                api_key: None,
+                org_id: None,
+                timeout_secs: None,
+            },
+        ] {
+            assert_eq!(
+                endpoint_scoped_context_window(&provider_config, "gpt-5.6"),
+                ResolvedContextWindow {
+                    capacity_tokens: None,
+                    authority: ContextWindowAuthority::ProviderManaged,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_worker_context_is_not_clamped_by_an_inferred_capacity() {
+        let mut config = AgentConfig {
+            context_window: Some(32_000),
+            ..Default::default()
+        };
+        let authority = apply_delegated_model_limits(
+            &mut config,
+            DelegationLimitPolicy::Explicit(750_000),
+            DelegationLimitPolicy::Auto,
+            ResolvedContextWindow {
+                capacity_tokens: Some(32_000),
+                authority: ContextWindowAuthority::ModelProfile,
+            },
+            None,
+            true,
+        );
+
+        assert_eq!(config.context_window, Some(750_000));
+        assert_eq!(authority, ContextWindowAuthority::UserOverride);
     }
 
     #[test]
@@ -6753,7 +6926,10 @@ mod tests {
             &mut config,
             DelegationLimitPolicy::Auto,
             DelegationLimitPolicy::Explicit(512),
-            None,
+            ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: ContextWindowAuthority::ProviderManaged,
+            },
             Some(65_536),
             true,
         );
@@ -6764,7 +6940,10 @@ mod tests {
             &mut config,
             DelegationLimitPolicy::Auto,
             DelegationLimitPolicy::Explicit(512),
-            None,
+            ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: ContextWindowAuthority::ProviderManaged,
+            },
             Some(400),
             true,
         );
@@ -6923,14 +7102,14 @@ mod tests {
             &db,
             Some(&conversation.id),
             "gemini-2.5-pro",
-            1_048_576,
+            Some(1_048_576),
             64_000,
         );
         let second = load_delegation_context_snapshot(
             &db,
             Some(&conversation.id),
             "gemini-2.5-pro",
-            1_048_576,
+            Some(1_048_576),
             64_000,
         );
 
@@ -6940,7 +7119,7 @@ mod tests {
             first.messages[0].text_content(),
             "Parent context that the delegated worker needs"
         );
-        assert_eq!(first.context_limit, 1_048_576);
+        assert_eq!(first.context_limit, Some(1_048_576));
         assert_eq!(first.handoff_token_budget, 64_000);
     }
 
@@ -6977,13 +7156,13 @@ mod tests {
             &db,
             Some(&conversation.id),
             "qwen3.8-max",
-            1_000_000,
+            Some(1_000_000),
             10_000,
         );
         assert!(snapshot.token_estimate <= 10_000);
         assert!(snapshot.messages.is_empty());
         assert_eq!(snapshot.dropped_invalid_messages, 1);
-        assert_eq!(snapshot.context_limit, 1_000_000);
+        assert_eq!(snapshot.context_limit, Some(1_000_000));
     }
 
     #[test]
