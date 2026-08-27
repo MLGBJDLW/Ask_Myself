@@ -23,6 +23,9 @@ canonical architecture entry point is [ARCHITECTURE.md](./ARCHITECTURE.md).
   argument previews, authoritative file-tool execution, and resumable writes.
 - [ORCHESTRATION_RUNTIME.md](./ORCHESTRATION_RUNTIME.md) defines MoA, Nexus,
   workflow checkpoints, verification, privacy, cost, and evaluation contracts.
+- [SCHEDULED_TASKS.md](./SCHEDULED_TASKS.md) defines recurrence, occurrence
+  claiming, execution policy, permissions, migration, and operator guidance for
+  unattended workflows.
 - [computer-use-integration.md](./computer-use-integration.md) defines the
   desktop automation boundary.
 - [computer-use-landscape-2026-08-23.md](./computer-use-landscape-2026-08-23.md)

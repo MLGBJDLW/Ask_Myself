@@ -25,6 +25,15 @@ configuration compatibility with another project.
 - [LangGraph checkpointing](https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint)
   informed the decision to make workflow progress serializable rather than
   keeping scheduler state only in a prompt.
+- [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+  establish independent inspectable worker threads, parent inheritance for
+  omitted model settings, and explicit orchestration controls.
+- [Gemini CLI subagents](https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md)
+  demonstrate isolated tool registries, provider/model inheritance, and
+  recursion protection.
+- [pi's subagent extension](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/subagent/index.ts)
+  demonstrates isolated processes, single/parallel/chain delegation, bounded
+  concurrency, streaming usage, and abort propagation.
 
 ## Product contracts
 
@@ -110,6 +119,55 @@ derived only from a successful `subagent_judgement` runtime artifact.
 Plan Mode compiles a separate read-only completion contract: mutation and
 delegation tools are removed from Workflow IR nodes, execution/release gates are
 omitted, and no isolated worktree or process sandbox is created.
+
+## Delegated context authority
+
+Every delegated worker owns an independent model conversation. The parent sends
+only the task baton, selected evidence, and the bounded handoff payload; it does
+not clone the parent's entire transcript into the worker. A worker returns a
+structured result and evidence summary to the parent, which remains responsible
+for synthesis and user-visible completion.
+
+Context capacity is resolved per provider route and model, not per display name.
+The default is `Auto`: use the verified shared-catalog capacity when the route is
+known, otherwise leave capacity provider-managed. Nexa must not invent a 32K
+limit for an unknown or custom endpoint. A positive user override is authoritative
+for that run and may be rejected with a validation error, but it must never be
+silently reduced by an unrelated fallback guess.
+
+The following limits are independent and must not be collapsed into one token
+number:
+
+- provider input capacity;
+- parent-to-worker handoff budget;
+- worker output limit;
+- aggregate delegated token or cost budget;
+- call, concurrency, iteration, and wall-time limits.
+
+Runtime artifacts record the requested and effective model policy, capacity,
+capacity authority, handoff budget, output limit, and preflight result. The UI
+projects those artifacts. It may show progress summaries, current tools, elapsed
+time, evidence counts, usage, and terminal state, but it must not present private
+chain-of-thought as an operational status stream.
+
+## Operator guidance
+
+Use Standard mode for ordinary work. Enable Nexus for work that benefits from
+parallel reconnaissance, checkpoints, independent verification, or an explicit
+completion contract. A quality profile controls the workflow depth; provider
+reasoning effort remains a separate setting and can use only values the selected
+route supports.
+
+Keep model, reasoning, and context controls on `Auto` unless a task requires a
+specific documented route or hard budget. Auto means inheritance or provider
+defaults, not a hidden small cap. Explicit worker limits are useful for a known
+cost ceiling or a provider with a documented deployment-specific capacity. The
+composer and worker views must display effective values rather than repeating
+static Nexus constants that later profiles can override.
+
+For recurring unattended work, use the durable
+[Scheduled Tasks](./SCHEDULED_TASKS.md) surface instead of embedding timers in a
+prompt or creating another polling loop.
 
 ## Evaluation contract
 

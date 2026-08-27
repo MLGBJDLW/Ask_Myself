@@ -79,6 +79,8 @@ batching, failure, recovery, and wire rules are normative in the
   previews from complete schema-valid execution and durable results.
 - [Orchestration Runtime](./ORCHESTRATION_RUNTIME.md) defines workflow IR,
   fan-out, checkpoints, verification, and quality-profile behavior.
+- [Scheduled Tasks](./SCHEDULED_TASKS.md) defines recurrence, occurrence
+  claiming, unattended execution policy, and compatibility boundaries.
 - [Ecosystem Architecture](./ECOSYSTEM_ARCHITECTURE.md) defines capability,
   connector, skill, workflow, adapter, and native-plugin lanes.
 - [Computer Use Integration](./computer-use-integration.md) defines the desktop
