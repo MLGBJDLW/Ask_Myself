@@ -832,10 +832,12 @@ fn main() {
             commands::list_due_workflow_automations_cmd,
             commands::list_due_task_orchestrator_queue_cmd,
             commands::preview_workflow_automation_prompt_cmd,
+            commands::preview_workflow_automation_schedule_cmd,
             commands::prepare_workflow_automation_delivery_cmd,
             commands::prepare_due_workflow_automation_delivery_cmd,
             commands::queue_workflow_automation_delivery_cmd,
             commands::queue_due_workflow_automation_delivery_cmd,
+            commands::start_workflow_automation_run_cmd,
             commands::start_due_workflow_automation_run_cmd,
             commands::record_workflow_automation_run_cmd,
             commands::list_workflow_automation_scheduler_events_cmd,
@@ -877,6 +879,7 @@ fn main() {
             browser::browser_close_session_cmd,
             // Model info
             commands::get_model_context_window,
+            commands::get_model_context_window_resolution,
             // Image attachment
             commands::prepare_image_attachment,
             // App Config

@@ -719,8 +719,9 @@ mod tests {
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
-        due_workflow_run_is_scheduler_eligible, ensure_workflow_template_runtime_visible,
-        filter_due_workflow_runs_by_package_host, queue_due_workflow_automation_execution_ticket,
+        apply_scheduled_execution_policy, due_workflow_run_is_scheduler_eligible,
+        ensure_workflow_template_runtime_visible, filter_due_workflow_runs_by_package_host,
+        queue_due_workflow_automation_execution_ticket,
         select_task_orchestrator_launch_agent_config, task_orchestrator_scheduler_due_runs,
         task_orchestrator_scheduler_retry_skip_event, task_orchestrator_scheduler_status_is_active,
         workflow_due_runs_to_queue_items,
@@ -1037,6 +1038,7 @@ mod tests {
                     allowed_tools: vec!["search_knowledge_base".to_string()],
                     risk_level: "medium".to_string(),
                 },
+                schedule_config: Default::default(),
                 enabled: true,
                 status: "ready".to_string(),
                 last_run_at: None,
@@ -1046,6 +1048,7 @@ mod tests {
             },
             prompt: "Run the saved workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
+            scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
         }
     }
 
@@ -1634,6 +1637,37 @@ mod tests {
         let error =
             select_task_orchestrator_launch_agent_config(&db, Some("missing-config")).unwrap_err();
         assert!(error.contains("Requested agent config 'missing-config' was not found"));
+    }
+
+    #[test]
+    fn scheduled_execution_policy_preserves_auto_and_fails_closed_on_route_drift() {
+        let db = Database::open_memory().unwrap();
+        let mut config = save_test_agent_config(&db, "cfg-scheduled", "gpt-original", true);
+        config.provider_endpoint_id = Some("text:openai-official".to_string());
+
+        let mut policy = nexa_core::workflow_scheduler::WorkflowAutomationExecutionPolicy {
+            agent_config_id: Some(config.id.clone()),
+            provider: Some(config.provider.clone()),
+            provider_endpoint_id: config.provider_endpoint_id.clone(),
+            model: Some("gpt-scheduled".to_string()),
+            context_window: None,
+            ..Default::default()
+        };
+        let resolved = apply_scheduled_execution_policy(config.clone(), &policy)
+            .expect("matching route should accept scheduled overrides");
+        assert_eq!(resolved.model, "gpt-scheduled");
+        assert_eq!(resolved.context_window, None, "None keeps provider Auto");
+        assert_eq!(resolved.model_id, None);
+        assert_eq!(resolved.model_selection_resolution, None);
+
+        policy.context_window = Some(750_000);
+        let explicit = apply_scheduled_execution_policy(config.clone(), &policy)
+            .expect("explicit context should remain authoritative");
+        assert_eq!(explicit.context_window, Some(750_000));
+
+        policy.provider_endpoint_id = Some("text:edited-endpoint".to_string());
+        let error = apply_scheduled_execution_policy(config, &policy).unwrap_err();
+        assert!(error.contains("endpoint drift"));
     }
 
     #[test]

@@ -130,6 +130,7 @@ import type {
   WorkflowAutomationDueRun,
   WorkflowAutomationRun,
   WorkflowAutomationSchedulerEvent,
+  WorkflowSchedulePreview,
 } from "../types/workflows";
 import type {
   DreamArtifact,
@@ -941,8 +942,13 @@ export const listProviderPresets = () =>
 export const listWorkflowTemplates = () =>
   invoke<WorkflowCatalogTemplate[]>('list_workflow_templates_cmd');
 
-export const saveWorkflowAutomation = (input: SaveWorkflowAutomationInput) =>
-  invoke<WorkflowAutomation>('save_workflow_automation_cmd', { input });
+export const saveWorkflowAutomation = (input: SaveWorkflowAutomationInput) => {
+  const { scheduleConfig, ...coreInput } = input;
+  return invoke<WorkflowAutomation>('save_workflow_automation_cmd', {
+    input: coreInput,
+    scheduleConfig: scheduleConfig ?? null,
+  });
+};
 
 export const listWorkflowAutomations = () =>
   invoke<WorkflowAutomation[]>('list_workflow_automations_cmd');
@@ -959,6 +965,18 @@ export const listDueWorkflowAutomations = (now?: string | null) =>
 export const previewWorkflowAutomationPrompt = (id: string) =>
   invoke<string>('preview_workflow_automation_prompt_cmd', { id });
 
+export const previewWorkflowAutomationSchedule = (
+  cron: string,
+  timezone: string,
+  after?: string | null,
+  limit = 5,
+) => invoke<WorkflowSchedulePreview>('preview_workflow_automation_schedule_cmd', {
+  cron,
+  timezone,
+  after: after ?? null,
+  limit,
+});
+
 export const prepareWorkflowAutomationDelivery = (id: string) =>
   invoke<TaskOrchestratorDeliveryEnvelope>('prepare_workflow_automation_delivery_cmd', { id });
 
@@ -973,6 +991,16 @@ export const queueWorkflowAutomationDelivery = (id: string, summary?: string | n
     id,
     summary: summary ?? null,
   });
+
+export const startWorkflowAutomationRun = (
+  id: string,
+  conversationId?: string | null,
+  summary?: string | null,
+) => invoke<TaskOrchestratorWorkflowLaunch>('start_workflow_automation_run_cmd', {
+  id,
+  conversationId: conversationId ?? null,
+  summary: summary ?? null,
+});
 
 export const queueDueWorkflowAutomationDelivery = (
   id: string,
@@ -1686,6 +1714,27 @@ export const agentStop = (conversationId: string) =>
 
 export const getModelContextWindow = (model: string) =>
   invoke<number>('get_model_context_window', { model });
+
+export type ContextWindowAuthority =
+  | 'user_override'
+  | 'catalog'
+  | 'model_profile'
+  | 'provider_managed';
+
+export interface ModelContextWindowResolution {
+  capacityTokens: number | null;
+  authority: ContextWindowAuthority;
+}
+
+export const getModelContextWindowResolution = (
+  provider: string,
+  baseUrl: string | null | undefined,
+  model: string,
+) => invoke<ModelContextWindowResolution>('get_model_context_window_resolution', {
+  provider,
+  baseUrl: baseUrl ?? null,
+  model,
+});
 
 // ── Image Attachment ────────────────────────────────────────────────────
 

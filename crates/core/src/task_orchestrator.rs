@@ -405,6 +405,7 @@ mod tests {
                 allowed_tools: vec!["search_knowledge_base".to_string()],
                 risk_level: "medium".to_string(),
             },
+            schedule_config: Default::default(),
             enabled,
             status: if enabled {
                 "ready".to_string()
@@ -425,6 +426,10 @@ mod tests {
             task_run_id: Some("task-run-1".to_string()),
             status: status.to_string(),
             summary: Some("done".to_string()),
+            occurrence_id: Some("occurrence-1".to_string()),
+            scheduled_for: Some("2026-01-01T09:00:00Z".to_string()),
+            definition_revision: 1,
+            attempt: 1,
             created_at: "2026-01-01T09:00:00Z".to_string(),
             finished_at: Some("2026-01-01T09:05:00Z".to_string()),
         }
@@ -505,6 +510,7 @@ mod tests {
             automation,
             prompt: "Run the saved workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
+            scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
         };
 
         let item = workflow_due_run_queue_item(&due);
@@ -534,6 +540,7 @@ mod tests {
             automation,
             prompt: "Run the scheduled workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
+            scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
         };
 
         let envelope = workflow_due_run_delivery_envelope(&due);
@@ -614,6 +621,7 @@ mod tests {
             automation,
             prompt: "Run the scheduled workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
+            scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
         };
         let run = workflow_run("queued");
 

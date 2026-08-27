@@ -1,4 +1,9 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Locator, test } from '@playwright/test';
+
+async function selectNexaOption(trigger: Locator, value: string) {
+  await trigger.click();
+  await trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -9,6 +14,8 @@ test.beforeEach(async ({ page }) => {
     const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
     const savedAutomationInputs: Array<Record<string, unknown>> = [];
     (window as unknown as { __savedAutomationInputs?: Array<Record<string, unknown>> }).__savedAutomationInputs = savedAutomationInputs;
+    const schedulePreviewInputs: Array<Record<string, unknown>> = [];
+    (window as unknown as { __schedulePreviewInputs?: Array<Record<string, unknown>> }).__schedulePreviewInputs = schedulePreviewInputs;
 
     const workflowCatalog = [
       {
@@ -68,6 +75,17 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'list_sources':
           return clone(sources);
+        case 'list_agent_configs_cmd':
+          return [{
+            id: 'cfg-scheduled',
+            name: 'Scheduled GLM',
+            provider: 'alibaba_model_studio',
+            providerEndpointId: 'text:alibaba-model-studio',
+            baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            model: 'ZHIPU/GLM-5.3',
+            contextWindow: null,
+            isDefault: true,
+          }];
         case 'get_learning_governance_snapshot_cmd':
           return {
             skillStats: [],
@@ -78,9 +96,11 @@ test.beforeEach(async ({ page }) => {
           };
         case 'save_workflow_automation_cmd': {
           const input = clone(args.input as Record<string, unknown>);
-          savedAutomationInputs.push(input);
+          const scheduleConfig = clone(args.scheduleConfig as Record<string, unknown> | null);
+          savedAutomationInputs.push({ ...input, scheduleConfig });
           return {
             ...(input as Record<string, unknown>),
+            scheduleConfig,
             id: 'automation-recorded',
             triggerKind: 'manual',
             status: 'ready',
@@ -90,6 +110,16 @@ test.beforeEach(async ({ page }) => {
             updatedAt: nowIso,
           };
         }
+        case 'preview_workflow_automation_schedule_cmd':
+          schedulePreviewInputs.push(clone(args));
+          return {
+            cron: String(args.cron),
+            timezone: String(args.timezone),
+            occurrences: [1, 2, 3, 4, 5].map((day) => ({
+              scheduledFor: `2026-09-0${day}T01:00:00Z`,
+              localTime: `2026-09-0${day}T09:00:00+08:00[Asia/Shanghai]`,
+            })),
+          };
         case 'get_index_stats':
           return { totalDocuments: 0, totalChunks: 0, ftsRows: 0 };
         case 'get_privacy_config':
@@ -164,4 +194,71 @@ test('recorded workflow can be previewed and saved as an automation', async ({ p
   expect(saved?.trigger).toEqual({ kind: 'manual' });
   expect(String(saved?.prompt)).toContain('Workflow: Weekly report export');
   expect(String(saved?.prompt)).toContain('Success criteria');
+});
+
+test('scheduled workflow previews timezone and saves provider-managed execution policy', async ({ page }) => {
+  await page.goto('/workflows');
+  await page.getByRole('button', { name: 'Automations' }).click();
+
+  await page.getByLabel('Name').fill('Weekday GLM review');
+  await page.getByLabel('Description').fill('Review the latest report every weekday.');
+  await page.getByLabel('Prompt').fill('Review the latest report and return only material changes.');
+  await page.getByRole('button', { name: 'Schedule', exact: true }).click();
+  await page.getByLabel('Cron').fill('0 9 * * 1-5');
+  await page.getByLabel('Timezone (IANA)').fill('Asia/Shanghai');
+
+  await expect(page.getByText('Next 5 runs')).toBeVisible();
+  await expect(page.getByText('2026-09-01T09:00:00+08:00[Asia/Shanghai]')).toBeVisible();
+  await selectNexaOption(
+    page.getByText('Agent configuration', { exact: true }).locator('..').locator('[data-nexa-select-trigger]'),
+    'cfg-scheduled',
+  );
+  await expect(page.getByLabel('Model override')).toHaveValue('ZHIPU/GLM-5.3');
+  await expect(page.getByLabel('Context window')).toHaveValue('');
+  await expect(page.getByLabel('Context window')).toHaveAttribute('placeholder', 'Provider default (Auto)');
+  await selectNexaOption(
+    page.getByText('Power mode', { exact: true }).locator('..').locator('[data-nexa-select-trigger]'),
+    'nexus',
+  );
+  await selectNexaOption(
+    page.getByText('Orchestration profile', { exact: true }).locator('..').locator('[data-nexa-select-trigger]'),
+    'codeUltra',
+  );
+  await page.getByLabel('Approval before run').uncheck();
+  await page.getByLabel('Allowed tools').fill('read_file, web_search');
+  await page.getByRole('button', { name: 'Save automation' }).click();
+
+  const state = await page.evaluate(() => ({
+    saved: (window as unknown as { __savedAutomationInputs?: Array<Record<string, unknown>> })
+      .__savedAutomationInputs?.[0],
+    previews: (window as unknown as { __schedulePreviewInputs?: Array<Record<string, unknown>> })
+      .__schedulePreviewInputs,
+  }));
+  expect(state.previews?.at(-1)).toMatchObject({
+    cron: '0 9 * * 1-5',
+    timezone: 'Asia/Shanghai',
+    limit: 5,
+  });
+  expect(state.saved?.trigger).toEqual({ kind: 'schedule', cron: '0 9 * * 1-5' });
+  expect(state.saved?.approvalPolicy).toEqual({
+    requireBeforeRun: false,
+    allowedTools: ['read_file', 'web_search'],
+    riskLevel: 'medium',
+  });
+  expect(state.saved?.scheduleConfig).toMatchObject({
+    version: 2,
+    timezone: 'Asia/Shanghai',
+    misfirePolicy: 'run_latest',
+    overlapPolicy: 'skip',
+    legacyNeedsReview: false,
+    executionPolicy: {
+      agentConfigId: 'cfg-scheduled',
+      provider: 'alibaba_model_studio',
+      providerEndpointId: 'text:alibaba-model-studio',
+      model: 'ZHIPU/GLM-5.3',
+      contextWindow: null,
+      powerMode: 'nexus',
+      orchestrationProfile: 'codeUltra',
+    },
+  });
 });

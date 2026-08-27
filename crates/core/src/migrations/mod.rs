@@ -2480,6 +2480,93 @@ Every answer that uses knowledge base search results.
          WHERE id = 'builtin-playwright-browser'
             OR builtin_id = 'playwright-browser';",
     ),
+    (
+        "v119_durable_workflow_schedules",
+        "CREATE TABLE IF NOT EXISTS workflow_automation_schedule_configs (
+             automation_id TEXT PRIMARY KEY NOT NULL
+                 REFERENCES workflow_automations(id) ON DELETE CASCADE,
+             config_json TEXT NOT NULL,
+             revision INTEGER NOT NULL DEFAULT 1,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE TABLE IF NOT EXISTS workflow_automation_occurrences (
+             id TEXT PRIMARY KEY NOT NULL,
+             automation_id TEXT NOT NULL
+                 REFERENCES workflow_automations(id) ON DELETE CASCADE,
+             definition_revision INTEGER NOT NULL,
+             scheduled_for TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'planned',
+             attempt_count INTEGER NOT NULL DEFAULT 0,
+             retry_at TEXT,
+             last_error TEXT,
+             lease_token TEXT,
+             lease_expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(automation_id, definition_revision, scheduled_for)
+         );
+         CREATE INDEX IF NOT EXISTS idx_workflow_occurrences_due
+             ON workflow_automation_occurrences(status, retry_at, lease_expires_at);
+         ALTER TABLE workflow_automation_runs ADD COLUMN occurrence_id TEXT
+             REFERENCES workflow_automation_occurrences(id) ON DELETE SET NULL;
+         ALTER TABLE workflow_automation_runs ADD COLUMN scheduled_for TEXT;
+         ALTER TABLE workflow_automation_runs ADD COLUMN definition_revision INTEGER NOT NULL DEFAULT 1;
+         ALTER TABLE workflow_automation_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_automation_run_attempt
+             ON workflow_automation_runs(occurrence_id, attempt)
+             WHERE occurrence_id IS NOT NULL;",
+    ),
+    (
+        "v120_classify_legacy_workflow_schedules",
+        "WITH legacy AS (
+             SELECT id, trim(json_extract(trigger_json, '$.cron')) AS cron
+             FROM workflow_automations
+             WHERE trigger_kind = 'schedule'
+         ), safe_daily AS (
+             SELECT id
+             FROM legacy
+             WHERE (
+                 cron GLOB '[0-9] [0-9] [*] [*] [*]'
+                 OR cron GLOB '[0-9][0-9] [0-9] [*] [*] [*]'
+                 OR cron GLOB '[0-9] [0-9][0-9] [*] [*] [*]'
+                 OR cron GLOB '[0-9][0-9] [0-9][0-9] [*] [*] [*]'
+             )
+             AND CAST(substr(cron, 1, instr(cron, ' ') - 1) AS INTEGER)
+                 BETWEEN 0 AND 59
+             AND CAST(
+                 substr(
+                     substr(cron, instr(cron, ' ') + 1),
+                     1,
+                     instr(substr(cron, instr(cron, ' ') + 1), ' ') - 1
+                 ) AS INTEGER
+             ) BETWEEN 0 AND 23
+         )
+         INSERT OR IGNORE INTO workflow_automation_schedule_configs
+             (automation_id, config_json, revision)
+         SELECT id,
+                '{\"version\":2,\"timezone\":\"UTC\",\"misfirePolicy\":\"run_latest\",\"misfireGraceSeconds\":300,\"overlapPolicy\":\"skip\",\"executionPolicy\":{\"powerMode\":\"standard\",\"orchestrationProfile\":\"balanced\",\"collaborationMode\":\"direct\"},\"legacyNeedsReview\":false}',
+                1
+         FROM safe_daily;
+         INSERT OR IGNORE INTO workflow_automation_schedule_configs
+             (automation_id, config_json, revision)
+         SELECT id,
+                '{\"version\":1,\"timezone\":\"UTC\",\"misfirePolicy\":\"run_latest\",\"misfireGraceSeconds\":300,\"overlapPolicy\":\"skip\",\"executionPolicy\":{\"powerMode\":\"standard\",\"orchestrationProfile\":\"balanced\",\"collaborationMode\":\"direct\"},\"legacyNeedsReview\":true}',
+                1
+         FROM workflow_automations
+         WHERE trigger_kind = 'schedule';
+         UPDATE workflow_automations
+         SET enabled = 0,
+             status = 'needs_review',
+             next_run_at = NULL,
+             updated_at = datetime('now')
+         WHERE trigger_kind = 'schedule'
+           AND id IN (
+               SELECT automation_id
+               FROM workflow_automation_schedule_configs
+               WHERE json_extract(config_json, '$.legacyNeedsReview') = 1
+           );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -2500,6 +2587,114 @@ fn is_idempotent_schema_error(err: &SqlError) -> bool {
         SqlError::SqliteFailure(_, Some(msg))
             if msg.to_ascii_lowercase().contains("duplicate column name")
     )
+}
+
+const DURABLE_WORKFLOW_SCHEDULES_MIGRATION: &str = "v119_durable_workflow_schedules";
+
+fn workflow_run_columns(conn: &Connection) -> Result<Vec<String>, CoreError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(workflow_automation_runs)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row?);
+    }
+    Ok(columns)
+}
+
+/// Applies and verifies v119 one restart-safe schema component at a time.
+///
+/// An older `execute_batch` could stop on the first duplicate column and then
+/// mark the whole migration applied, leaving later columns or indexes absent.
+/// This repair runs even when the migration marker already exists.
+fn ensure_durable_workflow_schedule_schema(conn: &Connection) -> Result<(), CoreError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workflow_automation_schedule_configs (
+             automation_id TEXT PRIMARY KEY NOT NULL
+                 REFERENCES workflow_automations(id) ON DELETE CASCADE,
+             config_json TEXT NOT NULL,
+             revision INTEGER NOT NULL DEFAULT 1,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE TABLE IF NOT EXISTS workflow_automation_occurrences (
+             id TEXT PRIMARY KEY NOT NULL,
+             automation_id TEXT NOT NULL
+                 REFERENCES workflow_automations(id) ON DELETE CASCADE,
+             definition_revision INTEGER NOT NULL,
+             scheduled_for TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'planned',
+             attempt_count INTEGER NOT NULL DEFAULT 0,
+             retry_at TEXT,
+             last_error TEXT,
+             lease_token TEXT,
+             lease_expires_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(automation_id, definition_revision, scheduled_for)
+         );
+         CREATE INDEX IF NOT EXISTS idx_workflow_occurrences_due
+             ON workflow_automation_occurrences(status, retry_at, lease_expires_at);",
+    )?;
+    let mut columns = workflow_run_columns(conn)?;
+    for (column, sql) in [
+        (
+            "occurrence_id",
+            "ALTER TABLE workflow_automation_runs ADD COLUMN occurrence_id TEXT
+                 REFERENCES workflow_automation_occurrences(id) ON DELETE SET NULL",
+        ),
+        (
+            "scheduled_for",
+            "ALTER TABLE workflow_automation_runs ADD COLUMN scheduled_for TEXT",
+        ),
+        (
+            "definition_revision",
+            "ALTER TABLE workflow_automation_runs ADD COLUMN definition_revision INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "attempt",
+            "ALTER TABLE workflow_automation_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+        ),
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            conn.execute_batch(sql)?;
+            columns.push(column.to_string());
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_automation_run_attempt
+             ON workflow_automation_runs(occurrence_id, attempt)
+             WHERE occurrence_id IS NOT NULL;",
+    )?;
+
+    let required_columns = [
+        "occurrence_id",
+        "scheduled_for",
+        "definition_revision",
+        "attempt",
+    ];
+    let columns = workflow_run_columns(conn)?;
+    if required_columns
+        .iter()
+        .any(|required| !columns.iter().any(|column| column == required))
+    {
+        return Err(CoreError::Internal(
+            "Durable workflow schedule migration failed its column postcondition".into(),
+        ));
+    }
+    let attempt_index_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_workflow_automation_run_attempt'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !attempt_index_exists {
+        return Err(CoreError::Internal(
+            "Durable workflow schedule migration failed its index postcondition".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Runs all pending migrations against the given connection.
@@ -2546,6 +2741,14 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
             [name],
             |row| row.get(0),
         )?;
+
+        if *name == DURABLE_WORKFLOW_SCHEDULES_MIGRATION {
+            ensure_durable_workflow_schedule_schema(conn)?;
+            if !already_applied {
+                conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
+            }
+            continue;
+        }
 
         if already_applied {
             continue;
@@ -2630,6 +2833,8 @@ mod tests {
         assert!(tables.contains(&"file_checkpoints".to_string()));
         assert!(tables.contains(&"personas".to_string()));
         assert!(tables.contains(&"workflow_automations".to_string()));
+        assert!(tables.contains(&"workflow_automation_schedule_configs".to_string()));
+        assert!(tables.contains(&"workflow_automation_occurrences".to_string()));
         assert!(tables.contains(&"workflow_automation_runs".to_string()));
         assert!(tables.contains(&"workflow_automation_scheduler_events".to_string()));
         assert!(tables.contains(&"task_resume_checkpoints".to_string()));
@@ -2669,6 +2874,128 @@ mod tests {
             "should have exactly {} migration records",
             total_migration_count()
         );
+    }
+
+    #[test]
+    fn legacy_workflow_schedules_only_auto_migrate_when_daily_utc_is_equivalent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        for (id, cron) in [
+            ("safe-daily", "0 9 * * *"),
+            ("unsafe-wildcard", "* * * * *"),
+            ("unsafe-weekday", "0 9 * * 1-5"),
+        ] {
+            conn.execute(
+                "INSERT INTO workflow_automations
+                     (id, name, description, workflow_template_id, prompt, trigger_json,
+                      trigger_kind, source_scope_json, approval_policy_json, enabled,
+                      status, next_run_at)
+                 VALUES (?1, ?1, '', 'report_brief', 'test', ?2, 'schedule', '[]', '{}',
+                         1, 'ready', '2026-09-01T01:00:00Z')",
+                rusqlite::params![id, format!(r#"{{"kind":"schedule","cron":"{cron}"}}"#)],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "DELETE FROM _migrations WHERE name = 'v120_classify_legacy_workflow_schedules'",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("v120 migration should classify legacy schedules");
+
+        let load = |id: &str| {
+            conn.query_row(
+                "SELECT a.enabled, a.status, a.next_run_at,
+                        json_extract(c.config_json, '$.version'),
+                        json_extract(c.config_json, '$.timezone'),
+                        json_extract(c.config_json, '$.legacyNeedsReview')
+                 FROM workflow_automations a
+                 JOIN workflow_automation_schedule_configs c ON c.automation_id = a.id
+                 WHERE a.id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            load("safe-daily"),
+            (
+                1,
+                "ready".to_string(),
+                Some("2026-09-01T01:00:00Z".to_string()),
+                2,
+                "UTC".to_string(),
+                0,
+            )
+        );
+        for id in ["unsafe-wildcard", "unsafe-weekday"] {
+            assert_eq!(
+                load(id),
+                (0, "needs_review".to_string(), None, 1, "UTC".to_string(), 1)
+            );
+        }
+    }
+
+    #[test]
+    fn durable_workflow_schedule_migration_repairs_a_marked_partial_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DROP INDEX idx_workflow_automation_run_attempt;
+             ALTER TABLE workflow_automation_runs DROP COLUMN scheduled_for;",
+        )
+        .expect("test should simulate a partially applied v119 schema");
+        let marker_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM _migrations
+                     WHERE name = 'v119_durable_workflow_schedules'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(marker_exists);
+
+        run_migrations(&conn).expect("v119 postcondition repair should be restart-safe");
+
+        let columns = conn
+            .prepare("PRAGMA table_info(workflow_automation_runs)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for column in [
+            "occurrence_id",
+            "scheduled_for",
+            "definition_revision",
+            "attempt",
+        ] {
+            assert!(columns.iter().any(|item| item == column), "{column}");
+        }
+        let attempt_index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index'
+                       AND name = 'idx_workflow_automation_run_attempt'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(attempt_index_exists);
     }
 
     #[test]
