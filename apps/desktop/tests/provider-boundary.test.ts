@@ -27,3 +27,30 @@ for (const endpoint of [
     `edited endpoint must keep an isolated credential scope: ${endpoint}`,
   );
 }
+
+assertEqual(
+  providerCredentialScope('zhipu', 'https://open.bigmodel.cn/api/paas/v4'),
+  'zhipu:china',
+  'China Zhipu Model API should keep its regional credential scope',
+);
+assertEqual(
+  providerCredentialScope('zhipu', 'https://api.z.ai/api/paas/v4'),
+  'zhipu:international',
+  'international Z.ai Model API should keep a separate credential scope',
+);
+assertEqual(
+  providerCredentialScope('zhipu'),
+  'zhipu:china',
+  'the legacy/default Zhipu provider identity should continue to resolve to China',
+);
+for (const endpoint of [
+  'https://open.bigmodel.cn/api/coding/paas/v4',
+  'https://api.z.ai/api/coding/paas/v4',
+  'https://api.z.ai/api/paas/v4?workspace=other',
+  'http://api.z.ai/api/paas/v4',
+]) {
+  assert(
+    providerCredentialScope('zhipu', endpoint).startsWith('endpoint:'),
+    `Coding Plan and edited Z.ai routes must keep isolated credentials: ${endpoint}`,
+  );
+}

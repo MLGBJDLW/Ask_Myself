@@ -38,7 +38,8 @@ const TRUSTED_CREDENTIAL_ENDPOINTS: Readonly<Record<string, string>> = {
   'https://api.minimax.io/v1': 'minimax',
   'https://api.jina.ai/v1': 'jina',
   'https://api.siliconflow.cn/v1': 'siliconflow',
-  'https://open.bigmodel.cn/api/paas/v4': 'zhipu',
+  'https://open.bigmodel.cn/api/paas/v4': 'zhipu:china',
+  'https://api.z.ai/api/paas/v4': 'zhipu:international',
 };
 
 /**
@@ -84,6 +85,7 @@ export function providerCredentialScope(
     open_ai: 'openai',
     azure_open_ai: 'azure-openai',
     deep_seek: 'deepseek',
+    zhipu: 'zhipu:china',
   };
   return providerAliases[normalizedProvider] ?? normalizedProvider;
 }

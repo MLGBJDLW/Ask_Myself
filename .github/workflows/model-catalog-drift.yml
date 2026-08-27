@@ -31,7 +31,7 @@ jobs:
           NEXA_DEEPSEEK_CATALOG_API_KEY: ${{ secrets.NEXA_DEEPSEEK_CATALOG_API_KEY }}
           NEXA_ALIBABA_CATALOG_API_KEY: ${{ secrets.NEXA_ALIBABA_CATALOG_API_KEY }}
           NEXA_ALIBABA_INTL_CATALOG_API_KEY: ${{ secrets.NEXA_ALIBABA_INTL_CATALOG_API_KEY }}
-        run: node scripts/model-catalog-audit.mjs --output .artifacts/model-catalog-drift
+        run: node scripts/model-catalog-audit.mjs --live-public --output .artifacts/model-catalog-drift
 
       - uses: actions/upload-artifact@v5
         if: always()

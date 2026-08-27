@@ -217,6 +217,30 @@ pub fn load_provider_presets() -> Result<Vec<ProviderPreset>, serde_json::Error>
     serde_json::from_str(PROVIDER_PRESETS_JSON)
 }
 
+fn is_alibaba_beijing_workspace_endpoint(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path().trim_end_matches('/') != "/compatible-mode/v1"
+    {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let suffix = ".cn-beijing.maas.aliyuncs.com";
+    let Some(workspace_id) = host.strip_suffix(suffix) else {
+        return false;
+    };
+    !workspace_id.is_empty()
+        && !workspace_id.contains('.')
+        && !matches!(workspace_id, "trial" | "token-plan")
+}
+
 pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<ProviderPreset> {
     let presets = load_provider_presets().ok()?;
     let provider = provider.trim();
@@ -243,6 +267,14 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
             }) {
                 return Some(exact.clone());
             }
+        }
+        if lookup_provider == "alibaba_model_studio"
+            && is_alibaba_beijing_workspace_endpoint(&normalized_base_url)
+        {
+            return presets
+                .iter()
+                .find(|preset| preset.id == "alibaba-model-studio")
+                .cloned();
         }
         // A provider label never authorizes projecting a trusted catalog onto
         // an unknown, user-edited, HTTP, or non-standard-port endpoint.
@@ -408,14 +440,27 @@ fn build_descriptor_snapshot(
 ) -> ModelCatalogSnapshot {
     let endpoint_id = resolve_or_derive_endpoint_id("text", provider, base_url);
     let builtin = load_builtin_catalog().ok();
+    let inherited_endpoint_id =
+        find_provider_preset(provider, base_url).map(|preset| format!("text:{}", preset.id));
     let curated = builtin
         .as_ref()
         .map(|catalog| {
             catalog
                 .models
                 .iter()
-                .filter(|model| model.endpoint_ids.iter().any(|id| id == &endpoint_id))
+                .filter(|model| {
+                    model.endpoint_ids.iter().any(|id| id == &endpoint_id)
+                        || inherited_endpoint_id.as_ref().is_some_and(|inherited| {
+                            model.endpoint_ids.iter().any(|id| id == inherited)
+                        })
+                })
                 .cloned()
+                .map(|mut model| {
+                    if !model.endpoint_ids.iter().any(|id| id == &endpoint_id) {
+                        model.endpoint_ids = vec![endpoint_id.clone()];
+                    }
+                    model
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -430,7 +475,9 @@ fn build_descriptor_snapshot(
         .unwrap_or_else(|| {
             if normalize_base_url(base_url).contains("dashscope-intl") {
                 "ap-southeast-1"
-            } else if normalize_base_url(base_url).contains("dashscope") {
+            } else if normalize_base_url(base_url).contains("dashscope")
+                || normalize_base_url(base_url).contains(".cn-beijing.maas.aliyuncs.com")
+            {
                 "cn-beijing"
             } else {
                 "global"
@@ -522,7 +569,12 @@ fn infer_lifecycle(model: &ProviderModelPreset) -> ModelLifecycleStatus {
 
 fn infer_regions(base_url: Option<&str>) -> Vec<String> {
     let base_url = normalize_base_url(base_url);
+    let is_z_ai_international = reqwest::Url::parse(&base_url).ok().is_some_and(|url| {
+        url.scheme() == "https" && url.host_str().is_some_and(|host| host == "api.z.ai")
+    });
     if base_url.contains("dashscope-intl") {
+        vec!["international".to_string()]
+    } else if is_z_ai_international {
         vec!["international".to_string()]
     } else if base_url.contains("dashscope") || base_url.contains("maas.aliyuncs.com") {
         vec!["cn-beijing".to_string()]
@@ -888,6 +940,7 @@ mod tests {
         assert!(ids.contains(&"kimi/kimi-k3"));
         assert!(ids.contains(&"qwen3-coder-flash"));
         assert!(ids.contains(&"glm-5.2-fast-preview"));
+        assert!(ids.contains(&"ZHIPU/GLM-5.3"));
         assert!(ids.contains(&"qwen3.6-plus"));
         assert!(!ids.contains(&"qwen3.8-max-preview"));
 
@@ -913,6 +966,71 @@ mod tests {
                 .and_then(|budget| budget.max_tokens),
             Some(262_144)
         );
+
+        let zhipu_direct = qwen
+            .models
+            .iter()
+            .find(|model| model.id == "ZHIPU/GLM-5.3")
+            .expect("Zhipu direct-supply GLM-5.3 should be listed");
+        assert_eq!(zhipu_direct.regions, ["cn-beijing"]);
+        assert_eq!(zhipu_direct.context_tokens, Some(1_048_576));
+        assert_eq!(zhipu_direct.max_output_tokens, Some(131_072));
+        assert_eq!(zhipu_direct.supports_tools, Some(true));
+        assert_eq!(zhipu_direct.supports_structured_output, None);
+        let zhipu_reasoning = zhipu_direct
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("Zhipu direct-supply GLM-5.3 should expose reasoning");
+        assert_eq!(zhipu_reasoning.mode.as_deref(), Some("always"));
+        assert_eq!(zhipu_reasoning.effort_levels, ["low", "high", "max"]);
+        assert_eq!(zhipu_reasoning.default_effort.as_deref(), Some("max"));
+
+        let workspace_url = "https://workspace123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+        assert_eq!(
+            find_provider_preset("alibaba_model_studio", Some(workspace_url))
+                .expect("trusted workspace endpoint should inherit PAYG metadata")
+                .id,
+            "alibaba-model-studio"
+        );
+        let workspace_snapshot = build_effective_model_catalog(
+            "alibaba_model_studio",
+            Some(workspace_url),
+            Some(vec!["ZHIPU/GLM-5.3".to_string()]),
+            Some("ZHIPU/GLM-5.3"),
+            "2026-08-27T00:00:00Z",
+        );
+        let workspace_glm = workspace_snapshot
+            .descriptors
+            .iter()
+            .find(|model| model.id == "ZHIPU/GLM-5.3")
+            .expect("workspace descriptor should retain curated GLM capabilities");
+        assert_eq!(workspace_glm.regions, ["cn-beijing"]);
+        assert_eq!(workspace_glm.limits.context_tokens, Some(1_048_576));
+        assert_eq!(
+            workspace_glm
+                .capabilities
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.default_effort.as_deref()),
+            Some("max")
+        );
+        assert_eq!(
+            workspace_glm.endpoint_ids,
+            vec![workspace_snapshot.endpoint_id.clone()]
+        );
+
+        for endpoint in [
+            "http://workspace123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://trial.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "https://workspace123.cn-beijing.maas.aliyuncs.com.evil.example/compatible-mode/v1",
+        ] {
+            assert!(
+                find_provider_preset("alibaba_model_studio", Some(endpoint)).is_none(),
+                "{endpoint} must not inherit the PAYG workspace catalog"
+            );
+        }
 
         let qwen37 = qwen
             .models
@@ -1061,6 +1179,8 @@ mod tests {
         assert!(ids.contains(&"x-ai/grok-4.6"));
         assert!(ids.contains(&"x-ai/grok-4.5"));
         assert!(ids.contains(&"anthropic/claude-sonnet-5"));
+        assert!(ids.contains(&"z-ai/glm-5.3"));
+        assert!(ids.contains(&"z-ai/glm-5.3-flash"));
         assert!(ids.contains(&"z-ai/glm-5.2"));
         assert!(ids.contains(&"moonshotai/kimi-k2.7-code"));
         assert!(ids.contains(&"qwen/qwen3.7-plus"));
@@ -1085,6 +1205,26 @@ mod tests {
             model_supports_vision_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.7-max"),
             Some(false)
         );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenRouter, "z-ai/glm-5.3"),
+            Some(false)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenRouter, "z-ai/glm-5.3-flash"),
+            Some(true)
+        );
+        for model in ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"] {
+            let limits = model_limits_from_catalog(ProviderType::OpenRouter, model)
+                .expect("OpenRouter GLM-5.3 route should expose limits");
+            assert_eq!(limits.context_tokens, Some(1_048_576));
+            assert_eq!(limits.max_output_tokens, Some(131_072));
+            let reasoning = model_capabilities_from_catalog(ProviderType::OpenRouter, model)
+                .and_then(|capabilities| capabilities.reasoning)
+                .expect("OpenRouter GLM-5.3 route should expose reasoning");
+            assert_eq!(reasoning.mode.as_deref(), Some("always"));
+            assert_eq!(reasoning.effort_levels, ["low", "high", "max"]);
+            assert_eq!(reasoning.default_effort.as_deref(), Some("max"));
+        }
     }
 
     #[test]
@@ -1161,6 +1301,69 @@ mod tests {
             .expect("GLM-5.3 limits should project from the shared catalog");
         assert_eq!(limits.context_tokens, Some(1_000_000));
         assert_eq!(limits.max_output_tokens, Some(131_072));
+        let glm53_flash = zhipu
+            .models
+            .iter()
+            .find(|model| model.id == "glm-5.3-flash")
+            .expect("GLM-5.3-Flash should be listed for the Model API");
+        assert_eq!(glm53_flash.context_tokens, Some(1_000_000));
+        assert_eq!(glm53_flash.max_output_tokens, Some(131_072));
+        assert_eq!(
+            glm53_flash
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.vision),
+            Some(true)
+        );
+        let flash_reasoning = glm53_flash
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("GLM-5.3-Flash should expose mandatory reasoning");
+        assert_eq!(flash_reasoning.mode.as_deref(), Some("always"));
+        assert_eq!(flash_reasoning.effort_levels, ["low", "high", "max"]);
+
+        let zhipu_international =
+            find_provider_preset("zhipu", Some("https://api.z.ai/api/paas/v4"))
+                .expect("international Z.ai Model API should have a distinct preset");
+        assert_eq!(zhipu_international.id, "zhipu-intl");
+        assert_ne!(zhipu_international.id, zhipu.id);
+        for model_id in ["glm-5.3", "glm-5.3-flash"] {
+            let international_model = zhipu_international
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .unwrap_or_else(|| panic!("missing international Z.ai model {model_id}"));
+            assert_eq!(international_model.regions, ["international"]);
+            assert_eq!(international_model.context_tokens, Some(1_000_000));
+            assert_eq!(international_model.max_output_tokens, Some(131_072));
+            assert_eq!(
+                international_model
+                    .capabilities
+                    .as_ref()
+                    .and_then(|capabilities| capabilities.reasoning.as_ref())
+                    .map(|reasoning| reasoning.effort_levels.as_slice()),
+                Some(["low", "high", "max"].map(str::to_string).as_slice())
+            );
+        }
+        assert_eq!(
+            find_provider_preset("zhipu", None)
+                .expect("legacy Zhipu identity should retain its China default")
+                .id,
+            "zhipu"
+        );
+        let international_snapshot = build_effective_model_catalog(
+            "zhipu",
+            Some("https://api.z.ai/api/paas/v4"),
+            None,
+            None,
+            "2026-08-27T00:00:00Z",
+        );
+        assert_eq!(international_snapshot.endpoint_id, "text:zhipu-intl");
+        assert!(international_snapshot.descriptors.iter().all(|descriptor| {
+            descriptor.endpoint_ids == ["text:zhipu-intl"]
+                && descriptor.regions == ["international"]
+        }));
         let snapshot = build_effective_model_catalog(
             "zhipu",
             Some("https://open.bigmodel.cn/api/paas/v4"),
@@ -1190,10 +1393,13 @@ mod tests {
         }
 
         for (provider, base_url) in [
-            ("openrouter", "https://openrouter.ai/api/v1"),
             (
-                "alibaba_model_studio",
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "qwen",
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            ),
+            (
+                "qwen",
+                "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
             ),
             ("siliconflow", "https://api.siliconflow.cn/v1"),
         ] {

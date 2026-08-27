@@ -395,6 +395,12 @@ export function inferModelCatalogRegion(baseUrl: string | null | undefined): str
   const value = (baseUrl ?? '').trim().toLowerCase();
   if (!value || value.includes('localhost') || value.includes('127.0.0.1')) return 'local';
   if (value.includes('dashscope-intl')) return 'ap-southeast-1';
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' && url.hostname === 'api.z.ai') return 'international';
+  } catch {
+    // Region inference remains conservative for malformed/custom endpoints.
+  }
   if (value.includes('dashscope') || value.includes('cn-beijing')) return 'cn-beijing';
   if (value.includes('eastus')) return 'eastus';
   return 'global';

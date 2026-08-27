@@ -2,9 +2,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { compareEndpointModels, driftDetected } from './model-catalog-audit-lib.mjs';
+import {
+  compareEndpointModels,
+  compareRequiredModelIds,
+  driftDetected,
+} from './model-catalog-audit-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const livePublicCatalogs = process.argv.includes('--live-public');
 const outputFlag = process.argv.indexOf('--output');
 const outputDir = path.resolve(
   repoRoot,
@@ -27,6 +32,13 @@ const discoveryCredentials = new Map([
   ['text:deepseek', 'NEXA_DEEPSEEK_CATALOG_API_KEY'],
   ['text:alibaba-model-studio', 'NEXA_ALIBABA_CATALOG_API_KEY'],
   ['text:qwen-cloud-intl', 'NEXA_ALIBABA_INTL_CATALOG_API_KEY'],
+]);
+
+// OpenRouter's first-party `/models` endpoint is public. Limit the anonymous
+// contract to exact integration-critical IDs so Nexa's curated picker is not
+// mistaken for an exhaustive mirror of the router's full catalog.
+const publicRequiredModelIds = new Map([
+  ['text:openrouter', ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash']],
 ]);
 
 const readJson = async (relativePath) => JSON.parse(
@@ -118,7 +130,11 @@ async function buildStaticCatalog() {
 async function probeEndpoint(endpoint) {
   const credentialEnv = discoveryCredentials.get(endpoint.endpointId);
   const credential = credentialEnv ? process.env[credentialEnv]?.trim() : '';
-  if (!credentialEnv || !credential) {
+  const requiredIds = livePublicCatalogs
+    ? publicRequiredModelIds.get(endpoint.endpointId) ?? []
+    : [];
+  const anonymousRequiredIdsOnly = !credential && requiredIds.length > 0;
+  if ((!credentialEnv || !credential) && !anonymousRequiredIdsOnly) {
     return { endpointId: endpoint.endpointId, status: 'skipped', reason: 'credential_not_configured' };
   }
   if (!endpoint.baseUrl || !String(endpoint.apiStyle).startsWith('openai')) {
@@ -127,7 +143,7 @@ async function probeEndpoint(endpoint) {
 
   try {
     const response = await fetch(`${endpoint.baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${credential}` },
+      headers: credential ? { Authorization: `Bearer ${credential}` } : undefined,
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
@@ -139,10 +155,13 @@ async function probeEndpoint(endpoint) {
       : Array.isArray(payload?.models)
         ? payload.models
         : [];
-    const comparison = compareEndpointModels(endpoint, liveModels);
+    const comparison = anonymousRequiredIdsOnly
+      ? compareRequiredModelIds(requiredIds, liveModels)
+      : compareEndpointModels(endpoint, liveModels);
     return {
       endpointId: endpoint.endpointId,
       status: 'ok',
+      ...(anonymousRequiredIdsOnly ? { probeMode: 'required_ids', requiredIds } : {}),
       discoveredCount: liveModels.length,
       ...comparison,
     };
@@ -169,6 +188,9 @@ function markdownReport(report) {
     lines.push(`### ${probe.endpointId}`, '', `Status: ${probe.status}`);
     if (probe.reason) lines.push(`Reason: ${probe.reason}`);
     if (probe.status === 'ok') {
+      if (probe.probeMode === 'required_ids') {
+        lines.push(`Required IDs: ${probe.requiredIds.join(', ')}`);
+      }
       lines.push(
         `Discovered: ${probe.discoveredCount}`,
         `New: ${probe.newIds.length ? probe.newIds.join(', ') : 'none'}`,
@@ -187,7 +209,12 @@ function markdownReport(report) {
 const staticCatalog = await buildStaticCatalog();
 const probes = [];
 for (const endpoint of staticCatalog.endpoints) {
-  if (discoveryCredentials.has(endpoint.endpointId)) probes.push(await probeEndpoint(endpoint));
+  if (
+    discoveryCredentials.has(endpoint.endpointId)
+    || (livePublicCatalogs && publicRequiredModelIds.has(endpoint.endpointId))
+  ) {
+    probes.push(await probeEndpoint(endpoint));
+  }
 }
 const modelCount = staticCatalog.endpoints.reduce((total, endpoint) => total + endpoint.models.length, 0);
 const completedProbeCount = probes.filter((probe) => probe.status === 'ok').length;

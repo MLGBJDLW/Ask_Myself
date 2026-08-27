@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { compareEndpointModels, driftDetected } from './model-catalog-audit-lib.mjs';
+import {
+  compareEndpointModels,
+  compareRequiredModelIds,
+  driftDetected,
+} from './model-catalog-audit-lib.mjs';
 
 const endpoint = {
   endpointId: 'text:tenant-a',
@@ -43,4 +47,17 @@ const aliasOnly = compareEndpointModels(endpoint, [{
 assert.deepEqual(aliasOnly.newIds, []);
 assert.deepEqual(aliasOnly.missingIds, []);
 assert.equal(driftDetected(aliasOnly), false);
+
+const requiredPublicIds = ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash'];
+const publicExact = compareRequiredModelIds(requiredPublicIds, [
+  { id: 'unrelated/provider-model' },
+  { id: 'Z-AI/GLM-5.3' },
+  { id: 'z-ai/glm-5.3-flash' },
+]);
+assert.deepEqual(publicExact.newIds, []);
+assert.deepEqual(publicExact.missingIds, []);
+assert.equal(driftDetected(publicExact), false);
+const publicMissing = compareRequiredModelIds(requiredPublicIds, [{ id: 'z-ai/glm-5.3' }]);
+assert.deepEqual(publicMissing.missingIds, ['z-ai/glm-5.3-flash']);
+assert.equal(driftDetected(publicMissing), true);
 process.stdout.write('model catalog audit fixtures passed\n');

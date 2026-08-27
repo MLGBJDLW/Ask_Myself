@@ -687,6 +687,70 @@
         }
       },
       {
+        "id": "z-ai/glm-5.3",
+        "name": "Z.AI: GLM 5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-18",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "z-ai/glm-5.3-flash",
+        "name": "Z.AI: GLM 5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "z-ai/glm-5.2",
         "name": "Z.AI: GLM 5.2",
         "tagKey": "providers.tagLatest",
@@ -7597,7 +7661,7 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.3 flagship Model API, plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.3 flagship and GLM-5.3-Flash multimodal Model APIs, plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
@@ -7613,7 +7677,7 @@
         "availableToCredential": true,
         "recommended": true,
         "regions": ["cn-mainland"],
-        "lastVerifiedAt": "2026-08-22",
+        "lastVerifiedAt": "2026-08-27",
         "releaseDate": "2026-08-14",
         "inputModalities": ["text"],
         "outputModalities": ["text"],
@@ -7623,6 +7687,38 @@
         "maxOutputTokens": 131072,
         "capabilities": {
           "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["cn-mainland"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
           "promptCache": true,
           "reasoning": {
             "mode": "always",
@@ -7715,6 +7811,84 @@
       {
         "id": "glm-4-long",
         "name": "GLM-4 Long (1M Context)"
+      }
+    ]
+  },
+  {
+    "id": "zhipu-intl",
+    "name": "Z.ai (International)",
+    "provider": "zhipu",
+    "baseUrl": "https://api.z.ai/api/paas/v4",
+    "requiresApiKey": true,
+    "icon": "🔵",
+    "description": "International pay-as-you-go Z.ai Model API with its own credential boundary, separate from China and GLM Coding Plan",
+    "capabilities": {
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": true,
+        "regions": ["international"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-14",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["international"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       }
     ]
   },
@@ -8299,6 +8473,36 @@
             "effortLevels": [],
             "thinkingBudget": {
               "enabled": true
+            }
+          }
+        }
+      },
+      {
+        "id": "ZHIPU/GLM-5.3",
+        "name": "Zhipu Direct: GLM-5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "account_enablement",
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-17",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
             }
           }
         }
