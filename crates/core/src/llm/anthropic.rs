@@ -920,7 +920,7 @@ async fn parse_anthropic_stream(
                                 tool_call_delta: Some(ToolCallDelta {
                                     id,
                                     name: Some(name),
-                                    arguments_delta: String::new(),
+                                    arguments_delta: String::new().into(),
                                     index: None,
                                     thought_signature:
                                         super::provider_turn::encode_anthropic_thinking_blocks(
@@ -1000,7 +1000,7 @@ async fn parse_anthropic_stream(
                             tool_call_delta: Some(ToolCallDelta {
                                 id: current_tool_id.clone(),
                                 name: current_tool_name.clone(),
-                                arguments_delta: partial_json,
+                                arguments_delta: partial_json.into(),
                                 index: None,
                                 thought_signature: None,
                             }),
@@ -1051,7 +1051,8 @@ async fn parse_anthropic_stream(
                                         super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
                                     ),
                                     arguments_delta: serde_json::to_string(&input)
-                                        .unwrap_or_else(|_| "{}".to_string()),
+                                        .unwrap_or_else(|_| "{}".to_string())
+                                        .into(),
                                     index: None,
                                     thought_signature:
                                         super::provider_turn::encode_anthropic_thinking_blocks(

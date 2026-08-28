@@ -1476,7 +1476,7 @@ async fn send_gemini_tool_call(
         tool_call_delta: Some(ToolCallDelta {
             id: tool_call.id.clone(),
             name: Some(tool_call.name),
-            arguments_delta: tool_call.arguments,
+            arguments_delta: tool_call.arguments.into(),
             index: tool_call
                 .id
                 .strip_prefix("call_")

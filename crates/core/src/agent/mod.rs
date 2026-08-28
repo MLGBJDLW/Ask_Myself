@@ -875,7 +875,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
                 calls.push(ToolCallRequest {
                     id: delta.id.clone(),
                     name: delta.name.clone().unwrap_or_default(),
-                    arguments: delta.arguments_delta.clone(),
+                    arguments: delta.arguments_delta.to_string(),
                     thought_signature: delta.thought_signature.clone(),
                 });
                 return true;
@@ -885,7 +885,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
         calls.push(ToolCallRequest {
             id: delta.id.clone(),
             name: delta.name.clone().unwrap_or_default(),
-            arguments: delta.arguments_delta.clone(),
+            arguments: delta.arguments_delta.to_string(),
             thought_signature: delta.thought_signature.clone(),
         });
         return true;
@@ -901,7 +901,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             calls.push(ToolCallRequest {
                 id: delta.id.clone(),
                 name: delta.name.clone().unwrap_or_default(),
-                arguments: delta.arguments_delta.clone(),
+                arguments: delta.arguments_delta.to_string(),
                 thought_signature: delta.thought_signature.clone(),
             });
             return true;
@@ -920,8 +920,20 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
     false
 }
 
-fn merge_tool_argument_fragment(arguments: &mut String, fragment: &str) -> bool {
+fn merge_tool_argument_fragment(
+    arguments: &mut String,
+    delta: &crate::llm::ToolCallArgumentsDelta,
+) -> bool {
+    let fragment = delta.as_ref();
     if fragment.is_empty() {
+        return true;
+    }
+    if delta.is_snapshot() {
+        if fragment.len() > MAX_TOOL_CALL_ARGUMENT_BYTES {
+            return false;
+        }
+        arguments.clear();
+        arguments.push_str(fragment);
         return true;
     }
     if arguments.is_empty() {

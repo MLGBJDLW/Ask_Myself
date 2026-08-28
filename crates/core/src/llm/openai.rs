@@ -508,7 +508,7 @@ fn completion_response_to_stream_chunks(
             tool_call_delta: Some(super::ToolCallDelta {
                 id: tool_call.id,
                 name: Some(tool_call.name),
-                arguments_delta: tool_call.arguments,
+                arguments_delta: tool_call.arguments.into(),
                 index: Some(index as u32),
                 thought_signature: tool_call.thought_signature,
             }),
@@ -1823,7 +1823,7 @@ fn client_tool_stream_event(
             tool_call_delta: Some(super::ToolCallDelta {
                 id: call_id,
                 name,
-                arguments_delta,
+                arguments_delta: arguments_delta.into(),
                 index,
                 thought_signature: None,
             }),
