@@ -1,6 +1,6 @@
 //! Google Gemini LLM provider.
 //!
-//! Uses the Gemini REST API with API key authentication via query parameter.
+//! Uses the Gemini REST API with API key authentication via `x-goog-api-key`.
 //! System prompts use top-level `systemInstruction`, roles map "assistant" → "model",
 //! and tool calls use `functionCall`/`functionResponse` parts.
 
@@ -552,6 +552,12 @@ fn clean_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
     let Some(schema) = value.as_object() else {
         return serde_json::json!({ "type": "object", "properties": {} });
     };
+    // Google rejects non-`$` siblings next to `$ref`. Definitions remain on
+    // the enclosing/root schema, while a referenced child is projected as the
+    // reference alone instead of leaking local descriptions or constraints.
+    if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+        return serde_json::json!({ "$ref": reference });
+    }
     let mut cleaned = serde_json::Map::new();
 
     if let Some(schema_type) = schema.get("type") {
@@ -568,7 +574,7 @@ fn clean_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
             cleaned.insert("type".to_string(), serde_json::Value::String(schema_type));
         }
     }
-    for key in ["description", "format", "$ref"] {
+    for key in ["description", "format"] {
         if let Some(value) = schema.get(key).and_then(serde_json::Value::as_str) {
             cleaned.insert(
                 key.to_string(),
@@ -1710,9 +1716,15 @@ impl GeminiProvider {
         }
 
         let body = response.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<GeminiErrorResponse>(&body)
+        let mut message = serde_json::from_str::<GeminiErrorResponse>(&body)
             .map(|e| e.error.message)
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
+        message =
+            crate::sensitive_data::sanitize_diagnostic(&message, self.config.api_key.as_deref());
+
+        if let Some(error) = gemini_location_error(&message) {
+            return Err(error);
+        }
 
         if status.is_server_error() {
             Err(CoreError::TransientLlm(message))
@@ -1720,6 +1732,22 @@ impl GeminiProvider {
             Err(CoreError::Llm(message))
         }
     }
+}
+
+fn gemini_location_error(message: &str) -> Option<CoreError> {
+    message
+        .to_ascii_lowercase()
+        .contains("user location is not supported")
+        .then(|| {
+            CoreError::Llm(
+                "Google rejected this Gemini API request because the current network/account location is not supported. Nexa cannot bypass Google's regional policy. Use an officially supported Google AI Studio or Vertex AI location, or select a Gemini model through another provider route you are authorized to use (for example OpenRouter)."
+                    .to_string(),
+            )
+        })
+}
+
+fn with_google_api_key(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    request.header("x-goog-api-key", api_key)
 }
 
 #[async_trait]
@@ -1773,7 +1801,7 @@ impl LlmProvider for GeminiProvider {
         let mut seen_page_tokens = HashSet::new();
 
         loop {
-            let mut request = self.transport.client().get(&url).query(&[("key", api_key)]);
+            let mut request = with_google_api_key(self.transport.client().get(&url), api_key);
             if let Some(token) = page_token.as_deref() {
                 request = request.query(&[("pageToken", token)]);
             }
@@ -1821,10 +1849,9 @@ impl LlmProvider for GeminiProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let api_key = self.api_key()?;
         let url = format!(
-            "{}/models/{}:generateContent?key={}",
+            "{}/models/{}:generateContent",
             self.base_url(),
             normalized_model_name(&request.model),
-            api_key,
         );
 
         let (system_instruction, contents) = convert_messages(&request.messages);
@@ -1832,9 +1859,7 @@ impl LlmProvider for GeminiProvider {
         let body_bytes = serialized_json_body(&body, "Gemini completion request")?;
 
         let response = with_request_timeout(
-            self.transport
-                .client()
-                .post(&url)
+            with_google_api_key(self.transport.client().post(&url), api_key)
                 .header("Content-Type", "application/json")
                 .body(body_bytes),
             self.request_timeout,
@@ -1882,26 +1907,19 @@ impl LlmProvider for GeminiProvider {
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let api_key = self.api_key()?;
         let url = format!(
-            "{}/models/{}:streamGenerateContent?alt=sse&key={}",
+            "{}/models/{}:streamGenerateContent?alt=sse",
             self.base_url(),
             normalized_model_name(&request.model),
-            api_key,
         );
 
         let (system_instruction, contents) = convert_messages(&request.messages);
         let body = build_request_body(request, system_instruction, contents);
         let body_bytes = serialized_json_body(&body, "Gemini stream request")?;
 
-        info!(
-            "Gemini stream request to {}..., model={}",
-            &url[..url.find("key=").unwrap_or(url.len())],
-            request.model
-        );
+        info!("Gemini stream request to {}, model={}", url, request.model);
 
         let response = send_stream_start_request(
-            self.transport
-                .client()
-                .post(&url)
+            with_google_api_key(self.transport.client().post(&url), api_key)
                 .header("Content-Type", "application/json")
                 .body(body_bytes),
             self.request_timeout,
@@ -1957,6 +1975,38 @@ impl LlmProvider for GeminiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_auth_uses_the_documented_header_without_leaking_keys_into_urls() {
+        let request = with_google_api_key(
+            reqwest::Client::new().post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+            ),
+            "AQ.test-secret",
+        )
+        .build()
+        .expect("build Gemini request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("x-goog-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("AQ.test-secret")
+        );
+        assert!(!request.url().as_str().contains("AQ.test-secret"));
+        assert!(request.url().query().is_none());
+    }
+
+    #[test]
+    fn unsupported_location_errors_name_actionable_supported_routes() {
+        let error = gemini_location_error("User location is not supported for the API use.")
+            .expect("known Gemini regional rejection");
+        let message = error.to_string();
+        assert!(message.contains("regional policy"));
+        assert!(message.contains("Vertex AI"));
+        assert!(message.contains("OpenRouter"));
+    }
 
     #[test]
     fn provider_native_search_replaces_only_the_local_search_tool() {
@@ -2036,6 +2086,18 @@ mod tests {
                 "schema retained {unsupported}"
             );
         }
+    }
+
+    #[test]
+    fn referenced_subschemas_drop_non_dollar_siblings() {
+        let cleaned = clean_schema_for_gemini(&serde_json::json!({
+            "$ref": "#/$defs/Mode",
+            "type": "string",
+            "description": "local hint",
+            "enum": ["fast", "safe"]
+        }));
+
+        assert_eq!(cleaned, serde_json::json!({"$ref": "#/$defs/Mode"}));
     }
 
     #[test]

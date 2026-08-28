@@ -94,6 +94,7 @@ pub mod rag;
 pub mod run_event_outbox;
 pub mod runtime;
 pub mod search;
+mod sensitive_data;
 pub mod settings_schema_v2;
 pub mod skills;
 pub mod source_tree;

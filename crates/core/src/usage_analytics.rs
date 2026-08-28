@@ -119,7 +119,10 @@ pub(crate) fn record_ai_usage_on_connection(
     conn: &rusqlite::Connection,
     input: &AiUsageRecordInput<'_>,
 ) -> Result<bool, CoreError> {
-    let provider_raw_json = serde_json::to_string(input.provider_raw)?;
+    let provider_raw_json = serde_json::to_string(&crate::sensitive_data::sanitize_json_strings(
+        input.provider_raw,
+        None,
+    ))?;
     let changed = conn.execute(
         "INSERT OR IGNORE INTO ai_usage_records (
                 id, invocation_id, occurred_at, provider_id, provider_type,
@@ -630,6 +633,30 @@ mod tests {
                 .request_count,
             1
         );
+    }
+
+    #[test]
+    fn provider_raw_diagnostics_are_redacted_before_insert() {
+        let db = Database::open_memory().unwrap();
+        let raw = serde_json::json!({
+            "requestUrl": "https://example.test/generate?key=AIza0123456789abcdefghijklmnopqrst",
+            "authorization": "Authorization: Bearer provider-secret",
+            "promptTokens": 100
+        });
+        db.record_ai_usage(&input("inv-redacted", &raw)).unwrap();
+
+        let stored: String = db
+            .conn()
+            .query_row(
+                "SELECT provider_raw_json FROM ai_usage_records WHERE invocation_id = 'inv-redacted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stored.contains("AIza"));
+        assert!(!stored.contains("provider-secret"));
+        assert!(!stored.to_ascii_lowercase().contains("?key="));
+        assert!(stored.contains("promptTokens"));
     }
 
     #[test]
