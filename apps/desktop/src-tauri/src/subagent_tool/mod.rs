@@ -965,6 +965,7 @@ struct JudgeDecisionArtifact {
 }
 
 mod catalog;
+mod event_pump;
 mod judge;
 mod policy;
 mod preflight;
@@ -973,6 +974,7 @@ mod tools;
 mod worker;
 
 use catalog::*;
+use event_pump::*;
 use policy::*;
 use preflight::*;
 use request::*;
