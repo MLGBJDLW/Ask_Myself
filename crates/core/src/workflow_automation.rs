@@ -368,6 +368,72 @@ pub struct WorkflowAutomationSchedulerEvent {
     pub created_at: String,
 }
 
+/// Canonical scheduler-event vocabulary shared by core and desktop adapters.
+/// `as_str` values are durable database values and must remain stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowSchedulerEventType {
+    DefinitionSuperseded,
+    ApprovalRequested,
+    ApprovalResolved,
+    SkippedRetryLimit,
+    SkippedBackoff,
+    SkippedPreRunApproval,
+    OccurrenceSkipped,
+    ClaimFailed,
+    SkippedNoAgentConfig,
+    Claimed,
+    LaunchSucceeded,
+    LaunchFailed,
+    SkippedActive,
+}
+
+impl WorkflowSchedulerEventType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DefinitionSuperseded => "definition_superseded",
+            Self::ApprovalRequested => "approval_requested",
+            Self::ApprovalResolved => "approval_resolved",
+            Self::SkippedRetryLimit => "skipped_retry_limit",
+            Self::SkippedBackoff => "skipped_backoff",
+            Self::SkippedPreRunApproval => "skipped_pre_run_approval",
+            Self::OccurrenceSkipped => "occurrence_skipped",
+            Self::ClaimFailed => "claim_failed",
+            Self::SkippedNoAgentConfig => "skipped_no_agent_config",
+            Self::Claimed => "claimed",
+            Self::LaunchSucceeded => "launch_succeeded",
+            Self::LaunchFailed => "launch_failed",
+            Self::SkippedActive => "skipped_active",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "definition_superseded" => Some(Self::DefinitionSuperseded),
+            "approval_requested" => Some(Self::ApprovalRequested),
+            "approval_resolved" => Some(Self::ApprovalResolved),
+            "skipped_retry_limit" => Some(Self::SkippedRetryLimit),
+            "skipped_backoff" => Some(Self::SkippedBackoff),
+            "skipped_pre_run_approval" => Some(Self::SkippedPreRunApproval),
+            "occurrence_skipped" => Some(Self::OccurrenceSkipped),
+            "claim_failed" => Some(Self::ClaimFailed),
+            "skipped_no_agent_config" => Some(Self::SkippedNoAgentConfig),
+            "claimed" => Some(Self::Claimed),
+            "launch_succeeded" => Some(Self::LaunchSucceeded),
+            "launch_failed" => Some(Self::LaunchFailed),
+            "skipped_active" => Some(Self::SkippedActive),
+            _ => None,
+        }
+    }
+
+    const fn is_retryable_failure(self) -> bool {
+        matches!(self, Self::ClaimFailed | Self::LaunchFailed)
+    }
+
+    const fn is_retry_audit_only(self) -> bool {
+        matches!(self, Self::SkippedBackoff | Self::SkippedRetryLimit)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowAutomationSchedulerRetryDecision {
@@ -708,6 +774,76 @@ fn workflow_automation_occurrence_from_row(
     })
 }
 
+const WORKFLOW_RUN_SELECT: &str = "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at, occurrence_id, scheduled_for, definition_revision, attempt FROM workflow_automation_runs";
+const WORKFLOW_OCCURRENCE_SELECT: &str = "SELECT id, automation_id, definition_revision, scheduled_for, status, attempt_count, retry_at, last_error, lease_token, lease_expires_at, created_at, updated_at FROM workflow_automation_occurrences";
+const WORKFLOW_AUTOMATION_SELECT: &str = "SELECT id, name, description, workflow_template_id, prompt, trigger_json, trigger_kind, source_scope_json, approval_policy_json, enabled, status, last_run_at, next_run_at, created_at, updated_at, COALESCE((SELECT config_json FROM workflow_automation_schedule_configs c WHERE c.automation_id = workflow_automations.id), '{}') FROM workflow_automations";
+
+fn fetch_workflow_run(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<WorkflowAutomationRun, CoreError> {
+    conn.query_row(
+        &format!("{WORKFLOW_RUN_SELECT} WHERE id = ?1"),
+        rusqlite::params![run_id],
+        workflow_automation_run_from_row,
+    )
+    .map_err(CoreError::Database)
+}
+
+fn fetch_workflow_occurrence(
+    conn: &rusqlite::Connection,
+    occurrence_id: &str,
+) -> Result<WorkflowAutomationOccurrence, CoreError> {
+    conn.query_row(
+        &format!("{WORKFLOW_OCCURRENCE_SELECT} WHERE id = ?1"),
+        rusqlite::params![occurrence_id],
+        workflow_automation_occurrence_from_row,
+    )
+    .map_err(CoreError::Database)
+}
+
+struct SchedulerEventRecord<'a> {
+    automation_id: Option<&'a str>,
+    run_id: Option<&'a str>,
+    event_type: WorkflowSchedulerEventType,
+    status: Option<&'a str>,
+    summary: &'a str,
+    payload: Option<&'a Value>,
+}
+
+fn insert_scheduler_event(
+    tx: &rusqlite::Transaction<'_>,
+    record: SchedulerEventRecord<'_>,
+) -> Result<String, CoreError> {
+    let summary = normalize_optional(record.summary, 2_000)?;
+    let status = record
+        .status
+        .map(|value| normalize_optional(value, 120))
+        .transpose()?
+        .filter(|value| !value.is_empty());
+    let payload = record
+        .payload
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let payload_json = serde_json::to_string(&payload)?;
+    let id = new_id();
+    tx.execute(
+        "INSERT INTO workflow_automation_scheduler_events
+         (id, automation_id, run_id, event_type, status, summary, payload_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            &id,
+            record.automation_id,
+            record.run_id,
+            record.event_type.as_str(),
+            status.as_deref(),
+            &summary,
+            &payload_json,
+        ],
+    )?;
+    Ok(id)
+}
+
 fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))
@@ -717,14 +853,6 @@ fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
                 .ok()
                 .map(|value| DateTime::<Utc>::from_naive_utc_and_offset(value, Utc))
         })
-}
-
-fn scheduler_event_is_retryable_failure(event_type: &str) -> bool {
-    matches!(event_type, "claim_failed" | "launch_failed")
-}
-
-fn scheduler_event_is_retry_audit_only(event_type: &str) -> bool {
-    matches!(event_type, "skipped_backoff" | "skipped_retry_limit")
 }
 
 fn scheduler_retry_backoff_seconds(failure_count: usize) -> Option<i64> {
@@ -768,16 +896,18 @@ pub fn workflow_automation_scheduler_retry_decision_from_events(
     let mut last_retryable_event_time = None;
 
     for (created_at, event) in ordered {
-        let event_type = event.event_type.trim();
-        if scheduler_event_is_retry_audit_only(event_type) {
+        let Some(event_type) = WorkflowSchedulerEventType::parse(&event.event_type) else {
+            break;
+        };
+        if event_type.is_retry_audit_only() {
             continue;
         }
-        if !scheduler_event_is_retryable_failure(event_type) {
+        if !event_type.is_retryable_failure() {
             break;
         }
         retryable_failure_count += 1;
         if last_retryable_event_type.is_none() {
-            last_retryable_event_type = Some(event_type.to_string());
+            last_retryable_event_type = Some(event_type.as_str().to_string());
             last_retryable_event_at = Some(event.created_at.clone());
             last_retryable_event_time = Some(created_at);
         }
@@ -1317,18 +1447,21 @@ impl Database {
                    AND status IN ('queued', 'waiting_approval')",
                 rusqlite::params![&id, previous_revision],
             )?;
-            let event_id = new_id();
-            let payload_json = serde_json::to_string(&serde_json::json!({
+            let payload = serde_json::json!({
                 "previousDefinitionRevision": previous_revision,
                 "definitionRevision": is_schedule.then_some(definition_revision),
                 "resolution": "cancelled_pending_occurrences",
-            }))?;
-            tx.execute(
-                "INSERT INTO workflow_automation_scheduler_events
-                     (id, automation_id, run_id, event_type, status, summary, payload_json)
-                 VALUES (?1, ?2, NULL, 'definition_superseded', 'cancelled',
-                         'Pending occurrences were cancelled because the definition changed', ?3)",
-                rusqlite::params![&event_id, &id, &payload_json],
+            });
+            insert_scheduler_event(
+                &tx,
+                SchedulerEventRecord {
+                    automation_id: Some(&id),
+                    run_id: None,
+                    event_type: WorkflowSchedulerEventType::DefinitionSuperseded,
+                    status: Some("cancelled"),
+                    summary: "Pending occurrences were cancelled because the definition changed",
+                    payload: Some(&payload),
+                },
             )?;
         }
         tx.commit()?;
@@ -1339,13 +1472,7 @@ impl Database {
     pub fn get_workflow_automation(&self, id: &str) -> Result<WorkflowAutomation, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, name, description, workflow_template_id, prompt, trigger_json,
-                    trigger_kind, source_scope_json, approval_policy_json, enabled,
-                    status, last_run_at, next_run_at, created_at, updated_at,
-                    COALESCE((SELECT config_json
-                              FROM workflow_automation_schedule_configs c
-                              WHERE c.automation_id = workflow_automations.id), '{}')
-             FROM workflow_automations WHERE id = ?1",
+            &format!("{WORKFLOW_AUTOMATION_SELECT} WHERE id = ?1"),
             rusqlite::params![id],
             workflow_automation_from_row,
         )
@@ -1359,16 +1486,9 @@ impl Database {
 
     pub fn list_workflow_automations(&self) -> Result<Vec<WorkflowAutomation>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, workflow_template_id, prompt, trigger_json,
-                    trigger_kind, source_scope_json, approval_policy_json, enabled,
-                    status, last_run_at, next_run_at, created_at, updated_at,
-                    COALESCE((SELECT config_json
-                              FROM workflow_automation_schedule_configs c
-                              WHERE c.automation_id = workflow_automations.id), '{}')
-             FROM workflow_automations
-             ORDER BY enabled DESC, updated_at DESC, name ASC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "{WORKFLOW_AUTOMATION_SELECT} ORDER BY enabled DESC, updated_at DESC, name ASC"
+        ))?;
         let rows = stmt.query_map([], workflow_automation_from_row)?;
         let mut out = Vec::new();
         for row in rows {
@@ -1480,18 +1600,21 @@ impl Database {
                  updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![&automation_id],
         )?;
-        let event_id = new_id();
-        let payload_json = serde_json::to_string(&serde_json::json!({
+        let payload = serde_json::json!({
             "occurrenceId": occurrence_id,
             "definitionRevision": definition_revision,
             "durableApproval": true,
-        }))?;
-        tx.execute(
-            "INSERT INTO workflow_automation_scheduler_events
-                 (id, automation_id, run_id, event_type, status, summary, payload_json)
-             VALUES (?1, ?2, ?3, 'approval_requested', 'waiting_approval',
-                     'Scheduled occurrence is waiting for pre-run approval', ?4)",
-            rusqlite::params![&event_id, &automation_id, run_id, &payload_json],
+        });
+        insert_scheduler_event(
+            &tx,
+            SchedulerEventRecord {
+                automation_id: Some(&automation_id),
+                run_id: Some(run_id),
+                event_type: WorkflowSchedulerEventType::ApprovalRequested,
+                status: Some("waiting_approval"),
+                summary: "Scheduled occurrence is waiting for pre-run approval",
+                payload: Some(&payload),
+            },
         )?;
         tx.commit()?;
         Ok(true)
@@ -1586,34 +1709,24 @@ impl Database {
              WHERE id = ?1",
             rusqlite::params![&automation_id],
         )?;
-        let event_id = new_id();
-        let payload_json = serde_json::to_string(&serde_json::json!({
+        let payload = serde_json::json!({
             "occurrenceId": occurrence_id,
             "definitionRevision": definition_revision,
             "decision": "approved",
-        }))?;
-        tx.execute(
-            "INSERT INTO workflow_automation_scheduler_events
-                 (id, automation_id, run_id, event_type, status, summary, payload_json)
-             VALUES (?1, ?2, ?3, 'approval_resolved', 'queued',
-                     'Scheduled occurrence was approved for launch', ?4)",
-            rusqlite::params![&event_id, &automation_id, run_id, &payload_json],
+        });
+        insert_scheduler_event(
+            &tx,
+            SchedulerEventRecord {
+                automation_id: Some(&automation_id),
+                run_id: Some(run_id),
+                event_type: WorkflowSchedulerEventType::ApprovalResolved,
+                status: Some("queued"),
+                summary: "Scheduled occurrence was approved for launch",
+                payload: Some(&payload),
+            },
         )?;
-        let run = tx.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs WHERE id = ?1",
-            rusqlite::params![run_id],
-            workflow_automation_run_from_row,
-        )?;
-        let occurrence = tx.query_row(
-            "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                    attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                    created_at, updated_at
-             FROM workflow_automation_occurrences WHERE id = ?1",
-            rusqlite::params![&occurrence_id],
-            workflow_automation_occurrence_from_row,
-        )?;
+        let run = fetch_workflow_run(&tx, run_id)?;
+        let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
         tx.commit()?;
         drop(conn);
         let automation = self.get_workflow_automation(&automation_id)?;
@@ -1669,13 +1782,7 @@ impl Database {
                 )),
                 other => CoreError::Database(other),
             })?;
-        let run = tx.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs WHERE id = ?1",
-            rusqlite::params![run_id],
-            workflow_automation_run_from_row,
-        )?;
+        let run = fetch_workflow_run(&tx, run_id)?;
         let occurrence_id = run.occurrence_id.clone().ok_or_else(|| {
             CoreError::Internal(format!("Workflow run {run_id} lost its occurrence"))
         })?;
@@ -1724,26 +1831,23 @@ impl Database {
                  updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![&automation.id, &next_run_at, now_rfc3339],
         )?;
-        let event_id = new_id();
-        let payload_json = serde_json::to_string(&serde_json::json!({
+        let payload = serde_json::json!({
             "occurrenceId": occurrence_id,
             "definitionRevision": run.definition_revision,
             "decision": "denied",
-        }))?;
-        tx.execute(
-            "INSERT INTO workflow_automation_scheduler_events
-                 (id, automation_id, run_id, event_type, status, summary, payload_json)
-             VALUES (?1, ?2, ?3, 'approval_resolved', 'cancelled',
-                     'Scheduled occurrence was denied before launch', ?4)",
-            rusqlite::params![&event_id, &automation.id, run_id, &payload_json],
+        });
+        insert_scheduler_event(
+            &tx,
+            SchedulerEventRecord {
+                automation_id: Some(&automation.id),
+                run_id: Some(run_id),
+                event_type: WorkflowSchedulerEventType::ApprovalResolved,
+                status: Some("cancelled"),
+                summary: "Scheduled occurrence was denied before launch",
+                payload: Some(&payload),
+            },
         )?;
-        let denied = tx.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs WHERE id = ?1",
-            rusqlite::params![run_id],
-            workflow_automation_run_from_row,
-        )?;
+        let denied = fetch_workflow_run(&tx, run_id)?;
         tx.commit()?;
         Ok(denied)
     }
@@ -1787,14 +1891,8 @@ impl Database {
         now_rfc3339: &str,
     ) -> Result<Vec<WorkflowAutomationDueRun>, CoreError> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, workflow_template_id, prompt, trigger_json,
-                    trigger_kind, source_scope_json, approval_policy_json, enabled,
-                    status, last_run_at, next_run_at, created_at, updated_at,
-                    COALESCE((SELECT config_json
-                              FROM workflow_automation_schedule_configs c
-                              WHERE c.automation_id = workflow_automations.id), '{}')
-             FROM workflow_automations
+        let mut stmt = conn.prepare(&format!(
+            "{WORKFLOW_AUTOMATION_SELECT}
              WHERE enabled = 1
                AND status != 'waiting_approval'
                AND trigger_kind IN ('schedule', 'folder')
@@ -1818,8 +1916,8 @@ impl Database {
                     )
                )
              ORDER BY COALESCE(next_run_at, updated_at) ASC, name ASC
-             LIMIT 100",
-        )?;
+             LIMIT 100"
+        ))?;
         let rows = stmt.query_map(rusqlite::params![now_rfc3339], workflow_automation_from_row)?;
         let mut out = Vec::new();
         for row in rows {
@@ -1922,13 +2020,7 @@ impl Database {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let authoritative_automation = tx.query_row(
-            "SELECT id, name, description, workflow_template_id, prompt, trigger_json,
-                    trigger_kind, source_scope_json, approval_policy_json, enabled,
-                    status, last_run_at, next_run_at, created_at, updated_at,
-                    COALESCE((SELECT config_json
-                              FROM workflow_automation_schedule_configs c
-                              WHERE c.automation_id = workflow_automations.id), '{}')
-             FROM workflow_automations WHERE id = ?1",
+            &format!("{WORKFLOW_AUTOMATION_SELECT} WHERE id = ?1"),
             rusqlite::params![&due_run.automation.id],
             workflow_automation_from_row,
         )?;
@@ -2244,14 +2336,7 @@ impl Database {
             false
         };
         if isolated_source_lock_exists {
-            let occurrence = tx.query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        created_at, updated_at
-                 FROM workflow_automation_occurrences WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-                workflow_automation_occurrence_from_row,
-            )?;
+            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
             tx.commit()?;
             drop(conn);
             return Ok(WorkflowAutomationDueRunClaim {
@@ -2277,14 +2362,7 @@ impl Database {
                  SET next_run_at = ?2, updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![&due_run.automation.id, &next_run_at],
             )?;
-            let occurrence = tx.query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        created_at, updated_at
-                 FROM workflow_automation_occurrences WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-                workflow_automation_occurrence_from_row,
-            )?;
+            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
             tx.commit()?;
             drop(conn);
             return Ok(WorkflowAutomationDueRunClaim {
@@ -2308,14 +2386,7 @@ impl Database {
                  WHERE id = ?1",
                 rusqlite::params![&due_run.automation.id, &next_run_at],
             )?;
-            let occurrence = tx.query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        created_at, updated_at
-                 FROM workflow_automation_occurrences WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-                workflow_automation_occurrence_from_row,
-            )?;
+            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
             tx.commit()?;
             drop(conn);
             return Ok(WorkflowAutomationDueRunClaim {
@@ -2356,14 +2427,7 @@ impl Database {
                  WHERE id = ?1",
                 rusqlite::params![&due_run.automation.id, &next_run_at],
             )?;
-            let occurrence = tx.query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        created_at, updated_at
-                 FROM workflow_automation_occurrences WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-                workflow_automation_occurrence_from_row,
-            )?;
+            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
             tx.commit()?;
             drop(conn);
             return Ok(WorkflowAutomationDueRunClaim {
@@ -2406,21 +2470,8 @@ impl Database {
              SET status = 'queued', updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![&due_run.automation.id],
         )?;
-        let run = tx.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs WHERE id = ?1",
-            rusqlite::params![&run_id],
-            workflow_automation_run_from_row,
-        )?;
-        let occurrence = tx.query_row(
-            "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                    attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                    created_at, updated_at
-             FROM workflow_automation_occurrences WHERE id = ?1",
-            rusqlite::params![&occurrence_id],
-            workflow_automation_occurrence_from_row,
-        )?;
+        let run = fetch_workflow_run(&tx, &run_id)?;
+        let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
         tx.commit()?;
         drop(conn);
         Ok(WorkflowAutomationDueRunClaim {
@@ -2514,9 +2565,7 @@ impl Database {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let run = tx
             .query_row(
-                "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                        occurrence_id, scheduled_for, definition_revision, attempt
-                 FROM workflow_automation_runs WHERE id = ?1",
+                &format!("{WORKFLOW_RUN_SELECT} WHERE id = ?1"),
                 rusqlite::params![run_id],
                 workflow_automation_run_from_row,
             )
@@ -2758,14 +2807,7 @@ impl Database {
              WHERE id = ?1",
             rusqlite::params![&run.automation_id, &next_run_at],
         )?;
-        let occurrence = tx.query_row(
-            "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                    attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                    created_at, updated_at
-             FROM workflow_automation_occurrences WHERE id = ?1",
-            rusqlite::params![occurrence_id],
-            workflow_automation_occurrence_from_row,
-        )?;
+        let occurrence = fetch_workflow_occurrence(&tx, occurrence_id)?;
         tx.commit()?;
         Ok(Some(occurrence))
     }
@@ -2795,10 +2837,7 @@ impl Database {
     ) -> Result<WorkflowAutomationOccurrence, CoreError> {
         self.conn()
             .query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        created_at, updated_at
-                 FROM workflow_automation_occurrences WHERE id = ?1",
+                &format!("{WORKFLOW_OCCURRENCE_SELECT} WHERE id = ?1"),
                 rusqlite::params![id],
                 workflow_automation_occurrence_from_row,
             )
@@ -2822,9 +2861,7 @@ impl Database {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let run = tx
             .query_row(
-                "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                        occurrence_id, scheduled_for, definition_revision, attempt
-                 FROM workflow_automation_runs WHERE id = ?1",
+                &format!("{WORKFLOW_RUN_SELECT} WHERE id = ?1"),
                 rusqlite::params![run_id],
                 workflow_automation_run_from_row,
             )
@@ -2902,9 +2939,7 @@ impl Database {
     ) -> Result<WorkflowAutomationRun, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs WHERE id = ?1",
+            &format!("{WORKFLOW_RUN_SELECT} WHERE id = ?1"),
             rusqlite::params![id],
             workflow_automation_run_from_row,
         )
@@ -2922,12 +2957,9 @@ impl Database {
     ) -> Result<Option<WorkflowAutomationRun>, CoreError> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT id, automation_id, task_run_id, status, summary, created_at, finished_at,
-                    occurrence_id, scheduled_for, definition_revision, attempt
-             FROM workflow_automation_runs
-             WHERE task_run_id = ?1
-             ORDER BY datetime(created_at) DESC, id DESC
-             LIMIT 1",
+            &format!(
+                "{WORKFLOW_RUN_SELECT} WHERE task_run_id = ?1 ORDER BY datetime(created_at) DESC, id DESC LIMIT 1"
+            ),
             rusqlite::params![task_run_id],
             workflow_automation_run_from_row,
         )
@@ -2939,35 +2971,25 @@ impl Database {
         &self,
         automation_id: Option<&str>,
         run_id: Option<&str>,
-        event_type: &str,
+        event_type: WorkflowSchedulerEventType,
         status: Option<&str>,
         summary: &str,
         payload: Option<&Value>,
     ) -> Result<WorkflowAutomationSchedulerEvent, CoreError> {
-        let event_type = normalize_required(event_type, "Scheduler event type", 120)?;
-        let summary = normalize_optional(summary, 2_000)?;
-        let status = status
-            .map(|value| normalize_optional(value, 120))
-            .transpose()?
-            .filter(|value| !value.is_empty());
-        let payload = payload.cloned().unwrap_or_else(|| serde_json::json!({}));
-        let payload_json = serde_json::to_string(&payload)?;
-        let id = new_id();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO workflow_automation_scheduler_events
-             (id, automation_id, run_id, event_type, status, summary, payload_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                &id,
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = insert_scheduler_event(
+            &tx,
+            SchedulerEventRecord {
                 automation_id,
                 run_id,
-                &event_type,
-                status.as_deref(),
-                &summary,
-                &payload_json
-            ],
+                event_type,
+                status,
+                summary,
+                payload,
+            },
         )?;
+        tx.commit()?;
         drop(conn);
         self.get_workflow_automation_scheduler_event(&id)
     }
@@ -3955,6 +3977,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::WorkflowSchedulerEventType;
     use chrono::Utc;
     use uuid::Uuid;
 
@@ -5333,7 +5356,7 @@ mod tests {
             .record_workflow_automation_scheduler_event(
                 Some(&automation.id),
                 Some(&run.id),
-                "launch_succeeded",
+                WorkflowSchedulerEventType::LaunchSucceeded,
                 Some("running"),
                 "Scheduler launched workflow",
                 Some(&serde_json::json!({

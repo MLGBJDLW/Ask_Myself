@@ -20,6 +20,7 @@ use nexa_core::workflow_automation::{
     WorkflowAutomationApprovalPolicy, WorkflowAutomationDueRun, WorkflowAutomationRun,
     WorkflowAutomationRunStatus, WorkflowAutomationSchedulerEvent,
     WorkflowAutomationSchedulerRetryDecision, WorkflowAutomationTrigger,
+    WorkflowSchedulerEventType,
 };
 use nexa_core::workflow_scheduler::{
     legacy_workflow_schedule_config, preview_workflow_cron_schedule,
@@ -230,7 +231,7 @@ fn record_task_orchestrator_scheduler_event(
     db: &Database,
     automation_id: Option<&str>,
     run_id: Option<&str>,
-    event_type: &str,
+    event_type: WorkflowSchedulerEventType,
     status: Option<&str>,
     summary: &str,
     payload: serde_json::Value,
@@ -243,22 +244,25 @@ fn record_task_orchestrator_scheduler_event(
         summary,
         Some(&payload),
     ) {
-        warn!("Failed to persist Task Orchestrator scheduler event {event_type}: {err}");
+        warn!(
+            "Failed to persist Task Orchestrator scheduler event {}: {err}",
+            event_type.as_str()
+        );
     }
 }
 
 pub(super) fn task_orchestrator_scheduler_retry_skip_event(
     retry_decision: &WorkflowAutomationSchedulerRetryDecision,
-) -> (&'static str, &'static str, &'static str) {
+) -> (WorkflowSchedulerEventType, &'static str, &'static str) {
     if retry_decision.attempts_exhausted {
         (
-            "skipped_retry_limit",
+            WorkflowSchedulerEventType::SkippedRetryLimit,
             "blocked",
             "Scheduler skipped due workflow because retry attempts are exhausted",
         )
     } else {
         (
-            "skipped_backoff",
+            WorkflowSchedulerEventType::SkippedBackoff,
             "backoff",
             "Scheduler skipped due workflow until retry backoff expires",
         )
@@ -989,7 +993,7 @@ async fn launch_authoritative_scheduled_workflow(
                 state.db.as_ref(),
                 Some(&automation_id),
                 None,
-                "skipped_pre_run_approval",
+                WorkflowSchedulerEventType::SkippedPreRunApproval,
                 Some("waiting_approval"),
                 "Scheduler skipped due workflow because pre-run approval is required",
                 serde_json::json!({
@@ -1022,7 +1026,7 @@ async fn launch_authoritative_scheduled_workflow(
                         state.db.as_ref(),
                         Some(&automation_id),
                         None,
-                        "occurrence_skipped",
+                        WorkflowSchedulerEventType::OccurrenceSkipped,
                         Some("skipped"),
                         "Scheduler applied the saved occurrence policy",
                         serde_json::json!({
@@ -1039,7 +1043,7 @@ async fn launch_authoritative_scheduled_workflow(
                 state.db.as_ref(),
                 Some(&automation_id),
                 None,
-                "claim_failed",
+                WorkflowSchedulerEventType::ClaimFailed,
                 Some("failed"),
                 "Scheduler failed to claim due workflow",
                 serde_json::json!({
@@ -1093,7 +1097,7 @@ async fn launch_authoritative_scheduled_workflow(
                 state.db.as_ref(),
                 Some(&automation_id),
                 Some(&run_id),
-                "skipped_no_agent_config",
+                WorkflowSchedulerEventType::SkippedNoAgentConfig,
                 Some("blocked"),
                 "Scheduler could not resolve the workflow's saved agent policy",
                 serde_json::json!({ "error": error }),
@@ -1114,7 +1118,7 @@ async fn launch_authoritative_scheduled_workflow(
         state.db.as_ref(),
         Some(&automation_id),
         Some(&run_id),
-        "claimed",
+        WorkflowSchedulerEventType::Claimed,
         Some(ticket.run.status.raw_status.as_str()),
         "Scheduler claimed due workflow",
         serde_json::json!({
@@ -1147,7 +1151,7 @@ async fn launch_authoritative_scheduled_workflow(
                 state.db.as_ref(),
                 Some(&automation_id),
                 Some(&run_id),
-                "launch_succeeded",
+                WorkflowSchedulerEventType::LaunchSucceeded,
                 Some("running"),
                 "Scheduler launched due workflow",
                 serde_json::json!({
@@ -1163,7 +1167,7 @@ async fn launch_authoritative_scheduled_workflow(
                 state.db.as_ref(),
                 Some(&automation_id),
                 Some(&run_id),
-                "launch_failed",
+                WorkflowSchedulerEventType::LaunchFailed,
                 Some("failed"),
                 "Scheduler failed to launch due workflow",
                 serde_json::json!({

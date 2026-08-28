@@ -66,6 +66,8 @@ use nexa_core::llm::{
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
+#[cfg(test)]
+use nexa_core::workflow_automation::WorkflowSchedulerEventType;
 
 use base64::Engine;
 use chrono::{SecondsFormat, Utc};
@@ -1597,7 +1599,7 @@ mod tests {
             .record_workflow_automation_scheduler_event(
                 Some(&automation.id),
                 None,
-                "launch_failed",
+                WorkflowSchedulerEventType::LaunchFailed,
                 Some("failed"),
                 "Scheduler failed to launch due workflow",
                 Some(&serde_json::json!({ "retryable": true })),
