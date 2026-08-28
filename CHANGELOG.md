@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.13.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.27...nexa-monorepo-v0.13.0) (2026-08-28)
+
+
+### Features
+
+* add scheduled agents and current provider routes ([7c30c13](https://github.com/MLGBJDLW/Nexa/commit/7c30c1333d8a5a2c494d3302b345e4a101a0785d))
+* **agent:** expose subagent runtime authority ([7404aa4](https://github.com/MLGBJDLW/Nexa/commit/7404aa4db45f78d8c62b4fc4395a8c0e7fc87f40))
+* **automation:** add durable timezone-aware scheduled agents ([d6ae644](https://github.com/MLGBJDLW/Nexa/commit/d6ae644a3fda0cbdf89b6fad222c1925987588d5))
+* **models:** add current Qwen 3.8 and Gemini routes ([587524f](https://github.com/MLGBJDLW/Nexa/commit/587524f34d5979db1a8c5b775f8d127e92e0f78c))
+* **models:** add verified GLM 5.3 provider routes ([9ee9db5](https://github.com/MLGBJDLW/Nexa/commit/9ee9db527690c1ce964b84d2f9b838d3205283e7))
+
+
+### Bug Fixes
+
+* **agent:** bound loops and replay resettable drafts ([e6057a1](https://github.com/MLGBJDLW/Nexa/commit/e6057a1a2dca5843470b3d3e756b7d770825bcdb))
+* **agent:** preserve provider-owned context authority ([a8b4df0](https://github.com/MLGBJDLW/Nexa/commit/a8b4df017875126bc820176d0d0b9c16b8d2a69c))
+* **automation:** preserve folder trigger launches ([2937135](https://github.com/MLGBJDLW/Nexa/commit/29371356ab3410b35fe2b1c5d860336c507bcb9c))
+* **automation:** preserve scheduled occurrence authority ([887efc0](https://github.com/MLGBJDLW/Nexa/commit/887efc0275bd78796e6c0f2c0c95cecaafb7341d))
+* **gemini:** secure direct auth and diagnostics ([0de2a06](https://github.com/MLGBJDLW/Nexa/commit/0de2a06f76b64c50c8ffd94760dffef42cdde685))
+
 ## [0.12.27](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.26...nexa-monorepo-v0.12.27) (2026-08-23)
 
 
