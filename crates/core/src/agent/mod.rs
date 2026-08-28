@@ -419,13 +419,25 @@ fn default_dynamic_tool_visibility() -> bool {
 const DEFAULT_AGENT_RESPONSE_TOKENS: u32 = 16_384;
 const DEFAULT_DEEPSEEK_RESPONSE_TOKENS: u32 = 32_768;
 
+fn is_deepseek_model_family(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().split('/').any(|segment| {
+        segment == "deepseek"
+            || segment.starts_with("deepseek-")
+            || segment.starts_with("deepseek_")
+            || segment.starts_with("deepseek.")
+    })
+}
+
 impl AgentConfig {
     /// Resolve one model-step output envelope. Explicit user configuration wins;
     /// otherwise reasoning-heavy DeepSeek routes get enough room to reach a
     /// tool call and other main-agent routes use a conservative 16K reserve.
     /// Known catalog limits remain the hard upper bound.
     fn resolved_max_response_tokens(&self, model: &str) -> u32 {
-        let default = if self.provider_type == Some(ProviderType::DeepSeek) {
+        let automatic = self.max_tokens.is_none();
+        let default = if self.provider_type == Some(ProviderType::DeepSeek)
+            || is_deepseek_model_family(model)
+        {
             DEFAULT_DEEPSEEK_RESPONSE_TOKENS
         } else {
             DEFAULT_AGENT_RESPONSE_TOKENS
@@ -442,7 +454,13 @@ impl AgentConfig {
             .context_window_resolution
             .and_then(|resolution| resolution.capacity_tokens)
             .or(self.context_window)
-            .map(|capacity| capacity.saturating_div(2).max(1));
+            .map(|capacity| {
+                if automatic {
+                    capacity.saturating_div(2).max(1)
+                } else {
+                    capacity.max(1)
+                }
+            });
 
         catalog_limit
             .into_iter()

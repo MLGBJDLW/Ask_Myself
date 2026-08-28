@@ -470,13 +470,33 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     );
 
     let explicit = AgentConfig {
-        max_tokens: Some(6_000),
+        max_tokens: Some(12_000),
+        context_window: Some(16_000),
         ..deepseek.clone()
     };
     assert_eq!(
         explicit.resolved_max_response_tokens("deepseek-v4-pro"),
-        6_000
+        12_000,
+        "explicit output caps are not reduced to half the context window"
     );
+
+    for (provider_type, model) in [
+        (
+            Some(ProviderType::OpenRouter),
+            "deepseek/deepseek-v4-pro:free",
+        ),
+        (Some(ProviderType::OpenAi), "deepseek-ai/deepseek-r1"),
+    ] {
+        let routed = AgentConfig {
+            provider_type,
+            ..AgentConfig::default()
+        };
+        assert_eq!(
+            routed.resolved_max_response_tokens(model),
+            DEFAULT_DEEPSEEK_RESPONSE_TOKENS,
+            "routed DeepSeek models retain the reasoning-heavy automatic reserve"
+        );
+    }
 
     let constrained = AgentConfig {
         context_window: Some(8_192),
