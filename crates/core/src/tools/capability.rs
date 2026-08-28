@@ -131,6 +131,21 @@ pub fn scheduled_workspace_tool_class(name: &str) -> ScheduledWorkspaceToolClass
     }
 }
 
+pub fn tool_delegates_to_subagent(name: &str) -> bool {
+    matches!(
+        name.trim(),
+        "spawn_subagent"
+            | "spawn_subagent_batch"
+            | "observe_subagent"
+            | "observe_subagent_batch"
+            | "wait_subagent"
+            | "send_subagent_input"
+            | "cancel_subagent"
+            | "close_subagent"
+            | "judge_subagent_results"
+    )
+}
+
 pub fn category_label(category: ToolCategory) -> &'static str {
     match category {
         ToolCategory::Core => "core",

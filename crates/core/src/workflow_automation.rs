@@ -1497,6 +1497,28 @@ impl Database {
         Ok(out)
     }
 
+    pub fn set_workflow_automation_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<WorkflowAutomation, CoreError> {
+        let existing = self.get_workflow_automation(id)?;
+        self.save_workflow_automation_with_schedule_config(
+            &SaveWorkflowAutomationInput {
+                id: Some(existing.id),
+                name: existing.name,
+                description: existing.description,
+                workflow_template_id: existing.workflow_template_id,
+                prompt: existing.prompt,
+                trigger: existing.trigger,
+                source_scope: existing.source_scope,
+                approval_policy: existing.approval_policy,
+                enabled,
+            },
+            &existing.schedule_config,
+        )
+    }
+
     pub fn delete_workflow_automation(&self, id: &str) -> Result<(), CoreError> {
         let conn = self.conn();
         let affected = conn.execute(

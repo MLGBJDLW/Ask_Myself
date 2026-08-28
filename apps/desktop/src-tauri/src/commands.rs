@@ -721,11 +721,8 @@ mod tests {
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
-        apply_scheduled_execution_policy, due_workflow_run_is_scheduler_eligible,
         ensure_workflow_template_runtime_visible, filter_due_workflow_runs_by_package_host,
-        queue_due_workflow_automation_execution_ticket,
-        select_task_orchestrator_launch_agent_config, task_orchestrator_scheduler_due_runs,
-        task_orchestrator_scheduler_retry_skip_event, task_orchestrator_scheduler_status_is_active,
+        queue_due_workflow_automation_execution_ticket, task_orchestrator_scheduler_due_runs,
         workflow_due_runs_to_queue_items,
     };
     use super::*;
@@ -733,6 +730,12 @@ mod tests {
         build_desktop_agent_session_config, desktop_runtime_package_context,
         filter_desktop_tool_names_by_package_host, runtime_session_config_artifact,
         DesktopAgentSessionConfigInput,
+    };
+    use nexa_core::workflow_execution::{
+        apply_scheduled_execution_policy, due_workflow_run_is_scheduler_eligible,
+        scheduler_retry_skip_event as task_orchestrator_scheduler_retry_skip_event,
+        scheduler_status_is_active as task_orchestrator_scheduler_status_is_active,
+        select_workflow_launch_agent_config as select_task_orchestrator_launch_agent_config,
     };
 
     #[test]
