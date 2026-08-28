@@ -46,10 +46,67 @@ test.beforeEach(async ({ page }) => {
         createdAt: nowIso,
         updatedAt: nowIso,
       },
+      'conv-subagent-controls': {
+        id: 'conv-subagent-controls',
+        title: 'Subagent Controls',
+        provider: 'open_ai',
+        model: 'gpt-4.1',
+        systemPrompt: '',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      },
     };
 
     const messagesByConversation: Record<string, Message[]> = {
       'conv-subagent': [],
+      'conv-subagent-controls': [
+        {
+          id: 'm-controls-assistant',
+          conversationId: 'conv-subagent-controls',
+          role: 'assistant',
+          content: '',
+          toolCallId: null,
+          toolCalls: [{
+            id: 'subagent-call-controls',
+            name: 'spawn_subagent',
+            arguments: JSON.stringify({ task: 'Continue background research', model_policy: 'fast' }),
+          }],
+          artifacts: null,
+          tokenCount: 0,
+          createdAt: nowIso,
+          sortOrder: 0,
+          thinking: 'Delegating a background worker.',
+          imageAttachments: null,
+        },
+        {
+          id: 'm-controls-tool',
+          conversationId: 'conv-subagent-controls',
+          role: 'tool',
+          content: 'Subagent spawned.',
+          toolCallId: 'subagent-call-controls',
+          toolCalls: [],
+          artifacts: {
+            kind: 'subagent_result',
+            id: 'agent-controls',
+            status: 'running',
+            task: 'Continue background research',
+            result: '',
+            toolEvents: [],
+            lifecycleTools: {
+              observe: 'observe_subagent',
+              wait: 'wait_subagent',
+              sendInput: 'send_subagent_input',
+              cancel: 'cancel_subagent',
+              close: 'close_subagent',
+            },
+          },
+          tokenCount: 0,
+          createdAt: nowIso,
+          sortOrder: 1,
+          thinking: null,
+          imageAttachments: null,
+        },
+      ],
     };
 
     const callbackMap = new Map<number, (event: unknown) => void>();
@@ -259,9 +316,11 @@ test.beforeEach(async ({ page }) => {
             parallel_group: 'review-pass',
             deliverable_style: 'critique',
             return_sections: ['Conclusion', 'Evidence', 'Risks'],
+            model_policy: 'independentReviewer',
           });
           const toolArtifact = {
             kind: 'subagent_result',
+            status: 'done',
             task: 'Audit the last answer for risks',
             role: 'Critic',
             expectedOutput: 'Short risk report',
@@ -287,6 +346,9 @@ test.beforeEach(async ({ page }) => {
             parallelGroup: 'review-pass',
             deliverableStyle: 'critique',
             returnSections: ['Conclusion', 'Evidence', 'Risks'],
+            modelPolicy: 'independentReviewer',
+            effectiveModel: 'private-model',
+            modelRouteFallback: true,
             result: '1. Conclusion\\nThe proposed answer is acceptable.\\n\\n2. Key evidence or reasoning\\nThe referenced facts are consistent.\\n\\n3. Risks or open questions\\nDouble-check the edge case around retries.',
             finishReason: 'stop',
             usageTotal: {
@@ -589,6 +651,28 @@ test('projects resolved context budgets and preflight into the subagent card', a
   const budgets = chatLog.getByTestId('subagent-model-budgets');
   await expect(budgets).toContainText('provider managed');
   await expect(budgets).toContainText('24,000');
+  const route = chatLog.getByTestId('subagent-runtime-route');
+  await expect(route).toContainText('Runtime provider: Custom');
+  await expect(route).toContainText('Effective model: private-model');
+  await expect(route).toContainText('Requested model route: independent reviewer');
   await expect(chatLog.getByTestId('subagent-preflight')).toContainText('Preflight passed 5 stages');
   await expect(chatLog.getByTestId('subagent-preflight')).toContainText('1 invalid context messages dropped');
+  const preflightBudgets = chatLog.getByTestId('subagent-preflight-budgets');
+  await expect(preflightBudgets).toContainText('Reserved estimate: 12,000');
+  await expect(preflightBudgets).toContainText('Tokens remaining at preflight: 48,000');
+  await expect(preflightBudgets).toContainText('Calls remaining at preflight: 2');
+  await expect(preflightBudgets).toContainText('Run deadline: 1 min');
+});
+
+test('marks persisted lifecycle handles interrupted instead of presenting stale controls', async ({ page }) => {
+  await page.goto('/chat/conv-subagent-controls');
+
+  const thinkingToggle = page.getByRole('button', { name: /Thinking completed/ });
+  if (await thinkingToggle.getAttribute('aria-expanded') !== 'true') {
+    await thinkingToggle.click();
+  }
+  const chatLog = page.getByLabel('Chat messages');
+  await chatLog.getByRole('button', { name: /Spawn Subagent/i }).click();
+  await expect(chatLog.getByText('Interrupted by restart')).toBeVisible();
+  await expect(chatLog.getByTestId('subagent-parent-controls')).toHaveCount(0);
 });

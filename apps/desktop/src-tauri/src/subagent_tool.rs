@@ -40,7 +40,8 @@ use nexa_core::llm::{
     ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
 use nexa_core::provider_catalog::{
-    find_provider_preset, model_capabilities_from_catalog, model_limits_from_catalog,
+    model_capabilities_from_catalog, model_limits_from_catalog,
+    resolve_endpoint_model_context_window,
 };
 use nexa_core::search;
 use nexa_core::skills::Skill;
@@ -91,46 +92,6 @@ fn provider_catalog_key(provider_type: ProviderType) -> &'static str {
         ProviderType::Yi => "yi",
         ProviderType::Baichuan => "baichuan",
         ProviderType::Custom => "custom",
-    }
-}
-
-fn normalize_endpoint_model_id(model: &str) -> String {
-    model
-        .trim()
-        .to_ascii_lowercase()
-        .split([':', '~'])
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn endpoint_scoped_context_window(
-    provider_config: &ProviderConfig,
-    model: &str,
-) -> ResolvedContextWindow {
-    let Some(preset) = find_provider_preset(
-        provider_catalog_key(provider_config.provider_type),
-        provider_config.base_url.as_deref(),
-    ) else {
-        return ResolvedContextWindow {
-            capacity_tokens: None,
-            authority: ContextWindowAuthority::ProviderManaged,
-        };
-    };
-    let normalized_model = normalize_endpoint_model_id(model);
-    let capacity_tokens = preset
-        .models
-        .iter()
-        .find(|candidate| normalize_endpoint_model_id(&candidate.id) == normalized_model)
-        .and_then(|candidate| candidate.context_tokens)
-        .and_then(|tokens| u32::try_from(tokens).ok());
-    ResolvedContextWindow {
-        capacity_tokens,
-        authority: if capacity_tokens.is_some() {
-            ContextWindowAuthority::Catalog
-        } else {
-            ContextWindowAuthority::ProviderManaged
-        },
     }
 }
 
@@ -2354,8 +2315,12 @@ async fn run_subagent_once(
                 .unwrap_or(3)
         })
         .clamp(1, 6);
-    let resolved_model_context =
-        endpoint_scoped_context_window(&runtime.provider_config, &effective_model_id);
+    let resolved_model_context = resolve_endpoint_model_context_window(
+        provider_catalog_key(runtime.provider_config.provider_type),
+        runtime.provider_config.base_url.as_deref(),
+        &effective_model_id,
+        None,
+    );
     let context_authority = apply_delegated_model_limits(
         &mut config,
         delegation_limits.input_context_policy,
@@ -6862,34 +6827,6 @@ mod tests {
                 "fallback context mismatch for {provider:?}:{model}"
             );
             assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
-        }
-    }
-
-    #[test]
-    fn edited_or_custom_endpoints_do_not_inherit_global_model_alias_capacity() {
-        for provider_config in [
-            ProviderConfig {
-                provider_type: ProviderType::Custom,
-                base_url: Some("https://private.example/v1".to_string()),
-                api_key: None,
-                org_id: None,
-                timeout_secs: None,
-            },
-            ProviderConfig {
-                provider_type: ProviderType::OpenAi,
-                base_url: Some("https://private.example/v1".to_string()),
-                api_key: None,
-                org_id: None,
-                timeout_secs: None,
-            },
-        ] {
-            assert_eq!(
-                endpoint_scoped_context_window(&provider_config, "gpt-5.6"),
-                ResolvedContextWindow {
-                    capacity_tokens: None,
-                    authority: ContextWindowAuthority::ProviderManaged,
-                }
-            );
         }
     }
 

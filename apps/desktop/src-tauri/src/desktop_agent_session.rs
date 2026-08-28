@@ -32,7 +32,7 @@ use nexa_core::context_pack::{
     ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
     ContextTrustLevel,
 };
-use nexa_core::conversation::memory::{ContextWindowAuthority, ResolvedContextWindow};
+use nexa_core::conversation::memory::ResolvedContextWindow;
 use nexa_core::conversation::{
     AgentConfig as DbAgentConfig, AgentSubtaskRun, Conversation, ConversationMessage,
     ImageAttachment,
@@ -49,7 +49,7 @@ use nexa_core::ocr::extract_text_from_image;
 use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
 #[cfg(test)]
 use nexa_core::project::{CreateProjectInput, UpdateProjectInput};
-use nexa_core::provider_catalog::find_provider_preset;
+use nexa_core::provider_catalog::resolve_endpoint_model_context_window;
 use nexa_core::provider_registry::provider_type_for_parts;
 use nexa_core::quality_profile::{
     resolve_orchestration_profile, CustomOrchestrationOptions, OrchestrationProfile,
@@ -107,50 +107,8 @@ fn canonical_builtin_tool_registry() -> ToolRegistry {
         .builtin_tool_registry()
 }
 
-fn normalize_context_model_id(model: &str) -> String {
-    model
-        .trim()
-        .to_ascii_lowercase()
-        .split([':', '~'])
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-pub(crate) fn resolve_endpoint_context_window(
-    provider: &str,
-    base_url: Option<&str>,
-    model: &str,
-    context_window_override: Option<u32>,
-) -> ResolvedContextWindow {
-    if let Some(capacity_tokens) = context_window_override {
-        return ResolvedContextWindow {
-            capacity_tokens: Some(capacity_tokens),
-            authority: ContextWindowAuthority::UserOverride,
-        };
-    }
-    let capacity_tokens = find_provider_preset(provider, base_url)
-        .and_then(|preset| {
-            let normalized_model = normalize_context_model_id(model);
-            preset
-                .models
-                .into_iter()
-                .find(|candidate| normalize_context_model_id(&candidate.id) == normalized_model)
-        })
-        .and_then(|model| model.context_tokens)
-        .and_then(|value| u32::try_from(value).ok());
-    ResolvedContextWindow {
-        capacity_tokens,
-        authority: if capacity_tokens.is_some() {
-            ContextWindowAuthority::Catalog
-        } else {
-            ContextWindowAuthority::ProviderManaged
-        },
-    }
-}
-
 fn resolve_desktop_context_window(db_config: &DbAgentConfig) -> ResolvedContextWindow {
-    resolve_endpoint_context_window(
+    resolve_endpoint_model_context_window(
         &db_config.provider,
         db_config.base_url.as_deref(),
         &db_config.model,
@@ -3337,34 +3295,6 @@ mod tests {
     }
 
     #[test]
-    fn edited_endpoint_cannot_borrow_a_global_model_alias_capacity() {
-        assert_eq!(
-            resolve_endpoint_context_window(
-                "open_ai",
-                Some("https://private.example/v1"),
-                "gpt-5.6",
-                None,
-            ),
-            ResolvedContextWindow {
-                capacity_tokens: None,
-                authority: ContextWindowAuthority::ProviderManaged,
-            }
-        );
-        assert_eq!(
-            resolve_endpoint_context_window(
-                "custom",
-                Some("https://private.example/v1"),
-                "gpt-5.6",
-                Some(750_000),
-            ),
-            ResolvedContextWindow {
-                capacity_tokens: Some(750_000),
-                authority: ContextWindowAuthority::UserOverride,
-            }
-        );
-    }
-
-    #[test]
     fn automatic_worker_cap_never_exceeds_small_aggregate_budget() {
         assert_eq!(automatic_delegated_worker_cap(96_000, 6), 32_000);
         assert_eq!(automatic_delegated_worker_cap(500, 6), 500);
@@ -3708,7 +3638,7 @@ mod tests {
             db.get_workflow_automation_run(&orchestrator.id)
                 .expect("active workflow remains open")
                 .status,
-            "running"
+            nexa_core::workflow_automation::WorkflowAutomationRunStatus::Running
         );
 
         let authoritative_artifacts = serde_json::json!({
@@ -3756,7 +3686,7 @@ mod tests {
         let failed_orchestrator = db
             .get_workflow_automation_run(&orchestrator.id)
             .expect("failed workflow run");
-        assert_eq!(failed_orchestrator.status, "failed");
+        assert_eq!(failed_orchestrator.status.as_str(), "failed");
         assert_eq!(
             failed_orchestrator.summary.as_deref(),
             Some("Run Event outbox failed closed")

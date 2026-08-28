@@ -65,6 +65,8 @@ import {
   parseSubagentArguments,
   projectSubagentLifecycle,
   projectSubagentLifecycleRuns,
+  type SubagentRun,
+  type SubagentBudgetSnapshot,
 } from '../../lib/subagentArtifacts';
 import { PlanPanel, VerificationPanel } from './TaskPanels';
 import type { ActivityEvent, ArtifactPayload, CapabilityOwner, ToolRenderKind, ToolRunCapabilities } from '../../types/conversation';
@@ -1404,7 +1406,7 @@ function buildSubagentRun(
   isError: boolean | undefined,
   artifacts: ArtifactPayload | undefined,
   activityEvents: ActivityEvent[] | undefined,
-) {
+): SubagentRun | null {
   if (toolName !== 'spawn_subagent') return null;
   const initialArtifact = extractSubagentArtifact(artifacts);
   const lifecycle = projectSubagentLifecycle(activityEvents);
@@ -1422,13 +1424,19 @@ function buildSubagentRun(
       : status === 'done'
         ? 'done'
         : 'error');
+  const parentActive = isPendingToolCallStatus(status);
+  const interrupted = runStatus === 'running' && !parentActive;
   return {
     id: `${toolName}-${task}`,
-    status: runStatus,
+    status: interrupted ? 'cancelled' : runStatus,
+    runtimeState: interrupted ? 'interrupted' : runStatus === 'running' ? 'live' : 'terminal',
     task,
     roleId: artifact?.roleId ?? parsedArgs?.roleId ?? null,
     roleName: artifact?.roleName ?? null,
     role: artifact?.role ?? parsedArgs?.role ?? null,
+    modelPolicy: artifact?.modelPolicy ?? parsedArgs?.modelPolicy ?? null,
+    effectiveModel: artifact?.effectiveModel ?? artifact?.preflight?.effectiveModel ?? null,
+    modelRouteFallback: artifact?.modelRouteFallback ?? false,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,
     acceptanceCriteria: artifact?.acceptanceCriteria ?? parsedArgs?.acceptanceCriteria ?? null,
     evidenceChunkIds: artifact?.evidenceChunkIds ?? parsedArgs?.evidenceChunkIds ?? null,
@@ -1451,10 +1459,23 @@ function buildSubagentRun(
     preflightFailure: artifact?.preflightFailure ?? null,
     contextSnapshot: artifact?.contextSnapshot ?? null,
     effectiveModelBudgets: artifact?.effectiveModelBudgets ?? null,
+    lifecycleTools: artifact?.lifecycleTools ?? null,
     argumentsText: args,
     isError: lifecycle.status === 'error' ? true : isError,
     content: lifecycle.errorMessage ?? content,
   };
+}
+
+function SubagentBudgetAfterBadge({ budget }: { budget: SubagentBudgetSnapshot }) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="mb-1.5 inline-flex rounded-full border border-accent/25 bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent"
+      data-testid="subagent-budget-after"
+    >
+      {t('chat.subagentBudgetAfter')}: {budget.remainingTokens.toLocaleString()} tokens · {budget.remainingCalls.toLocaleString()} calls
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1689,8 +1710,11 @@ export function ToolCallCard({
   const visibleSubagentBatchRuns = useMemo(() => {
     if (safeToolName !== 'spawn_subagent_batch') return [];
     const lifecycleRuns = projectSubagentLifecycleRuns(activityEvents);
-    return lifecycleRuns.length > 0 ? lifecycleRuns : subagentBatch?.runs ?? [];
-  }, [activityEvents, safeToolName, subagentBatch]);
+    const runs = lifecycleRuns.length > 0 ? lifecycleRuns : subagentBatch?.runs ?? [];
+    return runs.map(run => run.status === 'running' && !isPending
+      ? { ...run, status: 'cancelled' as const, runtimeState: 'interrupted' as const }
+      : { ...run, runtimeState: run.status === 'running' ? 'live' as const : 'terminal' as const });
+  }, [activityEvents, isPending, safeToolName, subagentBatch]);
   const subagentJudgement = useMemo(() => extractSubagentJudgementArtifact(artifacts), [artifacts]);
   const planArtifact = useMemo(() => extractPlanArtifact(artifacts), [artifacts]);
   const verificationArtifact = useMemo(() => extractVerificationArtifact(artifacts), [artifacts]);
@@ -1969,6 +1993,7 @@ export function ToolCallCard({
                   <SubagentCard run={subagentRun} compact defaultOpen />
                 ) : visibleSubagentBatchRuns.length > 0 ? (
                   <div className="space-y-2">
+                    {subagentBatch?.budgetAfter && <SubagentBudgetAfterBadge budget={subagentBatch.budgetAfter} />}
                     {visibleSubagentBatchRuns.map((run) => (
                       <SubagentCard key={run.id} run={run} compact defaultOpen />
                     ))}
@@ -2134,6 +2159,7 @@ export function ToolCallCard({
                   <SubagentCard run={subagentRun} compact defaultOpen />
                 ) : visibleSubagentBatchRuns.length > 0 ? (
                   <div className="space-y-1.5">
+                    {subagentBatch?.budgetAfter && <SubagentBudgetAfterBadge budget={subagentBatch.budgetAfter} />}
                     {visibleSubagentBatchRuns.map((run) => (
                       <SubagentCard key={run.id} run={run} compact defaultOpen />
                     ))}
@@ -2331,6 +2357,9 @@ export function ToolCallCard({
             <span className="rounded-full border border-danger/25 bg-danger/10 px-1.5 py-0.5 text-danger">
               {t('chat.subagentFailedCount', { count: String(subagentBatch.failedRuns) })}
             </span>
+          )}
+          {subagentBatch.budgetAfter && (
+            <SubagentBudgetAfterBadge budget={subagentBatch.budgetAfter} />
           )}
         </div>
         <div className="space-y-1.5">

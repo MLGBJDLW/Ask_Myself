@@ -65,6 +65,21 @@ function formatTokens(value: number | null | undefined, unknownLabel: string) {
   return value.toLocaleString();
 }
 
+function formatDurationMs(value: number) {
+  if (value >= 60_000 && value % 60_000 === 0) {
+    return `${(value / 60_000).toLocaleString()} min`;
+  }
+  if (value >= 1_000) return `${(value / 1_000).toLocaleString()} s`;
+  return `${value.toLocaleString()} ms`;
+}
+
+function formatModelPolicy(value: string) {
+  return value
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
+}
+
 function contextAuthorityCopy(
   authority: NonNullable<SubagentRun['effectiveModelBudgets']>['contextAuthority'],
   t: TranslateFn,
@@ -83,7 +98,15 @@ export function SubagentCard({
   const { t } = useTranslation();
   const autoOpen = defaultOpen ?? run.status === 'running';
   const [expanded, setExpanded] = useState(autoOpen);
-  const status = statusCopy(run.status, t);
+  const isInterrupted = run.runtimeState === 'interrupted'
+    || (run.status === 'running' && run.runtimeState !== 'live');
+  const status = isInterrupted
+    ? {
+        label: t('chat.subagentStatusInterrupted'),
+        icon: Flag,
+        chipClassName: 'border-warning/30 bg-warning/10 text-warning',
+      }
+    : statusCopy(run.status, t);
   const StatusIcon = status.icon;
 
   useEffect(() => {
@@ -108,8 +131,13 @@ export function SubagentCard({
         ? t('chat.toolBriefCancelled')
         : t('chat.subagentInProgress');
   const displayRole = run.roleName?.trim() || run.role?.trim() || t('chat.helperDefaultLabel');
-  const isRunning = run.status === 'running';
+  const isRunning = run.status === 'running' && run.runtimeState === 'live';
   const cardState = isRunning ? 'running' : run.status === 'error' ? 'error' : 'done';
+  const effectiveModel = run.effectiveModel?.trim() || run.preflight?.effectiveModel.trim() || null;
+  const providerId = run.preflight?.providerId.trim() || null;
+  const lifecycleTools = isRunning && run.lifecycleTools
+    ? Object.values(run.lifecycleTools).filter((tool): tool is string => Boolean(tool))
+    : [];
   const accessibleLabel = [
     displayRole,
     status.label,
@@ -223,29 +251,77 @@ export function SubagentCard({
             )}
           </div>
 
-          {run.effectiveModelBudgets && (
+          {(providerId || effectiveModel || run.modelPolicy) && (
+            <div className="mt-3 rounded-lg border border-border/60 bg-surface-1/70 p-2.5" data-testid="subagent-runtime-route">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
+                <span>{t('chat.subagentRuntimeRoute')}</span>
+                {run.modelRouteFallback && (
+                  <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 normal-case tracking-normal text-warning">
+                    {t('chat.subagentRouteFallback')}
+                  </span>
+                )}
+              </div>
+              <div className="grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-3">
+                {providerId && <div className="min-w-0 break-all">{t('chat.subagentRuntimeProvider')}: {providerId}</div>}
+                {effectiveModel && <div className="min-w-0 break-all">{t('chat.subagentEffectiveModel')}: {effectiveModel}</div>}
+                {run.modelPolicy && <div>{t('chat.subagentModelPolicy')}: {formatModelPolicy(run.modelPolicy)}</div>}
+              </div>
+            </div>
+          )}
+
+          {(run.effectiveModelBudgets || run.preflight) && (
             <div className="mt-3 rounded-lg border border-border/60 bg-surface-1/70 p-2.5" data-testid="subagent-model-budgets">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
                 <span>{t('chat.subagentResolvedBudgets')}</span>
-                <span>{contextAuthorityCopy(run.effectiveModelBudgets.contextAuthority, t)}</span>
+                {run.effectiveModelBudgets && <span>{contextAuthorityCopy(run.effectiveModelBudgets.contextAuthority, t)}</span>}
               </div>
-              <div className="grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-4">
-                <div>{t('chat.subagentContextCapacity')}: {formatTokens(run.effectiveModelBudgets.contextCapacity, t('chat.subagentProviderManaged'))}</div>
-                <div>{t('chat.subagentParentHandoff')}: {formatTokens(run.effectiveModelBudgets.parentHistoryHandoff, '0')}</div>
-                <div>{t('chat.subagentStepOutput')}: {formatTokens(run.effectiveModelBudgets.maxOutputPerStep, t('chat.subagentProviderManaged'))}</div>
-                <div>{t('chat.subagentWorkerActual')}: {formatTokens(run.effectiveModelBudgets.maxActualTokensPerWorker, t('chat.subagentProviderManaged'))}</div>
-              </div>
-              {run.preflight && (
-                <div className="mt-2 text-[11px] text-text-tertiary" data-testid="subagent-preflight">
-                  {t('chat.subagentPreflightPassed', {
-                    stages: String(run.preflight.completedStages.length),
-                    messages: String(run.preflight.contextMessageCount),
-                  })}
-                  {run.preflight.droppedInvalidContextMessages > 0
-                    ? ` · ${t('chat.subagentDroppedContext', { count: String(run.preflight.droppedInvalidContextMessages) })}`
-                    : ''}
+              {run.effectiveModelBudgets && (
+                <div className="grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-4">
+                  <div>{t('chat.subagentContextCapacity')}: {formatTokens(run.effectiveModelBudgets.contextCapacity, t('chat.subagentProviderManaged'))}</div>
+                  <div>{t('chat.subagentParentHandoff')}: {formatTokens(run.effectiveModelBudgets.parentHistoryHandoff, '0')}</div>
+                  <div>{t('chat.subagentStepOutput')}: {formatTokens(run.effectiveModelBudgets.maxOutputPerStep, t('chat.subagentProviderManaged'))}</div>
+                  <div>{t('chat.subagentWorkerActual')}: {formatTokens(run.effectiveModelBudgets.maxActualTokensPerWorker, t('chat.subagentProviderManaged'))}</div>
                 </div>
               )}
+              {run.preflight && (
+                <div className="mt-2 border-t border-border/50 pt-2" data-testid="subagent-preflight">
+                  <div className="text-[11px] text-text-tertiary">
+                    {t('chat.subagentPreflightPassed', {
+                      stages: String(run.preflight.completedStages.length),
+                      messages: String(run.preflight.contextMessageCount),
+                    })}
+                    {run.preflight.droppedInvalidContextMessages > 0
+                      ? ` · ${t('chat.subagentDroppedContext', { count: String(run.preflight.droppedInvalidContextMessages) })}`
+                      : ''}
+                  </div>
+                  <div className="mt-2 grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-4" data-testid="subagent-preflight-budgets">
+                    <div>{t('chat.subagentPreflightReserved')}: {run.preflight.reservedTokens.toLocaleString()}</div>
+                    <div>{t('chat.subagentPreflightTokens')}: {run.preflight.remainingTokenBudget.toLocaleString()}</div>
+                    <div>{t('chat.subagentPreflightCalls')}: {run.preflight.remainingCallBudget.toLocaleString()}</div>
+                    <div>{t('chat.subagentRunDeadline')}: {formatDurationMs(run.preflight.runDeadlineMs)}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {lifecycleTools.length > 0 && (
+            <div className="mt-3" data-testid="subagent-parent-controls">
+              <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-text-tertiary">
+                {t('chat.subagentParentControls')}
+              </div>
+              <p className="mb-2 text-[11px] leading-4 text-text-tertiary">{t('chat.subagentParentControlsHelp')}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {lifecycleTools.map(toolName => (
+                  <span
+                    key={toolName}
+                    className="inline-flex items-center rounded-md border border-border/60 bg-surface-1 px-2 py-1 text-[11px] text-text-secondary"
+                    title={toolName}
+                  >
+                    {toolLabel(toolName)}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
 
