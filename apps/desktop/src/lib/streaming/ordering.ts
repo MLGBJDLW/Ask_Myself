@@ -75,6 +75,45 @@ export function alignAuthoritativeReplayCursor(
   return true;
 }
 
+/**
+ * Merge a database-authoritative suffix with live events that arrived while
+ * the query was in flight, then advance across sequence numbers that SQLite
+ * confirms were intentionally not retained (for example ephemeral previews).
+ */
+export function takeAuthoritativeRunEventSuffix(
+  state: StreamEventOrderingState,
+  runId: string,
+  durableEvents: AgentRunEvent[],
+): AgentRunEvent[] {
+  if (state._orderedRunId !== null && state._orderedRunId !== runId) return [];
+
+  const bySequence = new Map<number, AgentRunEvent>();
+  for (const event of state._pendingRunEvents.values()) {
+    const eventSeq = parseStreamEventSeq(event.eventSeq);
+    if (event.runId === runId && eventSeq !== null) bySequence.set(eventSeq, event);
+  }
+  for (const event of durableEvents) {
+    const eventSeq = parseStreamEventSeq(event.eventSeq);
+    if (event.runId === runId && eventSeq !== null) bySequence.set(eventSeq, event);
+  }
+
+  state._pendingRunEvents.clear();
+  const ready: AgentRunEvent[] = [];
+  const ordered = [...bySequence.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, event]) => event);
+  for (const event of ordered) {
+    const eventSeq = parseStreamEventSeq(event.eventSeq);
+    if (eventSeq === null || eventSeq <= state._lastEventSeq) continue;
+    if (!alignAuthoritativeReplayCursor(state, event)) continue;
+    const enqueue = enqueueStreamRunEvent(state, event);
+    if (!enqueue.accepted || enqueue.runChanged) continue;
+    let next: AgentRunEvent | null;
+    while ((next = takeNextStreamRunEvent(state)) !== null) ready.push(next);
+  }
+  return ready;
+}
+
 export function takeNextStreamRunEvent(
   state: StreamEventOrderingState,
 ): AgentRunEvent | null {

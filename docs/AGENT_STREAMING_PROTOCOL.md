@@ -17,6 +17,11 @@ the outbox still sequences and orders the event, but deliberately omits it from
 SQLite. Lifecycle, approval, resumable, result, error, and terminal events must
 remain durable and use the normal submission interface.
 
+`flush()` is a processed-through barrier: when an ephemeral publication has
+been delivered or intentionally dropped, its sequence advances that barrier
+after every earlier durable event is committed. It must not wait for a row that
+the protocol deliberately never writes.
+
 The first accepted true terminal event closes the outbox permanently; later
 submissions are rejected as already closed. `paused` and `awaiting_user_input`
 are durable, resumable phases rather than terminal outcomes, so they leave the
@@ -70,6 +75,11 @@ advance across a missing sequence because historical ledgers can contain gaps
 for events that were intentionally not retained. It never renumbers committed
 events. Answer and thinking block deltas also require the exact UTF-8 byte
 offset. Tool and reset boundaries rotate block identities.
+
+Gap recovery uses the same authority for a bounded durable suffix. It merges
+that suffix with live events buffered while the query was in flight, then may
+advance across sequence numbers absent from SQLite. Strict live dispatch alone
+never guesses that a gap was ephemeral.
 
 Ordering is also bound to `runId`. A different run may replace only a settled,
 unbound retained projection; an event from another run cannot enter a bound

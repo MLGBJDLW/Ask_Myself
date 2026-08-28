@@ -43,6 +43,7 @@ import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
 import { parseAgentFrontendEvent } from '../src/lib/streaming/runEventWire';
 import { applyStreamBlockDelta } from '../src/lib/streaming/blockProjection';
 import { createDefaultState } from '../src/lib/streaming/state';
+import { takeAuthoritativeRunEventSuffix } from '../src/lib/streaming/ordering';
 import { upsertBoundedConversationCache } from '../src/lib/boundedConversationCache';
 import { buildAgentChatRequest } from '../src/lib/agentChatRequest';
 import {
@@ -1061,6 +1062,29 @@ test('authoritative durable replay accepts legacy event sequence gaps without we
   assertEqual(restored.streamRounds[0].reply, 'Legacy reply', 'legacy replay should join gapped blocks');
 
   streamStore.clearStream(conversationId);
+});
+
+test('authoritative suffix recovery advances across lost ephemeral preview sequences', () => {
+  const state = createDefaultState();
+  state._orderedRunId = 'run-1';
+  state._lastEventSeq = 1;
+  state._pendingRunEvents.set(5, runEvent({
+    eventSeq: 5,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: { message: 'Recovered answer' },
+  }));
+
+  const recovered = takeAuthoritativeRunEventSuffix(state, 'run-1', [runEvent({
+    eventSeq: 4,
+    kind: 'outputDelta',
+    payload: { blockId: 'answer', channel: 'answer', offset: 0, delta: 'Recovered answer' },
+  })]);
+
+  assertEqual(recovered.map(event => event.eventSeq).join(','), '4,5', 'durable and live suffix merge');
+  assertEqual(state._lastEventSeq, 5, 'cursor advances across absent ephemeral sequences');
+  assertEqual(state._pendingRunEvents.size, 0, 'authoritative suffix drains the live buffer');
 });
 
 test('canonical run event projection matches live stream dispatch for render state', () => {

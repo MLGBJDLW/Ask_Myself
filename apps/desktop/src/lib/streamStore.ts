@@ -15,6 +15,7 @@ import type {
 import { projectRunEventsToStreamState } from './streaming/durableReplay';
 import {
   enqueueStreamRunEvent,
+  takeAuthoritativeRunEventSuffix,
   takeNextStreamRunEvent,
 } from './streaming/ordering';
 import { applyAgentRunEvent } from './streaming/runEventReducer';
@@ -415,14 +416,11 @@ class StreamStoreImpl {
       runId,
       afterEventSeq: this._streams[conversationId]?._lastEventSeq,
       isCurrent,
-      accept: runEvents => {
-        for (const runEvent of runEvents) {
-          this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
-        }
-        const state = this._streams[conversationId];
-        return Boolean(state && [...state._pendingRunEvents.values()]
-          .some(event => event.runId === runId));
-      },
+      accept: runEvents => this.applyAuthoritativeRunEventSuffix(
+        conversationId,
+        runId,
+        runEvents,
+      ),
     }).then(outcome => {
       if (outcome.kind !== 'exhausted' || !isCurrent()) return;
       const state = this._streams[conversationId];
@@ -447,6 +445,24 @@ class StreamStoreImpl {
         this._gapRecoveries.delete(conversationId);
       }
     });
+  }
+
+  private applyAuthoritativeRunEventSuffix(
+    conversationId: string,
+    runId: string,
+    runEvents: AgentRunEvent[],
+  ): boolean {
+    const state = this._streams[conversationId];
+    if (!state || (state.turnHandle?.runId && state.turnHandle.runId !== runId)) return false;
+
+    const ordered = takeAuthoritativeRunEventSuffix(state, runId, runEvents);
+    for (const runEvent of ordered) {
+      if (this.applyOrderedRunEvent(conversationId, state, runEvent)) {
+        state._pendingRunEvents.clear();
+        break;
+      }
+    }
+    return [...state._pendingRunEvents.values()].some(event => event.runId === runId);
   }
 
   private watchdogStateIsCurrent(
@@ -624,9 +640,11 @@ class StreamStoreImpl {
 
       state.taskRun = outcome.snapshot.taskRun;
       state.taskEvents = outcome.snapshot.taskEvents;
-      for (const runEvent of outcome.snapshot.runEvents) {
-        this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
-      }
+      this.applyAuthoritativeRunEventSuffix(
+        conversationId,
+        outcome.snapshot.taskRun.id,
+        outcome.snapshot.runEvents,
+      );
 
       state = this._streams[conversationId];
       if (!state || !state.isStreaming) return;

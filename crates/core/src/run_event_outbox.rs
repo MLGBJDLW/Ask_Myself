@@ -1142,6 +1142,14 @@ fn spawn_outbox_actor(
                                     &actor.conversation_id,
                                     &event,
                                 );
+                                // `flush` waits for every accepted command to
+                                // be processed, not for an ephemeral preview to
+                                // materialize in SQLite. All earlier durable
+                                // events were committed above, so this sequence
+                                // is a safe processed-through high-water mark.
+                                actor.durability.send_replace(
+                                    AgentRunEventOutboxDurability::Committed(sequence),
+                                );
                                 continue;
                             }
                             let deferred = is_deferred_event(&event);
@@ -1530,6 +1538,13 @@ mod tests {
                 created_at: None,
             })
             .expect("ephemeral preview submission");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), outbox.flush())
+                .await
+                .expect("ephemeral publication must not strand flush")
+                .expect("ephemeral publication processed"),
+            1
+        );
         outbox
             .submit(AgentRunEvent::terminal_status(
                 &run_id,
