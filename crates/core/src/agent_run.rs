@@ -495,6 +495,19 @@ pub struct AgentRunEvent {
     pub created_at: Option<String>,
 }
 
+/// One finite, database-authoritative page used by live Run Event recovery.
+///
+/// `durable_high_water` freezes the upper bound on the first query so a busy
+/// producer cannot move the recovery target while subsequent pages are read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunEventPage {
+    pub events: Vec<AgentRunEvent>,
+    pub durable_high_water: u64,
+    pub next_after_event_seq: Option<u64>,
+    pub has_more: bool,
+}
+
 impl AgentRunEvent {
     pub fn from_agent_event(event: &AgentEvent) -> Self {
         let (kind, phase, label, status) = match event {

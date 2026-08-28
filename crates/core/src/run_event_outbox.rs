@@ -1085,6 +1085,7 @@ fn spawn_outbox_actor(
                     };
                     actor.fail_closed(
                         &last_turn_id,
+                        sequence,
                         failure.clone(),
                     ).await;
                     for response in rejected_pause_responses {
@@ -1126,6 +1127,7 @@ fn spawn_outbox_actor(
                                     ).await {
                                         actor.fail_closed(
                                             &last_turn_id,
+                                            sequence,
                                             AgentRunEventOutboxFailure::Persistence {
                                                 message: error.to_string(),
                                             },
@@ -1165,6 +1167,7 @@ fn spawn_outbox_actor(
                                 ).await {
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         AgentRunEventOutboxFailure::Persistence {
                                             message: error.to_string(),
                                         },
@@ -1203,6 +1206,7 @@ fn spawn_outbox_actor(
                                     };
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
@@ -1234,6 +1238,7 @@ fn spawn_outbox_actor(
                                     };
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
@@ -1253,6 +1258,7 @@ fn spawn_outbox_actor(
                     ).await {
                         actor.fail_closed(
                             &last_turn_id,
+                            sequence,
                             AgentRunEventOutboxFailure::Persistence {
                                 message: error.to_string(),
                             },
@@ -1268,7 +1274,12 @@ fn spawn_outbox_actor(
 }
 
 impl AgentRunEventOutboxActorContext {
-    async fn fail_closed(&self, turn_id: &str, failure: AgentRunEventOutboxFailure) {
+    async fn fail_closed(
+        &self,
+        turn_id: &str,
+        live_high_water: u64,
+        failure: AgentRunEventOutboxFailure,
+    ) {
         if let Ok(mut closed) = self.terminal_submitted.lock() {
             *closed = true;
         }
@@ -1313,7 +1324,10 @@ impl AgentRunEventOutboxActorContext {
                 return;
             }
         };
-        let terminal_sequence = durable_head.saturating_add(1);
+        // The durable head omits ephemeral previews and may also trail the
+        // durable batch whose commit just failed. Keep the safety terminal
+        // strictly above every sequence this actor has already assigned.
+        let terminal_sequence = durable_head.max(live_high_water).saturating_add(1);
 
         let mut terminal = AgentRunEvent::terminal_error(
             &self.run_id,
@@ -1754,7 +1768,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].persistence, AgentRunEventPersistence::Ephemeral);
         assert!(events[0].is_terminal());
-        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[0].event_seq, 2);
         assert_eq!(events[0].payload["reason"], "run_event_persistence_failed");
         let failed_run = database
             .get_agent_task_run(&run_id)
@@ -1785,6 +1799,103 @@ mod tests {
             )),
             Err(AgentRunEventSubmitError::AlreadyClosed)
         ));
+    }
+
+    #[tokio::test]
+    async fn fail_closed_terminal_stays_above_ephemeral_and_failed_sequences() {
+        let database = Database::open_memory().expect("in-memory database");
+        let (conversation_id, turn_id, run_id) = create_started_run(&database);
+        let executor = DatabaseExecutor::new(database.clone(), 8).expect("database executor");
+        let delivery = Arc::new(CaptureDelivery::default());
+        let outboxes = AgentRunEventOutboxes::new(executor, delivery.clone());
+        let outbox = outboxes
+            .open(&conversation_id, &run_id)
+            .await
+            .expect("run outbox");
+
+        outbox
+            .submit(AgentRunEvent::status_update(
+                &run_id,
+                Some(&turn_id),
+                0,
+                AgentRunPhase::Routing,
+                "Stored status",
+                Some("running"),
+                None,
+            ))
+            .expect("durable status");
+        assert_eq!(outbox.flush().await.expect("durable flush"), 1);
+
+        outbox
+            .publish_ephemeral(AgentRunEvent {
+                version: AGENT_RUN_EVENT_VERSION,
+                run_id: run_id.clone(),
+                turn_id: turn_id.clone(),
+                event_seq: 0,
+                kind: AgentRunEventKind::ToolProgress,
+                phase: AgentRunPhase::Tooling,
+                visibility: AgentRunEventVisibility::User,
+                persistence: AgentRunEventPersistence::Ephemeral,
+                display_kind: AgentRunDisplayKind::Tool,
+                importance: AgentRunEventImportance::Normal,
+                label: "create_file".to_string(),
+                status: Some("preparing".to_string()),
+                payload: serde_json::json!({
+                    "run": {
+                        "callId": "call-preview",
+                        "toolName": "create_file",
+                        "status": "preparing"
+                    }
+                }),
+                created_at: None,
+            })
+            .expect("ephemeral preview");
+        assert_eq!(outbox.flush().await.expect("preview publication"), 2);
+
+        database
+            .execute_batch_for_test(
+                "CREATE TRIGGER fail_later_run_event_insert
+                 BEFORE INSERT ON agent_run_events
+                 BEGIN
+                   SELECT RAISE(FAIL, 'forced later persistence failure');
+                 END;",
+            )
+            .expect("failure trigger");
+        outbox
+            .submit(AgentRunEvent::status_update(
+                &run_id,
+                Some(&turn_id),
+                0,
+                AgentRunPhase::Responding,
+                "Cannot store",
+                Some("running"),
+                None,
+            ))
+            .expect("failed durable status");
+        assert!(matches!(
+            outbox.wait_for_terminal_commit().await,
+            Err(AgentRunEventOutboxFailure::Persistence { .. })
+        ));
+
+        let stored = database
+            .list_agent_run_events(&run_id)
+            .expect("durable ledger");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].event_seq, 1);
+        let delivered = delivery.events.lock().expect("capture lock").clone();
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 4],
+            "the safety terminal must exceed the failed durable sequence"
+        );
+        assert!(delivered[2].is_terminal());
+        assert_eq!(
+            delivered[2].persistence,
+            AgentRunEventPersistence::Ephemeral
+        );
     }
 
     #[tokio::test]
@@ -1838,7 +1949,7 @@ mod tests {
         let events = delivery.events.lock().expect("capture lock").clone();
         assert_eq!(events.len(), 1);
         assert!(events[0].is_terminal());
-        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[0].event_seq, 2);
         assert_eq!(events[0].persistence, AgentRunEventPersistence::Ephemeral);
         assert_eq!(events[0].payload["reason"], "run_event_persistence_failed");
 

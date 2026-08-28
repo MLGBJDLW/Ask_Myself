@@ -99,6 +99,13 @@ test.beforeEach(async ({ page }) => {
           return [clone(conversation)];
         case 'get_conversation_cmd':
           return [clone(conversation), []];
+        case 'get_agent_run_event_page_cmd':
+          return {
+            events: [],
+            durableHighWater: Number(args.durableHighWater ?? args.afterEventSeq ?? 0),
+            nextAfterEventSeq: null,
+            hasMore: false,
+          };
         case 'get_conversation_turns_cmd':
         case 'get_agent_task_runs_cmd':
         case 'get_agent_run_events_cmd':

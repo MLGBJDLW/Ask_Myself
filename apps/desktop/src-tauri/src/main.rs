@@ -754,6 +754,7 @@ fn main() {
             commands::list_agent_task_run_summaries_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_run_events_cmd,
+            commands::get_agent_run_event_page_cmd,
             commands::get_run_usage_snapshot_cmd,
             commands::get_conversation_usage_snapshot_cmd,
             commands::get_ai_usage_analytics_cmd,

@@ -609,7 +609,7 @@ impl Database {
         &self,
         run_id: &str,
     ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
-        self.list_agent_run_events_from(run_id, 0, None)
+        self.list_agent_run_events_from(run_id, 0, None, None)
     }
 
     /// Read a bounded unseen suffix for live recovery. Full historical replay
@@ -620,46 +620,94 @@ impl Database {
         after_event_seq: u64,
         limit: u32,
     ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
-        self.list_agent_run_events_from(run_id, after_event_seq, Some(limit.clamp(1, 4_096)))
+        self.list_agent_run_events_from(run_id, after_event_seq, None, Some(limit.clamp(1, 4_096)))
+    }
+
+    /// Read one bounded recovery page against a frozen durable high-water mark.
+    ///
+    /// The first request omits `durable_high_water` and snapshots the current
+    /// ledger head. Every continuation supplies the returned value, which makes
+    /// pagination finite even while the actor is appending newer events.
+    pub fn list_agent_run_event_page(
+        &self,
+        run_id: &str,
+        after_event_seq: u64,
+        durable_high_water: Option<u64>,
+        limit: u32,
+    ) -> Result<crate::agent_run::AgentRunEventPage, CoreError> {
+        let durable_high_water = match durable_high_water {
+            Some(sequence) => sequence,
+            None => self.agent_run_event_head(run_id)?.0,
+        };
+        let bounded_limit = limit.clamp(1, 4_096);
+        let mut events = self.list_agent_run_events_from(
+            run_id,
+            after_event_seq,
+            Some(durable_high_water),
+            Some(bounded_limit.saturating_add(1)),
+        )?;
+        let has_more = events.len() > bounded_limit as usize;
+        if has_more {
+            events.truncate(bounded_limit as usize);
+        }
+        let next_after_event_seq = events.last().map(|event| event.event_seq);
+        Ok(crate::agent_run::AgentRunEventPage {
+            events,
+            durable_high_water,
+            next_after_event_seq,
+            has_more,
+        })
     }
 
     fn list_agent_run_events_from(
         &self,
         run_id: &str,
         after_event_seq: u64,
+        up_to_event_seq: Option<u64>,
         limit: Option<u32>,
     ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
         let after_event_seq = i64::try_from(after_event_seq).map_err(|_| {
             CoreError::InvalidInput("Run Event recovery cursor exceeds SQLite range".to_string())
         })?;
+        let up_to_event_seq = match up_to_event_seq {
+            Some(sequence) => i64::try_from(sequence).map_err(|_| {
+                CoreError::InvalidInput(
+                    "Run Event recovery high-water exceeds SQLite range".to_string(),
+                )
+            })?,
+            None => i64::MAX,
+        };
         let limit = limit.map(i64::from).unwrap_or(i64::MAX);
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT version, run_id, turn_id, event_seq, kind, phase, visibility, persistence,
                     display_kind, importance, label, status, payload_json, created_at
              FROM agent_run_events
-             WHERE run_id = ?1 AND event_seq > ?2
+             WHERE run_id = ?1 AND event_seq > ?2 AND event_seq <= ?3
              ORDER BY event_seq ASC
-             LIMIT ?3",
+             LIMIT ?4",
         )?;
-        let rows = stmt.query_map(rusqlite::params![run_id, after_event_seq, limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-                row.get::<_, String>(10)?,
-                row.get::<_, Option<String>>(11)?,
-                row.get::<_, String>(12)?,
-                row.get::<_, String>(13)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![run_id, after_event_seq, up_to_event_seq, limit],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                ))
+            },
+        )?;
 
         let mut events = Vec::new();
         for row in rows {
@@ -1576,6 +1624,89 @@ mod tests {
         assert_eq!(events[1].kind, crate::agent_run::AgentRunEventKind::Error);
         assert_eq!(events[1].status.as_deref(), Some("timed_out"));
         assert_eq!(events[1].payload["reason"], "timeout");
+    }
+
+    #[test]
+    fn test_agent_run_event_pages_freeze_the_first_durable_head() {
+        let db = Database::open_memory().unwrap();
+        let events = (1..=5)
+            .map(|event_seq| {
+                crate::agent_run::AgentRunEvent::status_update(
+                    "run-page-1",
+                    Some("turn-page-1"),
+                    event_seq,
+                    crate::agent_run::AgentRunPhase::Responding,
+                    &format!("event-{event_seq}"),
+                    Some("running"),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        db.save_agent_run_events(&events)
+            .expect("seed paged ledger");
+
+        let first = db
+            .list_agent_run_event_page("run-page-1", 0, None, 2)
+            .expect("first page");
+        assert_eq!(first.durable_high_water, 5);
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(first.has_more);
+        assert_eq!(first.next_after_event_seq, Some(2));
+
+        db.save_agent_run_event(&crate::agent_run::AgentRunEvent::status_update(
+            "run-page-1",
+            Some("turn-page-1"),
+            6,
+            crate::agent_run::AgentRunPhase::Responding,
+            "newer than snapshot",
+            Some("running"),
+            None,
+        ))
+        .expect("append after snapshot");
+
+        let second = db
+            .list_agent_run_event_page(
+                "run-page-1",
+                first.next_after_event_seq.unwrap(),
+                Some(first.durable_high_water),
+                2,
+            )
+            .expect("second page");
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(second.has_more);
+
+        let final_page = db
+            .list_agent_run_event_page(
+                "run-page-1",
+                second.next_after_event_seq.unwrap(),
+                Some(second.durable_high_water),
+                2,
+            )
+            .expect("final page");
+        assert_eq!(
+            final_page
+                .events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![5],
+            "events appended above the frozen head wait for the next recovery"
+        );
+        assert!(!final_page.has_more);
     }
 
     #[test]

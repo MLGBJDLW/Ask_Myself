@@ -1076,15 +1076,58 @@ test('authoritative suffix recovery advances across lost ephemeral preview seque
     payload: { message: 'Recovered answer' },
   }));
 
-  const recovered = takeAuthoritativeRunEventSuffix(state, 'run-1', [runEvent({
-    eventSeq: 4,
-    kind: 'outputDelta',
-    payload: { blockId: 'answer', channel: 'answer', offset: 0, delta: 'Recovered answer' },
-  })]);
+  const recovered = takeAuthoritativeRunEventSuffix(
+    state,
+    'run-1',
+    [runEvent({
+      eventSeq: 4,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer', channel: 'answer', offset: 0, delta: 'Recovered answer' },
+    })],
+    { includeLivePending: true, authoritativeThroughEventSeq: 5 },
+  );
 
   assertEqual(recovered.map(event => event.eventSeq).join(','), '4,5', 'durable and live suffix merge');
   assertEqual(state._lastEventSeq, 5, 'cursor advances across absent ephemeral sequences');
   assertEqual(state._pendingRunEvents.size, 0, 'authoritative suffix drains the live buffer');
+});
+
+test('authoritative suffix keeps live events buffered until every durable page is consumed', () => {
+  const state = createDefaultState();
+  state._orderedRunId = 'run-1';
+  state._lastEventSeq = 1;
+  state._pendingRunEvents.set(2_052, runEvent({
+    eventSeq: 2_052,
+    kind: 'done',
+    phase: 'done',
+    status: 'completed',
+    payload: { message: 'Complete answer' },
+  }));
+  const firstPage = Array.from({ length: 2_048 }, (_, index) => runEvent({
+    eventSeq: index + 2,
+    kind: 'status',
+    payload: { index },
+  }));
+
+  const firstReady = takeAuthoritativeRunEventSuffix(
+    state,
+    'run-1',
+    firstPage,
+    { includeLivePending: false, authoritativeThroughEventSeq: 2_052 },
+  );
+  assertEqual(firstReady.length, 2_048, 'first durable page remains ordered');
+  assertEqual(state._lastEventSeq, 2_049, 'cursor stops at the first page boundary');
+  assertEqual(state._pendingRunEvents.has(2_052), true, 'live terminal remains buffered');
+
+  const finalReady = takeAuthoritativeRunEventSuffix(
+    state,
+    'run-1',
+    [runEvent({ eventSeq: 2_050, kind: 'status', payload: { finalPage: true } })],
+    { includeLivePending: true, authoritativeThroughEventSeq: 2_052 },
+  );
+  assertEqual(finalReady.map(event => event.eventSeq).join(','), '2050,2052', 'final page precedes live recovery');
+  assertEqual(state._lastEventSeq, 2_052, 'only the exhausted suffix may cross the preview gap');
+  assertEqual(state._pendingRunEvents.size, 0, 'final authoritative page drains the buffer');
 });
 
 test('canonical run event projection matches live stream dispatch for render state', () => {

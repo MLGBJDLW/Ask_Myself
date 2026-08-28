@@ -39,6 +39,9 @@ and emits exactly one internally generated ephemeral failure terminal for live
 presentation. A replaceable preview is instead dropped under queue pressure; a
 diagnostic snapshot must never poison the authoritative run. A continuing
 executor cannot invoke more tools after the durable ledger becomes unsafe.
+The failure terminal uses `max(durableHead, actorLiveHighWater) + 1`; deriving
+it from SQLite alone could reuse a sequence already assigned to an ephemeral
+preview or to the durable batch whose commit failed.
 
 Provider-native replay envelopes remain backend-only durable state. They are
 never compacted into the public stream payload and are not replaced by this
@@ -77,9 +80,14 @@ events. Answer and thinking block deltas also require the exact UTF-8 byte
 offset. Tool and reset boundaries rotate block identities.
 
 Gap recovery uses the same authority for a bounded durable suffix. It merges
-that suffix with live events buffered while the query was in flight, then may
-advance across sequence numbers absent from SQLite. Strict live dispatch alone
-never guesses that a gap was ephemeral.
+that suffix with live events buffered while the query was in flight only after
+every page is consumed, then may advance across sequence numbers absent from
+SQLite. The first page freezes a durable high-water mark and each continuation
+is bounded to 2,048 rows, so a busy producer cannot move the recovery target or
+hide a later durable page behind an already-buffered live event. Live events
+that arrive after the query's captured high-water remain buffered for another
+authoritative pass. Strict live dispatch alone never guesses that a gap was
+ephemeral.
 
 Ordering is also bound to `runId`. A different run may replace only a settled,
 unbound retained projection; an event from another run cannot enter a bound
@@ -166,11 +174,11 @@ replace an incomplete streamed preview. When the native payload must be bounded,
 `done.payload.messageTruncated` is `true`; only then may the frontend retain a
 non-empty, fully ordered streamed preview instead of replacing it with the
 bounded message. A recovery pass requests the unseen durable suffix after the
-frontend's `eventSeq` high-water mark (bounded to 2,048 rows per query), replays
-the ordered ledger, and confirms completion with the final assistant message joined
-through the conversation turn. A completed task without that message is not
-allowed to settle to a blank answer; recovery remains armed until the durable
-message is available.
+frontend's `eventSeq` high-water mark in frozen, 2,048-row pages, exhausts that
+snapshot, replays the ordered ledger, and confirms completion with the final
+assistant message joined through the conversation turn. A completed task
+without that message is not allowed to settle to a blank answer; recovery
+remains armed until the durable message is available.
 
 The chat surface hydrates an active conversation once. Live events and recovery
 patch that projection instead of initiating a second completion fetch. React

@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
-    (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: number }).__ASK_STREAM_TIMEOUT_MS__ = 120;
+    (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: number }).__ASK_STREAM_TIMEOUT_MS__ = 350;
     history.replaceState(
       { usr: { initialMessage: 'Why did the connection fail?' }, key: 'e2e-inline-error', idx: 0 },
       '',
@@ -29,6 +29,9 @@ test.beforeEach(async ({ page }) => {
     const listeners = new Map<number, { event: string; handlerId: number }>();
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      if (eventName === 'agent://run-event') {
+        payload = { runId: 'run-inline-error', turnId: 'turn-inline-error', ...payload };
+      }
       const convert = (window as unknown as {
         __toRunEventFixture?: (
           name: string,
@@ -218,6 +221,30 @@ test.beforeEach(async ({ page }) => {
           }];
         case 'get_agent_task_run_events_cmd':
           return [];
+        case 'get_agent_run_event_page_cmd': {
+          const eventSeq = Number(args.afterEventSeq ?? 0) + 1;
+          return {
+            events: [{
+              version: 2,
+              runId: 'run-inline-error',
+              turnId: 'turn-inline-error',
+              eventSeq,
+              kind: 'error',
+              phase: 'done',
+              visibility: 'user',
+              persistence: 'durable',
+              displayKind: 'error',
+              importance: 'high',
+              label: 'Backend confirmed worker failure.',
+              status: 'failed',
+              payload: { message: 'Backend confirmed worker failure.' },
+              createdAt: new Date().toISOString(),
+            }],
+            durableHighWater: eventSeq,
+            nextAfterEventSeq: eventSeq,
+            hasMore: false,
+          };
+        }
         default:
           return null;
       }

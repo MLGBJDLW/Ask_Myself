@@ -482,6 +482,23 @@ pub async fn get_agent_run_events_cmd(
 }
 
 #[tauri::command]
+pub async fn get_agent_run_event_page_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    after_event_seq: u64,
+    durable_high_water: Option<u64>,
+) -> Result<nexa_core::agent_run::AgentRunEventPage, String> {
+    state
+        .db_executor
+        .read(move |db| {
+            db.list_agent_run_event_page(&run_id, after_event_seq, durable_high_water, 2_048)
+        })
+        .await
+        .map(|execution| execution.value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_run_usage_snapshot_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
