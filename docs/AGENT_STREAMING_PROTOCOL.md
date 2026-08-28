@@ -110,10 +110,16 @@ builds semantic previews only on the first observation and each 2 KiB
 cumulative-input bucket. Preparing parsing and raw display are bounded to a
 32 KiB prefix. The desktop Tool preview journal then keeps only the latest
 snapshot per `callId`, publishing after another 2 KiB of growth or a two-second
-slow-stream heartbeat. These publications are ephemeral; the completed
-`ToolRun` remains the durable authority. Provider argument fragments therefore
-cannot create one parse, full diff, frontend event, or SQLite row per transport
-chunk.
+slow-stream heartbeat. Only `ToolRunUpdated(status=preparing)` may enter this
+journal. Approval-pending, running, and execution-progress updates bypass it and
+remain durable lifecycle events. The completed `ToolRun` remains the final
+durable authority. Provider argument fragments therefore cannot create one
+parse, full diff, frontend event, or SQLite row per transport chunk.
+
+Argument assembly also preserves the provider wire shape: string values are
+opaque fragments, while object-valued OpenAI-compatible arguments are typed
+complete snapshots and replace the prior snapshot. The runtime never infers
+that distinction by reparsing every growing string.
 
 ## Completion and recovery
 

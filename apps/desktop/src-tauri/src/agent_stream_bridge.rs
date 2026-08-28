@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use nexa_core::agent::AgentEvent;
+use nexa_core::agent::{AgentEvent, ToolRunStatus};
 use nexa_core::agent_run::{AgentRunEventPersistence, AgentRunPhase};
 use nexa_core::runtime::{AgentRunEventOutbox, TurnLaunchStage};
 use tokio::sync::mpsc;
@@ -127,12 +127,17 @@ impl AgentStreamForwarder {
                                 | AgentEvent::ToolCallResult { .. } => {
                                     // ToolRun is the only public tool lifecycle.
                                 }
-                                event @ AgentEvent::ToolRunUpdated { .. } => {
+                                AgentEvent::ToolRunUpdated { run }
+                                    if run.status == ToolRunStatus::Preparing =>
+                                {
                                     if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                                    pending_tool_updates.queue(event, Instant::now());
+                                    pending_tool_updates.queue(
+                                        AgentEvent::ToolRunUpdated { run },
+                                        Instant::now(),
+                                    );
                                 }
                                 other => {
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
@@ -140,7 +145,11 @@ impl AgentStreamForwarder {
                                         AgentEvent::StreamReset { .. } => {
                                             pending_tool_updates.reset();
                                         }
-                                        AgentEvent::ToolRunCompleted { run } => {
+                                        AgentEvent::ToolRunStarted { run }
+                                        | AgentEvent::ToolRunCompleted { run } => {
+                                            pending_tool_updates.retire(&run.call_id);
+                                        }
+                                        AgentEvent::ToolRunUpdated { run } => {
                                             pending_tool_updates.retire(&run.call_id);
                                         }
                                         _ => self.flush_tool_preview_events(

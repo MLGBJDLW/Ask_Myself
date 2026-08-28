@@ -53,7 +53,9 @@ The runtime now uses a display-only tolerant parser that extracts complete top-l
   prefix before diff construction or frontend transport.
 - `inputProgress.receivedBytes` reports the cumulative provider argument size even when the displayed raw arguments are truncated.
 - The desktop Tool preview journal replaces snapshots by `callId` and publishes
-  only after another 2 KiB of growth or a two-second heartbeat.
+  only after another 2 KiB of growth or a two-second heartbeat. It accepts only
+  `ToolRunUpdated(status=preparing)`; approval, running, and progress updates
+  stay on the normal durable lifecycle path.
 - Preparing updates use sequenced ephemeral Run Events and are never written to
   the durable SQLite ledger.
 - UI state is patched by `callId`; preparing updates must not create duplicate cards.
@@ -74,7 +76,7 @@ accumulate complete argument buffer
        bounded tolerant parse + diff            │
                  │                             │
                  ▼                             │
- ToolRunStarted + ephemeral ToolRunUpdated       │
+ ephemeral preparing ToolRunUpdated              │
                  │                             │
                  ▼                             │
  frontend upsert by callId                     │

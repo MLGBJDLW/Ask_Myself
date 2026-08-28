@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use nexa_core::agent::AgentEvent;
+use nexa_core::agent::{AgentEvent, ToolRunStatus};
 
 const MIN_PREVIEW_GROWTH_BYTES: usize = 2 * 1024;
 const MAX_PREVIEW_SILENCE: Duration = Duration::from_secs(2);
@@ -95,7 +95,9 @@ impl ToolPreviewJournal {
 
 fn preview_call_id(event: &AgentEvent) -> Option<&str> {
     match event {
-        AgentEvent::ToolRunUpdated { run } => Some(run.call_id.as_str()),
+        AgentEvent::ToolRunUpdated { run } if run.status == ToolRunStatus::Preparing => {
+            Some(run.call_id.as_str())
+        }
         _ => None,
     }
 }
@@ -175,5 +177,20 @@ mod tests {
             .drain_due(started + Duration::from_millis(1_999))
             .is_empty());
         assert_eq!(journal.drain_due(started + Duration::from_secs(2)).len(), 1);
+    }
+
+    #[test]
+    fn execution_lifecycle_updates_never_enter_the_preview_journal() {
+        let started = Instant::now();
+        let mut journal = ToolPreviewJournal::default();
+        let mut running = preview(32);
+        let AgentEvent::ToolRunUpdated { run } = &mut running else {
+            unreachable!("preview fixture must be a ToolRunUpdated event");
+        };
+        run.status = ToolRunStatus::Running;
+
+        journal.queue(running, started);
+
+        assert!(journal.drain_all().is_empty());
     }
 }
