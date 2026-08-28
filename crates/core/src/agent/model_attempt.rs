@@ -1823,6 +1823,9 @@ mod tests {
                 Invocation::Stream(Err(CoreError::RateLimited {
                     retry_after_secs: 7,
                 })),
+                Invocation::Stream(Err(CoreError::RateLimited {
+                    retry_after_secs: 7,
+                })),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -1832,7 +1835,7 @@ mod tests {
         let started_at = tokio::time::Instant::now();
 
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth rate limit should exhaust three retries")
+            panic!("fifth rate limit should exhaust four retries")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Connect);
@@ -1842,8 +1845,8 @@ mod tests {
                 retry_after_secs: 7
             }
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -1851,22 +1854,22 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(states.len(), 4);
-        for (index, state) in states[..3].iter().enumerate() {
+        assert_eq!(states.len(), 5);
+        for (index, state) in states[..4].iter().enumerate() {
             assert_eq!(state.state, ConnectionStateKind::Reconnecting);
             assert_eq!(
                 state.error_category,
                 Some(ConnectionErrorCategory::RateLimit)
             );
             assert_eq!(state.attempt, u32::try_from(index + 1).unwrap());
-            assert_eq!(state.max_attempts, 3);
+            assert_eq!(state.max_attempts, 4);
             assert!(state.next_retry_at.is_some());
             assert!(state.recoverable);
         }
-        assert_eq!(states[3].state, ConnectionStateKind::Failed);
-        assert_eq!(states[3].attempt, 3);
-        assert_eq!(states[3].max_attempts, 3);
-        assert!(!states[3].recoverable);
+        assert_eq!(states[4].state, ConnectionStateKind::Failed);
+        assert_eq!(states[4].attempt, 4);
+        assert_eq!(states[4].max_attempts, 4);
+        assert!(!states[4].recoverable);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1956,6 +1959,7 @@ mod tests {
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
+                Invocation::Stream(Ok(vec![terminal_rate_limit()])),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -1965,11 +1969,11 @@ mod tests {
 
         expect_stream_opened(&mut attempt).await;
         let started_at = tokio::time::Instant::now();
-        for _ in 0..3 {
+        for _ in 0..4 {
             expect_stream_opened(&mut attempt).await;
         }
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth terminal rate limit should exhaust the shared retry budget")
+            panic!("fifth terminal rate limit should exhaust the shared retry budget")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Stream);
@@ -1979,8 +1983,8 @@ mod tests {
                 retry_after_secs: 7
             }
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -1988,26 +1992,26 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(states.len(), 4);
-        for (index, state) in states[..3].iter().enumerate() {
+        assert_eq!(states.len(), 5);
+        for (index, state) in states[..4].iter().enumerate() {
             assert_eq!(state.state, ConnectionStateKind::Reconnecting);
             assert_eq!(
                 state.error_category,
                 Some(ConnectionErrorCategory::RateLimit)
             );
             assert_eq!(state.attempt, u32::try_from(index + 1).unwrap());
-            assert_eq!(state.max_attempts, 3);
+            assert_eq!(state.max_attempts, 4);
             assert!(state.next_retry_at.is_some());
             assert!(state.recoverable);
         }
-        assert_eq!(states[3].state, ConnectionStateKind::Failed);
+        assert_eq!(states[4].state, ConnectionStateKind::Failed);
         assert_eq!(
-            states[3].error_category,
+            states[4].error_category,
             Some(ConnectionErrorCategory::RateLimit)
         );
-        assert_eq!(states[3].attempt, 3);
-        assert_eq!(states[3].max_attempts, 3);
-        assert!(!states[3].recoverable);
+        assert_eq!(states[4].attempt, 4);
+        assert_eq!(states[4].max_attempts, 4);
+        assert!(!states[4].recoverable);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2041,6 +2045,7 @@ mod tests {
                 metadata_then_rate_limit(),
                 metadata_then_rate_limit(),
                 metadata_then_rate_limit(),
+                metadata_then_rate_limit(),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -2050,7 +2055,7 @@ mod tests {
 
         expect_stream_opened(&mut attempt).await;
         let started_at = tokio::time::Instant::now();
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert!(matches!(
                 attempt.next().await,
                 ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
@@ -2068,17 +2073,17 @@ mod tests {
             }) if chunk.usage.is_some() && !chunk_is_visible(chunk)
         ));
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth post-metadata rate limit should exhaust the shared retry budget")
+            panic!("fifth post-metadata rate limit should exhaust the shared retry budget")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Stream);
         assert!(matches!(failure.error, CoreError::RateLimited { .. }));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        assert_eq!(events.len(), 4);
-        for (index, event) in events[..3].iter().enumerate() {
+        assert_eq!(events.len(), 5);
+        for (index, event) in events[..4].iter().enumerate() {
             assert!(matches!(
                 event,
                 AgentEvent::ConnectionState { state }
@@ -2088,11 +2093,11 @@ mod tests {
             ));
         }
         assert!(matches!(
-            events[3],
+            events[4],
             AgentEvent::ConnectionState { ref state }
                 if state.state == ConnectionStateKind::Failed
                     && state.error_category == Some(ConnectionErrorCategory::RateLimit)
-                    && state.attempt == 3
+                    && state.attempt == 4
         ));
     }
 
@@ -2649,6 +2654,7 @@ mod tests {
                 Invocation::Complete(Err(CoreError::TransientLlm("reset two".to_string()))),
                 Invocation::Complete(Err(CoreError::TransientLlm("reset three".to_string()))),
                 Invocation::Complete(Err(CoreError::TransientLlm("give up".to_string()))),
+                Invocation::Complete(Err(CoreError::TransientLlm("give up".to_string()))),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -2658,7 +2664,7 @@ mod tests {
         let started_at = tokio::time::Instant::now();
 
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth completion failure should exhaust three retries")
+            panic!("fifth completion failure should exhaust four retries")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Completion);
@@ -2666,8 +2672,8 @@ mod tests {
             failure.error,
             CoreError::TransientLlm(ref message) if message == "give up"
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(7));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_millis(76_370));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -2678,6 +2684,7 @@ mod tests {
         assert_eq!(
             states.iter().map(|state| state.state).collect::<Vec<_>>(),
             vec![
+                ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,

@@ -6505,7 +6505,7 @@ async fn test_stream_incomplete_before_visible_output_replays_stream() {
 }
 
 #[tokio::test]
-async fn test_stream_incomplete_before_visible_output_recovers_with_non_streaming_retry() {
+async fn test_repeated_stream_incomplete_fails_without_non_streaming_fallback() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
@@ -6526,7 +6526,7 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
     let db = Database::open_memory().expect("in-memory db");
     let (tx, mut rx) = mpsc::channel(32);
 
-    let final_msg = executor
+    let error = executor
         .run(
             vec![],
             vec![ContentPart::Text {
@@ -6539,11 +6539,15 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
             0,
         )
         .await
-        .expect("run should recover");
+        .expect_err("repeated stream disconnects should fail explicitly");
 
-    assert_eq!(final_msg.text_content(), "complete answer");
+    assert!(matches!(
+        error,
+        CoreError::StreamIncomplete(ref message)
+            if message.contains("disconnected after 2 replay attempt")
+    ));
     assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
-    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
 
     let mut saw_reset = false;
     let mut saw_error = false;
@@ -6562,12 +6566,12 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
         }
     }
 
+    assert!(saw_reset, "expected stream resets before explicit failure");
     assert!(
-        saw_reset,
-        "expected partial stream reset before retry replay"
+        saw_error,
+        "exhausted stream recovery should surface an error"
     );
-    assert!(!saw_error, "stream recovery should not surface an error");
-    assert_eq!(visible_text, "complete answer");
+    assert_eq!(visible_text, "");
 }
 
 #[tokio::test]
