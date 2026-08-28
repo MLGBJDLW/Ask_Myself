@@ -7672,6 +7672,82 @@ async fn model_progress_qwen_thinking_stream_remains_alive_until_answer() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn model_progress_user_recovery_restarts_with_request_side_controls() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::ActiveThinkingThenAnswer,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks,
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::XHigh),
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "Inspect the active model stream.".to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the first provider stream must open");
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settle_paused_runtime().await;
+    steering_tx
+        .send(AgentSteeringMessage::recovery(
+            AgentRecoveryControl::LowerReasoningAndRetry,
+        ))
+        .expect("recovery control send");
+    settle_paused_runtime().await;
+
+    let final_message = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("the controlled retry must complete")
+        .expect("agent run task")
+        .expect("controlled retry succeeds");
+    let event_counts = event_drain.await.expect("agent event drain");
+
+    assert_eq!(final_message.text_content(), "recovered answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(event_counts.resets, 1);
+    assert_eq!(event_counts.errors, 0);
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].reasoning_enabled, Some(true));
+    assert_eq!(captured[0].reasoning_effort, Some(ReasoningEffort::XHigh));
+    assert_eq!(captured[1].reasoning_enabled, Some(false));
+    assert_eq!(captured[1].reasoning_effort, None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn model_progress_pending_stream_open_stops_without_executing_tools() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let thinking_chunks = Arc::new(AtomicUsize::new(0));

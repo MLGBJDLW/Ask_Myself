@@ -422,6 +422,63 @@ impl AgentExecutor {
 
             let progress = match signal {
                 ModelStepWaitSignal::Steering(Some(steering)) => {
+                    if steering.recovery_control
+                        == Some(AgentRecoveryControl::LowerReasoningAndRetry)
+                    {
+                        let controls = model_progress_watchdog::recovery_controls(
+                            current_request.provider_type,
+                            &current_request.model,
+                        );
+                        current_request.reasoning_enabled = controls.reasoning_enabled;
+                        current_request.reasoning_effort = controls.reasoning_effort;
+                        current_request.thinking_budget = controls.thinking_budget;
+                        reasoning_was_requested = request_reasoning_was_requested(&current_request);
+                        reset_iteration_capture_for_new_sample(
+                            accumulated_content,
+                            accumulated_len_before_iteration,
+                            &mut full_content,
+                            &mut tool_calls,
+                            &mut tool_call_assembly_rejected,
+                            &mut provider_replay,
+                            &mut chunk_usage,
+                            &mut iteration_thinking,
+                            &mut answer_delta_seen,
+                            &mut thinking_delta_seen,
+                            &mut finish_reason,
+                            &mut preparing_call_ids,
+                            &mut started_call_ids,
+                            &mut tool_run_started_ids,
+                            &mut chunk_count,
+                        );
+                        accepted_attempt = None;
+                        let reason = format!(
+                            "User requested a retry with {}; restarting the current model sample.",
+                            controls.description,
+                        );
+                        let _ = tx
+                            .send(AgentEvent::StreamReset {
+                                reason: reason.clone(),
+                                discard_sample: true,
+                            })
+                            .await;
+                        append_internal_persisted_trace_status(
+                            persisted_trace_items,
+                            &reason,
+                            "info",
+                        );
+                        model_attempt = model_attempt::ModelAttempt::new(
+                            self.provider.as_ref(),
+                            current_request.clone(),
+                            tx,
+                            *force_non_streaming_llm,
+                        )
+                        .with_cancel_token(self.cancel_token.clone());
+                        progress_watchdog.reset_for_new_attempt();
+                        if *force_non_streaming_llm {
+                            progress_watchdog.arm();
+                        }
+                        continue 'model_attempt;
+                    }
                     stream_interrupted_by_steering = Some(steering);
                     break 'model_attempt None;
                 }

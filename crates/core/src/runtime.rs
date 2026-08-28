@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::agent::power_mode::AgentPowerMode;
-use crate::agent::{AgentExecutionMode, AgentSteeringMessage, CancellationToken};
+use crate::agent::{
+    AgentExecutionMode, AgentRecoveryControl, AgentSteeringMessage, CancellationToken,
+};
 use crate::agent_run::{AgentRunEvent, AGENT_RUN_EVENT_VERSION};
 use crate::app_settings::ShellAccessMode;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
@@ -52,6 +54,21 @@ impl ActiveAgentTurn {
             .map_err(|_| {
                 CoreError::InvalidInput(
                     "Agent turn is no longer accepting steering messages.".to_string(),
+                )
+            })
+    }
+
+    pub fn recover(&self, control: AgentRecoveryControl) -> Result<(), CoreError> {
+        if self.is_finished() {
+            return Err(CoreError::InvalidInput(
+                "Agent turn is no longer running.".to_string(),
+            ));
+        }
+        self.steering_tx
+            .send(AgentSteeringMessage::recovery(control))
+            .map_err(|_| {
+                CoreError::InvalidInput(
+                    "Agent turn is no longer accepting recovery controls.".to_string(),
                 )
             })
     }
@@ -134,6 +151,28 @@ impl AgentSessionManager {
             ));
         }
         turn.steer(message)
+    }
+
+    pub async fn recover(
+        &self,
+        session_id: &str,
+        control: AgentRecoveryControl,
+    ) -> Result<(), CoreError> {
+        let mut active = self.active.lock().await;
+        let Some(turn) = active.get(session_id) else {
+            return Err(CoreError::NotFound(
+                "No running agent turn for this session.".to_string(),
+            ));
+        };
+        if turn.is_finished() {
+            if turn.event_outbox.is_closed_for_submission() {
+                active.remove(session_id);
+            }
+            return Err(CoreError::NotFound(
+                "No running agent turn for this session.".to_string(),
+            ));
+        }
+        turn.recover(control)
     }
 
     pub async fn take(&self, session_id: &str) -> Option<ActiveAgentTurn> {

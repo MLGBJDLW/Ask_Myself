@@ -111,8 +111,9 @@ export function applyStatusEvent(
   tone: 'muted' | 'success' | 'error',
   visibility: 'user' | 'developer' | 'internal' = 'user',
   displayKind: Parameters<typeof appendStatusTraceEvent>[4] = 'status',
+  code?: string,
 ): void {
-  appendStatusTraceEvent(state, text, tone, visibility, displayKind);
+  appendStatusTraceEvent(state, text, tone, visibility, displayKind, code);
 }
 
 function replaceTerminalReplyTrace(state: InternalStreamState, finalReply: string): void {

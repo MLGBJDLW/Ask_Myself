@@ -65,6 +65,7 @@ export function appendStatusTraceEvent(
   tone: TraceStatusEvent['tone'] = 'muted',
   visibility: TraceStatusEvent['visibility'] = 'user',
   displayKind: TraceStatusEvent['displayKind'] = 'status',
+  code?: string,
 ): void {
   if (!text.trim()) return;
   state.traceEvents = [...state.traceEvents, {
@@ -74,7 +75,17 @@ export function appendStatusTraceEvent(
     tone,
     visibility,
     displayKind,
+    code,
   }];
+}
+
+export function clearTransientControllerStatus(
+  state: StreamTerminalProjectionState,
+  code: string,
+): void {
+  state.traceEvents = state.traceEvents.filter(event => (
+    event.kind !== 'status' || event.code !== code
+  ));
 }
 
 export function syncTraceToolEvents(state: StreamTerminalProjectionState): void {
@@ -102,6 +113,7 @@ export function applyStreamResetProjection(
   state.streamText = '';
   state.thinkingText = '';
   state.isThinking = false;
+  clearTransientControllerStatus(state, 'model_planning_slow');
 
   if (options.discardSample) {
     const pendingToolIds = new Set(

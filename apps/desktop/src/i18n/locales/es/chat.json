@@ -46,6 +46,8 @@
   "fileDiffShowLess": "Mostrar menos archivos",
   "thinking": "Pensando",
   "stop": "Stop",
+  "lowerReasoningRetry": "Reducir razonamiento y reintentar",
+  "lowerReasoningRetrying": "Reintentando con menos razonamiento…",
   "retry": "Retry",
   "finalAnswerMissing": "El modelo terminó antes de producir una respuesta final. El razonamiento se mantuvo separado.",
   "retryFinalAnswer": "Generar respuesta final",

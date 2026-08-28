@@ -2279,6 +2279,21 @@ pub async fn agent_steer_cmd(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn agent_lower_reasoning_and_retry_cmd(
+    agent_state: tauri::State<'_, AgentState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    agent_state
+        .sessions
+        .recover(
+            &conversation_id,
+            nexa_core::agent::AgentRecoveryControl::LowerReasoningAndRetry,
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
 // ── Agent Stop Command ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

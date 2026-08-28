@@ -1715,6 +1715,9 @@ export const agentChat = (input: AgentChatRequestInput) => {
 export const agentSteer = (conversationId: string, message: string) =>
   invoke<void>('agent_steer_cmd', { conversationId, message });
 
+export const agentLowerReasoningAndRetry = (conversationId: string) =>
+  invoke<void>('agent_lower_reasoning_and_retry_cmd', { conversationId });
+
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
 

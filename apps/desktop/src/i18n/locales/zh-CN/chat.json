@@ -46,6 +46,8 @@
   "fileDiffShowLess": "收起文件列表",
   "thinking": "思考中",
   "stop": "停止",
+  "lowerReasoningRetry": "降低推理力度重试",
+  "lowerReasoningRetrying": "正在降低推理力度重试…",
   "retry": "重试",
   "finalAnswerMissing": "模型在生成最终回答前结束。思考内容已保持独立，不会作为回复显示。",
   "retryFinalAnswer": "重新生成最终回答",

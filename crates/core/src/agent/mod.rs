@@ -185,6 +185,16 @@ pub struct AgentSteeringMessage {
     pub content: String,
     pub parts: Vec<ContentPart>,
     pub image_attachments: Option<Vec<ImageAttachment>>,
+    pub recovery_control: Option<AgentRecoveryControl>,
+}
+
+/// Request-side recovery selected by the user for an active model sample.
+///
+/// This is control-plane input, not conversation content: applying it must not
+/// add a synthetic user message to the model history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRecoveryControl {
+    LowerReasoningAndRetry,
 }
 
 impl AgentSteeringMessage {
@@ -196,6 +206,16 @@ impl AgentSteeringMessage {
             }],
             content,
             image_attachments: None,
+            recovery_control: None,
+        }
+    }
+
+    pub fn recovery(control: AgentRecoveryControl) -> Self {
+        Self {
+            content: String::new(),
+            parts: Vec::new(),
+            image_attachments: None,
+            recovery_control: Some(control),
         }
     }
 }

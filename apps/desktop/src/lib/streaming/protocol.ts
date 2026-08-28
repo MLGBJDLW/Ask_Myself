@@ -79,6 +79,8 @@ export interface TraceStatusEvent {
   tone?: 'muted' | 'success' | 'error';
   visibility?: 'user' | 'developer' | 'internal';
   displayKind?: AgentRunDisplayKind;
+  /** Semantic controller code used for live, actionable status presentation. */
+  code?: string;
 }
 
 export type TraceEvent = TraceThinkingEvent | TraceReplyEvent | TraceToolEvent | TraceStatusEvent;

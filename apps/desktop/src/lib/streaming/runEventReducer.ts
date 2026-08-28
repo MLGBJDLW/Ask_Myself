@@ -26,6 +26,7 @@ import {
 import {
   appendStatusTraceEvent,
   applyStreamResetProjection,
+  clearTransientControllerStatus,
 } from './terminalProjection';
 import {
   applyToolRunEvent,
@@ -163,6 +164,9 @@ export function applyAgentRunEvent(
   switch (runEvent.kind) {
     case 'outputDelta': {
       const channel = payload.channel === 'thinking' ? 'thinking' : 'answer';
+      if (channel === 'answer') {
+        clearTransientControllerStatus(state, 'model_planning_slow');
+      }
       applyStreamBlockDelta(
         state,
         channel,
@@ -198,6 +202,7 @@ export function applyAgentRunEvent(
         presentationTone(payload),
         runEvent.visibility ?? 'user',
         runEvent.displayKind ?? 'status',
+        stringValue(payload.code),
       );
       return;
     }
@@ -224,6 +229,7 @@ export function applyAgentRunEvent(
     }
 
     case 'toolPreparing': {
+      clearTransientControllerStatus(state, 'model_planning_slow');
       const run = toolRun(payload) ?? legacyToolRun(runEvent, payload);
       if (run) {
         clearToolPreparingTimer(state, run.callId.trim());
@@ -245,6 +251,7 @@ export function applyAgentRunEvent(
     case 'toolStarted':
     case 'toolProgress':
     case 'toolCompleted': {
+      clearTransientControllerStatus(state, 'model_planning_slow');
       const run = toolRun(payload) ?? legacyToolRun(runEvent, payload);
       if (run) {
         clearToolPreparingTimer(state, run.callId.trim());

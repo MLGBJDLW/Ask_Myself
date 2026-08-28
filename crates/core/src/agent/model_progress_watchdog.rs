@@ -206,11 +206,16 @@ impl ModelProgressWatchdog {
         }
     }
 
-    pub(super) fn reset_for_context_retry(&mut self) {
+    pub(super) fn reset_for_new_attempt(&mut self) {
         self.phase = ModelProgressPhase::Connecting;
         self.started_at = Instant::now();
         self.deadline = Some(self.started_at + self.policy.connect_deadline);
+        self.warning_emitted = false;
         self.hosted_tool_hard_deadline = None;
+    }
+
+    pub(super) fn reset_for_context_retry(&mut self) {
+        self.reset_for_new_attempt();
     }
 
     pub(super) fn elapsed_seconds(&self) -> u64 {
