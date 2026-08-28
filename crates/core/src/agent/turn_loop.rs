@@ -1379,9 +1379,14 @@ impl AgentExecutor {
                         accumulated_content
                             .truncate(accumulated_content.len().saturating_sub(full_content.len()));
                     }
+                    let rejection_reason = if tool_calls_truncated_by_output_limit {
+                        "The provider reached max_tokens while assembling a tool call. Nexa discarded the truncated parameters before re-planning."
+                    } else {
+                        "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning."
+                    };
                     let _ = tx
                         .send(AgentEvent::StreamReset {
-                            reason: "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning.".to_string(),
+                            reason: rejection_reason.to_string(),
                             discard_sample: true,
                         })
                         .await;
@@ -1393,15 +1398,24 @@ impl AgentExecutor {
                         rejected.assembly_rejected,
                         rejected.terminal_rejected,
                     );
+                    let rejection_status = if tool_calls_truncated_by_output_limit {
+                        "The provider output limit truncated tool parameters. Nexa rejected them before execution; large create_file requests should be split into create plus append operations."
+                    } else {
+                        "The provider returned an incomplete tool-call envelope. Nexa discarded it before persistence or execution and requested a fresh plan."
+                    };
                     append_internal_persisted_trace_status(
                         &mut persisted_trace_items,
-                        "The provider returned an incomplete tool-call envelope. Nexa discarded it before persistence or execution and requested a fresh plan.",
+                        rejection_status,
                         "warning",
                     );
                     let _ = tx
                         .send(AgentEvent::ControllerStatus {
-                            code: "incomplete_tool_calls_rejected".to_string(),
-                            content: "The provider returned incomplete tool-call data. Nexa rejected it safely and will ask the model to re-plan.".to_string(),
+                            code: if tool_calls_truncated_by_output_limit {
+                                "tool_calls_truncated_by_output_limit".to_string()
+                            } else {
+                                "incomplete_tool_calls_rejected".to_string()
+                            },
+                            content: rejection_status.to_string(),
                             tone: Some("warning".to_string()),
                         })
                         .await;
@@ -1411,15 +1425,24 @@ impl AgentExecutor {
                     // state instead of manufacturing a failed chat tool card.
 
                     if iteration + 1 < self.config.max_iterations {
-                        if let Some(message) = prompt_ir::controller_state_message(
-                            "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call.",
-                        ) {
+                        let replan_instruction = if tool_calls_truncated_by_output_limit {
+                            "The previous provider response hit max_tokens while assembling a tool call and was discarded before execution. Re-plan from the user request. For large file content, create a smaller initial file and use append operations in bounded chunks; otherwise emit one complete tool call with valid JSON arguments."
+                        } else {
+                            "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call."
+                        };
+                        if let Some(message) =
+                            prompt_ir::controller_state_message(replan_instruction)
+                        {
                             messages.push(message);
                         }
                         continue 'react_loop;
                     }
 
-                    let frontend_message = "The provider repeatedly returned incomplete tool-call data. Nexa rejected it without executing any tool; retry the turn or choose another model.";
+                    let frontend_message = if tool_calls_truncated_by_output_limit {
+                        "The provider repeatedly reached max_tokens while assembling tool parameters. Nexa rejected every truncated call without execution; retry with a higher output limit or split large file writes into create plus append operations."
+                    } else {
+                        "The provider repeatedly returned incomplete tool-call data. Nexa rejected it without executing any tool; retry the turn or choose another model."
+                    };
                     emit_error_and_finalize_turn(
                         &tx,
                         db,

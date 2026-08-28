@@ -270,7 +270,7 @@ fn queue_latest_tool_update(pending: &mut Vec<AgentEvent>, event: AgentEvent) {
     pending.push(event);
 }
 
-fn event_marks_provider_response_byte(event: &AgentEvent) -> bool {
+pub(crate) fn event_marks_provider_response_byte(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::TextDelta { .. }
@@ -286,7 +286,7 @@ fn event_marks_provider_response_byte(event: &AgentEvent) -> bool {
     )
 }
 
-fn event_has_visible_token(event: &AgentEvent) -> bool {
+pub(crate) fn event_has_visible_token(event: &AgentEvent) -> bool {
     match event {
         AgentEvent::TextDelta { delta } => !delta.is_empty(),
         AgentEvent::Thinking { content } => !content.is_empty(),

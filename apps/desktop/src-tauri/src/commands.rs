@@ -66,6 +66,8 @@ use nexa_core::llm::{
 };
 use nexa_core::mcp::{McpServer, McpToolInfo, SaveMcpServerInput};
 use nexa_core::persona::{PersonaProfile, SavePersonaInput};
+#[cfg(test)]
+use nexa_core::workflow_automation::WorkflowSchedulerEventType;
 
 use base64::Engine;
 use chrono::{SecondsFormat, Utc};
@@ -607,6 +609,7 @@ fn db_config_to_provider_config(
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs,
+        streaming: config.provider_streaming,
     }
 }
 
@@ -719,11 +722,8 @@ mod tests {
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
-        apply_scheduled_execution_policy, due_workflow_run_is_scheduler_eligible,
         ensure_workflow_template_runtime_visible, filter_due_workflow_runs_by_package_host,
-        queue_due_workflow_automation_execution_ticket,
-        select_task_orchestrator_launch_agent_config, task_orchestrator_scheduler_due_runs,
-        task_orchestrator_scheduler_retry_skip_event, task_orchestrator_scheduler_status_is_active,
+        queue_due_workflow_automation_execution_ticket, task_orchestrator_scheduler_due_runs,
         workflow_due_runs_to_queue_items,
     };
     use super::*;
@@ -731,6 +731,12 @@ mod tests {
         build_desktop_agent_session_config, desktop_runtime_package_context,
         filter_desktop_tool_names_by_package_host, runtime_session_config_artifact,
         DesktopAgentSessionConfigInput,
+    };
+    use nexa_core::workflow_execution::{
+        apply_scheduled_execution_policy, due_workflow_run_is_scheduler_eligible,
+        scheduler_retry_skip_event as task_orchestrator_scheduler_retry_skip_event,
+        scheduler_status_is_active as task_orchestrator_scheduler_status_is_active,
+        select_workflow_launch_agent_config as select_task_orchestrator_launch_agent_config,
     };
 
     #[test]
@@ -874,6 +880,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
             provider_endpoint_id: None,
             model_id: None,
             model_selection_resolution: None,
@@ -995,6 +1002,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
             provider_endpoint_id: None,
             model_id: None,
         })
@@ -1516,7 +1524,7 @@ mod tests {
         assert_eq!(
             task_orchestrator_scheduler_retry_skip_event(&backoff),
             (
-                "skipped_backoff",
+                WorkflowSchedulerEventType::SkippedBackoff,
                 "backoff",
                 "Scheduler skipped due workflow until retry backoff expires"
             )
@@ -1530,7 +1538,7 @@ mod tests {
         assert_eq!(
             task_orchestrator_scheduler_retry_skip_event(&retry_limit),
             (
-                "skipped_retry_limit",
+                WorkflowSchedulerEventType::SkippedRetryLimit,
                 "blocked",
                 "Scheduler skipped due workflow because retry attempts are exhausted"
             )
@@ -1597,7 +1605,7 @@ mod tests {
             .record_workflow_automation_scheduler_event(
                 Some(&automation.id),
                 None,
-                "launch_failed",
+                WorkflowSchedulerEventType::LaunchFailed,
                 Some("failed"),
                 "Scheduler failed to launch due workflow",
                 Some(&serde_json::json!({ "retryable": true })),
@@ -1637,7 +1645,9 @@ mod tests {
 
         let error =
             select_task_orchestrator_launch_agent_config(&db, Some("missing-config")).unwrap_err();
-        assert!(error.contains("Requested agent config 'missing-config' was not found"));
+        assert!(error
+            .to_string()
+            .contains("Requested agent config 'missing-config' was not found"));
     }
 
     #[test]
@@ -1668,7 +1678,7 @@ mod tests {
 
         policy.provider_endpoint_id = Some("text:edited-endpoint".to_string());
         let error = apply_scheduled_execution_policy(config, &policy).unwrap_err();
-        assert!(error.contains("endpoint drift"));
+        assert!(error.to_string().contains("endpoint drift"));
     }
 
     #[test]

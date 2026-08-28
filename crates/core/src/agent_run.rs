@@ -685,9 +685,14 @@ impl AgentRunEvent {
         };
 
         let (mut visibility, mut display_kind, mut importance) = event_presentation(kind);
-        if matches!(event, AgentEvent::ControllerStatus { .. }) {
-            visibility = AgentRunEventVisibility::Developer;
-            importance = AgentRunEventImportance::Low;
+        if let AgentEvent::ControllerStatus { code, .. } = event {
+            if code == "model_planning_slow" {
+                visibility = AgentRunEventVisibility::User;
+                importance = AgentRunEventImportance::High;
+            } else {
+                visibility = AgentRunEventVisibility::Developer;
+                importance = AgentRunEventImportance::Low;
+            }
         }
         if matches!(event, AgentEvent::PlanUpdated { .. }) {
             visibility = AgentRunEventVisibility::Developer;
@@ -1326,6 +1331,19 @@ mod tests {
         assert_eq!(run_event.phase, AgentRunPhase::AwaitingUserInput);
         assert_eq!(run_event.status.as_deref(), Some("awaiting_user_input"));
         assert_eq!(run_event.payload["tone"], "attention");
+    }
+
+    #[test]
+    fn slow_model_controller_status_is_actionable_user_output() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ControllerStatus {
+            code: "model_planning_slow".to_string(),
+            content: "The model is still reasoning (45s, about 120 tokens).".to_string(),
+            tone: Some("warning".to_string()),
+        });
+
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.importance, AgentRunEventImportance::High);
+        assert_eq!(run_event.payload["code"], "model_planning_slow");
     }
 
     #[test]

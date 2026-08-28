@@ -868,6 +868,7 @@ fn main() {
             commands::agent_chat_cmd,
             commands::record_agent_frontend_paint_cmd,
             commands::agent_steer_cmd,
+            commands::agent_lower_reasoning_and_retry_cmd,
             commands::agent_stop_cmd,
             // Terminal
             commands::terminal_start_session_cmd,

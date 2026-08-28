@@ -210,6 +210,8 @@ pub struct ProviderPreset {
     pub capabilities: Option<ProviderCapabilities>,
     #[serde(default)]
     pub native_web_search: Option<NativeWebSearchCapability>,
+    #[serde(default)]
+    pub streaming: crate::llm::ProviderStreamingConfig,
 }
 
 const PROVIDER_PRESETS_JSON: &str = include_str!("../../../shared/provider-presets.json");
@@ -863,6 +865,7 @@ mod tests {
         assert!(ids.contains(&"deepseek-v4-flash"));
         assert!(!ids.contains(&"deepseek-reasoner"));
         assert!(!ids.contains(&"deepseek-chat"));
+        assert!(deepseek.streaming.stream_idle_timeout_ms >= Some(300_000));
 
         let pro = deepseek
             .models

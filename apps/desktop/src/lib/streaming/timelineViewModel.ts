@@ -28,7 +28,7 @@ export interface TimelineSkillRef extends PersistedTraceSkillRef {
 
 export type TimelineSection =
   | { kind: 'thinking'; id: string; text: string }
-  | { kind: 'status'; id: string; text: string; tone?: TraceTone }
+  | { kind: 'status'; id: string; text: string; tone?: TraceTone; code?: string }
   | { kind: 'steering'; id: string; text: string }
   | { kind: 'tool'; id: string; toolCall: ToolCallEvent; trace: boolean }
   | { kind: 'reply'; id: string; text: string };
@@ -516,6 +516,7 @@ export function traceEventToTimelineSections(event: TraceEvent): TimelineSection
     id: event.id,
     text: event.text,
     tone: event.tone,
+    code: event.code,
   }];
 }
 

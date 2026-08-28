@@ -1,18 +1,18 @@
 use super::*;
 use crate::browser::BrowserState;
 use crate::desktop_agent_session::{
-    annotate_user_artifacts_with_execution_mode, build_desktop_agent_initial_task_artifacts,
-    build_desktop_agent_session_config, build_desktop_agent_session_dependencies,
-    build_desktop_agent_turn_config, build_desktop_agent_vision_user_content,
-    finalize_desktop_agent_stop, finalize_desktop_agent_turn, provider_config_egress_id,
-    provider_config_is_local, reconcile_authoritative_run_event_outbox_failure,
-    request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
-    run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
-    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
-    DesktopAgentSessionDependencyRequest, DesktopAgentStopFinalization,
-    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
-    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
-    DesktopRunningAgentStopRequest,
+    annotate_user_artifacts_with_execution_mode, apply_desktop_agent_turn_config_effects,
+    build_desktop_agent_initial_task_artifacts, build_desktop_agent_session_config,
+    build_desktop_agent_session_dependencies, build_desktop_agent_turn_config,
+    build_desktop_agent_vision_user_content, finalize_desktop_agent_stop,
+    finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
+    reconcile_authoritative_run_event_outbox_failure, request_desktop_running_agent_stop,
+    resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
+    run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
+    DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
+    DesktopAgentStopFinalization, DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization,
+    DesktopAgentTurnRequest, DesktopAgentTurnRuntime, DesktopAgentTurnStream,
+    DesktopAgentVisionUserContentRequest, DesktopRunningAgentStopRequest,
 };
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::llm::ReasoningEffort;
@@ -1163,6 +1163,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     orchestration_profile,
                     custom_orchestration: custom_orchestration.clone(),
                 });
+            apply_desktop_agent_turn_config_effects(&db, &desktop_turn_config.effects);
             record_turn_launch_metric(
                 &db,
                 &handle,
@@ -2274,6 +2275,21 @@ pub async fn agent_steer_cmd(
     agent_state
         .sessions
         .steer(&conversation_id, trimmed.to_string())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_lower_reasoning_and_retry_cmd(
+    agent_state: tauri::State<'_, AgentState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    agent_state
+        .sessions
+        .recover(
+            &conversation_id,
+            nexa_core::agent::AgentRecoveryControl::LowerReasoningAndRetry,
+        )
         .await
         .map_err(|error| error.to_string())
 }

@@ -7201,6 +7201,11 @@
     "requiresApiKey": true,
     "icon": "🔎",
     "description": "DeepSeek V4 Pro, Flash, and Flash Vision Experimental",
+    "streaming": {
+      "streamIdleTimeoutMs": 300000,
+      "connectTimeoutMs": 30000,
+      "streamMaxRetries": 2
+    },
     "capabilities": {
       "vision": false
     },

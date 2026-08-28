@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +17,7 @@ function run(command, args) {
   }
 }
 
+rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 

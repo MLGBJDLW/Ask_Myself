@@ -390,6 +390,8 @@ pub struct AgentConfig {
     pub delegation_limits_v2: Option<crate::agent::DelegationLimitsConfig>,
     pub tool_timeout_secs: Option<i64>,
     pub agent_timeout_secs: Option<i64>,
+    #[serde(default)]
+    pub provider_streaming: crate::llm::ProviderStreamingConfig,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -706,6 +708,8 @@ pub struct SaveAgentConfigInput {
     pub delegation_limits_v2: Option<crate::agent::DelegationLimitsConfig>,
     pub tool_timeout_secs: Option<i64>,
     pub agent_timeout_secs: Option<i64>,
+    #[serde(default)]
+    pub provider_streaming: crate::llm::ProviderStreamingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -876,6 +880,33 @@ fn validate_agent_config_numeric_overrides(input: &SaveAgentConfigInput) -> Resu
     // Zero intentionally disables the corresponding outer timeout.
     validate_nonnegative_u32_override("toolTimeoutSecs", input.tool_timeout_secs)?;
     validate_nonnegative_u32_override("agentTimeoutSecs", input.agent_timeout_secs)?;
+    for (field, value, maximum) in [
+        (
+            "providerStreaming.streamIdleTimeoutMs",
+            input.provider_streaming.stream_idle_timeout_ms,
+            3_600_000_u64,
+        ),
+        (
+            "providerStreaming.connectTimeoutMs",
+            input.provider_streaming.connect_timeout_ms,
+            300_000_u64,
+        ),
+    ] {
+        if value.is_some_and(|value| !(1_000..=maximum).contains(&value)) {
+            return Err(CoreError::InvalidInput(format!(
+                "{field} must be between 1000 and {maximum} when set"
+            )));
+        }
+    }
+    if input
+        .provider_streaming
+        .stream_max_retries
+        .is_some_and(|value| value > 10)
+    {
+        return Err(CoreError::InvalidInput(
+            "providerStreaming.streamMaxRetries must be between 0 and 10 when set".into(),
+        ));
+    }
     if let Some(thinking_budget) = input.thinking_budget {
         if thinking_budget < 0 || thinking_budget > i64::from(u32::MAX) {
             return Err(CoreError::InvalidInput(format!(
@@ -986,6 +1017,13 @@ fn parse_delegation_limits_v2(
     value: Option<String>,
 ) -> Option<crate::agent::DelegationLimitsConfig> {
     value.and_then(|json| serde_json::from_str(&json).ok())
+}
+
+fn parse_provider_streaming(value: Option<String>) -> crate::llm::ProviderStreamingConfig {
+    value
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default()
 }
 
 fn serialize_string_list(value: &[String]) -> Result<String, CoreError> {
@@ -4519,11 +4557,15 @@ impl Database {
             .map_err(|error| {
                 CoreError::InvalidInput(format!("Invalid delegation limits v2: {error}"))
             })?;
+        let provider_streaming_json =
+            serde_json::to_string(&input.provider_streaming).map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid provider streaming config: {error}"))
+            })?;
         let mut conn = self.conn();
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
-            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+            "INSERT INTO agent_configs (id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json, provider_streaming_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 provider = excluded.provider,
@@ -4551,6 +4593,7 @@ impl Database {
                 provider_endpoint_id = excluded.provider_endpoint_id,
                 model_id = excluded.model_id,
                 delegation_limits_v2_json = excluded.delegation_limits_v2_json,
+                provider_streaming_json = excluded.provider_streaming_json,
                 updated_at = datetime('now')",
             rusqlite::params![
                 &id,
@@ -4580,6 +4623,7 @@ impl Database {
                 &provider_endpoint_id,
                 &model_id,
                 &delegation_limits_v2_json,
+                &provider_streaming_json,
             ],
         )?;
         crate::settings_schema_v2::sync_legacy_agent_config_in_transaction(&transaction, &id)?;
@@ -4593,13 +4637,14 @@ impl Database {
     pub fn list_agent_configs(&self) -> Result<Vec<AgentConfig>, CoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json, provider_streaming_json
              FROM agent_configs ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             let subagent_allowed_tools_json: Option<String> = row.get(19)?;
             let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
             let delegation_limits_v2_json: Option<String> = row.get(28)?;
+            let provider_streaming_json: Option<String> = row.get(29)?;
             Ok(AgentConfig {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -4633,6 +4678,7 @@ impl Database {
                 delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                 tool_timeout_secs: row.get(24)?,
                 agent_timeout_secs: row.get(25)?,
+                provider_streaming: parse_provider_streaming(provider_streaming_json),
             })
         })?;
         let mut results = Vec::new();
@@ -4646,13 +4692,14 @@ impl Database {
     pub fn get_agent_config(&self, id: &str) -> Result<AgentConfig, CoreError> {
         let conn = self.conn();
         let config = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json, provider_streaming_json
              FROM agent_configs WHERE id = ?1",
             rusqlite::params![id],
             |row| {
                 let subagent_allowed_tools_json: Option<String> = row.get(19)?;
                 let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
                 let delegation_limits_v2_json: Option<String> = row.get(28)?;
+                let provider_streaming_json: Option<String> = row.get(29)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -4686,6 +4733,7 @@ impl Database {
                     delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                     tool_timeout_secs: row.get(24)?,
                     agent_timeout_secs: row.get(25)?,
+                    provider_streaming: parse_provider_streaming(provider_streaming_json),
                 })
             },
         )
@@ -4743,13 +4791,14 @@ impl Database {
     pub fn get_default_agent_config(&self) -> Result<Option<AgentConfig>, CoreError> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json
+            "SELECT id, name, provider, api_key, base_url, model, temperature, max_tokens, context_window, is_default, reasoning_enabled, thinking_budget, reasoning_effort, created_at, updated_at, max_iterations, summarization_model, summarization_provider, image_generation_model, subagent_allowed_tools_json, subagent_allowed_skill_ids_json, subagent_max_parallel, subagent_max_calls_per_turn, subagent_token_budget, tool_timeout_secs, agent_timeout_secs, provider_endpoint_id, model_id, delegation_limits_v2_json, provider_streaming_json
              FROM agent_configs WHERE is_default = 1 LIMIT 1",
             [],
             |row| {
                 let subagent_allowed_tools_json: Option<String> = row.get(19)?;
                 let subagent_allowed_skill_ids_json: Option<String> = row.get(20)?;
                 let delegation_limits_v2_json: Option<String> = row.get(28)?;
+                let provider_streaming_json: Option<String> = row.get(29)?;
                 Ok(AgentConfig {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -4783,6 +4832,7 @@ impl Database {
                     delegation_limits_v2: parse_delegation_limits_v2(delegation_limits_v2_json),
                     tool_timeout_secs: row.get(24)?,
                     agent_timeout_secs: row.get(25)?,
+                    provider_streaming: parse_provider_streaming(provider_streaming_json),
                 })
             },
         );
@@ -5238,6 +5288,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
         }
     }
 
@@ -5306,6 +5357,35 @@ mod tests {
             db.save_agent_config(&input),
             Err(CoreError::InvalidInput(message)) if message.contains("toolTimeoutSecs")
         ));
+    }
+
+    #[test]
+    fn agent_config_round_trips_provider_streaming_overrides() {
+        let db = Database::open_memory().unwrap();
+        let mut input = credential_contract_input("https://example.com/v1", "sk-test");
+        input.provider = "custom".into();
+        input.model = "private-model".into();
+        input.provider_streaming = crate::llm::ProviderStreamingConfig {
+            stream_idle_timeout_ms: Some(420_000),
+            connect_timeout_ms: Some(25_000),
+            stream_max_retries: Some(3),
+        };
+
+        let saved = db.save_agent_config(&input).expect("save streaming config");
+        assert_eq!(saved.provider_streaming, input.provider_streaming);
+        assert_eq!(
+            db.get_agent_config(&saved.id)
+                .expect("reload streaming config")
+                .provider_streaming,
+            input.provider_streaming
+        );
+
+        input.provider_streaming.stream_idle_timeout_ms = Some(999);
+        assert!(db
+            .save_agent_config(&input)
+            .expect_err("unsafe idle timeout must fail")
+            .to_string()
+            .contains("streamIdleTimeoutMs"));
     }
 
     #[test]
@@ -7002,6 +7082,7 @@ mod tests {
                 delegation_limits_v2: Some(delegation_limits_v2.clone()),
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
         assert_eq!(config.name, "My GPT-4");
@@ -7048,6 +7129,7 @@ mod tests {
                 delegation_limits_v2: Some(delegation_limits_v2.clone()),
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
         assert_eq!(updated.name, "Renamed");
@@ -7091,6 +7173,7 @@ mod tests {
                 delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
 
@@ -7132,6 +7215,7 @@ mod tests {
                 delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
 
@@ -7223,6 +7307,7 @@ mod tests {
                 delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
 
@@ -7255,6 +7340,7 @@ mod tests {
                 delegation_limits_v2: None,
                 tool_timeout_secs: None,
                 agent_timeout_secs: None,
+                provider_streaming: Default::default(),
             })
             .unwrap();
 

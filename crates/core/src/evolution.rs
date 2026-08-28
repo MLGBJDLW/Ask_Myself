@@ -1539,6 +1539,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
         })
         .unwrap();
 

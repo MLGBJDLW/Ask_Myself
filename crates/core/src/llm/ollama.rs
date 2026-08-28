@@ -15,7 +15,7 @@ use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
     FinishReason, LlmProvider, Message, ProviderConfig, ProviderStreamEvent, Role, StreamChunk,
-    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
 };
 use crate::error::CoreError;
 use std::sync::Arc;
@@ -285,6 +285,7 @@ fn parse_finish_reason(resp: &OllamaResponse) -> FinishReason {
 async fn parse_ollama_ndjson_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -294,7 +295,7 @@ async fn parse_ollama_ndjson_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "Ollama NDJSON stream",
     )
     .await?
@@ -513,6 +514,10 @@ impl LlmProvider for OllamaProvider {
         "ollama"
     }
 
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.config.streaming.stream_max_retries
+    }
+
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let url = format!("{}/api/tags", self.base_url());
 
@@ -639,12 +644,13 @@ impl LlmProvider for OllamaProvider {
         let (tx, rx) = mpsc::channel(64);
 
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_ollama_ndjson_stream(response, parser_tx) => result,
+                result = parse_ollama_ndjson_stream(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());

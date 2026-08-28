@@ -174,6 +174,21 @@ export function AgentConfigForm({
   const [contextWindow, setContextWindow] = useState<number | null>(
     config?.contextWindow ?? null,
   );
+  const [streamIdleTimeoutMs, setStreamIdleTimeoutMs] = useState<number | null>(
+    config?.providerStreaming?.streamIdleTimeoutMs
+      ?? initialPreset?.streaming?.streamIdleTimeoutMs
+      ?? null,
+  );
+  const [connectTimeoutMs, setConnectTimeoutMs] = useState<number | null>(
+    config?.providerStreaming?.connectTimeoutMs
+      ?? initialPreset?.streaming?.connectTimeoutMs
+      ?? null,
+  );
+  const [streamMaxRetries, setStreamMaxRetries] = useState<number | null>(
+    config?.providerStreaming?.streamMaxRetries
+      ?? initialPreset?.streaming?.streamMaxRetries
+      ?? null,
+  );
   const [isDefault, setIsDefault] = useState(config?.isDefault ?? false);
   const [reasoningEnabled, setReasoningEnabled] = useState<boolean | null>(
     config?.reasoningEnabled ?? null,
@@ -281,6 +296,20 @@ export function AgentConfigForm({
     temperature: config?.temperature ?? 0.3,
     maxTokens: config?.maxTokens ?? null,
     contextWindow: config?.contextWindow ?? null,
+    providerStreaming: {
+      streamIdleTimeoutMs:
+        config?.providerStreaming?.streamIdleTimeoutMs
+        ?? initialPreset?.streaming?.streamIdleTimeoutMs
+        ?? null,
+      connectTimeoutMs:
+        config?.providerStreaming?.connectTimeoutMs
+        ?? initialPreset?.streaming?.connectTimeoutMs
+        ?? null,
+      streamMaxRetries:
+        config?.providerStreaming?.streamMaxRetries
+        ?? initialPreset?.streaming?.streamMaxRetries
+        ?? null,
+    },
     isDefault: config?.isDefault ?? false,
     reasoningEnabled: config?.reasoningEnabled ?? null,
     thinkingBudget: config?.thinkingBudget ?? null,
@@ -681,6 +710,11 @@ export function AgentConfigForm({
         temperature,
         maxTokens,
         contextWindow: contextWindow,
+        providerStreaming: {
+          streamIdleTimeoutMs,
+          connectTimeoutMs,
+          streamMaxRetries,
+        },
         isDefault,
         reasoningEnabled: normalizedReasoningEnabled,
         thinkingBudget: normalizedThinkingBudget,
@@ -729,6 +763,9 @@ export function AgentConfigForm({
       temperature,
       maxTokens,
       contextWindow,
+      streamIdleTimeoutMs,
+      connectTimeoutMs,
+      streamMaxRetries,
       isDefault,
       reasoningEnabled,
       reasoningAlwaysOn,
@@ -862,8 +899,16 @@ export function AgentConfigForm({
         <NexaSelect
           value={provider}
           onChange={(e) => {
-            setProvider(e.target.value as ProviderType);
+            const nextProvider = e.target.value as ProviderType;
+            const nextPreset = findProviderPreset({
+              provider: nextProvider,
+              baseUrl: null,
+            });
+            setProvider(nextProvider);
             setContextWindow(null);
+            setStreamIdleTimeoutMs(nextPreset?.streaming?.streamIdleTimeoutMs ?? null);
+            setConnectTimeoutMs(nextPreset?.streaming?.connectTimeoutMs ?? null);
+            setStreamMaxRetries(nextPreset?.streaming?.streamMaxRetries ?? null);
           }}
           className="w-full h-10 bg-surface-1 border border-border rounded-md text-sm text-text-primary px-3.5 transition-all duration-fast ease-out hover:border-border-hover focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none cursor-pointer"
         >
@@ -1100,6 +1145,70 @@ export function AgentConfigForm({
             <p className="text-xs text-text-tertiary">
               {t("settings.contextWindowHelp")}
             </p>
+          </div>
+
+          <div className="space-y-2 border-t border-border/70 pt-4">
+            <div>
+              <p className="text-sm font-medium text-text-primary">
+                {t("settings.providerStreaming")}
+              </p>
+              <p className="text-xs text-text-tertiary">
+                {t("settings.providerStreamingHelp")}
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  {t("settings.streamIdleTimeoutMs")}
+                </label>
+                <Input
+                  type="number"
+                  value={streamIdleTimeoutMs ?? ""}
+                  onChange={(event) => {
+                    const value = event.target.value.trim();
+                    setStreamIdleTimeoutMs(value ? Number.parseInt(value, 10) || null : null);
+                  }}
+                  placeholder="300000"
+                  min={1000}
+                  max={3600000}
+                  step={1000}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  {t("settings.connectTimeoutMs")}
+                </label>
+                <Input
+                  type="number"
+                  value={connectTimeoutMs ?? ""}
+                  onChange={(event) => {
+                    const value = event.target.value.trim();
+                    setConnectTimeoutMs(value ? Number.parseInt(value, 10) || null : null);
+                  }}
+                  placeholder="10000"
+                  min={1000}
+                  max={300000}
+                  step={1000}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  {t("settings.streamMaxRetries")}
+                </label>
+                <Input
+                  type="number"
+                  value={streamMaxRetries ?? ""}
+                  onChange={(event) => {
+                    const value = event.target.value.trim();
+                    setStreamMaxRetries(value ? Number.parseInt(value, 10) || 0 : null);
+                  }}
+                  placeholder="2"
+                  min={0}
+                  max={10}
+                  step={1}
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}

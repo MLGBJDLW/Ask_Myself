@@ -233,13 +233,17 @@ fn provider_observability_fragment(value: &serde_json::Value) -> Option<serde_js
 // Mapping helpers
 // ---------------------------------------------------------------------------
 
-fn parse_finish_reason(s: &str) -> FinishReason {
+fn parse_finish_reason(s: &str) -> Result<FinishReason, CoreError> {
     match s {
-        "stop" => FinishReason::Stop,
-        "length" => FinishReason::Length,
-        "tool_calls" => FinishReason::ToolCalls,
-        "content_filter" => FinishReason::ContentFilter,
-        _ => FinishReason::Other,
+        "stop" => Ok(FinishReason::Stop),
+        "length" => Ok(FinishReason::Length),
+        "tool_calls" => Ok(FinishReason::ToolCalls),
+        "content_filter" => Ok(FinishReason::ContentFilter),
+        "insufficient_system_resource" => Err(CoreError::StreamIncomplete(
+            "DeepSeek interrupted the stream because capacity was unavailable during a peak period"
+                .to_string(),
+        )),
+        _ => Ok(FinishReason::Other),
     }
 }
 
@@ -662,7 +666,8 @@ async fn process_sse_line(
                 split_think_tags(&raw_delta, in_think_block, think_tag_buffer);
             let finish_reason = choice
                 .and_then(|c| c.finish_reason.as_deref())
-                .map(parse_finish_reason);
+                .map(parse_finish_reason)
+                .transpose()?;
             let usage = sse.usage.map(|u| {
                 let prompt_details = u.prompt_tokens_details;
                 let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
@@ -832,6 +837,14 @@ pub async fn parse_sse_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
 ) -> Result<(), CoreError> {
+    parse_sse_stream_with_idle_timeout(response, tx, DEFAULT_STREAM_IDLE_TIMEOUT).await
+}
+
+pub async fn parse_sse_stream_with_idle_timeout(
+    response: reqwest::Response,
+    tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    stream_idle_timeout: std::time::Duration,
+) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
     let mut in_think_block = false;
@@ -841,7 +854,7 @@ pub async fn parse_sse_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "OpenAI SSE stream",
     )
     .await?
@@ -952,6 +965,30 @@ mod tests {
             Some("raw internal reasoning")
         );
         assert_eq!(chunk.finish_reason, Some(FinishReason::Length));
+    }
+
+    #[tokio::test]
+    async fn deepseek_capacity_finish_is_a_recoverable_stream_interruption() {
+        let (tx, _rx) = mpsc::channel(2);
+        let mut in_think_block = false;
+        let mut think_tag_buffer = String::new();
+        let line =
+            r#"data: {"choices":[{"delta":{},"finish_reason":"insufficient_system_resource"}]}"#;
+
+        let error = process_sse_line(
+            line.to_string(),
+            &tx,
+            &mut in_think_block,
+            &mut think_tag_buffer,
+        )
+        .await
+        .expect_err("capacity interruption must enter stream recovery");
+
+        assert!(matches!(
+            error,
+            CoreError::StreamIncomplete(ref message)
+                if message.contains("DeepSeek") && message.contains("capacity")
+        ));
     }
 
     #[test]

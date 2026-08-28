@@ -46,6 +46,8 @@
   "fileDiffShowLess": "Show fewer files",
   "thinking": "Thinking",
   "stop": "Stop",
+  "lowerReasoningRetry": "Lower reasoning and retry",
+  "lowerReasoningRetrying": "Retrying with lower reasoning…",
   "retry": "Retry",
   "finalAnswerMissing": "The model ended before producing a final answer. Its reasoning was kept separate.",
   "retryFinalAnswer": "Generate final answer",

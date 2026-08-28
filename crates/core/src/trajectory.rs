@@ -16,6 +16,8 @@ use crate::task_orchestrator::{
 };
 use crate::trace::AgentTrace;
 use crate::workflow_automation::WorkflowAutomationSchedulerEvent;
+#[cfg(test)]
+use crate::workflow_automation::WorkflowSchedulerEventType;
 
 pub const TRAJECTORY_SCHEMA_VERSION: u16 = 1;
 
@@ -1095,7 +1097,7 @@ mod tests {
             .record_workflow_automation_scheduler_event(
                 Some(&automation.id),
                 Some(&workflow_run.id),
-                "launch_succeeded",
+                WorkflowSchedulerEventType::LaunchSucceeded,
                 Some("running"),
                 "Scheduler launched due workflow",
                 Some(&serde_json::json!({
@@ -1107,7 +1109,7 @@ mod tests {
         db.record_workflow_automation_scheduler_event(
             Some(&automation.id),
             None,
-            "skipped_active",
+            WorkflowSchedulerEventType::SkippedActive,
             Some("running"),
             "Unrelated automation-level skip",
             Some(&serde_json::json!({ "reason": "already active" })),

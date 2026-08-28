@@ -353,6 +353,59 @@ test('runtime wire schema accepts only the canonical Run Event envelope', () => 
   );
 });
 
+test('slow model status keeps its semantic recovery action until model progress resumes', () => {
+  const warning = runEvent({
+    eventSeq: 1,
+    kind: 'status',
+    label: 'The model is still reasoning (45s, about 120 tokens).',
+    payload: {
+      type: 'controllerStatus',
+      code: 'model_planning_slow',
+      content: 'The model is still reasoning (45s, about 120 tokens).',
+      tone: 'warning',
+    },
+  });
+  const projectedWarning = projectRunEventsToStreamState(taskRun('running'), [warning]);
+  const actionable = projectedWarning.traceEvents.find(event => (
+    event.kind === 'status' && event.code === 'model_planning_slow'
+  ));
+  assert(
+    actionable?.kind === 'status',
+    'slow-model warning should retain its semantic action code',
+  );
+  assertEqual(actionable.text, warning.label, 'slow-model progress text');
+
+  const projectedAnswer = projectRunEventsToStreamState(taskRun('running'), [
+    warning,
+    runEvent({
+      eventSeq: 2,
+      kind: 'outputDelta',
+      payload: { blockId: 'answer', channel: 'answer', offset: 0, delta: 'Ready.' },
+    }),
+  ]);
+  assert(
+    !projectedAnswer.traceEvents.some(event => (
+      event.kind === 'status' && event.code === 'model_planning_slow'
+    )),
+    'answer progress should retire the recovery banner',
+  );
+
+  const projectedRetry = projectRunEventsToStreamState(taskRun('running'), [
+    warning,
+    runEvent({
+      eventSeq: 2,
+      kind: 'streamReset',
+      payload: { reason: 'Retrying with lower reasoning.', discardSample: true },
+    }),
+  ]);
+  assert(
+    !projectedRetry.traceEvents.some(event => (
+      event.kind === 'status' && event.code === 'model_planning_slow'
+    )),
+    'request-side retry should retire the recovery banner',
+  );
+});
+
 function taskEvent(input: {
   id: string;
   eventType: string;

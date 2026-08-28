@@ -22,7 +22,6 @@ use super::{
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
     FinishReason, LlmProvider, Message, ProviderConfig, ProviderStreamEvent, ProviderType,
     ReasoningEffort, Role, StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
-    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
 use crate::provider_catalog::model_limits_from_catalog;
@@ -1582,6 +1581,7 @@ async fn process_gemini_sse_event(
 async fn parse_gemini_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -1592,7 +1592,7 @@ async fn parse_gemini_stream(
 
     'stream: while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "Gemini SSE stream",
     )
     .await?
@@ -1754,6 +1754,10 @@ fn with_google_api_key(request: reqwest::RequestBuilder, api_key: &str) -> reqwe
 impl LlmProvider for GeminiProvider {
     fn name(&self) -> &str {
         "google"
+    }
+
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.config.streaming.stream_max_retries
     }
 
     fn reasoning_replay_policy(
@@ -1938,12 +1942,13 @@ impl LlmProvider for GeminiProvider {
         info!("Gemini SSE stream started");
 
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_gemini_stream(response, parser_tx) => result,
+                result = parse_gemini_stream(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());

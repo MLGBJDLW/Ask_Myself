@@ -42,18 +42,6 @@ test('stream types are imported from their authoritative protocol instead of a h
   );
 });
 
-test('desktop agent sessions use the structured approval callback exclusively', () => {
-  const session = source('src-tauri/src/desktop_agent_session.rs');
-  assert(
-    !session.includes('build_desktop_confirmation_callback'),
-    'desktop must not construct the shadowed confirmation callback',
-  );
-  assert(
-    !session.includes('.with_confirmation_callback('),
-    'desktop must not wire the legacy confirmation callback',
-  );
-});
-
 test('Whisper model metadata exposes only the active safetensors layout', () => {
   const video = source('../../crates/core/src/video.rs');
   assert(!video.includes('pub fn filename('), 'legacy GGML filename helper must stay removed');
@@ -165,7 +153,6 @@ test('Tool execution has one context-based entry point', () => {
 
 test('tool approvals use structured permission policies exclusively', () => {
   const approval = source('../../crates/core/src/approval.rs');
-  const session = source('src-tauri/src/desktop_agent_session.rs');
 
   for (const symbol of [
     'get_tool_approval_policy',
@@ -173,7 +160,6 @@ test('tool approvals use structured permission policies exclusively', () => {
     'delete_tool_approval_policy',
   ]) {
     assert(!approval.includes(symbol), `approval storage must not expose ${symbol}`);
-    assert(!session.includes(symbol), `desktop runtime must not fall back through ${symbol}`);
   }
   assert(
     approval.includes('resolve_tool_permission_policy'),

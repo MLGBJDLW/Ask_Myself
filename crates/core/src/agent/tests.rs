@@ -2309,9 +2309,7 @@ impl LlmProvider for TruncatedToolCallProvider {
             });
             let has_replan_instruction = request.messages.iter().any(|message| {
                 message.role == Role::System
-                    && message
-                        .text_content()
-                        .contains("incomplete tool-call envelope")
+                    && message.text_content().contains("use append operations")
             });
             *self.saw_safe_replan_context.lock().unwrap() =
                 !has_tool_protocol_unit && has_replan_instruction;
@@ -5550,7 +5548,7 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
     );
     assert!(
         *saw_safe_replan_context.lock().unwrap(),
-        "the next model step must receive a controller replan without a fabricated tool unit"
+        "the next model step must receive a safe chunked-write replan without a fabricated tool unit"
     );
 }
 
@@ -6507,7 +6505,7 @@ async fn test_stream_incomplete_before_visible_output_replays_stream() {
 }
 
 #[tokio::test]
-async fn test_stream_incomplete_before_visible_output_recovers_with_non_streaming_retry() {
+async fn test_repeated_stream_incomplete_fails_without_non_streaming_fallback() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
@@ -6528,7 +6526,7 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
     let db = Database::open_memory().expect("in-memory db");
     let (tx, mut rx) = mpsc::channel(32);
 
-    let final_msg = executor
+    let error = executor
         .run(
             vec![],
             vec![ContentPart::Text {
@@ -6541,11 +6539,15 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
             0,
         )
         .await
-        .expect("run should recover");
+        .expect_err("repeated stream disconnects should fail explicitly");
 
-    assert_eq!(final_msg.text_content(), "complete answer");
+    assert!(matches!(
+        error,
+        CoreError::StreamIncomplete(ref message)
+            if message.contains("disconnected after 2 replay attempt")
+    ));
     assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
-    assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
 
     let mut saw_reset = false;
     let mut saw_error = false;
@@ -6564,12 +6566,12 @@ async fn test_stream_incomplete_before_visible_output_recovers_with_non_streamin
         }
     }
 
+    assert!(saw_reset, "expected stream resets before explicit failure");
     assert!(
-        saw_reset,
-        "expected partial stream reset before retry replay"
+        saw_error,
+        "exhausted stream recovery should surface an error"
     );
-    assert!(!saw_error, "stream recovery should not surface an error");
-    assert_eq!(visible_text, "complete answer");
+    assert_eq!(visible_text, "");
 }
 
 #[tokio::test]
@@ -7446,7 +7448,7 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
 
 #[derive(Clone, Copy)]
 enum ModelProgressScript {
-    ThinkingUntilRecovery,
+    ActiveThinkingThenAnswer,
     PendingStreamOpen,
 }
 
@@ -7490,13 +7492,28 @@ impl LlmProvider for ModelProgressScriptedProvider {
                 std::future::pending::<Result<BoxStream<'_, ProviderStreamEvent>, CoreError>>()
                     .await
             }
-            (ModelProgressScript::ThinkingUntilRecovery, 0) => {
+            (ModelProgressScript::ActiveThinkingThenAnswer, 0) => {
                 let thinking_chunks = Arc::clone(&self.thinking_chunks);
                 crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
                     0_u64,
                     move |tick| {
                         let thinking_chunks = Arc::clone(&thinking_chunks);
                         async move {
+                            if tick == 180 {
+                                return Some((
+                                    Ok(StreamChunk {
+                                        delta: "answer after active reasoning".to_string(),
+                                        tool_call_delta: None,
+                                        finish_reason: Some(FinishReason::Stop),
+                                        usage: Some(Usage::default()),
+                                        thinking_delta: None,
+                                    }),
+                                    tick + 1,
+                                ));
+                            }
+                            if tick > 180 {
+                                return None;
+                            }
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             thinking_chunks.fetch_add(1, Ordering::SeqCst);
                             Some((
@@ -7533,10 +7550,11 @@ impl LlmProvider for ModelProgressScriptedProvider {
 #[derive(Default)]
 struct ModelProgressEventCounts {
     thinking: usize,
-    recoveries: usize,
+    slow_warnings: usize,
     resets: usize,
     errors: usize,
     done: usize,
+    done_usage: Option<Usage>,
 }
 
 async fn drain_model_progress_events(
@@ -7546,12 +7564,15 @@ async fn drain_model_progress_events(
     while let Some(event) = rx.recv().await {
         match event {
             AgentEvent::Thinking { .. } => counts.thinking += 1,
-            AgentEvent::ControllerStatus { ref code, .. } if code == "model_progress_recovery" => {
-                counts.recoveries += 1;
+            AgentEvent::ControllerStatus { ref code, .. } if code == "model_planning_slow" => {
+                counts.slow_warnings += 1;
             }
             AgentEvent::StreamReset { .. } => counts.resets += 1,
             AgentEvent::Error { .. } => counts.errors += 1,
-            AgentEvent::Done { .. } => counts.done += 1,
+            AgentEvent::Done { usage_total, .. } => {
+                counts.done += 1;
+                counts.done_usage = Some(usage_total);
+            }
             _ => {}
         }
     }
@@ -7565,7 +7586,7 @@ async fn settle_paused_runtime() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn model_progress_qwen_thinking_stream_recovers_exactly_once() {
+async fn model_progress_qwen_thinking_stream_remains_alive_until_answer() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let thinking_chunks = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -7577,7 +7598,7 @@ async fn model_progress_qwen_thinking_stream_recovers_exactly_once() {
     }));
     let executor = AgentExecutor::new(
         Box::new(ModelProgressScriptedProvider {
-            script: ModelProgressScript::ThinkingUntilRecovery,
+            script: ModelProgressScript::ActiveThinkingThenAnswer,
             stream_calls: Arc::clone(&stream_calls),
             thinking_chunks: Arc::clone(&thinking_chunks),
             requests: Arc::clone(&requests),
@@ -7616,15 +7637,18 @@ async fn model_progress_qwen_thinking_stream_recovers_exactly_once() {
     tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
         .await
         .expect("the first provider stream must open");
-    for _ in 0..89 {
+    for _ in 0..179 {
         tokio::time::advance(Duration::from_secs(1)).await;
         settle_paused_runtime().await;
     }
 
-    assert!(!run.is_finished(), "the 90 second deadline fired too early");
+    assert!(
+        !run.is_finished(),
+        "an active reasoning stream must remain under user control"
+    );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
     assert!(
-        thinking_chunks.load(Ordering::SeqCst) >= 80,
+        thinking_chunks.load(Ordering::SeqCst) >= 170,
         "the scripted stream must stay active with thinking-only chunks"
     );
 
@@ -7632,32 +7656,108 @@ async fn model_progress_qwen_thinking_stream_recovers_exactly_once() {
     settle_paused_runtime().await;
     let final_message = tokio::time::timeout(Duration::from_secs(1), run)
         .await
-        .expect("the recovery sample must complete immediately")
+        .expect("the active stream must complete immediately after its answer")
         .expect("agent run task")
-        .expect("one bounded recovery should succeed");
+        .expect("the original stream should succeed");
+    let event_counts = event_drain.await.expect("agent event drain");
+
+    assert_eq!(
+        final_message.text_content(),
+        "answer after active reasoning"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(event_counts.slow_warnings, 1);
+    assert_eq!(event_counts.resets, 0);
+    assert_eq!(event_counts.errors, 0);
+    assert_eq!(event_counts.done, 1);
+    assert!(event_counts.thinking >= 170);
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 1, "active streams must not be replayed");
+    assert_eq!(captured[0].reasoning_enabled, Some(true));
+    assert_eq!(captured[0].reasoning_effort, Some(ReasoningEffort::XHigh));
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_progress_user_recovery_restarts_with_request_side_controls() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let thinking_chunks = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let invocation_started = Arc::new(Notify::new());
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let executor = AgentExecutor::new(
+        Box::new(ModelProgressScriptedProvider {
+            script: ModelProgressScript::ActiveThinkingThenAnswer,
+            stream_calls: Arc::clone(&stream_calls),
+            thinking_chunks,
+            requests: Arc::clone(&requests),
+            invocation_started: Arc::clone(&invocation_started),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("qwen3.8-max".to_string()),
+            provider_type: Some(ProviderType::Qwen),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::XHigh),
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+    let db = Database::open_memory().expect("in-memory db");
+    let run_db = db.clone();
+    let (tx, rx) = mpsc::channel(64);
+    let event_drain = tokio::spawn(drain_model_progress_events(rx));
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text {
+                    text: "Inspect the active model stream.".to_string(),
+                }],
+                &run_db,
+                None,
+                None,
+                tx,
+                0,
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
+        .await
+        .expect("the first provider stream must open");
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settle_paused_runtime().await;
+    steering_tx
+        .send(AgentSteeringMessage::recovery(
+            AgentRecoveryControl::LowerReasoningAndRetry,
+        ))
+        .expect("recovery control send");
+    settle_paused_runtime().await;
+
+    let final_message = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("the controlled retry must complete")
+        .expect("agent run task")
+        .expect("controlled retry succeeds");
     let event_counts = event_drain.await.expect("agent event drain");
 
     assert_eq!(final_message.text_content(), "recovered answer");
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(event_counts.recoveries, 1);
     assert_eq!(event_counts.resets, 1);
     assert_eq!(event_counts.errors, 0);
-    assert_eq!(event_counts.done, 1);
-    assert!(event_counts.thinking >= 80);
-
+    let done_usage = event_counts.done_usage.as_ref().expect("final usage event");
+    assert!(
+        done_usage.prompt_tokens > 0 && done_usage.total_tokens >= done_usage.prompt_tokens,
+        "the discarded physical sample must count toward prompt and total usage"
+    );
     let captured = requests.lock().unwrap();
-    assert_eq!(captured.len(), 2, "only one physical retry is permitted");
-    let recovery = &captured[1];
-    assert_eq!(recovery.max_tokens, Some(4096));
-    assert_eq!(recovery.reasoning_enabled, Some(false));
-    assert_eq!(recovery.reasoning_effort, None);
-    assert!(recovery.messages.iter().any(|message| {
-        message.role == Role::System
-            && message
-                .text_content()
-                .contains("## Model Progress Recovery")
-    }));
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].reasoning_enabled, Some(true));
+    assert_eq!(captured[0].reasoning_effort, Some(ReasoningEffort::XHigh));
+    assert_eq!(captured[1].reasoning_enabled, Some(false));
+    assert_eq!(captured[1].reasoning_effort, None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -7736,21 +7836,21 @@ async fn model_progress_pending_stream_open_stops_without_executing_tools() {
     assert!(elapsed <= Duration::from_secs(91));
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(event_counts.recoveries, 0);
+    assert_eq!(event_counts.slow_warnings, 0);
     assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 1);
     assert_eq!(event_counts.done, 0);
 }
 
 #[tokio::test(start_paused = true)]
-async fn model_progress_direct_kimi_k3_recovery_uses_low_effort() {
+async fn model_progress_direct_kimi_k3_keeps_requested_effort_while_active() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let thinking_chunks = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let invocation_started = Arc::new(Notify::new());
     let executor = AgentExecutor::new(
         Box::new(ModelProgressScriptedProvider {
-            script: ModelProgressScript::ThinkingUntilRecovery,
+            script: ModelProgressScript::ActiveThinkingThenAnswer,
             stream_calls: Arc::clone(&stream_calls),
             thinking_chunks,
             requests: Arc::clone(&requests),
@@ -7788,35 +7888,34 @@ async fn model_progress_direct_kimi_k3_recovery_uses_low_effort() {
     tokio::time::timeout(Duration::from_secs(1), invocation_started.notified())
         .await
         .expect("the first Kimi stream must open");
-    for _ in 0..150 {
+    for _ in 0..180 {
         tokio::time::advance(Duration::from_secs(1)).await;
         settle_paused_runtime().await;
     }
     let final_message = tokio::time::timeout(Duration::from_secs(1), run)
         .await
-        .expect("the low-effort recovery must complete immediately")
+        .expect("the active Kimi stream must complete immediately after its answer")
         .expect("agent run task")
-        .expect("Kimi recovery should succeed");
+        .expect("Kimi stream should succeed without replay");
     let event_counts = event_drain.await.expect("agent event drain");
 
-    assert_eq!(final_message.text_content(), "recovered answer");
-    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(event_counts.recoveries, 1);
-    assert_eq!(event_counts.resets, 1);
+    assert_eq!(
+        final_message.text_content(),
+        "answer after active reasoning"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(event_counts.slow_warnings, 1);
+    assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 0);
 
     let captured = requests.lock().unwrap();
-    assert_eq!(captured.len(), 2, "Kimi also gets at most one recovery");
-    let recovery = &captured[1];
-    assert_eq!(recovery.max_tokens, Some(4096));
-    assert_eq!(recovery.reasoning_enabled, Some(true));
-    assert_eq!(recovery.reasoning_effort, Some(ReasoningEffort::Low));
-    assert!(recovery.messages.iter().any(|message| {
-        message.role == Role::System
-            && message
-                .text_content()
-                .contains("## Model Progress Recovery")
-    }));
+    assert_eq!(
+        captured.len(),
+        1,
+        "active Kimi streams must not be replayed"
+    );
+    assert_eq!(captured[0].reasoning_enabled, Some(true));
+    assert_eq!(captured[0].reasoning_effort, Some(ReasoningEffort::Max));
 }
 
 #[tokio::test(start_paused = true)]
@@ -7833,7 +7932,7 @@ async fn model_progress_cancellation_wins_the_deadline_race() {
     }));
     let executor = AgentExecutor::new(
         Box::new(ModelProgressScriptedProvider {
-            script: ModelProgressScript::ThinkingUntilRecovery,
+            script: ModelProgressScript::ActiveThinkingThenAnswer,
             stream_calls: Arc::clone(&stream_calls),
             thinking_chunks,
             requests: Arc::clone(&requests),
@@ -7877,9 +7976,8 @@ async fn model_progress_cancellation_wins_the_deadline_race() {
     }
     assert!(!run.is_finished());
 
-    // Cancellation becomes ready before `advance` yields. The paused clock is
-    // then moved onto the semantic deadline, so model_step observes both
-    // branches ready in the same biased select poll.
+    // Cancellation remains authoritative even while reasoning bytes continue
+    // to arrive and no semantic milestone deadline is armed.
     cancel_token.cancel();
     tokio::time::advance(Duration::from_secs(1)).await;
     settle_paused_runtime().await;
@@ -7894,7 +7992,7 @@ async fn model_progress_cancellation_wins_the_deadline_race() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(event_counts.recoveries, 0);
+    assert_eq!(event_counts.slow_warnings, 1);
     assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 1);
     assert_eq!(event_counts.done, 0);

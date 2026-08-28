@@ -117,6 +117,9 @@ impl AgentExecutor {
 
         let mut steering_texts = Vec::with_capacity(drained.len());
         for steering in drained {
+            if steering.recovery_control.is_some() {
+                continue;
+            }
             let text = steering.content.trim().to_string();
             if text.is_empty() && steering.parts.is_empty() {
                 continue;

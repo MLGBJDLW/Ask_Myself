@@ -19,11 +19,11 @@ use super::reasoning_profile::{
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
-    serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
-    CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
-    ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus, ProviderStreamEvent,
-    ProviderType, ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk, ToolCallRequest,
-    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    serialized_json_body, streaming::parse_sse_stream_with_idle_timeout, with_request_timeout,
+    CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider, Message,
+    ProviderConfig, ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus,
+    ProviderStreamEvent, ProviderType, ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk,
+    ToolCallRequest, ToolDefinition, Usage,
 };
 #[cfg(test)]
 use super::{CacheBoundaryHint, PromptStability};
@@ -1737,8 +1737,9 @@ fn responses_usage_from_value(usage_value: serde_json::Value) -> Usage {
 }
 
 /// Single state machine for projecting one Responses stream into executable
-/// agent events. Tool arguments remain provisional until a provider completion
-/// event supplies a complete JSON object.
+/// agent events. Argument deltas are projected for preview, but remain
+/// provisional until a provider completion event supplies a complete JSON
+/// object and confirms that the streamed prefix was authoritative.
 #[derive(Default)]
 struct ResponsesAssembler {
     answer: String,
@@ -1855,6 +1856,7 @@ fn project_responses_client_tool_event(
         projection
             .client_tool_item_ids
             .insert(item_id.to_string(), call_id.to_string());
+        let initial_arguments = provisional_arguments.clone();
         projection.client_tools.insert(
             call_id.to_string(),
             ResponsesClientToolAssembly {
@@ -1866,7 +1868,7 @@ fn project_responses_client_tool_event(
         return Ok(Some(vec![client_tool_stream_event(
             call_id.to_string(),
             Some(name.to_string()),
-            String::new(),
+            initial_arguments,
             index,
         )]));
     }
@@ -1934,7 +1936,12 @@ fn project_responses_client_tool_event(
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         state.provisional_arguments.push_str(delta);
-        return Ok(Some(Vec::new()));
+        return Ok(Some(vec![client_tool_stream_event(
+            call_id,
+            None,
+            delta.to_string(),
+            state.index.or(index),
+        )]));
     }
 
     let completed_arguments = value
@@ -1959,17 +1966,30 @@ fn project_responses_client_tool_event(
     if state.arguments_emitted {
         return Ok(Some(Vec::new()));
     }
+    let remaining_arguments = completed_arguments
+        .strip_prefix(&state.provisional_arguments)
+        .ok_or_else(|| {
+            CoreError::StreamIncomplete(format!(
+                "Responses function call {call_id} completed with arguments that conflict with its streamed prefix"
+            ))
+        })?
+        .to_string();
+    state.provisional_arguments = completed_arguments;
     state.arguments_emitted = true;
     let name = emit_name
         .then(|| item.get("name").and_then(serde_json::Value::as_str))
         .flatten()
         .map(str::to_string);
-    Ok(Some(vec![client_tool_stream_event(
-        call_id,
-        name,
-        completed_arguments,
-        state.index.or(index),
-    )]))
+    Ok(Some(if remaining_arguments.is_empty() {
+        Vec::new()
+    } else {
+        vec![client_tool_stream_event(
+            call_id,
+            name,
+            remaining_arguments,
+            state.index.or(index),
+        )]
+    }))
 }
 
 fn required_responses_tool_field<'a>(
@@ -2055,6 +2075,15 @@ fn finalize_terminal_client_tools(
             }
         };
         state.final_arguments = Some(authoritative.clone());
+        let remaining_arguments = authoritative
+            .strip_prefix(&state.provisional_arguments)
+            .ok_or_else(|| {
+                CoreError::StreamIncomplete(format!(
+                    "Responses function call {call_id} terminal arguments conflicted with its streamed prefix"
+                ))
+            })?
+            .to_string();
+        state.provisional_arguments = authoritative;
 
         if let Some(item_id) = item
             .get("id")
@@ -2067,12 +2096,14 @@ fn finalize_terminal_client_tools(
         }
         if !state.arguments_emitted {
             state.arguments_emitted = true;
-            events.push(client_tool_stream_event(
-                call_id,
-                (!existed).then_some(name),
-                authoritative,
-                state.index,
-            ));
+            if !remaining_arguments.is_empty() {
+                events.push(client_tool_stream_event(
+                    call_id,
+                    (!existed).then_some(name),
+                    remaining_arguments,
+                    state.index,
+                ));
+            }
         }
     }
     Ok(events)
@@ -2492,6 +2523,7 @@ async fn parse_responses_sse_stream(
     tx: mpsc::Sender<ProviderStreamEvent>,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
+    stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = Vec::new();
@@ -2500,7 +2532,7 @@ async fn parse_responses_sse_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "Responses SSE stream",
     )
     .await?
@@ -2720,12 +2752,13 @@ impl OpenAiProvider {
         let response = self.check_response(response).await?;
         let (tx, rx) = mpsc::channel(64);
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_responses_sse_stream(response, parser_tx, dialect, capability) => result,
+                result = parse_responses_sse_stream(response, parser_tx, dialect, capability, stream_idle_timeout) => result,
             };
             if let Err(error) = result {
                 transport.record_transport_failure(&error.to_string());
@@ -2753,6 +2786,10 @@ impl OpenAiProvider {
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
+    }
+
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.config.streaming.stream_max_retries
     }
 
     fn prompt_cache_profile(&self, model: &str) -> PromptCacheProfile {
@@ -3107,12 +3144,13 @@ impl LlmProvider for OpenAiProvider {
         info!("SSE stream started");
 
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_sse_stream(response, parser_tx) => result,
+                result = parse_sse_stream_with_idle_timeout(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());
@@ -3155,6 +3193,7 @@ mod tests {
             base_url: Some(base_url.to_string()),
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         }
     }
 
@@ -3779,6 +3818,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(1),
+            streaming: Default::default(),
         })
         .expect("provider");
 
@@ -3830,6 +3870,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(1),
+            streaming: Default::default(),
         })
         .expect("provider");
 
@@ -3860,6 +3901,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(2),
+            streaming: Default::default(),
         })
         .expect("provider");
         let capability = crate::model_catalog::NativeWebSearchCapability {
@@ -3992,6 +4034,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(2),
+            streaming: Default::default(),
         })
         .expect("provider");
         let capability = crate::model_catalog::NativeWebSearchCapability {
@@ -4441,7 +4484,7 @@ data: [DONE]
     }
 
     #[test]
-    fn responses_buffers_function_arguments_until_a_completion_event() {
+    fn responses_streams_provisional_arguments_and_completion_confirms_the_prefix() {
         let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
         let capability = crate::model_catalog::NativeWebSearchCapability {
             dialect,
@@ -4506,11 +4549,61 @@ data: [DONE]
             [ProviderStreamEvent::Chunk { chunk }]
                 if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta.is_empty())
         ));
-        assert!(delta.is_empty(), "partial JSON must stay provisional");
+        assert!(matches!(
+            delta.as_slice(),
+            [ProviderStreamEvent::Chunk { chunk }]
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "{\"path\":")
+        ));
         assert!(matches!(
             done.as_slice(),
             [ProviderStreamEvent::Chunk { chunk }]
-                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "{\"path\":\"README.md\"}")
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "\"README.md\"}")
+        ));
+
+        let mut conflicting = ResponsesAssembler::default();
+        project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "fc-conflict",
+                    "type": "function_call",
+                    "call_id": "call-conflict",
+                    "name": "read_file",
+                    "arguments": ""
+                }
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc-conflict",
+                "delta": "{\"path\":\"safe"
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        let error = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc-conflict",
+                "arguments": "{\"path\":\"other.md\"}"
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .expect_err("terminal arguments must extend the streamed prefix");
+        assert!(matches!(
+            error,
+            CoreError::StreamIncomplete(ref message)
+                if message.contains("conflict with its streamed prefix")
         ));
     }
 
@@ -4766,7 +4859,15 @@ data: [DONE]
             messages: vec![Message::text(Role::User, "make a docx"), assistant, tool],
             temperature: Some(0.4),
             max_tokens: Some(100),
-            tools: None,
+            tools: Some(vec![ToolDefinition {
+                name: "run_shell".to_string(),
+                description: "Run an approved command".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "program": { "type": "string" } },
+                    "required": ["program"]
+                }),
+            }]),
             stop: None,
             thinking_budget: None,
             reasoning_enabled: None,
@@ -4779,6 +4880,8 @@ data: [DONE]
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["tools"][0]["function"]["name"], "run_shell");
         assert_eq!(
             body["messages"][1]["reasoning_content"],
             "Need to check whether python-docx is installed."
@@ -5725,6 +5828,7 @@ data: [DONE]
             api_key: None,
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         };
         let trusted = ProviderConfig {
             provider_type: ProviderType::Qwen,
@@ -5734,6 +5838,7 @@ data: [DONE]
             api_key: None,
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         };
 
         let unknown_body = serde_json::to_value(build_request_body_with_config(

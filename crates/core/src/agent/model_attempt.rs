@@ -73,7 +73,6 @@ pub(super) enum ModelAttemptFailureStage {
     Connect,
     Stream,
     Completion,
-    NonStreamingFallback,
 }
 
 #[derive(Debug)]
@@ -146,17 +145,14 @@ enum AttemptPhase<'provider> {
     WaitingToRetryStream(Pin<Box<tokio::time::Sleep>>),
     Streaming(BoxStream<'provider, ProviderStreamEvent>),
     ReadyToComplete {
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     OpeningCompletion {
         future: CompletionFuture<'provider>,
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     WaitingToRetryCompletion {
         sleep: Pin<Box<tokio::time::Sleep>>,
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     Done,
@@ -221,7 +217,6 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         let initial_model_id = original_request.model.clone();
         let phase = if force_non_streaming {
             AttemptPhase::ReadyToComplete {
-                fallback_detail: None,
                 switched_to_non_streaming: false,
             }
         } else {
@@ -231,7 +226,8 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             provider,
             events,
             original_request,
-            policy: StreamRecoveryPolicy::default(),
+            policy: StreamRecoveryPolicy::default()
+                .with_stream_max_retries(provider.stream_max_retries()),
             phase,
             request_started_at: Instant::now(),
             candidate_sample_id: None,
@@ -463,24 +459,16 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     }
                 }
                 AttemptPhase::ReadyToComplete {
-                    ref fallback_detail,
                     switched_to_non_streaming,
                 } => {
-                    let fallback_detail = fallback_detail.clone();
-                    self.begin_completion(fallback_detail, switched_to_non_streaming);
+                    self.begin_completion(switched_to_non_streaming);
                 }
                 AttemptPhase::OpeningCompletion { .. } => {
-                    let (result, fallback_detail, switched_to_non_streaming) = match &mut self.phase
-                    {
+                    let (result, switched_to_non_streaming) = match &mut self.phase {
                         AttemptPhase::OpeningCompletion {
                             future,
-                            fallback_detail,
                             switched_to_non_streaming,
-                        } => (
-                            future.as_mut().await,
-                            fallback_detail.clone(),
-                            *switched_to_non_streaming,
-                        ),
+                        } => (future.as_mut().await, *switched_to_non_streaming),
                         _ => unreachable!("opening completion phase checked above"),
                     };
                     match result {
@@ -507,41 +495,29 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                             ConnectErrorAction::Retry(delay) => {
                                 self.phase = AttemptPhase::WaitingToRetryCompletion {
                                     sleep: Box::pin(tokio::time::sleep(delay)),
-                                    fallback_detail,
                                     switched_to_non_streaming,
                                 };
                             }
                             ConnectErrorAction::Finish(failure) => {
                                 self.phase = AttemptPhase::Done;
-                                let progress = progress_from_connect_failure(*failure);
-                                self.pending_progress = Some(match progress {
-                                    ModelAttemptProgress::Failed(mut failure) => {
-                                        apply_non_streaming_fallback_failure(
-                                            &mut failure,
-                                            fallback_detail.as_deref(),
-                                        );
-                                        ModelAttemptProgress::Failed(failure)
-                                    }
-                                    progress => progress,
-                                });
+                                self.pending_progress =
+                                    Some(progress_from_connect_failure(*failure));
                             }
                         },
                     }
                 }
                 AttemptPhase::WaitingToRetryCompletion { .. } => {
-                    let (fallback_detail, switched_to_non_streaming) = match &mut self.phase {
+                    let switched_to_non_streaming = match &mut self.phase {
                         AttemptPhase::WaitingToRetryCompletion {
                             sleep,
-                            fallback_detail,
                             switched_to_non_streaming,
                         } => {
                             sleep.as_mut().await;
-                            (fallback_detail.clone(), *switched_to_non_streaming)
+                            *switched_to_non_streaming
                         }
                         _ => unreachable!("completion retry phase checked above"),
                     };
                     self.phase = AttemptPhase::ReadyToComplete {
-                        fallback_detail,
                         switched_to_non_streaming,
                     };
                 }
@@ -587,11 +563,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             ));
     }
 
-    fn begin_completion(
-        &mut self,
-        fallback_detail: Option<String>,
-        switched_to_non_streaming: bool,
-    ) {
+    fn begin_completion(&mut self, switched_to_non_streaming: bool) {
         let request = self.request_for_invocation();
         self.candidate_sample_id = Some(Uuid::new_v4().to_string());
         info!(
@@ -601,7 +573,6 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         let provider = self.provider;
         self.phase = AttemptPhase::OpeningCompletion {
             future: Box::pin(async move { provider.complete(&request).await }),
-            fallback_detail,
             switched_to_non_streaming,
         };
     }
@@ -774,31 +745,22 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 self.phase =
                     AttemptPhase::WaitingToRetryStream(Box::pin(tokio::time::sleep(delay)));
             }
-            StreamRecoveryDecision::NonStreamingFallback { reset_reason, .. } => {
-                self.queue_connection_state(ConnectionNotice {
-                    state: ConnectionStateKind::Degraded,
-                    error_category: Some(ConnectionErrorCategory::Network),
-                    attempt: self.disconnect_retries,
-                    max_attempts: self.policy.max_disconnect_retries(),
-                    delay: None,
-                    recoverable: true,
-                    accepted: self.accepted.clone(),
-                });
-                self.pending_agent_events
-                    .push_back(AgentEvent::StreamReset {
-                        reason: reset_reason.clone(),
-                        discard_sample: true,
-                    });
-                self.pending_recovery = Some(RecoverySignal {
-                    attempt: self.disconnect_retries,
-                    max_attempts: self.policy.max_disconnect_retries(),
-                });
-                self.discard_resettable_sample();
-                self.connect_retries = 0;
-                self.phase = AttemptPhase::ReadyToComplete {
-                    fallback_detail: Some(detail),
-                    switched_to_non_streaming: true,
-                };
+            StreamRecoveryDecision::GiveUp {
+                user_message,
+                trace_message,
+            } => {
+                self.queue_failed(
+                    ConnectionErrorCategory::Network,
+                    self.disconnect_retries,
+                    self.policy.max_disconnect_retries(),
+                );
+                self.phase = AttemptPhase::Done;
+                self.pending_progress = Some(ModelAttemptProgress::Failed(self.failure(
+                    ModelAttemptFailureStage::Stream,
+                    CoreError::StreamIncomplete(trace_message.clone()),
+                    Some(user_message),
+                    Some(trace_message),
+                )));
             }
         }
     }
@@ -1062,23 +1024,6 @@ fn progress_from_connect_failure(failure: ModelAttemptFailure) -> ModelAttemptPr
             timing,
         }),
     }
-}
-
-fn apply_non_streaming_fallback_failure(
-    failure: &mut ModelAttemptFailure,
-    fallback_detail: Option<&str>,
-) {
-    let Some(detail) = fallback_detail else {
-        return;
-    };
-    let fallback_error = format!(
-        "Stream interrupted and non-streaming retry failed: {}",
-        failure.error
-    );
-    failure.stage = ModelAttemptFailureStage::NonStreamingFallback;
-    failure.user_message = fallback_error;
-    failure.trace_message = format!("{detail}; fallback failed: {}", failure.error);
-    failure.error = CoreError::StreamIncomplete(failure.trace_message.clone());
 }
 
 fn chunk_is_visible(chunk: &crate::llm::StreamChunk) -> bool {
@@ -1393,7 +1338,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn disconnect_before_visible_output_reconnects_then_switches_to_completion() {
+    async fn disconnect_before_visible_output_reconnects_then_returns_control() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let route_queries = Arc::new(Mutex::new(0));
         let provider = ScriptedProvider::boxed(
@@ -1422,12 +1367,12 @@ mod tests {
         expect_stream_opened(&mut attempt).await;
         expect_stream_opened(&mut attempt).await;
         expect_stream_opened(&mut attempt).await;
-        let ModelAttemptProgress::Completion(completion) = attempt.next().await else {
-            panic!("completion fallback should succeed")
+        let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
+            panic!("disconnect exhaustion should return an explicit failure")
         };
-        assert_eq!(completion.response.content, "fallback answer");
-        assert!(completion.switched_to_non_streaming);
-        assert_eq!(requests.lock().unwrap().len(), 4);
+        assert!(failure.user_message.contains("disconnected repeatedly"));
+        assert!(matches!(failure.error, CoreError::StreamIncomplete(_)));
+        assert_eq!(requests.lock().unwrap().len(), 3);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1878,6 +1823,9 @@ mod tests {
                 Invocation::Stream(Err(CoreError::RateLimited {
                     retry_after_secs: 7,
                 })),
+                Invocation::Stream(Err(CoreError::RateLimited {
+                    retry_after_secs: 7,
+                })),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -1887,7 +1835,7 @@ mod tests {
         let started_at = tokio::time::Instant::now();
 
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth rate limit should exhaust three retries")
+            panic!("fifth rate limit should exhaust four retries")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Connect);
@@ -1897,8 +1845,8 @@ mod tests {
                 retry_after_secs: 7
             }
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -1906,22 +1854,22 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(states.len(), 4);
-        for (index, state) in states[..3].iter().enumerate() {
+        assert_eq!(states.len(), 5);
+        for (index, state) in states[..4].iter().enumerate() {
             assert_eq!(state.state, ConnectionStateKind::Reconnecting);
             assert_eq!(
                 state.error_category,
                 Some(ConnectionErrorCategory::RateLimit)
             );
             assert_eq!(state.attempt, u32::try_from(index + 1).unwrap());
-            assert_eq!(state.max_attempts, 3);
+            assert_eq!(state.max_attempts, 4);
             assert!(state.next_retry_at.is_some());
             assert!(state.recoverable);
         }
-        assert_eq!(states[3].state, ConnectionStateKind::Failed);
-        assert_eq!(states[3].attempt, 3);
-        assert_eq!(states[3].max_attempts, 3);
-        assert!(!states[3].recoverable);
+        assert_eq!(states[4].state, ConnectionStateKind::Failed);
+        assert_eq!(states[4].attempt, 4);
+        assert_eq!(states[4].max_attempts, 4);
+        assert!(!states[4].recoverable);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2011,6 +1959,7 @@ mod tests {
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
                 Invocation::Stream(Ok(vec![terminal_rate_limit()])),
+                Invocation::Stream(Ok(vec![terminal_rate_limit()])),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -2020,11 +1969,11 @@ mod tests {
 
         expect_stream_opened(&mut attempt).await;
         let started_at = tokio::time::Instant::now();
-        for _ in 0..3 {
+        for _ in 0..4 {
             expect_stream_opened(&mut attempt).await;
         }
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth terminal rate limit should exhaust the shared retry budget")
+            panic!("fifth terminal rate limit should exhaust the shared retry budget")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Stream);
@@ -2034,8 +1983,8 @@ mod tests {
                 retry_after_secs: 7
             }
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -2043,26 +1992,26 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(states.len(), 4);
-        for (index, state) in states[..3].iter().enumerate() {
+        assert_eq!(states.len(), 5);
+        for (index, state) in states[..4].iter().enumerate() {
             assert_eq!(state.state, ConnectionStateKind::Reconnecting);
             assert_eq!(
                 state.error_category,
                 Some(ConnectionErrorCategory::RateLimit)
             );
             assert_eq!(state.attempt, u32::try_from(index + 1).unwrap());
-            assert_eq!(state.max_attempts, 3);
+            assert_eq!(state.max_attempts, 4);
             assert!(state.next_retry_at.is_some());
             assert!(state.recoverable);
         }
-        assert_eq!(states[3].state, ConnectionStateKind::Failed);
+        assert_eq!(states[4].state, ConnectionStateKind::Failed);
         assert_eq!(
-            states[3].error_category,
+            states[4].error_category,
             Some(ConnectionErrorCategory::RateLimit)
         );
-        assert_eq!(states[3].attempt, 3);
-        assert_eq!(states[3].max_attempts, 3);
-        assert!(!states[3].recoverable);
+        assert_eq!(states[4].attempt, 4);
+        assert_eq!(states[4].max_attempts, 4);
+        assert!(!states[4].recoverable);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2096,6 +2045,7 @@ mod tests {
                 metadata_then_rate_limit(),
                 metadata_then_rate_limit(),
                 metadata_then_rate_limit(),
+                metadata_then_rate_limit(),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -2105,7 +2055,7 @@ mod tests {
 
         expect_stream_opened(&mut attempt).await;
         let started_at = tokio::time::Instant::now();
-        for _ in 0..3 {
+        for _ in 0..4 {
             assert!(matches!(
                 attempt.next().await,
                 ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
@@ -2123,17 +2073,17 @@ mod tests {
             }) if chunk.usage.is_some() && !chunk_is_visible(chunk)
         ));
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth post-metadata rate limit should exhaust the shared retry budget")
+            panic!("fifth post-metadata rate limit should exhaust the shared retry budget")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Stream);
         assert!(matches!(failure.error, CoreError::RateLimited { .. }));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(21));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_secs(28));
 
         let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        assert_eq!(events.len(), 4);
-        for (index, event) in events[..3].iter().enumerate() {
+        assert_eq!(events.len(), 5);
+        for (index, event) in events[..4].iter().enumerate() {
             assert!(matches!(
                 event,
                 AgentEvent::ConnectionState { state }
@@ -2143,11 +2093,11 @@ mod tests {
             ));
         }
         assert!(matches!(
-            events[3],
+            events[4],
             AgentEvent::ConnectionState { ref state }
                 if state.state == ConnectionStateKind::Failed
                     && state.error_category == Some(ConnectionErrorCategory::RateLimit)
-                    && state.attempt == 3
+                    && state.attempt == 4
         ));
     }
 
@@ -2704,6 +2654,7 @@ mod tests {
                 Invocation::Complete(Err(CoreError::TransientLlm("reset two".to_string()))),
                 Invocation::Complete(Err(CoreError::TransientLlm("reset three".to_string()))),
                 Invocation::Complete(Err(CoreError::TransientLlm("give up".to_string()))),
+                Invocation::Complete(Err(CoreError::TransientLlm("give up".to_string()))),
             ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
@@ -2713,7 +2664,7 @@ mod tests {
         let started_at = tokio::time::Instant::now();
 
         let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
-            panic!("fourth completion failure should exhaust three retries")
+            panic!("fifth completion failure should exhaust four retries")
         };
 
         assert_eq!(failure.stage, ModelAttemptFailureStage::Completion);
@@ -2721,8 +2672,8 @@ mod tests {
             failure.error,
             CoreError::TransientLlm(ref message) if message == "give up"
         ));
-        assert_eq!(requests.lock().unwrap().len(), 4);
-        assert_eq!(started_at.elapsed(), Duration::from_secs(7));
+        assert_eq!(requests.lock().unwrap().len(), 5);
+        assert_eq!(started_at.elapsed(), Duration::from_millis(76_370));
 
         let states = std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|event| match event {
@@ -2733,6 +2684,7 @@ mod tests {
         assert_eq!(
             states.iter().map(|state| state.state).collect::<Vec<_>>(),
             vec![
+                ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,
                 ConnectionStateKind::Reconnecting,

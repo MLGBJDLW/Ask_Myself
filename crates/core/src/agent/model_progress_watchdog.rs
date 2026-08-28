@@ -1,9 +1,10 @@
-//! Progress watchdog for model planning before the first answer/tool action.
+//! Lightweight liveness policy around model execution.
 //!
-//! Provider stream activity is not the same as task progress. Long-reasoning
-//! models can emit thinking tokens indefinitely, keeping transport idle
-//! deadlines alive without producing an answer or tool call. This watchdog
-//! owns a separate semantic deadline and one bounded tool-first recovery.
+//! Transport activity is authoritative for stream liveness. This module only
+//! owns the deadlines that cannot be expressed by the transport adapter: the
+//! initial connection deadline and the absolute cap for provider-hosted tools
+//! that may already have side effects. Reasoning, answer, and tool-argument
+//! deltas are deliberately not assigned semantic milestone deadlines.
 
 use std::time::Duration;
 
@@ -14,38 +15,26 @@ use crate::llm::{ProviderType, ReasoningEffort};
 use crate::provider_catalog::model_capabilities_from_catalog;
 
 const DEFAULT_SOFT_WARNING: Duration = Duration::from_secs(45);
+const LONG_REASONER_SOFT_WARNING: Duration = Duration::from_secs(30);
 const LONG_REASONER_CONNECT_DEADLINE: Duration = Duration::from_secs(90);
 const DEFAULT_CONNECT_DEADLINE: Duration = Duration::from_secs(180);
 const LOCAL_MODEL_CONNECT_DEADLINE: Duration = Duration::from_secs(300);
-const DEFAULT_TOOL_FIRST_DEADLINE: Duration = Duration::from_secs(120);
-const DEFAULT_DIRECT_DEADLINE: Duration = Duration::from_secs(180);
-const LONG_REASONER_SOFT_WARNING: Duration = Duration::from_secs(30);
-const LONG_REASONER_TOOL_FIRST_DEADLINE: Duration = Duration::from_secs(90);
-const LONG_REASONER_DIRECT_DEADLINE: Duration = Duration::from_secs(150);
-const RECOVERY_DEADLINE: Duration = Duration::from_secs(60);
-const TOOL_ASSEMBLY_DEADLINE: Duration = Duration::from_secs(60);
-const ANSWER_STREAM_DEADLINE: Duration = Duration::from_secs(180);
-const HOSTED_TOOL_DEADLINE: Duration = Duration::from_secs(180);
+const HOSTED_TOOL_IDLE_DEADLINE: Duration = Duration::from_secs(180);
 const HOSTED_TOOL_HARD_DEADLINE: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ModelProgressPolicy {
     pub(super) soft_warning_after: Duration,
-    pub(super) first_progress_deadline: Duration,
-    pub(super) recovery_deadline: Duration,
-    pub(super) tool_assembly_deadline: Duration,
-    pub(super) answer_stream_deadline: Duration,
-    pub(super) hosted_tool_deadline: Duration,
+    pub(super) hosted_tool_idle_deadline: Duration,
     pub(super) connect_deadline: Duration,
-    pub(super) requires_tool_action: bool,
 }
 
 impl ModelProgressPolicy {
     pub(super) fn for_model(
         provider: Option<ProviderType>,
         model: &str,
-        route: AgentRouteKind,
-        has_executable_tools: bool,
+        _route: AgentRouteKind,
+        _has_executable_tools: bool,
     ) -> Self {
         let normalized = model.trim().to_ascii_lowercase();
         let catalog_limits = provider.and_then(|provider| {
@@ -73,27 +62,14 @@ impl ModelProgressPolicy {
             || normalized.contains("kimi-k3")
             || normalized.contains("qwen3.8-max")
             || normalized.contains("qwen3.8_max");
-        let tool_first_route = has_executable_tools
-            && !matches!(
-                route,
-                AgentRouteKind::DirectResponse | AgentRouteKind::ConversationRecall
-            );
+
         Self {
             soft_warning_after: if long_reasoner {
                 LONG_REASONER_SOFT_WARNING
             } else {
                 DEFAULT_SOFT_WARNING
             },
-            first_progress_deadline: match (long_reasoner, tool_first_route) {
-                (true, true) => LONG_REASONER_TOOL_FIRST_DEADLINE,
-                (true, false) => LONG_REASONER_DIRECT_DEADLINE,
-                (false, true) => DEFAULT_TOOL_FIRST_DEADLINE,
-                (false, false) => DEFAULT_DIRECT_DEADLINE,
-            },
-            recovery_deadline: RECOVERY_DEADLINE,
-            tool_assembly_deadline: TOOL_ASSEMBLY_DEADLINE,
-            answer_stream_deadline: ANSWER_STREAM_DEADLINE,
-            hosted_tool_deadline: HOSTED_TOOL_DEADLINE,
+            hosted_tool_idle_deadline: HOSTED_TOOL_IDLE_DEADLINE,
             connect_deadline: if matches!(
                 provider,
                 Some(ProviderType::Ollama | ProviderType::LmStudio)
@@ -104,7 +80,6 @@ impl ModelProgressPolicy {
             } else {
                 DEFAULT_CONNECT_DEADLINE
             },
-            requires_tool_action: tool_first_route,
         }
     }
 }
@@ -117,6 +92,8 @@ pub(super) struct ModelProgressRecoveryControls {
     pub(super) description: &'static str,
 }
 
+/// Request-side controls used by explicit user recovery and replay-safety
+/// recovery. They are never applied merely because an active stream is slow.
 pub(super) fn recovery_controls(
     provider: Option<ProviderType>,
     model: &str,
@@ -162,7 +139,7 @@ pub(super) fn recovery_controls(
         ) {
             "reasoning reduced to the lowest supported effort"
         } else {
-            "always-on reasoning bounded by the recovery deadline"
+            "always-on reasoning reduced to the lowest supported effort"
         },
     }
 }
@@ -170,17 +147,13 @@ pub(super) fn recovery_controls(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModelProgressDeadlineAction {
     StopConnecting,
-    RestartWithoutReasoning,
-    StopBeforeAction,
-    StopAfterVisibleOutput,
+    StopHostedTool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelProgressPhase {
     Connecting,
-    Planning,
-    ToolAssembly,
-    AnswerStreaming,
+    Active,
     HostedTool,
     Complete,
 }
@@ -188,10 +161,9 @@ enum ModelProgressPhase {
 pub(super) struct ModelProgressWatchdog {
     policy: ModelProgressPolicy,
     started_at: Instant,
-    deadline: Instant,
+    deadline: Option<Instant>,
     phase: ModelProgressPhase,
     warning_emitted: bool,
-    recovery_used: bool,
     hosted_tool_hard_deadline: Option<Instant>,
 }
 
@@ -215,40 +187,43 @@ impl ModelProgressWatchdog {
         Self {
             policy,
             started_at,
-            deadline: started_at + policy.connect_deadline,
+            deadline: Some(started_at + policy.connect_deadline),
             phase: ModelProgressPhase::Connecting,
             warning_emitted: false,
-            recovery_used: false,
             hosted_tool_hard_deadline: None,
         }
     }
 
     pub(super) fn deadline(&self) -> Option<Instant> {
-        (self.phase != ModelProgressPhase::Complete).then_some(self.deadline)
+        self.deadline
     }
 
     pub(super) fn arm(&mut self) {
         if self.phase == ModelProgressPhase::Connecting {
-            self.phase = ModelProgressPhase::Planning;
+            self.phase = ModelProgressPhase::Active;
             self.started_at = Instant::now();
-            self.deadline = self.started_at
-                + if self.recovery_used {
-                    self.policy.recovery_deadline
-                } else {
-                    self.policy.first_progress_deadline
-                };
+            self.deadline = None;
         }
     }
 
-    pub(super) fn reset_for_context_retry(&mut self) {
+    pub(super) fn reset_for_new_attempt(&mut self) {
         self.phase = ModelProgressPhase::Connecting;
         self.started_at = Instant::now();
-        self.deadline = self.started_at + self.policy.connect_deadline;
+        self.deadline = Some(self.started_at + self.policy.connect_deadline);
+        self.warning_emitted = false;
         self.hosted_tool_hard_deadline = None;
     }
 
+    pub(super) fn reset_for_context_retry(&mut self) {
+        self.reset_for_new_attempt();
+    }
+
+    pub(super) fn elapsed_seconds(&self) -> u64 {
+        Instant::now().duration_since(self.started_at).as_secs()
+    }
+
     pub(super) fn observe_thinking(&mut self) -> bool {
-        if self.phase != ModelProgressPhase::Planning
+        if self.phase != ModelProgressPhase::Active
             || self.warning_emitted
             || Instant::now().duration_since(self.started_at) < self.policy.soft_warning_after
         {
@@ -259,26 +234,18 @@ impl ModelProgressWatchdog {
     }
 
     pub(super) fn observe_answer_progress(&mut self) {
-        if self.policy.requires_tool_action
-            && matches!(
-                self.phase,
-                ModelProgressPhase::Planning | ModelProgressPhase::ToolAssembly
-            )
-        {
-            // Tool-required turns may stream plans or misplaced reasoning in
-            // the answer channel. Visible bytes do not satisfy first-action.
-            return;
-        }
-        // Visible answer deltas are useful progress. Bound silence between
-        // deltas instead of truncating a long response that is still moving.
-        self.phase = ModelProgressPhase::AnswerStreaming;
-        self.deadline = Instant::now() + self.policy.answer_stream_deadline;
+        self.observe_stream_activity();
     }
 
     pub(super) fn observe_tool_call_progress(&mut self) {
-        if self.phase != ModelProgressPhase::ToolAssembly {
-            self.phase = ModelProgressPhase::ToolAssembly;
-            self.deadline = Instant::now() + self.policy.tool_assembly_deadline;
+        self.observe_stream_activity();
+    }
+
+    fn observe_stream_activity(&mut self) {
+        if self.phase != ModelProgressPhase::Complete {
+            self.phase = ModelProgressPhase::Active;
+            self.deadline = None;
+            self.hosted_tool_hard_deadline = None;
         }
     }
 
@@ -288,54 +255,44 @@ impl ModelProgressWatchdog {
             .hosted_tool_hard_deadline
             .get_or_insert(now + HOSTED_TOOL_HARD_DEADLINE);
         self.phase = ModelProgressPhase::HostedTool;
-        self.deadline = (now + self.policy.hosted_tool_deadline).min(hard_deadline);
+        self.deadline = Some((now + self.policy.hosted_tool_idle_deadline).min(hard_deadline));
     }
 
     pub(super) fn complete(&mut self) {
         self.phase = ModelProgressPhase::Complete;
+        self.deadline = None;
         self.hosted_tool_hard_deadline = None;
     }
 
-    pub(super) fn on_deadline(&mut self) -> ModelProgressDeadlineAction {
-        if self.phase == ModelProgressPhase::Connecting {
-            return ModelProgressDeadlineAction::StopConnecting;
+    pub(super) fn on_deadline(&self) -> ModelProgressDeadlineAction {
+        match self.phase {
+            ModelProgressPhase::Connecting => ModelProgressDeadlineAction::StopConnecting,
+            ModelProgressPhase::HostedTool => ModelProgressDeadlineAction::StopHostedTool,
+            ModelProgressPhase::Active | ModelProgressPhase::Complete => {
+                unreachable!("active model streams have no semantic progress deadline")
+            }
         }
-        if matches!(
-            self.phase,
-            ModelProgressPhase::AnswerStreaming | ModelProgressPhase::HostedTool
-        ) {
-            return ModelProgressDeadlineAction::StopAfterVisibleOutput;
-        }
-        if self.recovery_used {
-            return ModelProgressDeadlineAction::StopBeforeAction;
-        }
-        self.recovery_used = true;
-        self.phase = ModelProgressPhase::Planning;
-        self.warning_emitted = true;
-        self.started_at = Instant::now();
-        self.deadline = self.started_at + self.policy.recovery_deadline;
-        ModelProgressDeadlineAction::RestartWithoutReasoning
     }
 }
-
-pub(super) const TOOL_PROGRESS_RECOVERY_PROMPT: &str = "## Model Progress Recovery\nThe previous sample spent its planning deadline emitting reasoning without producing an answer or tool call. Reasoning has been disabled or reduced to the lowest level this model supports. Do not continue private analysis. If the task needs evidence or action, emit the single best next tool call immediately. Otherwise provide a concise final answer now.";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn policy() -> ModelProgressPolicy {
+        ModelProgressPolicy {
+            soft_warning_after: Duration::from_secs(2),
+            hosted_tool_idle_deadline: Duration::from_secs(4),
+            connect_deadline: Duration::from_secs(3),
+        }
+    }
+
     #[test]
-    fn long_reasoning_models_get_a_shorter_first_progress_deadline() {
-        let kimi = ModelProgressPolicy::for_model(
+    fn provider_profile_only_changes_connection_and_warning_policy() {
+        let long_reasoner = ModelProgressPolicy::for_model(
             Some(ProviderType::Moonshot),
             "kimi-k3",
             AgentRouteKind::CodebaseOperation,
-            true,
-        );
-        let qwen = ModelProgressPolicy::for_model(
-            Some(ProviderType::Qwen),
-            "qwen3.8-max",
-            AgentRouteKind::KnowledgeRetrieval,
             true,
         );
         let ordinary = ModelProgressPolicy::for_model(
@@ -344,159 +301,50 @@ mod tests {
             AgentRouteKind::CodebaseOperation,
             true,
         );
-        assert_eq!(kimi.first_progress_deadline, Duration::from_secs(90));
-        assert_eq!(qwen.first_progress_deadline, Duration::from_secs(90));
-        assert_eq!(ordinary.first_progress_deadline, Duration::from_secs(120));
-        assert_eq!(kimi.connect_deadline, Duration::from_secs(90));
         let local = ModelProgressPolicy::for_model(
             Some(ProviderType::Ollama),
             "qwen3.8-max",
             AgentRouteKind::CodebaseOperation,
             true,
         );
+
+        assert_eq!(long_reasoner.connect_deadline, Duration::from_secs(90));
+        assert_eq!(long_reasoner.soft_warning_after, Duration::from_secs(30));
+        assert_eq!(ordinary.connect_deadline, Duration::from_secs(180));
         assert_eq!(local.connect_deadline, Duration::from_secs(300));
-        let no_tools = ModelProgressPolicy::for_model(
-            Some(ProviderType::Qwen),
-            "qwen3.8-max",
-            AgentRouteKind::CodebaseOperation,
-            false,
-        );
-        assert_eq!(no_tools.first_progress_deadline, Duration::from_secs(150));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn connecting_has_its_own_deadline_and_stream_open_arms_planning() {
-        let policy = ModelProgressPolicy {
-            soft_warning_after: Duration::from_secs(1),
-            first_progress_deadline: Duration::from_secs(5),
-            recovery_deadline: Duration::from_secs(3),
-            tool_assembly_deadline: Duration::from_secs(2),
-            answer_stream_deadline: Duration::from_secs(4),
-            hosted_tool_deadline: Duration::from_secs(4),
-            connect_deadline: Duration::from_secs(2),
-            requires_tool_action: false,
-        };
-        let mut watchdog = ModelProgressWatchdog::with_policy(policy);
-        assert_eq!(
-            watchdog.deadline().unwrap() - Instant::now(),
-            Duration::from_secs(2)
-        );
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert_eq!(
-            watchdog.on_deadline(),
-            ModelProgressDeadlineAction::StopConnecting
-        );
-
-        let mut opened = ModelProgressWatchdog::with_policy(policy);
-        opened.arm();
-        assert_eq!(
-            opened.deadline().unwrap() - Instant::now(),
-            Duration::from_secs(5)
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn thinking_does_not_count_as_productive_progress() {
-        let policy = ModelProgressPolicy {
-            soft_warning_after: Duration::from_secs(2),
-            first_progress_deadline: Duration::from_secs(5),
-            recovery_deadline: Duration::from_secs(3),
-            tool_assembly_deadline: Duration::from_secs(2),
-            answer_stream_deadline: Duration::from_secs(4),
-            hosted_tool_deadline: Duration::from_secs(4),
-            connect_deadline: Duration::from_secs(2),
-            requires_tool_action: false,
-        };
-        let mut watchdog = ModelProgressWatchdog::with_policy(policy);
-        watchdog.arm();
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(watchdog.observe_thinking());
-        assert!(watchdog.deadline().is_some());
-        tokio::time::advance(Duration::from_secs(3)).await;
-        assert_eq!(
-            watchdog.on_deadline(),
-            ModelProgressDeadlineAction::RestartWithoutReasoning
-        );
-        tokio::time::advance(Duration::from_secs(3)).await;
-        assert_eq!(
-            watchdog.on_deadline(),
-            ModelProgressDeadlineAction::StopBeforeAction
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn answer_channel_planning_does_not_bypass_a_required_first_tool_action() {
-        let mut watchdog = ModelProgressWatchdog::new(
-            Some(ProviderType::Qwen),
-            "qwen3.8-max",
-            AgentRouteKind::CodebaseOperation,
-            true,
-        );
-        watchdog.arm();
-        let first_action_deadline = watchdog.deadline();
-        tokio::time::advance(Duration::from_secs(20)).await;
-        watchdog.observe_answer_progress();
-
-        assert_eq!(watchdog.deadline(), first_action_deadline);
-        tokio::time::advance(Duration::from_secs(70)).await;
-        assert_eq!(
-            watchdog.on_deadline(),
-            ModelProgressDeadlineAction::RestartWithoutReasoning
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn answer_and_partial_tool_calls_get_bounded_phase_deadlines() {
-        let policy = ModelProgressPolicy {
-            soft_warning_after: Duration::from_secs(1),
-            first_progress_deadline: Duration::from_secs(2),
-            recovery_deadline: Duration::from_secs(1),
-            tool_assembly_deadline: Duration::from_secs(3),
-            answer_stream_deadline: Duration::from_secs(4),
-            hosted_tool_deadline: Duration::from_secs(5),
-            connect_deadline: Duration::from_secs(1),
-            requires_tool_action: false,
-        };
-        let mut watchdog = ModelProgressWatchdog::with_policy(policy);
-        watchdog.arm();
-        watchdog.observe_tool_call_progress();
+    async fn stream_open_removes_semantic_progress_deadlines() {
+        let mut watchdog = ModelProgressWatchdog::with_policy(policy());
         assert_eq!(
             watchdog.deadline().unwrap() - Instant::now(),
             Duration::from_secs(3)
         );
-        watchdog.observe_answer_progress();
-        assert_eq!(
-            watchdog.deadline().unwrap() - Instant::now(),
-            Duration::from_secs(4)
-        );
-        tokio::time::advance(Duration::from_secs(2)).await;
-        watchdog.observe_answer_progress();
-        assert_eq!(
-            watchdog.deadline().unwrap() - Instant::now(),
-            Duration::from_secs(4)
-        );
-        assert_eq!(
-            watchdog.on_deadline(),
-            ModelProgressDeadlineAction::StopAfterVisibleOutput
-        );
-        watchdog.complete();
+        watchdog.arm();
         assert_eq!(watchdog.deadline(), None);
+
+        tokio::time::advance(Duration::from_secs(600)).await;
+        watchdog.observe_thinking();
+        watchdog.observe_tool_call_progress();
+        watchdog.observe_answer_progress();
+        assert_eq!(watchdog.deadline(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_reasoning_emits_one_warning_without_killing_the_stream() {
+        let mut watchdog = ModelProgressWatchdog::with_policy(policy());
+        watchdog.arm();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(watchdog.observe_thinking());
         assert!(!watchdog.observe_thinking());
+        assert_eq!(watchdog.elapsed_seconds(), 2);
+        assert_eq!(watchdog.deadline(), None);
     }
 
     #[tokio::test(start_paused = true)]
     async fn hosted_tool_heartbeats_cannot_extend_the_absolute_side_effect_deadline() {
-        let policy = ModelProgressPolicy {
-            soft_warning_after: Duration::from_secs(1),
-            first_progress_deadline: Duration::from_secs(2),
-            recovery_deadline: Duration::from_secs(1),
-            tool_assembly_deadline: Duration::from_secs(3),
-            answer_stream_deadline: Duration::from_secs(4),
-            hosted_tool_deadline: Duration::from_secs(180),
-            connect_deadline: Duration::from_secs(1),
-            requires_tool_action: true,
-        };
-        let mut watchdog = ModelProgressWatchdog::with_policy(policy);
+        let mut watchdog = ModelProgressWatchdog::with_policy(policy());
         watchdog.arm();
         watchdog.observe_hosted_tool_progress();
         tokio::time::advance(Duration::from_secs(599)).await;
@@ -508,34 +356,16 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(
             watchdog.on_deadline(),
-            ModelProgressDeadlineAction::StopAfterVisibleOutput
+            ModelProgressDeadlineAction::StopHostedTool
         );
     }
 
     #[test]
-    fn recovery_controls_disable_optional_reasoning_and_reduce_always_on_models() {
+    fn recovery_controls_are_request_side_only() {
         let qwen = recovery_controls(Some(ProviderType::Qwen), "qwen3.8-max");
         assert_eq!(qwen.reasoning_enabled, Some(false));
-        assert_eq!(qwen.reasoning_effort, None);
-
         let kimi = recovery_controls(Some(ProviderType::Moonshot), "kimi-k3");
         assert_eq!(kimi.reasoning_enabled, Some(true));
         assert_eq!(kimi.reasoning_effort, Some(ReasoningEffort::Low));
-
-        let openrouter = recovery_controls(Some(ProviderType::OpenRouter), "moonshotai/kimi-k3");
-        assert_eq!(openrouter.reasoning_enabled, Some(true));
-        assert_eq!(openrouter.reasoning_effort, Some(ReasoningEffort::Low));
-
-        let openrouter_qwen = recovery_controls(Some(ProviderType::OpenRouter), "qwen/qwen3.8-max");
-        assert_eq!(openrouter_qwen.reasoning_enabled, Some(false));
-        assert_eq!(
-            openrouter_qwen.reasoning_effort,
-            Some(ReasoningEffort::None)
-        );
-
-        let routed = recovery_controls(Some(ProviderType::AlibabaModelStudio), "kimi/kimi-k3");
-        assert_eq!(routed.reasoning_enabled, Some(true));
-        assert_eq!(routed.reasoning_effort, Some(ReasoningEffort::Max));
-        assert!(routed.description.contains("bounded"));
     }
 }
