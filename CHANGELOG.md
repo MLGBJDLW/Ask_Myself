@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.0...nexa-monorepo-v0.13.1) (2026-08-28)
+
+
+### Features
+
+* **chat:** add slow-model recovery actions ([3653e51](https://github.com/MLGBJDLW/Nexa/commit/3653e51642bcd4d5a19b8df12507f732f6befb88))
+* **providers:** configure streaming resilience ([9ef988b](https://github.com/MLGBJDLW/Nexa/commit/9ef988b41e25d791abc57faa8ba6aa414a825f5b))
+
+
+### Bug Fixes
+
+* **registry:** preserve streaming policy ([dc7b65a](https://github.com/MLGBJDLW/Nexa/commit/dc7b65a72fe458957c06bc9c1bad74e64a2f7a23))
+* **streaming:** account for controlled retries ([f882dbd](https://github.com/MLGBJDLW/Nexa/commit/f882dbd011257a480dad54bf751c194836b3c18f))
+* **streaming:** make provider recovery fail safe ([e6ed805](https://github.com/MLGBJDLW/Nexa/commit/e6ed80530bdd12f49cff79306339c0b1c45cd5ac))
+* **streaming:** preserve active model streams ([00f9bab](https://github.com/MLGBJDLW/Nexa/commit/00f9bab9f7ddaadcc1e7df604aa708ccc19487e6))
+* **streaming:** project responses tool previews ([84b6416](https://github.com/MLGBJDLW/Nexa/commit/84b6416de0a29b4425c1911b4165aa74d14c51f5))
+
 ## [0.13.0](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.12.27...nexa-monorepo-v0.13.0) (2026-08-28)
 
 
