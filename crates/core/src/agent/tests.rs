@@ -118,6 +118,31 @@ fn test_accumulate_appends_arguments() {
 }
 
 #[test]
+fn test_accumulate_treats_a_complete_nested_object_as_an_opaque_delta() {
+    let mut calls = vec![ToolCallRequest {
+        id: "call_nested".into(),
+        name: "create_file".into(),
+        arguments: r#"{"metadata":"#.into(),
+        thought_signature: None,
+    }];
+
+    for fragment in [r#"{"language":"rust"}"#, "}"] {
+        assert!(accumulate_tool_call(
+            &mut calls,
+            &ToolCallDelta {
+                id: "call_nested".into(),
+                name: None,
+                arguments_delta: fragment.into(),
+                index: None,
+                thought_signature: None,
+            },
+        ));
+    }
+
+    assert_eq!(calls[0].arguments, r#"{"metadata":{"language":"rust"}}"#);
+}
+
+#[test]
 fn test_accumulate_replaces_cumulative_provider_argument_snapshots() {
     let mut calls = Vec::new();
     assert!(accumulate_tool_call(
@@ -400,6 +425,42 @@ fn test_default_config() {
     assert!(cfg.system_prompt.contains("local-first workspace agent"));
     assert_eq!(cfg.temperature, Some(0.3));
     assert_eq!(cfg.max_tokens, None);
+}
+
+#[test]
+fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
+    let standard = AgentConfig::default();
+    assert_eq!(
+        standard.resolved_max_response_tokens("unknown-model"),
+        DEFAULT_AGENT_RESPONSE_TOKENS
+    );
+
+    let deepseek = AgentConfig {
+        provider_type: Some(ProviderType::DeepSeek),
+        ..AgentConfig::default()
+    };
+    assert_eq!(
+        deepseek.resolved_max_response_tokens("deepseek-v4-pro"),
+        DEFAULT_DEEPSEEK_RESPONSE_TOKENS
+    );
+
+    let explicit = AgentConfig {
+        max_tokens: Some(6_000),
+        ..deepseek.clone()
+    };
+    assert_eq!(
+        explicit.resolved_max_response_tokens("deepseek-v4-pro"),
+        6_000
+    );
+
+    let constrained = AgentConfig {
+        context_window: Some(8_192),
+        ..deepseek
+    };
+    assert_eq!(
+        constrained.resolved_max_response_tokens("deepseek-chat"),
+        4_096
+    );
 }
 
 #[test]
@@ -2920,7 +2981,7 @@ async fn prefix_cached_provider_uses_bounded_resident_surface_without_dropping_u
     let requests = captured.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].iter().any(|name| name == "tool_search"));
-    assert!(requests[0].iter().any(|name| name == "mock_tool"));
+    assert!(!requests[0].iter().any(|name| name == "mock_tool"));
     assert!(!requests[0]
         .iter()
         .any(|name| name == "mcp__cache_test__oversized"));

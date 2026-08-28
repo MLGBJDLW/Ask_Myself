@@ -175,7 +175,7 @@ impl AgentExecutor {
         next_sort_order: i64,
     ) -> Result<Message, CoreError> {
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
-        let max_response_tokens = self.config.max_tokens.unwrap_or(4096);
+        let max_response_tokens = self.config.resolved_max_response_tokens(model);
         let mut turn_state = TurnStateMachine::new();
 
         // --- 0. Early cancellation check before any work ----------------------

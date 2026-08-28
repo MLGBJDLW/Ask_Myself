@@ -7,6 +7,8 @@ use strsim::jaro_winkler;
 use super::model::Skill;
 use super::registry::load_builtin_skills;
 
+const MAX_AVAILABLE_SKILL_METADATA: usize = 12;
+
 /// Tokenize a text into lowercase alphanumeric word tokens (length ≥ 2).
 pub(crate) fn tokenize(text: &str) -> Vec<String> {
     text.to_lowercase()
@@ -573,7 +575,26 @@ pub fn select_available_skills_from_pool_with_pinned(
             .then_with(|| fallback_skill_order(&a.3, &b.3))
     });
 
-    ranked.into_iter().map(|(_, _, _, skill)| skill).collect()
+    let mut selected = Vec::new();
+    for (pinned, explicit, _score, skill) in ranked.iter() {
+        if (*pinned || *explicit)
+            && !selected
+                .iter()
+                .any(|candidate: &Skill| candidate.id == skill.id)
+        {
+            selected.push(skill.clone());
+        }
+    }
+    for (_pinned, _explicit, score, skill) in ranked {
+        if selected.len() >= MAX_AVAILABLE_SKILL_METADATA {
+            break;
+        }
+        if score <= 0.0 || selected.iter().any(|candidate| candidate.id == skill.id) {
+            continue;
+        }
+        selected.push(skill);
+    }
+    selected
 }
 
 pub fn select_available_skills_from_pool(skills: Vec<Skill>, query: &str) -> Vec<Skill> {
@@ -717,6 +738,38 @@ mod tests {
         assert_eq!(
             selected.first().map(|skill| skill.id.as_str()),
             Some("frontend-design")
+        );
+    }
+
+    #[test]
+    fn available_skill_metadata_is_relevance_ranked_and_bounded() {
+        let mut skills = (0..40)
+            .map(|index| {
+                test_skill(
+                    &format!("unrelated-{index:02}"),
+                    &format!("Unrelated {index:02}"),
+                    "A specialist workflow unrelated to browser interface styling.",
+                )
+            })
+            .collect::<Vec<_>>();
+        skills.push(test_skill(
+            "frontend-design",
+            "Frontend Design",
+            "Improve frontend UI layout, styling, color contrast, and interaction polish.",
+        ));
+
+        let available = select_available_skills_from_pool(
+            skills,
+            "fix the frontend UI color contrast and interaction",
+        );
+
+        assert_eq!(
+            available.first().map(|skill| skill.id.as_str()),
+            Some("frontend-design")
+        );
+        assert!(
+            available.len() <= MAX_AVAILABLE_SKILL_METADATA,
+            "progressive disclosure must not inject the entire skill catalog"
         );
     }
 }

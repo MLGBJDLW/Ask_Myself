@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "Auto (sichere Agent-Reserve)",
-  "maxTokensHelp": "Leer nutzt die sichere Reserve pro Anfrage (derzeit 4096 für den Haupt-Agent). Kontext, Ausgabe pro Schritt und Gesamtbudget der Nexus-Worker werden unten getrennt eingestellt.",
+  "maxTokensHelp": "Leer nutzt die modellabhängige Reserve pro Anfrage (allgemein 16K; 32K für DeepSeek). Kontext, Ausgabe pro Schritt und Gesamtbudget der Nexus-Worker werden unten getrennt eingestellt.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

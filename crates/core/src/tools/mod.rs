@@ -29,6 +29,10 @@ use capability::{
     fallback_registry_run_capabilities,
 };
 
+/// Hard transport envelope for one model-authored tool-call argument object.
+/// Provider assembly and mutation-tool validation must agree on this limit.
+pub(crate) const MAX_TOOL_CALL_ARGUMENT_BYTES: usize = 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Shared tool-definition helper (parsed from JSON once via OnceLock)
 // ---------------------------------------------------------------------------
@@ -1494,8 +1498,6 @@ fn plan_mode_allows_tool(name: &str, access: &ToolAccessProfile) -> bool {
 /// here. Plain-text mutation tools need room for exact old/new snippets, so
 /// they get a much larger cap while read/search tools keep the tighter guard.
 fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> {
-    const MAX_FILE_MUTATION_ARG_BYTES: usize = 8 * 1024 * 1024;
-
     let Some(max_bytes) = tool_arg_limit_bytes(name) else {
         return Ok(());
     };
@@ -1504,7 +1506,7 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
         let lower = name.to_ascii_lowercase();
         let guidance = if lower == "manage_skill" || lower.contains("manage_skill") {
             "Keep SKILL.md and its declared resource bundle within the owner safety envelope; use the filesystem importer for exceptionally large binary assets."
-        } else if max_bytes == MAX_FILE_MUTATION_ARG_BYTES {
+        } else if max_bytes == MAX_TOOL_CALL_ARGUMENT_BYTES {
             "Split very large rewrites into smaller targeted edits, or use run_shell stdin for bulk generated content."
         } else {
             "For document editing with large content, use a file mutation tool for plain text or run_shell with the doc-script-editor skill for rich document formats."
@@ -1521,7 +1523,6 @@ fn enforce_tool_arg_limit(name: &str, arguments: &str) -> Result<(), CoreError> 
 
 fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
     const DEFAULT_MAX_TOOL_ARG_BYTES: usize = 256 * 1024;
-    const MAX_FILE_MUTATION_ARG_BYTES: usize = 8 * 1024 * 1024;
     const MAX_SKILL_PROPOSAL_ARG_BYTES: usize = 16 * 1024 * 1024;
 
     let lower = name.to_ascii_lowercase();
@@ -1543,7 +1544,7 @@ fn tool_arg_limit_bytes(name: &str) -> Option<usize> {
         || lower.contains("write_note")
         || lower.contains("apply_patch")
     {
-        return Some(MAX_FILE_MUTATION_ARG_BYTES);
+        return Some(MAX_TOOL_CALL_ARGUMENT_BYTES);
     }
     Some(DEFAULT_MAX_TOOL_ARG_BYTES)
 }
@@ -2245,6 +2246,20 @@ mod tests {
 
         assert!(enforce_tool_arg_limit("edit_file", &args).is_ok());
         assert!(enforce_tool_arg_limit("mcp__repo__apply_patch", &args).is_ok());
+    }
+
+    #[test]
+    fn file_mutation_guard_matches_stream_assembly_envelope() {
+        let oversized = serde_json::json!({
+            "path": "large.txt",
+            "content": "x".repeat(MAX_TOOL_CALL_ARGUMENT_BYTES),
+        })
+        .to_string();
+
+        let error = enforce_tool_arg_limit("create_file", &oversized)
+            .expect_err("mutation payload cannot exceed provider assembly capacity");
+
+        assert!(error.to_string().contains("1024 KB"));
     }
 
     #[test]

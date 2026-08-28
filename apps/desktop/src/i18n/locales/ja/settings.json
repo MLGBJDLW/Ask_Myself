@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "自動（Agent 安全予約）",
-  "maxTokensHelp": "空欄では Agent 安全なリクエスト上限（メイン Agent は現在 4096）を使います。Nexus worker のコンテキスト、ステップ出力、累積予算は下で個別に設定します。",
+  "maxTokensHelp": "空欄ではモデル対応のリクエスト上限（通常 16K、DeepSeek は 32K）を使います。Nexus worker のコンテキスト、ステップ出力、累積予算は下で個別に設定します。",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

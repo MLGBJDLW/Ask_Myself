@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "자동(Agent 안전 예약)",
-  "maxTokensHelp": "비워 두면 요청별 Agent 안전 예약(메인 Agent는 현재 4096)을 사용합니다. Nexus worker의 컨텍스트, 단계별 출력, 누적 예산은 아래에서 따로 설정합니다.",
+  "maxTokensHelp": "비워 두면 모델별 요청 예약(일반 16K, DeepSeek 32K)을 사용합니다. Nexus worker의 컨텍스트, 단계별 출력, 누적 예산은 아래에서 따로 설정합니다.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

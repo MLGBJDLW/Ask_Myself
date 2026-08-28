@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "Auto (reserva segura do agente)",
-  "maxTokensHelp": "Em branco usa a reserva segura por solicitação (4096 no agente principal). Contexto, saída por etapa e orçamento acumulado dos workers Nexus são configurados separadamente abaixo.",
+  "maxTokensHelp": "Em branco usa a reserva por solicitação adaptada ao modelo (16K em geral; 32K para DeepSeek). Contexto, saída por etapa e orçamento acumulado dos workers Nexus são configurados separadamente abaixo.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

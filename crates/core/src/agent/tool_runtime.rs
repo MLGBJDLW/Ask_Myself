@@ -32,23 +32,29 @@ pub(super) fn build_tool_run_item(
     progress_note: Option<String>,
     duration_ms: Option<u64>,
 ) -> ToolRunItem {
-    // Complete JSON remains the execution contract. This tolerant parser is
-    // used only for display metadata and semantic previews while a provider is
-    // still streaming an unfinished function-call argument string.
-    let parsed_args = parse_tool_arguments_for_preview(arguments);
+    // Complete JSON remains the execution contract. Preparing previews are a
+    // diagnostic projection, so never repeatedly parse or diff the full
+    // cumulative argument buffer while the provider is still producing it.
+    let bounded_preparing_arguments = matches!(status, ToolRunStatus::Preparing)
+        .then(|| {
+            arguments.map(|arguments| {
+                truncate_utf8_prefix(arguments, MAX_PREPARING_ARGUMENT_PREVIEW_BYTES)
+            })
+        })
+        .flatten();
+    let preview_arguments = bounded_preparing_arguments.as_deref().or(arguments);
+    let parsed_args = if matches!(status, ToolRunStatus::Preparing) {
+        parse_bounded_preparing_arguments(arguments, preview_arguments)
+    } else {
+        parse_tool_arguments_for_preview(arguments)
+    };
     let invocation = tools.build_invocation(call_id, tool_name, parsed_args.clone());
     let capabilities = invocation.capabilities.clone();
     let owner = invocation.owner.clone();
     let artifacts =
         artifacts_for_tool_run(artifacts, &invocation, &status, &parsed_args, arguments);
-    let displayed_arguments = arguments.map(|arguments| {
-        let audit_safe =
-            crate::tool_argument_projection::audit_safe_arguments_string(tool_name, arguments);
-        if matches!(status, ToolRunStatus::Preparing) {
-            truncate_utf8_prefix(&audit_safe, MAX_PREPARING_ARGUMENT_PREVIEW_BYTES)
-        } else {
-            audit_safe
-        }
+    let displayed_arguments = preview_arguments.map(|arguments| {
+        crate::tool_argument_projection::audit_safe_arguments_string(tool_name, arguments)
     });
 
     ToolRunItem {
@@ -150,6 +156,33 @@ fn parse_tool_arguments_for_preview(arguments: Option<&str>) -> Value {
         Value::Null
     } else {
         Value::Object(partial)
+    }
+}
+
+fn parse_bounded_preparing_arguments(raw: Option<&str>, bounded: Option<&str>) -> Value {
+    if let Some(raw) = raw.filter(|raw| raw.len() > MAX_PREPARING_ARGUMENT_PREVIEW_BYTES) {
+        // A complete final snapshot may place short semantic keys after a very
+        // large content field. Parse that snapshot once, then bound every
+        // string before diff construction. Incomplete cumulative snapshots
+        // stay on the cheap prefix parser.
+        if raw.trim_end().ends_with('}') {
+            if let Ok(mut value) = serde_json::from_str::<Value>(raw) {
+                bound_preview_value_strings(&mut value);
+                return value;
+            }
+        }
+    }
+    parse_tool_arguments_for_preview(bounded)
+}
+
+fn bound_preview_value_strings(value: &mut Value) {
+    match value {
+        Value::String(text) if text.len() > MAX_PREPARING_ARGUMENT_PREVIEW_BYTES => {
+            *text = truncate_utf8_prefix(text, MAX_PREPARING_ARGUMENT_PREVIEW_BYTES);
+        }
+        Value::Array(items) => items.iter_mut().for_each(bound_preview_value_strings),
+        Value::Object(map) => map.values_mut().for_each(bound_preview_value_strings),
+        _ => {}
     }
 }
 
@@ -394,8 +427,10 @@ fn artifacts_for_tool_run(
                 "inputProgress".to_string(),
                 json!({
                     "receivedBytes": raw_arguments.map(str::len).unwrap_or(0),
-                    "argumentsComplete": raw_arguments
-                        .is_some_and(|arguments| serde_json::from_str::<Value>(arguments).is_ok()),
+                    "argumentsComplete": raw_arguments.is_some_and(|arguments| {
+                        arguments.len() <= MAX_PREPARING_ARGUMENT_PREVIEW_BYTES
+                            && serde_json::from_str::<Value>(arguments).is_ok()
+                    }),
                 }),
             );
         }

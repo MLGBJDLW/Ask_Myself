@@ -1,13 +1,27 @@
 //! Provider-aware prompt layout decisions for model requests.
 
-use std::collections::HashSet;
-
 use super::*;
-use crate::tools::ToolCategory;
-
-const MAX_CACHE_STABLE_TOOL_DEFINITIONS: usize = 128;
+const MAX_CACHE_STABLE_TOOL_DEFINITIONS: usize = 24;
+const MAX_CACHE_STABLE_TOOL_TOKENS: u32 = 12_000;
 const CACHE_STABLE_TOOL_BUDGET_DIVISOR: u32 = 4;
 const RESIDENT_DISCOVERY_TOOL_NAME: &str = "tool_search";
+const CACHE_STABLE_RESIDENT_TOOL_NAMES: &[&str] = &[
+    "activity_observe",
+    "code_intelligence",
+    "create_file",
+    "edit_file",
+    "glob_files",
+    "grep_files",
+    "list_dir",
+    "manage_skill",
+    "multi_edit",
+    "read_file",
+    "read_files",
+    "request_user_input",
+    "run_shell",
+    "search_files",
+    RESIDENT_DISCOVERY_TOOL_NAME,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CacheStableToolSurfaceMode {
@@ -75,7 +89,7 @@ pub(super) fn cache_stable_tool_surface_limits(
     context_window: Option<u32>,
     max_response_tokens: u32,
 ) -> (usize, u32) {
-    let max_tool_tokens = context_window
+    let context_relative_tool_tokens = context_window
         .map(|max_context| {
             max_context
                 .saturating_sub(max_response_tokens)
@@ -84,8 +98,11 @@ pub(super) fn cache_stable_tool_surface_limits(
         })
         // Provider-managed capacity is unknown, not a synthetic 32K window.
         // Definition count remains bounded independently below.
-        .unwrap_or(u32::MAX);
-    (MAX_CACHE_STABLE_TOOL_DEFINITIONS, max_tool_tokens)
+        .unwrap_or(MAX_CACHE_STABLE_TOOL_TOKENS);
+    (
+        MAX_CACHE_STABLE_TOOL_DEFINITIONS,
+        context_relative_tool_tokens.min(MAX_CACHE_STABLE_TOOL_TOKENS),
+    )
 }
 
 pub(super) fn tool_surface_fits_cache_stable_limits(
@@ -117,17 +134,21 @@ pub(super) fn select_cache_stable_tool_surface(
         });
     }
 
-    let core_categories = HashSet::from([ToolCategory::Core]);
-    let core = registry.definitions_for_categories(&core_categories);
-    let has_discovery = core
+    let resident_names = CACHE_STABLE_RESIDENT_TOOL_NAMES
+        .iter()
+        .filter(|name| registry.contains(name))
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    let resident = registry.filtered(&resident_names).definitions();
+    let has_discovery = resident
         .iter()
         .any(|definition| definition.name == RESIDENT_DISCOVERY_TOOL_NAME);
     if has_discovery
-        && tool_surface_fits_cache_stable_limits(model, &core, max_definitions, max_tool_tokens)
+        && tool_surface_fits_cache_stable_limits(model, &resident, max_definitions, max_tool_tokens)
     {
         return Ok(CacheStableToolSurface {
             mode: CacheStableToolSurfaceMode::StableResidentDynamic,
-            definitions: core,
+            definitions: resident,
         });
     }
 
@@ -225,7 +246,7 @@ mod tests {
                 "properties": {
                     "payload": {
                         "type": "string",
-                        "description": "cache schema field description ".repeat(300)
+                        "description": "cache schema field description ".repeat(3_000)
                     }
                 }
             })
@@ -407,7 +428,7 @@ mod tests {
         let (max_definitions, max_tool_tokens) =
             cache_stable_tool_surface_limits("private-model", None, 4_096);
         assert_eq!(max_definitions, MAX_CACHE_STABLE_TOOL_DEFINITIONS);
-        assert_eq!(max_tool_tokens, u32::MAX);
+        assert_eq!(max_tool_tokens, MAX_CACHE_STABLE_TOOL_TOKENS);
     }
 
     #[test]
@@ -431,6 +452,67 @@ mod tests {
                 .map(|definition| definition.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["tool_search"]
+        );
+    }
+
+    #[test]
+    fn huge_context_does_not_justify_pinning_a_distracting_tool_surface() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ToolSearchTool));
+        registry.register(Box::new(OversizedMcpTool));
+
+        let surface =
+            select_cache_stable_tool_surface(&registry, "deepseek-v4-pro", Some(1_000_000), 8_192)
+                .expect("resident discovery should fit independently of model context size");
+
+        assert_eq!(
+            surface.mode,
+            CacheStableToolSurfaceMode::StableResidentDynamic,
+            "large context capacity must not turn tool-schema bloat into the default prompt"
+        );
+        assert_eq!(
+            surface
+                .definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tool_search"]
+        );
+    }
+
+    #[test]
+    fn default_registry_uses_a_small_stable_coding_surface() {
+        let registry = crate::tools::default_tool_registry();
+        let surface =
+            select_cache_stable_tool_surface(&registry, "deepseek-v4-pro", Some(1_000_000), 16_384)
+                .expect("the stable resident coding surface should fit");
+        let names = surface
+            .definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            surface.mode,
+            CacheStableToolSurfaceMode::StableResidentDynamic
+        );
+        for required in [
+            "tool_search",
+            "read_file",
+            "create_file",
+            "edit_file",
+            "run_shell",
+            "manage_skill",
+        ] {
+            assert!(
+                names.contains(&required),
+                "missing resident tool {required}"
+            );
+        }
+        assert!(surface.definitions.len() <= MAX_CACHE_STABLE_TOOL_DEFINITIONS);
+        assert!(
+            context::estimate_tool_tokens_for_model("deepseek-v4-pro", &surface.definitions)
+                <= MAX_CACHE_STABLE_TOOL_TOKENS
         );
     }
 }

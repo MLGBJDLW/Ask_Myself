@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "自動（Agent 安全預留）",
-  "maxTokensHelp": "留空時使用 Agent 的單次請求安全預留（主 Agent 目前為 4096）。Nexus 子代理的模型上下文、單步輸出與累計預算在下方分別設定。",
+  "maxTokensHelp": "留空時使用模型感知的單次請求預留（通常 16K，DeepSeek 為 32K）。Nexus 子代理的模型上下文、單步輸出與累計預算在下方分別設定。",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

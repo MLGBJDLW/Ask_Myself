@@ -453,7 +453,7 @@
   "temperature": "温度",
   "maxTokens": "最大令牌数",
   "maxTokensAutoPlaceholder": "自动（Agent 安全预留）",
-  "maxTokensHelp": "留空时使用 Agent 的单次请求安全预留（主 Agent 当前为 4096）。Nexus 子代理的模型上下文、单步输出和累计预算在下方分别配置。",
+  "maxTokensHelp": "留空时使用模型感知的单次请求预留（通常 16K，DeepSeek 为 32K）。Nexus 子代理的模型上下文、单步输出和累计预算在下方分别配置。",
   "testConnection": "测试连接",
   "connectionSuccess": "连接成功",
   "connectionFailed": "连接失败",

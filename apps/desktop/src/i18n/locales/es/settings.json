@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "Auto (reserva segura del agente)",
-  "maxTokensHelp": "Vacío usa la reserva segura por solicitud (4096 para el agente principal). El contexto, la salida por paso y el presupuesto acumulado de Nexus se configuran por separado abajo.",
+  "maxTokensHelp": "Vacío usa la reserva por solicitud adaptada al modelo (16K en general; 32K para DeepSeek). El contexto, la salida por paso y el presupuesto acumulado de Nexus se configuran por separado abajo.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",
