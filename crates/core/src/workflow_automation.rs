@@ -10,7 +10,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use globset::{Glob, GlobSetBuilder};
-use rusqlite::{OptionalExtension, TransactionBehavior};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -167,6 +167,40 @@ pub struct WorkflowAutomationDueRunClaim {
     pub occurrence: Option<WorkflowAutomationOccurrence>,
     pub run: Option<WorkflowAutomationRun>,
     pub skip_reason: Option<String>,
+}
+
+struct PreparedWorkflowOccurrenceClaim {
+    due_run: WorkflowAutomationDueRun,
+    definition_revision: i64,
+    scheduled_for: String,
+    scheduled_at: DateTime<Utc>,
+    next_run_at: Option<String>,
+    occurrence_id: String,
+    existing: Option<WorkflowAutomationOccurrence>,
+}
+
+enum WorkflowOccurrenceClaimDecision {
+    Skip(&'static str),
+    Queue { attempt: u32 },
+}
+
+#[derive(Clone, Copy)]
+enum WorkflowApprovalDecision {
+    Approve,
+    Deny,
+}
+
+enum WorkflowApprovalResolution {
+    Approved(WorkflowAutomationDueRunClaim),
+    Denied(WorkflowAutomationRun),
+}
+
+struct PendingWorkflowApproval {
+    automation: WorkflowAutomation,
+    run: WorkflowAutomationRun,
+    occurrence_id: String,
+    origin: WorkflowAutomationOccurrenceOrigin,
+    resume_next_run_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -802,6 +836,53 @@ fn fetch_workflow_occurrence(
     .map_err(CoreError::Database)
 }
 
+fn fetch_pending_workflow_approval(
+    tx: &Transaction<'_>,
+    run_id: &str,
+) -> Result<PendingWorkflowApproval, CoreError> {
+    let automation = tx
+        .query_row(
+            "SELECT a.id, a.name, a.description, a.workflow_template_id, a.prompt,
+                    a.trigger_json, a.trigger_kind, a.source_scope_json,
+                    a.approval_policy_json, a.enabled, a.status, a.last_run_at,
+                    a.next_run_at, a.created_at, a.updated_at, c.config_json
+             FROM workflow_automations a
+             JOIN workflow_automation_schedule_configs c ON c.automation_id = a.id
+             JOIN workflow_automation_runs r ON r.automation_id = a.id
+             JOIN workflow_automation_occurrence_approvals p ON p.occurrence_id = r.occurrence_id
+             JOIN workflow_automation_occurrences o ON o.id = r.occurrence_id
+             WHERE r.id = ?1 AND r.status = 'waiting_approval'
+               AND p.state = 'pending' AND o.status = 'waiting_approval'
+               AND c.revision = r.definition_revision",
+            rusqlite::params![run_id],
+            workflow_automation_from_row,
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => CoreError::InvalidInput(format!(
+                "Workflow run {run_id} is no longer waiting for approval"
+            )),
+            other => CoreError::Database(other),
+        })?;
+    let run = fetch_workflow_run(tx, run_id)?;
+    let occurrence_id = run
+        .occurrence_id
+        .clone()
+        .ok_or_else(|| CoreError::Internal(format!("Workflow run {run_id} lost its occurrence")))?;
+    let (origin, resume_next_run_at): (String, Option<String>) = tx.query_row(
+        "SELECT origin, resume_next_run_at
+         FROM workflow_automation_occurrence_origins WHERE occurrence_id = ?1",
+        rusqlite::params![&occurrence_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(PendingWorkflowApproval {
+        automation,
+        run,
+        occurrence_id,
+        origin: WorkflowAutomationOccurrenceOrigin::parse(&origin)?,
+        resume_next_run_at,
+    })
+}
+
 struct SchedulerEventRecord<'a> {
     automation_id: Option<&'a str>,
     run_id: Option<&'a str>,
@@ -1279,6 +1360,477 @@ pub fn browser_evidence_payload(
     })
 }
 
+fn prepare_workflow_occurrence_claim(
+    tx: &Transaction<'_>,
+    mut due_run: WorkflowAutomationDueRun,
+    mut cached_scheduled_for: String,
+    now: DateTime<Utc>,
+) -> Result<PreparedWorkflowOccurrenceClaim, CoreError> {
+    let authoritative_automation = tx.query_row(
+        &format!("{WORKFLOW_AUTOMATION_SELECT} WHERE id = ?1"),
+        rusqlite::params![&due_run.automation.id],
+        workflow_automation_from_row,
+    )?;
+    if !authoritative_automation.enabled {
+        return Err(CoreError::InvalidInput(
+            "Workflow occurrence was already claimed, rescheduled, or disabled".into(),
+        ));
+    }
+    if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow
+        && !matches!(
+            authoritative_automation.trigger,
+            WorkflowAutomationTrigger::Schedule { .. }
+        )
+    {
+        return Err(CoreError::InvalidInput(
+            "Only scheduled definitions support durable run-now occurrences".into(),
+        ));
+    }
+    due_run.automation = authoritative_automation;
+    due_run.prompt = automation_prompt(&due_run.automation);
+    due_run.due_reason = if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
+        "manual run requested".to_string()
+    } else {
+        due_run.automation.trigger.label()
+    };
+    let definition_revision: i64 = tx.query_row(
+        "SELECT revision FROM workflow_automation_schedule_configs WHERE automation_id = ?1",
+        rusqlite::params![&due_run.automation.id],
+        |row| row.get(0),
+    )?;
+    let pending_candidate = tx
+        .query_row(
+            "SELECT id, automation_id, definition_revision, scheduled_for, status,
+                    attempt_count, retry_at, last_error, lease_token, lease_expires_at,
+                    o.created_at, o.updated_at, COALESCE(g.origin, 'schedule'),
+                    g.resume_next_run_at
+             FROM workflow_automation_occurrences o
+             LEFT JOIN workflow_automation_occurrence_origins g ON g.occurrence_id = o.id
+             WHERE o.automation_id = ?1 AND o.definition_revision = ?2
+               AND o.status IN ('planned', 'claimed', 'retry_wait', 'waiting_approval')
+             ORDER BY datetime(o.created_at) DESC, o.id DESC
+             LIMIT 1",
+            rusqlite::params![&due_run.automation.id, definition_revision],
+            |row| {
+                Ok((
+                    workflow_automation_occurrence_from_row(row)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                ))
+            },
+        )
+        .optional()?;
+    let pending_occurrence = pending_candidate
+        .map(|(occurrence, origin, resume_next_run_at)| {
+            Ok::<_, CoreError>((
+                occurrence,
+                WorkflowAutomationOccurrenceOrigin::parse(&origin)?,
+                resume_next_run_at,
+            ))
+        })
+        .transpose()?
+        .filter(|(occurrence, origin, _)| {
+            *origin == due_run.origin
+                && (due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
+                    || occurrence.scheduled_for == cached_scheduled_for)
+        });
+    if let Some((pending, origin, _)) = pending_occurrence.as_ref() {
+        cached_scheduled_for = pending.scheduled_for.clone();
+        due_run.origin = *origin;
+    }
+    if due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
+        && due_run.automation.next_run_at.as_deref() != Some(cached_scheduled_for.as_str())
+        && pending_occurrence.is_none()
+    {
+        return Err(CoreError::InvalidInput(
+            "Workflow occurrence was already claimed, rescheduled, or disabled".into(),
+        ));
+    }
+    let cached_scheduled_at = parse_utc_timestamp(&cached_scheduled_for).ok_or_else(|| {
+        CoreError::InvalidInput(format!(
+            "Invalid workflow scheduled occurrence '{cached_scheduled_for}'"
+        ))
+    })?;
+    if cached_scheduled_at > now {
+        return Err(CoreError::InvalidInput(format!(
+            "Workflow occurrence '{cached_scheduled_for}' is not due yet"
+        )));
+    }
+    let scheduled_for = if let Some((pending, _, _)) = pending_occurrence.as_ref() {
+        pending.scheduled_for.clone()
+    } else if due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
+        && due_run.automation.schedule_config.misfire_policy
+            == WorkflowScheduleMisfirePolicy::RunLatest
+        && cached_scheduled_at < now
+    {
+        let WorkflowAutomationTrigger::Schedule { cron } = &due_run.automation.trigger else {
+            return Err(CoreError::Internal(
+                "A scheduled occurrence must retain a schedule trigger".into(),
+            ));
+        };
+        latest_workflow_cron_occurrence_at_or_before(
+            cron,
+            &due_run.automation.schedule_config.timezone,
+            cached_scheduled_at,
+            now,
+        )?
+        .to_rfc3339()
+    } else {
+        cached_scheduled_for
+    };
+    let scheduled_at = parse_utc_timestamp(&scheduled_for).ok_or_else(|| {
+        CoreError::InvalidInput(format!(
+            "Invalid workflow scheduled occurrence '{scheduled_for}'"
+        ))
+    })?;
+    due_run.scheduled_for = Some(scheduled_for.clone());
+    let resume_next_run_at = pending_occurrence
+        .as_ref()
+        .and_then(|(_, _, resume)| resume.clone())
+        .or_else(|| {
+            (due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow)
+                .then(|| due_run.automation.next_run_at.clone())
+                .flatten()
+        });
+    let next_run_at = if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
+        resume_next_run_at.clone()
+    } else {
+        next_run_for_trigger(
+            &due_run.automation.trigger,
+            &due_run.automation.schedule_config,
+            due_run.automation.enabled,
+            now,
+        )?
+    };
+    let existing = if let Some((occurrence, _, _)) = pending_occurrence {
+        Some(occurrence)
+    } else {
+        tx.query_row(
+            "SELECT id, automation_id, definition_revision, scheduled_for, status,
+                    attempt_count, retry_at, last_error, lease_token, lease_expires_at,
+                    o.created_at, o.updated_at
+             FROM workflow_automation_occurrences o
+             JOIN workflow_automation_occurrence_origins g ON g.occurrence_id = o.id
+             WHERE o.automation_id = ?1 AND o.definition_revision = ?2
+               AND o.scheduled_for = ?3 AND g.origin = ?4",
+            rusqlite::params![
+                &due_run.automation.id,
+                definition_revision,
+                &scheduled_for,
+                due_run.origin.as_str()
+            ],
+            workflow_automation_occurrence_from_row,
+        )
+        .optional()?
+    };
+    let occurrence_id = existing
+        .as_ref()
+        .map(|item| item.id.clone())
+        .unwrap_or_else(new_id);
+    if existing.is_none() {
+        tx.execute(
+            "INSERT INTO workflow_automation_occurrences
+                 (id, automation_id, definition_revision, scheduled_for, status)
+             VALUES (?1, ?2, ?3, ?4, 'planned')",
+            rusqlite::params![
+                &occurrence_id,
+                &due_run.automation.id,
+                definition_revision,
+                &scheduled_for
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO workflow_automation_occurrence_origins
+                 (occurrence_id, origin, resume_next_run_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![&occurrence_id, due_run.origin.as_str(), &resume_next_run_at],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO workflow_automation_occurrence_approvals
+             (occurrence_id, state)
+         VALUES (?1, ?2)",
+        rusqlite::params![
+            &occurrence_id,
+            if due_run.automation.approval_policy.require_before_run {
+                WorkflowAutomationApprovalState::Pending.as_str()
+            } else {
+                WorkflowAutomationApprovalState::NotRequired.as_str()
+            }
+        ],
+    )?;
+    Ok(PreparedWorkflowOccurrenceClaim {
+        due_run,
+        definition_revision,
+        scheduled_for,
+        scheduled_at,
+        next_run_at,
+        occurrence_id,
+        existing,
+    })
+}
+
+fn workflow_has_active_run(
+    tx: &Transaction<'_>,
+    automation_id: &str,
+    occurrence_id: &str,
+) -> Result<bool, CoreError> {
+    tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM workflow_automation_runs
+             WHERE automation_id = ?1
+               AND (occurrence_id IS NULL OR occurrence_id != ?2)
+               AND status IN ('queued', 'running', 'initializing', 'in_progress',
+                              'waiting_approval', 'paused', 'resuming', 'cancelling')
+         )",
+        rusqlite::params![automation_id, occurrence_id],
+        |row| row.get(0),
+    )
+    .map_err(CoreError::Database)
+}
+
+fn workflow_has_isolated_source_lock(
+    tx: &Transaction<'_>,
+    prepared: &PreparedWorkflowOccurrenceClaim,
+) -> Result<bool, CoreError> {
+    if prepared
+        .due_run
+        .automation
+        .schedule_config
+        .execution_policy
+        .workspace_policy
+        != WorkflowScheduleWorkspacePolicy::IsolatedPatch
+    {
+        return Ok(false);
+    }
+    let source_fingerprint = prepared
+        .due_run
+        .automation
+        .schedule_config
+        .execution_policy
+        .source_root_fingerprint
+        .as_deref()
+        .ok_or_else(|| {
+            CoreError::InvalidInput(
+                "Isolated scheduled patch lost its canonical source fingerprint before claim"
+                    .into(),
+            )
+        })?;
+    tx.query_row(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM workflow_automation_runs r
+             JOIN workflow_automation_definition_revisions d
+               ON d.automation_id = r.automation_id
+              AND d.revision = r.definition_revision
+             WHERE r.automation_id != ?1
+               AND r.status IN ('queued', 'running', 'initializing', 'in_progress',
+                                'waiting_approval', 'paused', 'resuming', 'cancelling')
+               AND json_extract(d.schedule_config_json,
+                                '$.executionPolicy.workspacePolicy') = 'isolated_patch'
+               AND json_extract(d.schedule_config_json,
+                                '$.executionPolicy.sourceRootFingerprint') = ?2
+         )",
+        rusqlite::params![&prepared.due_run.automation.id, source_fingerprint],
+        |row| row.get(0),
+    )
+    .map_err(CoreError::Database)
+}
+
+fn decide_workflow_occurrence_claim(
+    tx: &Transaction<'_>,
+    prepared: &PreparedWorkflowOccurrenceClaim,
+    now: DateTime<Utc>,
+) -> Result<WorkflowOccurrenceClaimDecision, CoreError> {
+    if let Some(current) = prepared.existing.as_ref() {
+        if current.status == WorkflowAutomationOccurrenceStatus::WaitingApproval {
+            return Ok(WorkflowOccurrenceClaimDecision::Skip("waiting_approval"));
+        }
+        let lease_is_live = current
+            .lease_expires_at
+            .as_deref()
+            .and_then(parse_utc_timestamp)
+            .is_some_and(|expires| expires > now);
+        if current.status == WorkflowAutomationOccurrenceStatus::Claimed && lease_is_live {
+            return Ok(WorkflowOccurrenceClaimDecision::Skip(
+                "already_claimed_live",
+            ));
+        }
+        if matches!(
+            current.status,
+            WorkflowAutomationOccurrenceStatus::Running
+                | WorkflowAutomationOccurrenceStatus::Completed
+                | WorkflowAutomationOccurrenceStatus::Skipped
+                | WorkflowAutomationOccurrenceStatus::Failed
+                | WorkflowAutomationOccurrenceStatus::Cancelled
+                | WorkflowAutomationOccurrenceStatus::TimedOut
+                | WorkflowAutomationOccurrenceStatus::Disabled
+        ) {
+            tx.execute(
+                "UPDATE workflow_automations
+                 SET next_run_at = ?2, status = CASE WHEN status = 'queued' THEN 'ready' ELSE status END,
+                     updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![&prepared.due_run.automation.id, &prepared.next_run_at],
+            )?;
+            return Ok(WorkflowOccurrenceClaimDecision::Skip("already_consumed"));
+        }
+        if current
+            .retry_at
+            .as_deref()
+            .and_then(parse_utc_timestamp)
+            .is_some_and(|retry_at| retry_at > now)
+        {
+            return Ok(WorkflowOccurrenceClaimDecision::Skip("retry_backoff"));
+        }
+    }
+    if workflow_has_isolated_source_lock(tx, prepared)? {
+        return Ok(WorkflowOccurrenceClaimDecision::Skip(
+            "source_workspace_locked",
+        ));
+    }
+    let active_run_exists =
+        workflow_has_active_run(tx, &prepared.due_run.automation.id, &prepared.occurrence_id)?;
+    if active_run_exists
+        && prepared.due_run.automation.schedule_config.overlap_policy
+            == WorkflowScheduleOverlapPolicy::Skip
+    {
+        tx.execute(
+            "UPDATE workflow_automation_occurrences
+             SET status = 'skipped', last_error = 'overlap_policy_skip',
+                 retry_at = NULL, lease_token = NULL, lease_expires_at = NULL,
+                 updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&prepared.occurrence_id],
+        )?;
+        tx.execute(
+            "UPDATE workflow_automations
+             SET next_run_at = ?2, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&prepared.due_run.automation.id, &prepared.next_run_at],
+        )?;
+        return Ok(WorkflowOccurrenceClaimDecision::Skip("overlap_active"));
+    }
+    let attempt = prepared
+        .existing
+        .as_ref()
+        .map_or(1, |item| item.attempt_count.saturating_add(1));
+    if attempt as usize > SCHEDULER_RETRY_MAX_ATTEMPTS {
+        tx.execute(
+            "UPDATE workflow_automation_occurrences
+             SET status = 'failed', lease_token = NULL, lease_expires_at = NULL,
+                 updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&prepared.occurrence_id],
+        )?;
+        tx.execute(
+            "UPDATE workflow_automations
+             SET next_run_at = ?2, status = 'ready', updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![&prepared.due_run.automation.id, &prepared.next_run_at],
+        )?;
+        return Ok(WorkflowOccurrenceClaimDecision::Skip("retry_exhausted"));
+    }
+    if attempt > 1 {
+        tx.execute(
+            "UPDATE workflow_automation_runs
+             SET status = 'cancelled',
+                 summary = COALESCE(summary, 'Occurrence lease superseded by a newer attempt'),
+                 finished_at = COALESCE(finished_at, datetime('now'))
+             WHERE occurrence_id = ?1 AND status = 'queued' AND attempt < ?2",
+            rusqlite::params![&prepared.occurrence_id, i64::from(attempt)],
+        )?;
+    }
+    let misfire_expired = prepared.due_run.automation.schedule_config.misfire_policy
+        == WorkflowScheduleMisfirePolicy::Skip
+        && attempt == 1
+        && now
+            > prepared.scheduled_at
+                + Duration::seconds(i64::from(
+                    prepared
+                        .due_run
+                        .automation
+                        .schedule_config
+                        .misfire_grace_seconds,
+                ));
+    if misfire_expired {
+        tx.execute(
+            "UPDATE workflow_automation_occurrences
+             SET status = 'skipped', retry_at = NULL, lease_token = NULL,
+                 lease_expires_at = NULL, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![&prepared.occurrence_id],
+        )?;
+        tx.execute(
+            "UPDATE workflow_automations
+             SET next_run_at = ?2, status = 'ready', updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![&prepared.due_run.automation.id, &prepared.next_run_at],
+        )?;
+        return Ok(WorkflowOccurrenceClaimDecision::Skip(
+            "misfire_grace_exceeded",
+        ));
+    }
+    Ok(WorkflowOccurrenceClaimDecision::Queue { attempt })
+}
+
+fn finish_workflow_claim_skipped(
+    tx: Transaction<'_>,
+    prepared: PreparedWorkflowOccurrenceClaim,
+    skip_reason: &'static str,
+) -> Result<WorkflowAutomationDueRunClaim, CoreError> {
+    let occurrence = fetch_workflow_occurrence(&tx, &prepared.occurrence_id)?;
+    tx.commit()?;
+    Ok(WorkflowAutomationDueRunClaim {
+        due_run: prepared.due_run,
+        occurrence: Some(occurrence),
+        run: None,
+        skip_reason: Some(skip_reason.to_string()),
+    })
+}
+
+fn queue_workflow_occurrence_claim(
+    tx: &Transaction<'_>,
+    prepared: &PreparedWorkflowOccurrenceClaim,
+    attempt: u32,
+    lease_token: &str,
+    lease_expires_at: &str,
+    summary: Option<&str>,
+) -> Result<(WorkflowAutomationRun, WorkflowAutomationOccurrence), CoreError> {
+    tx.execute(
+        "UPDATE workflow_automation_occurrences
+         SET status = 'claimed', attempt_count = ?2, retry_at = NULL,
+             lease_token = ?3, lease_expires_at = ?4, updated_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![
+            &prepared.occurrence_id,
+            i64::from(attempt),
+            lease_token,
+            lease_expires_at
+        ],
+    )?;
+    let run_id = new_id();
+    tx.execute(
+        "INSERT INTO workflow_automation_runs
+             (id, automation_id, task_run_id, status, summary, occurrence_id,
+              scheduled_for, definition_revision, attempt)
+         VALUES (?1, ?2, NULL, 'queued', ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            &run_id,
+            &prepared.due_run.automation.id,
+            summary.or(Some(prepared.due_run.due_reason.as_str())),
+            &prepared.occurrence_id,
+            &prepared.scheduled_for,
+            prepared.definition_revision,
+            i64::from(attempt)
+        ],
+    )?;
+    tx.execute(
+        "UPDATE workflow_automations
+         SET status = 'queued', updated_at = datetime('now') WHERE id = ?1",
+        rusqlite::params![&prepared.due_run.automation.id],
+    )?;
+    Ok((
+        fetch_workflow_run(tx, &run_id)?,
+        fetch_workflow_occurrence(tx, &prepared.occurrence_id)?,
+    ))
+}
+
 impl Database {
     pub fn save_workflow_automation(
         &self,
@@ -1669,106 +2221,16 @@ impl Database {
         run_id: &str,
         now_rfc3339: &str,
     ) -> Result<WorkflowAutomationDueRunClaim, CoreError> {
-        let now = parse_utc_timestamp(now_rfc3339).ok_or_else(|| {
-            CoreError::InvalidInput(format!("Invalid workflow approval time '{now_rfc3339}'"))
-        })?;
-        let lease_token = new_id();
-        let lease_expires_at = (now + Duration::minutes(2)).to_rfc3339();
-        let mut conn = self.conn();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let candidate = tx
-            .query_row(
-                "SELECT r.automation_id, r.occurrence_id, r.definition_revision,
-                        r.scheduled_for, COALESCE(g.origin, 'schedule')
-                 FROM workflow_automation_runs r
-                 JOIN workflow_automation_occurrence_approvals p
-                   ON p.occurrence_id = r.occurrence_id
-                 JOIN workflow_automation_occurrences o ON o.id = r.occurrence_id
-                 LEFT JOIN workflow_automation_occurrence_origins g
-                   ON g.occurrence_id = r.occurrence_id
-                 JOIN workflow_automation_schedule_configs c ON c.automation_id = r.automation_id
-                 WHERE r.id = ?1 AND r.status = 'waiting_approval'
-                   AND p.state = 'pending' AND o.status = 'waiting_approval'
-                   AND c.revision = r.definition_revision",
-                rusqlite::params![run_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or_else(|| {
-                CoreError::InvalidInput(format!(
-                    "Workflow run {run_id} is no longer waiting for approval"
-                ))
-            })?;
-        let (automation_id, occurrence_id, definition_revision, scheduled_for, origin) = candidate;
-        let origin = WorkflowAutomationOccurrenceOrigin::parse(&origin)?;
-        tx.execute(
-            "UPDATE workflow_automation_occurrence_approvals
-             SET state = 'approved', resolved_at = datetime('now'), updated_at = datetime('now')
-             WHERE occurrence_id = ?1 AND state = 'pending'",
-            rusqlite::params![&occurrence_id],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automation_occurrences
-             SET status = 'claimed', lease_token = ?2, lease_expires_at = ?3,
-                 updated_at = datetime('now') WHERE id = ?1 AND status = 'waiting_approval'",
-            rusqlite::params![&occurrence_id, &lease_token, &lease_expires_at],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automation_runs SET status = 'queued'
-             WHERE id = ?1 AND status = 'waiting_approval'",
-            rusqlite::params![run_id],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automations SET status = 'queued', updated_at = datetime('now')
-             WHERE id = ?1",
-            rusqlite::params![&automation_id],
-        )?;
-        let payload = serde_json::json!({
-            "occurrenceId": occurrence_id,
-            "definitionRevision": definition_revision,
-            "decision": "approved",
-        });
-        insert_scheduler_event(
-            &tx,
-            SchedulerEventRecord {
-                automation_id: Some(&automation_id),
-                run_id: Some(run_id),
-                event_type: WorkflowSchedulerEventType::ApprovalResolved,
-                status: Some("queued"),
-                summary: "Scheduled occurrence was approved for launch",
-                payload: Some(&payload),
-            },
-        )?;
-        let run = fetch_workflow_run(&tx, run_id)?;
-        let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-        tx.commit()?;
-        drop(conn);
-        let automation = self.get_workflow_automation(&automation_id)?;
-        let due_reason = if origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
-            "manual run requested".to_string()
-        } else {
-            automation.trigger.label()
-        };
-        Ok(WorkflowAutomationDueRunClaim {
-            due_run: WorkflowAutomationDueRun {
-                prompt: automation_prompt(&automation),
-                due_reason,
-                scheduled_for,
-                origin,
-                automation,
-            },
-            occurrence: Some(occurrence),
-            run: Some(run),
-            skip_reason: None,
-        })
+        match self.resolve_workflow_automation_approval_at(
+            run_id,
+            now_rfc3339,
+            WorkflowApprovalDecision::Approve,
+        )? {
+            WorkflowApprovalResolution::Approved(claim) => Ok(claim),
+            WorkflowApprovalResolution::Denied(_) => Err(CoreError::Internal(
+                "Approval transaction returned the wrong decision".into(),
+            )),
+        }
     }
 
     pub fn deny_workflow_automation_run_at(
@@ -1776,106 +2238,167 @@ impl Database {
         run_id: &str,
         now_rfc3339: &str,
     ) -> Result<WorkflowAutomationRun, CoreError> {
+        match self.resolve_workflow_automation_approval_at(
+            run_id,
+            now_rfc3339,
+            WorkflowApprovalDecision::Deny,
+        )? {
+            WorkflowApprovalResolution::Denied(run) => Ok(run),
+            WorkflowApprovalResolution::Approved(_) => Err(CoreError::Internal(
+                "Denial transaction returned the wrong decision".into(),
+            )),
+        }
+    }
+
+    fn resolve_workflow_automation_approval_at(
+        &self,
+        run_id: &str,
+        now_rfc3339: &str,
+        decision: WorkflowApprovalDecision,
+    ) -> Result<WorkflowApprovalResolution, CoreError> {
+        let decision_label = match decision {
+            WorkflowApprovalDecision::Approve => "approval",
+            WorkflowApprovalDecision::Deny => "denial",
+        };
         let now = parse_utc_timestamp(now_rfc3339).ok_or_else(|| {
-            CoreError::InvalidInput(format!("Invalid workflow denial time '{now_rfc3339}'"))
+            CoreError::InvalidInput(format!(
+                "Invalid workflow {decision_label} time '{now_rfc3339}'"
+            ))
         })?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let automation = tx
-            .query_row(
-                "SELECT a.id, a.name, a.description, a.workflow_template_id, a.prompt,
-                    a.trigger_json, a.trigger_kind, a.source_scope_json,
-                    a.approval_policy_json, a.enabled, a.status, a.last_run_at,
-                    a.next_run_at, a.created_at, a.updated_at, c.config_json
-             FROM workflow_automations a
-             JOIN workflow_automation_schedule_configs c ON c.automation_id = a.id
-             JOIN workflow_automation_runs r ON r.automation_id = a.id
-             JOIN workflow_automation_occurrence_approvals p ON p.occurrence_id = r.occurrence_id
-             JOIN workflow_automation_occurrences o ON o.id = r.occurrence_id
-             WHERE r.id = ?1 AND r.status = 'waiting_approval'
-               AND p.state = 'pending' AND o.status = 'waiting_approval'
-               AND c.revision = r.definition_revision",
-                rusqlite::params![run_id],
-                workflow_automation_from_row,
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => CoreError::InvalidInput(format!(
-                    "Workflow run {run_id} is no longer waiting for approval"
-                )),
-                other => CoreError::Database(other),
-            })?;
-        let run = fetch_workflow_run(&tx, run_id)?;
-        let occurrence_id = run.occurrence_id.clone().ok_or_else(|| {
-            CoreError::Internal(format!("Workflow run {run_id} lost its occurrence"))
-        })?;
-        let (origin, resume_next_run_at): (String, Option<String>) = tx.query_row(
-            "SELECT origin, resume_next_run_at
-             FROM workflow_automation_occurrence_origins WHERE occurrence_id = ?1",
-            rusqlite::params![&occurrence_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let next_run_at = if WorkflowAutomationOccurrenceOrigin::parse(&origin)?
-            == WorkflowAutomationOccurrenceOrigin::ManualRunNow
-        {
-            resume_next_run_at
-        } else {
-            next_run_for_trigger(
-                &automation.trigger,
-                &automation.schedule_config,
-                automation.enabled,
-                now,
-            )?
+        let pending = fetch_pending_workflow_approval(&tx, run_id)?;
+        let approval_state = match decision {
+            WorkflowApprovalDecision::Approve => "approved",
+            WorkflowApprovalDecision::Deny => "denied",
         };
         tx.execute(
             "UPDATE workflow_automation_occurrence_approvals
-             SET state = 'denied', resolved_at = datetime('now'), updated_at = datetime('now')
+             SET state = ?2, resolved_at = datetime('now'), updated_at = datetime('now')
              WHERE occurrence_id = ?1 AND state = 'pending'",
-            rusqlite::params![&occurrence_id],
+            rusqlite::params![&pending.occurrence_id, approval_state],
         )?;
-        tx.execute(
-            "UPDATE workflow_automation_occurrences
-             SET status = 'skipped', last_error = 'pre_run_approval_denied',
-                 retry_at = NULL, lease_token = NULL, lease_expires_at = NULL,
-                 updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![&occurrence_id],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automation_runs
-             SET status = 'cancelled', summary = 'Pre-run approval denied',
-                 finished_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![run_id],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automations
-             SET status = CASE WHEN enabled = 1 THEN 'ready' ELSE 'disabled' END,
-                 next_run_at = ?2,
-                 last_run_at = CASE WHEN trigger_kind = 'folder' THEN ?3 ELSE last_run_at END,
-                 updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![&automation.id, &next_run_at, now_rfc3339],
-        )?;
+
+        match decision {
+            WorkflowApprovalDecision::Approve => {
+                let lease_token = new_id();
+                let lease_expires_at = (now + Duration::minutes(2)).to_rfc3339();
+                tx.execute(
+                    "UPDATE workflow_automation_occurrences
+                     SET status = 'claimed', lease_token = ?2, lease_expires_at = ?3,
+                         updated_at = datetime('now') WHERE id = ?1 AND status = 'waiting_approval'",
+                    rusqlite::params![
+                        &pending.occurrence_id,
+                        &lease_token,
+                        &lease_expires_at
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE workflow_automation_runs SET status = 'queued'
+                     WHERE id = ?1 AND status = 'waiting_approval'",
+                    rusqlite::params![run_id],
+                )?;
+                tx.execute(
+                    "UPDATE workflow_automations SET status = 'queued', updated_at = datetime('now')
+                     WHERE id = ?1",
+                    rusqlite::params![&pending.automation.id],
+                )?;
+            }
+            WorkflowApprovalDecision::Deny => {
+                let next_run_at =
+                    if pending.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
+                        pending.resume_next_run_at.clone()
+                    } else {
+                        next_run_for_trigger(
+                            &pending.automation.trigger,
+                            &pending.automation.schedule_config,
+                            pending.automation.enabled,
+                            now,
+                        )?
+                    };
+                tx.execute(
+                    "UPDATE workflow_automation_occurrences
+                     SET status = 'skipped', last_error = 'pre_run_approval_denied',
+                         retry_at = NULL, lease_token = NULL, lease_expires_at = NULL,
+                         updated_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![&pending.occurrence_id],
+                )?;
+                tx.execute(
+                    "UPDATE workflow_automation_runs
+                     SET status = 'cancelled', summary = 'Pre-run approval denied',
+                         finished_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![run_id],
+                )?;
+                tx.execute(
+                    "UPDATE workflow_automations
+                     SET status = CASE WHEN enabled = 1 THEN 'ready' ELSE 'disabled' END,
+                         next_run_at = ?2,
+                         last_run_at = CASE WHEN trigger_kind = 'folder' THEN ?3 ELSE last_run_at END,
+                         updated_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![&pending.automation.id, &next_run_at, now_rfc3339],
+                )?;
+            }
+        }
+
+        let (event_status, event_summary) = match decision {
+            WorkflowApprovalDecision::Approve => {
+                ("queued", "Scheduled occurrence was approved for launch")
+            }
+            WorkflowApprovalDecision::Deny => {
+                ("cancelled", "Scheduled occurrence was denied before launch")
+            }
+        };
         let payload = serde_json::json!({
-            "occurrenceId": occurrence_id,
-            "definitionRevision": run.definition_revision,
-            "decision": "denied",
+            "occurrenceId": pending.occurrence_id,
+            "definitionRevision": pending.run.definition_revision,
+            "decision": approval_state,
         });
         insert_scheduler_event(
             &tx,
             SchedulerEventRecord {
-                automation_id: Some(&automation.id),
+                automation_id: Some(&pending.automation.id),
                 run_id: Some(run_id),
                 event_type: WorkflowSchedulerEventType::ApprovalResolved,
-                status: Some("cancelled"),
-                summary: "Scheduled occurrence was denied before launch",
+                status: Some(event_status),
+                summary: event_summary,
                 payload: Some(&payload),
             },
         )?;
-        let denied = fetch_workflow_run(&tx, run_id)?;
+        let run = fetch_workflow_run(&tx, run_id)?;
+        let occurrence = matches!(decision, WorkflowApprovalDecision::Approve)
+            .then(|| fetch_workflow_occurrence(&tx, &pending.occurrence_id))
+            .transpose()?;
         tx.commit()?;
-        Ok(denied)
+        drop(conn);
+
+        match decision {
+            WorkflowApprovalDecision::Approve => {
+                let due_reason =
+                    if pending.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
+                        "manual run requested".to_string()
+                    } else {
+                        pending.automation.trigger.label()
+                    };
+                Ok(WorkflowApprovalResolution::Approved(
+                    WorkflowAutomationDueRunClaim {
+                        due_run: WorkflowAutomationDueRun {
+                            prompt: automation_prompt(&pending.automation),
+                            due_reason,
+                            scheduled_for: run.scheduled_for.clone(),
+                            origin: pending.origin,
+                            automation: pending.automation,
+                        },
+                        occurrence,
+                        run: Some(run),
+                        skip_reason: None,
+                    },
+                ))
+            }
+            WorkflowApprovalDecision::Deny => Ok(WorkflowApprovalResolution::Denied(run)),
+        }
     }
 
-    /// Builds an immediate occurrence for a saved scheduled definition without
-    /// consuming or moving its recurring cron cursor. The occurrence is still
+    /// Builds an immediate occurrence for a saved scheduled definition without    /// consuming or moving its recurring cron cursor. The occurrence is still
     /// claimed by the same durable scheduler seam as timer-generated work.
     pub fn workflow_automation_run_now_due_at(
         &self,
@@ -2016,11 +2539,11 @@ impl Database {
 
     pub fn claim_workflow_automation_due_run_at(
         &self,
-        mut due_run: WorkflowAutomationDueRun,
+        due_run: WorkflowAutomationDueRun,
         now_rfc3339: &str,
         summary: Option<&str>,
     ) -> Result<WorkflowAutomationDueRunClaim, CoreError> {
-        let Some(mut cached_scheduled_for) = due_run.scheduled_for.clone() else {
+        let Some(cached_scheduled_for) = due_run.scheduled_for.clone() else {
             let run = self.record_workflow_automation_run(
                 &due_run.automation.id,
                 None,
@@ -2041,467 +2564,30 @@ impl Database {
         let lease_expires_at = (now + Duration::minutes(2)).to_rfc3339();
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let authoritative_automation = tx.query_row(
-            &format!("{WORKFLOW_AUTOMATION_SELECT} WHERE id = ?1"),
-            rusqlite::params![&due_run.automation.id],
-            workflow_automation_from_row,
-        )?;
-        if !authoritative_automation.enabled {
-            return Err(CoreError::InvalidInput(
-                "Workflow occurrence was already claimed, rescheduled, or disabled".into(),
-            ));
-        }
-        if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow
-            && !matches!(
-                authoritative_automation.trigger,
-                WorkflowAutomationTrigger::Schedule { .. }
-            )
-        {
-            return Err(CoreError::InvalidInput(
-                "Only scheduled definitions support durable run-now occurrences".into(),
-            ));
-        }
-        due_run.automation = authoritative_automation;
-        due_run.prompt = automation_prompt(&due_run.automation);
-        due_run.due_reason = if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
-            "manual run requested".to_string()
-        } else {
-            due_run.automation.trigger.label()
-        };
-        let definition_revision: i64 = tx.query_row(
-            "SELECT revision FROM workflow_automation_schedule_configs WHERE automation_id = ?1",
-            rusqlite::params![&due_run.automation.id],
-            |row| row.get(0),
-        )?;
-        let pending_candidate = tx
-            .query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        o.created_at, o.updated_at, COALESCE(g.origin, 'schedule'),
-                        g.resume_next_run_at
-                 FROM workflow_automation_occurrences o
-                 LEFT JOIN workflow_automation_occurrence_origins g ON g.occurrence_id = o.id
-                 WHERE o.automation_id = ?1 AND o.definition_revision = ?2
-                   AND o.status IN ('planned', 'claimed', 'retry_wait', 'waiting_approval')
-                 ORDER BY datetime(o.created_at) DESC, o.id DESC
-                 LIMIT 1",
-                rusqlite::params![&due_run.automation.id, definition_revision],
-                |row| {
-                    Ok((
-                        workflow_automation_occurrence_from_row(row)?,
-                        row.get::<_, String>(12)?,
-                        row.get::<_, Option<String>>(13)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let pending_occurrence = pending_candidate
-            .map(|(occurrence, origin, resume_next_run_at)| {
-                Ok::<_, CoreError>((
-                    occurrence,
-                    WorkflowAutomationOccurrenceOrigin::parse(&origin)?,
-                    resume_next_run_at,
-                ))
-            })
-            .transpose()?
-            .filter(|(occurrence, origin, _)| {
-                *origin == due_run.origin
-                    && (due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
-                        || occurrence.scheduled_for == cached_scheduled_for)
-            });
-        if let Some((pending, origin, _)) = pending_occurrence.as_ref() {
-            cached_scheduled_for = pending.scheduled_for.clone();
-            due_run.origin = *origin;
-        }
-        if due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
-            && due_run.automation.next_run_at.as_deref() != Some(cached_scheduled_for.as_str())
-            && pending_occurrence.is_none()
-        {
-            return Err(CoreError::InvalidInput(
-                "Workflow occurrence was already claimed, rescheduled, or disabled".into(),
-            ));
-        }
-        let cached_scheduled_at = parse_utc_timestamp(&cached_scheduled_for).ok_or_else(|| {
-            CoreError::InvalidInput(format!(
-                "Invalid workflow scheduled occurrence '{cached_scheduled_for}'"
-            ))
-        })?;
-        if cached_scheduled_at > now {
-            return Err(CoreError::InvalidInput(format!(
-                "Workflow occurrence '{cached_scheduled_for}' is not due yet"
-            )));
-        }
-        let scheduled_for = if let Some((pending, _, _)) = pending_occurrence.as_ref() {
-            pending.scheduled_for.clone()
-        } else if due_run.origin == WorkflowAutomationOccurrenceOrigin::Schedule
-            && due_run.automation.schedule_config.misfire_policy
-                == WorkflowScheduleMisfirePolicy::RunLatest
-            && cached_scheduled_at < now
-        {
-            let WorkflowAutomationTrigger::Schedule { cron } = &due_run.automation.trigger else {
-                return Err(CoreError::Internal(
-                    "A scheduled occurrence must retain a schedule trigger".into(),
-                ));
-            };
-            latest_workflow_cron_occurrence_at_or_before(
-                cron,
-                &due_run.automation.schedule_config.timezone,
-                cached_scheduled_at,
-                now,
-            )?
-            .to_rfc3339()
-        } else {
-            cached_scheduled_for.clone()
-        };
-        let scheduled_at = parse_utc_timestamp(&scheduled_for).ok_or_else(|| {
-            CoreError::InvalidInput(format!(
-                "Invalid workflow scheduled occurrence '{scheduled_for}'"
-            ))
-        })?;
-        due_run.scheduled_for = Some(scheduled_for.clone());
-        let resume_next_run_at = pending_occurrence
-            .as_ref()
-            .and_then(|(_, _, resume)| resume.clone())
-            .or_else(|| {
-                (due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow)
-                    .then(|| due_run.automation.next_run_at.clone())
-                    .flatten()
-            });
-        let next_run_at = if due_run.origin == WorkflowAutomationOccurrenceOrigin::ManualRunNow {
-            resume_next_run_at.clone()
-        } else {
-            next_run_for_trigger(
-                &due_run.automation.trigger,
-                &due_run.automation.schedule_config,
-                due_run.automation.enabled,
-                now,
-            )?
-        };
-        let existing = if let Some((occurrence, _, _)) = pending_occurrence {
-            Some(occurrence)
-        } else {
-            tx.query_row(
-                "SELECT id, automation_id, definition_revision, scheduled_for, status,
-                        attempt_count, retry_at, last_error, lease_token, lease_expires_at,
-                        o.created_at, o.updated_at
-                 FROM workflow_automation_occurrences o
-                 JOIN workflow_automation_occurrence_origins g ON g.occurrence_id = o.id
-                 WHERE o.automation_id = ?1 AND o.definition_revision = ?2
-                   AND o.scheduled_for = ?3 AND g.origin = ?4",
-                rusqlite::params![
-                    &due_run.automation.id,
-                    definition_revision,
-                    &scheduled_for,
-                    due_run.origin.as_str()
-                ],
-                workflow_automation_occurrence_from_row,
-            )
-            .optional()?
-        };
-        let occurrence_id = existing
-            .as_ref()
-            .map(|item| item.id.clone())
-            .unwrap_or_else(new_id);
-        if existing.is_none() {
-            tx.execute(
-                "INSERT INTO workflow_automation_occurrences
-                     (id, automation_id, definition_revision, scheduled_for, status)
-                 VALUES (?1, ?2, ?3, ?4, 'planned')",
-                rusqlite::params![
-                    &occurrence_id,
-                    &due_run.automation.id,
-                    definition_revision,
-                    &scheduled_for
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO workflow_automation_occurrence_origins
-                     (occurrence_id, origin, resume_next_run_at)
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![&occurrence_id, due_run.origin.as_str(), &resume_next_run_at],
-            )?;
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO workflow_automation_occurrence_approvals
-                 (occurrence_id, state)
-             VALUES (?1, ?2)",
-            rusqlite::params![
-                &occurrence_id,
-                if due_run.automation.approval_policy.require_before_run {
-                    WorkflowAutomationApprovalState::Pending.as_str()
-                } else {
-                    WorkflowAutomationApprovalState::NotRequired.as_str()
-                }
-            ],
-        )?;
-        let current = existing.as_ref();
-        if let Some(current) = current {
-            if current.status == WorkflowAutomationOccurrenceStatus::WaitingApproval {
-                let occurrence = current.clone();
-                tx.commit()?;
-                drop(conn);
-                return Ok(WorkflowAutomationDueRunClaim {
-                    due_run,
-                    occurrence: Some(occurrence),
-                    run: None,
-                    skip_reason: Some("waiting_approval".into()),
-                });
+        let prepared = prepare_workflow_occurrence_claim(&tx, due_run, cached_scheduled_for, now)?;
+        match decide_workflow_occurrence_claim(&tx, &prepared, now)? {
+            WorkflowOccurrenceClaimDecision::Skip(reason) => {
+                finish_workflow_claim_skipped(tx, prepared, reason)
             }
-            let lease_is_live = current
-                .lease_expires_at
-                .as_deref()
-                .and_then(parse_utc_timestamp)
-                .is_some_and(|expires| expires > now);
-            if current.status == WorkflowAutomationOccurrenceStatus::Claimed && lease_is_live {
-                let occurrence = current.clone();
-                tx.commit()?;
-                drop(conn);
-                return Ok(WorkflowAutomationDueRunClaim {
-                    due_run,
-                    occurrence: Some(occurrence),
-                    run: None,
-                    skip_reason: Some("already_claimed_live".into()),
-                });
-            }
-            if matches!(
-                current.status,
-                WorkflowAutomationOccurrenceStatus::Running
-                    | WorkflowAutomationOccurrenceStatus::Completed
-                    | WorkflowAutomationOccurrenceStatus::Skipped
-                    | WorkflowAutomationOccurrenceStatus::Failed
-                    | WorkflowAutomationOccurrenceStatus::Cancelled
-                    | WorkflowAutomationOccurrenceStatus::TimedOut
-                    | WorkflowAutomationOccurrenceStatus::Disabled
-            ) {
-                tx.execute(
-                    "UPDATE workflow_automations
-                     SET next_run_at = ?2, status = CASE WHEN status = 'queued' THEN 'ready' ELSE status END,
-                         updated_at = datetime('now') WHERE id = ?1",
-                    rusqlite::params![&due_run.automation.id, &next_run_at],
+            WorkflowOccurrenceClaimDecision::Queue { attempt } => {
+                let (run, occurrence) = queue_workflow_occurrence_claim(
+                    &tx,
+                    &prepared,
+                    attempt,
+                    &lease_token,
+                    &lease_expires_at,
+                    summary,
                 )?;
-                let occurrence = current.clone();
                 tx.commit()?;
                 drop(conn);
-                return Ok(WorkflowAutomationDueRunClaim {
-                    due_run,
+                Ok(WorkflowAutomationDueRunClaim {
+                    due_run: prepared.due_run,
                     occurrence: Some(occurrence),
-                    run: None,
-                    skip_reason: Some("already_consumed".into()),
-                });
-            }
-            if current
-                .retry_at
-                .as_deref()
-                .and_then(parse_utc_timestamp)
-                .is_some_and(|retry_at| retry_at > now)
-            {
-                let occurrence = current.clone();
-                tx.commit()?;
-                drop(conn);
-                return Ok(WorkflowAutomationDueRunClaim {
-                    due_run,
-                    occurrence: Some(occurrence),
-                    run: None,
-                    skip_reason: Some("retry_backoff".into()),
-                });
+                    run: Some(run),
+                    skip_reason: None,
+                })
             }
         }
-        let active_run_exists: bool = tx.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM workflow_automation_runs
-                 WHERE automation_id = ?1
-                   AND (occurrence_id IS NULL OR occurrence_id != ?2)
-                   AND status IN ('queued', 'running', 'initializing', 'in_progress',
-                                  'waiting_approval', 'paused', 'resuming', 'cancelling')
-             )",
-            rusqlite::params![&due_run.automation.id, &occurrence_id],
-            |row| row.get(0),
-        )?;
-        let isolated_source_lock_exists = if due_run
-            .automation
-            .schedule_config
-            .execution_policy
-            .workspace_policy
-            == WorkflowScheduleWorkspacePolicy::IsolatedPatch
-        {
-            let source_fingerprint = due_run
-                .automation
-                .schedule_config
-                .execution_policy
-                .source_root_fingerprint
-                .as_deref()
-                .ok_or_else(|| {
-                    CoreError::InvalidInput(
-                    "Isolated scheduled patch lost its canonical source fingerprint before claim"
-                        .into(),
-                )
-                })?;
-            tx.query_row(
-                "SELECT EXISTS(
-                     SELECT 1
-                     FROM workflow_automation_runs r
-                     JOIN workflow_automation_definition_revisions d
-                       ON d.automation_id = r.automation_id
-                      AND d.revision = r.definition_revision
-                     WHERE r.automation_id != ?1
-                       AND r.status IN ('queued', 'running', 'initializing', 'in_progress',
-                                        'waiting_approval', 'paused', 'resuming', 'cancelling')
-                       AND json_extract(d.schedule_config_json,
-                                        '$.executionPolicy.workspacePolicy') = 'isolated_patch'
-                       AND json_extract(d.schedule_config_json,
-                                        '$.executionPolicy.sourceRootFingerprint') = ?2
-                 )",
-                rusqlite::params![&due_run.automation.id, source_fingerprint],
-                |row| row.get::<_, bool>(0),
-            )?
-        } else {
-            false
-        };
-        if isolated_source_lock_exists {
-            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-            tx.commit()?;
-            drop(conn);
-            return Ok(WorkflowAutomationDueRunClaim {
-                due_run,
-                occurrence: Some(occurrence),
-                run: None,
-                skip_reason: Some("source_workspace_locked".into()),
-            });
-        }
-        if active_run_exists
-            && due_run.automation.schedule_config.overlap_policy
-                == WorkflowScheduleOverlapPolicy::Skip
-        {
-            tx.execute(
-                "UPDATE workflow_automation_occurrences
-                 SET status = 'skipped', last_error = 'overlap_policy_skip',
-                     retry_at = NULL, lease_token = NULL, lease_expires_at = NULL,
-                     updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-            )?;
-            tx.execute(
-                "UPDATE workflow_automations
-                 SET next_run_at = ?2, updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![&due_run.automation.id, &next_run_at],
-            )?;
-            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-            tx.commit()?;
-            drop(conn);
-            return Ok(WorkflowAutomationDueRunClaim {
-                due_run,
-                occurrence: Some(occurrence),
-                run: None,
-                skip_reason: Some("overlap_active".into()),
-            });
-        }
-        let attempt = current.map_or(1, |item| item.attempt_count.saturating_add(1));
-        if attempt as usize > SCHEDULER_RETRY_MAX_ATTEMPTS {
-            tx.execute(
-                "UPDATE workflow_automation_occurrences
-                 SET status = 'failed', lease_token = NULL, lease_expires_at = NULL,
-                     updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-            )?;
-            tx.execute(
-                "UPDATE workflow_automations
-                 SET next_run_at = ?2, status = 'ready', updated_at = datetime('now')
-                 WHERE id = ?1",
-                rusqlite::params![&due_run.automation.id, &next_run_at],
-            )?;
-            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-            tx.commit()?;
-            drop(conn);
-            return Ok(WorkflowAutomationDueRunClaim {
-                due_run,
-                occurrence: Some(occurrence),
-                run: None,
-                skip_reason: Some("retry_exhausted".into()),
-            });
-        }
-        if attempt > 1 {
-            tx.execute(
-                "UPDATE workflow_automation_runs
-                 SET status = 'cancelled',
-                     summary = COALESCE(summary, 'Occurrence lease superseded by a newer attempt'),
-                     finished_at = COALESCE(finished_at, datetime('now'))
-                 WHERE occurrence_id = ?1 AND status = 'queued' AND attempt < ?2",
-                rusqlite::params![&occurrence_id, i64::from(attempt)],
-            )?;
-        }
-        let misfire_expired = due_run.automation.schedule_config.misfire_policy
-            == WorkflowScheduleMisfirePolicy::Skip
-            && attempt == 1
-            && now
-                > scheduled_at
-                    + Duration::seconds(i64::from(
-                        due_run.automation.schedule_config.misfire_grace_seconds,
-                    ));
-        if misfire_expired {
-            tx.execute(
-                "UPDATE workflow_automation_occurrences
-                 SET status = 'skipped', retry_at = NULL, lease_token = NULL,
-                     lease_expires_at = NULL, updated_at = datetime('now') WHERE id = ?1",
-                rusqlite::params![&occurrence_id],
-            )?;
-            tx.execute(
-                "UPDATE workflow_automations
-                 SET next_run_at = ?2, status = 'ready', updated_at = datetime('now')
-                 WHERE id = ?1",
-                rusqlite::params![&due_run.automation.id, &next_run_at],
-            )?;
-            let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-            tx.commit()?;
-            drop(conn);
-            return Ok(WorkflowAutomationDueRunClaim {
-                due_run,
-                occurrence: Some(occurrence),
-                run: None,
-                skip_reason: Some("misfire_grace_exceeded".into()),
-            });
-        }
-        tx.execute(
-            "UPDATE workflow_automation_occurrences
-             SET status = 'claimed', attempt_count = ?2, retry_at = NULL,
-                 lease_token = ?3, lease_expires_at = ?4, updated_at = datetime('now')
-             WHERE id = ?1",
-            rusqlite::params![
-                &occurrence_id,
-                i64::from(attempt),
-                &lease_token,
-                &lease_expires_at
-            ],
-        )?;
-        let run_id = new_id();
-        tx.execute(
-            "INSERT INTO workflow_automation_runs
-                 (id, automation_id, task_run_id, status, summary, occurrence_id,
-                  scheduled_for, definition_revision, attempt)
-             VALUES (?1, ?2, NULL, 'queued', ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                &run_id,
-                &due_run.automation.id,
-                summary.or(Some(due_run.due_reason.as_str())),
-                &occurrence_id,
-                &scheduled_for,
-                definition_revision,
-                i64::from(attempt)
-            ],
-        )?;
-        tx.execute(
-            "UPDATE workflow_automations
-             SET status = 'queued', updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![&due_run.automation.id],
-        )?;
-        let run = fetch_workflow_run(&tx, &run_id)?;
-        let occurrence = fetch_workflow_occurrence(&tx, &occurrence_id)?;
-        tx.commit()?;
-        drop(conn);
-        Ok(WorkflowAutomationDueRunClaim {
-            due_run,
-            occurrence: Some(occurrence),
-            run: Some(run),
-            skip_reason: None,
-        })
     }
 
     pub fn claim_due_workflow_automation_run(
