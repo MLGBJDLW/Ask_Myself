@@ -1,5 +1,102 @@
 use super::*;
 
+fn stable_instruction(
+    id: &'static str,
+    source: &'static str,
+    reason: &'static str,
+    trust: ContextTrustLevel,
+    priority: i32,
+    text: String,
+) -> ContextPackItem {
+    ContextPackItem::text(
+        id,
+        ContextItemRole::Instruction,
+        source,
+        reason,
+        trust,
+        priority,
+        ContextItemStability::StablePrefix,
+        text,
+    )
+}
+
+fn volatile_instruction(
+    id: &'static str,
+    source: &'static str,
+    reason: &'static str,
+    trust: ContextTrustLevel,
+    priority: i32,
+    text: String,
+) -> ContextPackItem {
+    ContextPackItem::text(
+        id,
+        ContextItemRole::Instruction,
+        source,
+        reason,
+        trust,
+        priority,
+        ContextItemStability::VolatileSuffix,
+        text,
+    )
+}
+
+fn source_context_section(
+    id: &'static str,
+    source: &'static str,
+    reason: &'static str,
+    priority: i32,
+    text: String,
+) -> ContextPackItem {
+    ContextPackItem::text(
+        id,
+        ContextItemRole::SourceScope,
+        source,
+        reason,
+        ContextTrustLevel::UserSelected,
+        priority,
+        ContextItemStability::VolatileSuffix,
+        text,
+    )
+}
+
+fn evidence_context_section(
+    id: &'static str,
+    source: &'static str,
+    reason: &'static str,
+    priority: i32,
+    text: String,
+) -> ContextPackItem {
+    ContextPackItem::text(
+        id,
+        ContextItemRole::Evidence,
+        source,
+        reason,
+        ContextTrustLevel::RetrievedEvidence,
+        priority,
+        ContextItemStability::VolatileSuffix,
+        text,
+    )
+}
+
+fn memory_context_section(
+    id: &'static str,
+    source: &'static str,
+    reason: &'static str,
+    priority: i32,
+    text: String,
+) -> ContextPackItem {
+    ContextPackItem::text(
+        id,
+        ContextItemRole::Memory,
+        source,
+        reason,
+        ContextTrustLevel::AgentMemory,
+        priority,
+        ContextItemStability::VolatileSuffix,
+        text,
+    )
+}
+
 pub fn build_desktop_agent_turn_config(
     request: DesktopAgentTurnConfigRequest<'_>,
 ) -> DesktopAgentTurnConfig {
@@ -60,22 +157,22 @@ pub fn build_desktop_agent_turn_config(
     let agent_memory_section =
         nexa_core::evolution::build_agent_procedural_memory_summary_for_query(db, Some(message))
             .unwrap_or_default();
-    if !agent_memory_section.is_empty() {
-        let memory_hits = db
-            .search_agent_procedural_memories(message, 3)
+    let memory_injections = if agent_memory_section.is_empty() {
+        Vec::new()
+    } else {
+        db.search_agent_procedural_memories(message, 3)
             .or_else(|_| db.list_agent_procedural_memories(2))
-            .unwrap_or_default();
-        for memory in memory_hits {
-            let _ = db.record_memory_injection_event(
-                &memory.id,
-                Some(&conversation.id),
-                Some(turn_id),
-                message,
-                "agent_procedural_memory_prompt",
-                Some(memory.confidence),
-            );
-        }
-    }
+            .unwrap_or_default()
+            .into_iter()
+            .map(|memory| DesktopMemoryInjectionEffect {
+                memory_id: memory.id,
+                conversation_id: conversation.id.clone(),
+                turn_id: turn_id.to_string(),
+                query: message.to_string(),
+                confidence: memory.confidence,
+            })
+            .collect()
+    };
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(db, Some(message))
             .unwrap_or_default();
@@ -114,16 +211,13 @@ pub fn build_desktop_agent_turn_config(
         .as_ref()
         .map(|persona| persona.id.as_str())
         .unwrap_or("default");
-    if conversation.persona_id.as_deref().unwrap_or("default") != effective_persona_id {
-        let _ = db.update_conversation_persona(
-            &conversation.id,
-            if effective_persona_id == "default" {
-                None
-            } else {
-                Some(effective_persona_id)
-            },
-        );
-    }
+    let persona_update = (conversation.persona_id.as_deref().unwrap_or("default")
+        != effective_persona_id)
+        .then(|| DesktopPersonaUpdateEffect {
+            conversation_id: conversation.id.clone(),
+            persona_id: (effective_persona_id != "default")
+                .then(|| effective_persona_id.to_string()),
+        });
     let persona_default_skill_ids = persona_profile
         .as_ref()
         .map(|persona| persona.default_skill_ids.clone())
@@ -273,203 +367,153 @@ pub fn build_desktop_agent_turn_config(
         .capacity_tokens
         .map(|window| window.saturating_mul(3) / 5);
     let mut context_assembler = ContextAssembler::new("agent_turn", context_budget);
-    let context_items = [
-        (
+    let context_items = vec![
+        stable_instruction(
             "system-instructions",
-            ContextItemRole::Instruction,
             "runtime",
             "stable runtime and conversation instructions",
             ContextTrustLevel::System,
             1_000,
-            ContextItemStability::StablePrefix,
             base_system_prompt,
         ),
-        (
+        volatile_instruction(
             "current-turn-time",
-            ContextItemRole::Instruction,
             "runtime.clock",
             "current turn time",
             ContextTrustLevel::System,
             130,
-            ContextItemStability::VolatileSuffix,
             current_turn_time_section,
         ),
-        (
+        stable_instruction(
             "project-instructions",
-            ContextItemRole::Instruction,
             "project.instructions",
             "live user-maintained project instructions",
             ContextTrustLevel::UserSelected,
             950,
-            ContextItemStability::StablePrefix,
             project_instruction_section,
         ),
-        (
+        volatile_instruction(
             "execution-mode",
-            ContextItemRole::Instruction,
             "runtime.execution_mode",
             "selected execution mode",
             ContextTrustLevel::System,
             120,
-            ContextItemStability::VolatileSuffix,
             plan_mode_section.to_string(),
         ),
-        (
+        volatile_instruction(
             "power-policy",
-            ContextItemRole::Instruction,
             "runtime.power_policy",
             "resolved power policy",
             ContextTrustLevel::System,
             110,
-            ContextItemStability::VolatileSuffix,
             power_mode_section,
         ),
-        (
+        volatile_instruction(
             "quality-policy",
-            ContextItemRole::Instruction,
             "runtime.orchestration_profile",
             "resolved orchestration quality profile",
             ContextTrustLevel::System,
             108,
-            ContextItemStability::VolatileSuffix,
             orchestration_profile_section,
         ),
-        (
+        volatile_instruction(
             "collaboration-policy",
-            ContextItemRole::Instruction,
             "runtime.collaboration_mode",
             "selected LLM collaboration policy",
             ContextTrustLevel::System,
             106,
-            ContextItemStability::VolatileSuffix,
             collaboration_mode_section,
         ),
-        (
+        volatile_instruction(
             "active-goal",
-            ContextItemRole::Instruction,
             "conversation.goal",
             "active user goal",
             ContextTrustLevel::UserSelected,
             100,
-            ContextItemStability::VolatileSuffix,
             goal_section,
         ),
-        (
+        volatile_instruction(
             "persona",
-            ContextItemRole::Instruction,
             "persona",
             "selected persona",
             ContextTrustLevel::UserSelected,
             90,
-            ContextItemStability::VolatileSuffix,
             persona_section,
         ),
-        (
+        source_context_section(
             "collection-context",
-            ContextItemRole::SourceScope,
             "conversation.collection",
             "selected collection context",
-            ContextTrustLevel::UserSelected,
             80,
-            ContextItemStability::VolatileSuffix,
             collection_context_section,
         ),
-        (
+        source_context_section(
             "source-scope",
-            ContextItemRole::SourceScope,
             "conversation.sources",
             "effective source scope",
-            ContextTrustLevel::UserSelected,
             70,
-            ContextItemStability::VolatileSuffix,
             source_scope_section,
         ),
-        (
+        memory_context_section(
             "user-memory",
-            ContextItemRole::Memory,
             "memory.user",
             "query-relevant user memory",
-            ContextTrustLevel::AgentMemory,
             60,
-            ContextItemStability::VolatileSuffix,
             memory_section,
         ),
-        (
+        memory_context_section(
             "project-memory",
-            ContextItemRole::Memory,
             "memory.project",
             "query-relevant project memory",
-            ContextTrustLevel::AgentMemory,
             50,
-            ContextItemStability::VolatileSuffix,
             project_memory_section,
         ),
-        (
+        evidence_context_section(
             "project-workspace-evidence",
-            ContextItemRole::Evidence,
             "project.workspace",
             "query-relevant project episodes and observed events",
-            ContextTrustLevel::RetrievedEvidence,
             55,
-            ContextItemStability::VolatileSuffix,
             project_evidence_section,
         ),
-        (
+        evidence_context_section(
             "event-claim-narrative",
-            ContextItemRole::Evidence,
             "knowledge.event_claim_graph",
             "query-classified event and claim narrative with review state",
-            ContextTrustLevel::RetrievedEvidence,
             54,
-            ContextItemStability::VolatileSuffix,
             narrative_evidence_section,
         ),
-        (
+        memory_context_section(
             "procedural-memory",
-            ContextItemRole::Memory,
             "memory.procedural",
             "query-relevant procedural memory",
-            ContextTrustLevel::AgentMemory,
             40,
-            ContextItemStability::VolatileSuffix,
             agent_memory_section,
         ),
-        (
+        memory_context_section(
             "preferences",
-            ContextItemRole::Memory,
             "memory.preferences",
             "query-relevant preferences",
-            ContextTrustLevel::AgentMemory,
             30,
-            ContextItemStability::VolatileSuffix,
             preference_section,
         ),
-        (
+        memory_context_section(
             "learned-successes",
-            ContextItemRole::Memory,
             "memory.learned_successes",
             "similar successful trajectories",
-            ContextTrustLevel::AgentMemory,
             20,
-            ContextItemStability::VolatileSuffix,
             learned_section,
         ),
-        (
+        memory_context_section(
             "scratchpad",
-            ContextItemRole::Memory,
             "memory.scratchpad",
             "conversation scratchpad",
-            ContextTrustLevel::AgentMemory,
             10,
-            ContextItemStability::VolatileSuffix,
             scratchpad_section,
         ),
     ];
-    for (id, role, source, reason, trust, priority, stability, text) in context_items {
+    for item in context_items {
         context_assembler
-            .add(ContextPackItem::text(
-                id, role, source, reason, trust, priority, stability, text,
-            ))
+            .add(item)
             .expect("desktop context contributors use stable unique ids");
     }
     let context_pack = context_assembler.assemble();
@@ -549,6 +593,35 @@ pub fn build_desktop_agent_turn_config(
         source_scope_ids,
         pinned_skill_ids,
         context_pack,
+        effects: DesktopAgentTurnConfigEffects {
+            memory_injections,
+            persona_update,
+        },
+    }
+}
+
+pub fn apply_desktop_agent_turn_config_effects(
+    db: &Database,
+    effects: &DesktopAgentTurnConfigEffects,
+) {
+    for effect in &effects.memory_injections {
+        if let Err(error) = db.record_memory_injection_event(
+            &effect.memory_id,
+            Some(&effect.conversation_id),
+            Some(&effect.turn_id),
+            &effect.query,
+            "agent_procedural_memory_prompt",
+            Some(effect.confidence),
+        ) {
+            warn!("Failed to record procedural memory injection: {error}");
+        }
+    }
+    if let Some(effect) = &effects.persona_update {
+        if let Err(error) =
+            db.update_conversation_persona(&effect.conversation_id, effect.persona_id.as_deref())
+        {
+            warn!("Failed to persist the resolved conversation persona: {error}");
+        }
     }
 }
 

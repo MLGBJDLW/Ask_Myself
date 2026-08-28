@@ -173,6 +173,26 @@ pub struct DesktopAgentTurnConfig {
     pub source_scope_ids: Vec<String>,
     pub pinned_skill_ids: Vec<String>,
     pub context_pack: ContextPack,
+    pub effects: DesktopAgentTurnConfigEffects,
+}
+
+#[derive(Default)]
+pub struct DesktopAgentTurnConfigEffects {
+    memory_injections: Vec<DesktopMemoryInjectionEffect>,
+    persona_update: Option<DesktopPersonaUpdateEffect>,
+}
+
+struct DesktopMemoryInjectionEffect {
+    memory_id: String,
+    conversation_id: String,
+    turn_id: String,
+    query: String,
+    confidence: f32,
+}
+
+struct DesktopPersonaUpdateEffect {
+    conversation_id: String,
+    persona_id: Option<String>,
 }
 
 pub struct DesktopAgentUserContentRequest<'a> {
