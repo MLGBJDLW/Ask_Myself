@@ -41,6 +41,54 @@ export interface SubagentBudgetSnapshot {
   remainingTokens: number;
 }
 
+export interface SubagentContextSnapshot {
+  id?: string;
+  selectedMessageIds?: string[];
+  tokenEstimate: number;
+  contextCapacity: number | null;
+  contextAuthority: 'user_override' | 'catalog' | 'model_profile' | 'provider_managed';
+  handoffTokenBudget: number;
+  droppedInvalidMessages: number;
+}
+
+export interface SubagentEffectiveModelBudgets {
+  contextCapacity: number | null;
+  parentHistoryHandoff: number;
+  maxOutputPerStep: number | null;
+  maxActualTokensPerWorker: number | null;
+  contextAuthority: SubagentContextSnapshot['contextAuthority'];
+  outputAuthority: 'user_override' | 'catalog_ceiling' | 'safe_default';
+}
+
+export interface SubagentPreflightReport {
+  schemaVersion: number;
+  completedStages: string[];
+  providerId: string;
+  effectiveModel: string;
+  contextMessageCount: number;
+  droppedInvalidContextMessages: number;
+  reservedTokens: number;
+  remainingTokenBudget: number;
+  remainingCallBudget: number;
+  runDeadlineMs: number;
+}
+
+export interface SubagentPreflightFailure {
+  schemaVersion: number;
+  stage: string;
+  code: string;
+  retryable: boolean;
+  message: string;
+}
+
+export interface SubagentLifecycleTools {
+  observe?: 'observe_subagent';
+  wait?: 'wait_subagent';
+  sendInput?: 'send_subagent_input';
+  cancel?: 'cancel_subagent';
+  close?: 'close_subagent';
+}
+
 export interface SubagentArtifact {
   kind: 'subagent_result';
   id?: string | null;
@@ -49,6 +97,9 @@ export interface SubagentArtifact {
   roleId?: string | null;
   roleName?: string | null;
   role?: string | null;
+  modelPolicy?: string | null;
+  effectiveModel?: string | null;
+  modelRouteFallback?: boolean;
   expectedOutput?: string | null;
   acceptanceCriteria?: string[] | null;
   evidenceChunkIds?: string[] | null;
@@ -67,6 +118,11 @@ export interface SubagentArtifact {
   thinking?: string[] | null;
   sourceScopeApplied?: boolean;
   allowedTools?: string[] | null;
+  preflight?: SubagentPreflightReport | null;
+  preflightFailure?: SubagentPreflightFailure | null;
+  contextSnapshot?: SubagentContextSnapshot | null;
+  effectiveModelBudgets?: SubagentEffectiveModelBudgets | null;
+  lifecycleTools?: SubagentLifecycleTools | null;
 }
 
 export interface SubagentBatchArtifact {
@@ -119,6 +175,7 @@ export interface PendingSubagentArgs {
   task: string;
   roleId?: string | null;
   role?: string | null;
+  modelPolicy?: string | null;
   context?: string | null;
   expectedOutput?: string | null;
   maxIterations?: number | null;
@@ -134,10 +191,15 @@ export interface PendingSubagentArgs {
 export interface SubagentRun {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
+  /** Whether the parent currently owns an in-memory lifecycle handle. */
+  runtimeState?: 'live' | 'terminal' | 'interrupted';
   task: string;
   roleId?: string | null;
   roleName?: string | null;
   role?: string | null;
+  modelPolicy?: string | null;
+  effectiveModel?: string | null;
+  modelRouteFallback?: boolean;
   expectedOutput?: string | null;
   acceptanceCriteria?: string[] | null;
   evidenceChunkIds?: string[] | null;
@@ -159,6 +221,11 @@ export interface SubagentRun {
   argumentsText?: string;
   isError?: boolean;
   content?: string;
+  preflight?: SubagentPreflightReport | null;
+  preflightFailure?: SubagentPreflightFailure | null;
+  contextSnapshot?: SubagentContextSnapshot | null;
+  effectiveModelBudgets?: SubagentEffectiveModelBudgets | null;
+  lifecycleTools?: SubagentLifecycleTools | null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -256,6 +323,7 @@ export function projectSubagentLifecycleRuns(
       runs.push({
         ...buildRunFromArtifact(projection.artifact, agentId),
         status: projection.status ?? 'done',
+        runtimeState: projection.status === 'running' ? 'live' : 'terminal',
         result: projection.artifact.result || projection.streamedResult || undefined,
         thinking: projection.artifact.thinking
           ?? (projection.thinking.length > 0 ? projection.thinking : null),
@@ -268,6 +336,7 @@ export function projectSubagentLifecycleRuns(
     runs.push({
       id: agentId,
       status: projection.status ?? 'running',
+      runtimeState: projection.status === 'running' ? 'live' : 'terminal',
       task,
       roleId,
       role,
@@ -288,6 +357,18 @@ function asStringArray(value: unknown): string[] | null {
     .map(item => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean);
   return items.length > 0 ? items : [];
+}
+
+function parseLifecycleTools(value: unknown): SubagentLifecycleTools | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const tools: SubagentLifecycleTools = {};
+  if (record.observe === 'observe_subagent') tools.observe = 'observe_subagent';
+  if (record.wait === 'wait_subagent') tools.wait = 'wait_subagent';
+  if (record.sendInput === 'send_subagent_input') tools.sendInput = 'send_subagent_input';
+  if (record.cancel === 'cancel_subagent') tools.cancel = 'cancel_subagent';
+  if (record.close === 'close_subagent') tools.close = 'close_subagent';
+  return Object.keys(tools).length > 0 ? tools : null;
 }
 
 function asNumber(value: unknown): number | null {
@@ -341,6 +422,118 @@ function parseBudgetSnapshot(value: unknown): SubagentBudgetSnapshot | null {
   };
 }
 
+function parseContextAuthority(
+  value: unknown,
+): SubagentContextSnapshot['contextAuthority'] | null {
+  return value === 'user_override'
+    || value === 'catalog'
+    || value === 'model_profile'
+    || value === 'provider_managed'
+    ? value
+    : null;
+}
+
+function parseContextSnapshot(value: unknown): SubagentContextSnapshot | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const tokenEstimate = asNumber(record.tokenEstimate);
+  const handoffTokenBudget = asNumber(record.handoffTokenBudget);
+  const droppedInvalidMessages = asNumber(record.droppedInvalidMessages);
+  const contextAuthority = parseContextAuthority(record.contextAuthority);
+  if (
+    tokenEstimate == null
+    || handoffTokenBudget == null
+    || droppedInvalidMessages == null
+    || !contextAuthority
+  ) return null;
+  return {
+    id: typeof record.id === 'string' ? record.id : undefined,
+    selectedMessageIds: asStringArray(record.selectedMessageIds) ?? undefined,
+    tokenEstimate,
+    contextCapacity: asNumber(record.contextCapacity),
+    contextAuthority,
+    handoffTokenBudget,
+    droppedInvalidMessages,
+  };
+}
+
+function parseEffectiveModelBudgets(value: unknown): SubagentEffectiveModelBudgets | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const contextAuthority = parseContextAuthority(record.contextAuthority);
+  const parentHistoryHandoff = asNumber(record.parentHistoryHandoff);
+  const outputAuthority = record.outputAuthority;
+  if (
+    !contextAuthority
+    || parentHistoryHandoff == null
+    || (outputAuthority !== 'user_override'
+      && outputAuthority !== 'catalog_ceiling'
+      && outputAuthority !== 'safe_default')
+  ) return null;
+  return {
+    contextCapacity: asNumber(record.contextCapacity),
+    parentHistoryHandoff,
+    maxOutputPerStep: asNumber(record.maxOutputPerStep),
+    maxActualTokensPerWorker: asNumber(record.maxActualTokensPerWorker),
+    contextAuthority,
+    outputAuthority,
+  };
+}
+
+function parsePreflightReport(value: unknown): SubagentPreflightReport | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const schemaVersion = asNumber(record.schemaVersion);
+  const contextMessageCount = asNumber(record.contextMessageCount);
+  const droppedInvalidContextMessages = asNumber(record.droppedInvalidContextMessages);
+  const reservedTokens = asNumber(record.reservedTokens);
+  const remainingTokenBudget = asNumber(record.remainingTokenBudget);
+  const remainingCallBudget = asNumber(record.remainingCallBudget);
+  const runDeadlineMs = asNumber(record.runDeadlineMs);
+  const providerId = typeof record.providerId === 'string' ? record.providerId : '';
+  const effectiveModel = typeof record.effectiveModel === 'string' ? record.effectiveModel : '';
+  if (
+    schemaVersion == null
+    || contextMessageCount == null
+    || droppedInvalidContextMessages == null
+    || reservedTokens == null
+    || remainingTokenBudget == null
+    || remainingCallBudget == null
+    || runDeadlineMs == null
+    || !providerId
+    || !effectiveModel
+  ) return null;
+  return {
+    schemaVersion,
+    completedStages: asStringArray(record.completedStages) ?? [],
+    providerId,
+    effectiveModel,
+    contextMessageCount,
+    droppedInvalidContextMessages,
+    reservedTokens,
+    remainingTokenBudget,
+    remainingCallBudget,
+    runDeadlineMs,
+  };
+}
+
+function parsePreflightFailure(value: unknown): SubagentPreflightFailure | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const schemaVersion = asNumber(record.schemaVersion);
+  const stage = typeof record.stage === 'string' ? record.stage : '';
+  const code = typeof record.code === 'string' ? record.code : '';
+  const message = typeof record.message === 'string' ? record.message : '';
+  if (schemaVersion == null || !stage || !code || !message) return null;
+  return {
+    schemaVersion,
+    stage,
+    code,
+    retryable: record.retryable === true,
+    message,
+  };
+}
+
 export function parseSubagentArguments(raw?: string): PendingSubagentArgs | null {
   if (!raw) return null;
   try {
@@ -351,6 +544,7 @@ export function parseSubagentArguments(raw?: string): PendingSubagentArgs | null
       task,
       roleId: typeof record.role_id === 'string' ? record.role_id.trim() : null,
       role: typeof record.role === 'string' ? record.role.trim() : null,
+      modelPolicy: typeof record.model_policy === 'string' ? record.model_policy.trim() : null,
       context: typeof record.context === 'string' ? record.context.trim() : null,
       expectedOutput: typeof record.expected_output === 'string'
         ? record.expected_output.trim()
@@ -417,6 +611,11 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
       return { chunkId, path, title, excerpt };
     })
     .filter((item): item is SubagentEvidenceHandoff => Boolean(item));
+  const preflight = parsePreflightReport(record.preflight);
+  const preflightFailure = parsePreflightFailure(record.preflightFailure);
+  const contextSnapshot = parseContextSnapshot(record.contextSnapshot);
+  const effectiveModelBudgets = parseEffectiveModelBudgets(record.effectiveModelBudgets);
+  const lifecycleTools = parseLifecycleTools(record.lifecycleTools);
 
   return {
     kind: 'subagent_result',
@@ -426,6 +625,9 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
     roleId: typeof record.roleId === 'string' ? record.roleId : null,
     roleName: typeof record.roleName === 'string' ? record.roleName : null,
     role: typeof record.role === 'string' ? record.role : null,
+    modelPolicy: typeof record.modelPolicy === 'string' ? record.modelPolicy : null,
+    effectiveModel: typeof record.effectiveModel === 'string' ? record.effectiveModel : null,
+    modelRouteFallback: record.modelRouteFallback === true,
     expectedOutput: typeof record.expectedOutput === 'string' ? record.expectedOutput : null,
     acceptanceCriteria,
     evidenceChunkIds,
@@ -452,23 +654,33 @@ export function extractSubagentArtifact(value: unknown): SubagentArtifact | null
     thinking,
     sourceScopeApplied: record.sourceScopeApplied === true,
     allowedTools,
+    preflight,
+    preflightFailure,
+    contextSnapshot,
+    effectiveModelBudgets,
+    lifecycleTools,
   };
 }
 
 function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: string): SubagentRun {
+  const persistedRunning = artifact.status === 'running' || artifact.status === 'queued';
   return {
     id,
-    status: artifact.status === 'running' || artifact.status === 'queued'
-      ? 'running'
+    status: persistedRunning
+      ? 'cancelled'
       : artifact.status === 'cancelled'
         ? 'cancelled'
         : artifact.status === 'error' || artifact.status === 'failed'
         ? 'error'
         : 'done',
+    runtimeState: persistedRunning ? 'interrupted' : 'terminal',
     task: artifact.task,
     roleId: artifact.roleId ?? null,
     roleName: artifact.roleName ?? null,
     role: artifact.role ?? null,
+    modelPolicy: artifact.modelPolicy ?? null,
+    effectiveModel: artifact.effectiveModel ?? artifact.preflight?.effectiveModel ?? null,
+    modelRouteFallback: artifact.modelRouteFallback ?? false,
     expectedOutput: artifact.expectedOutput ?? null,
     acceptanceCriteria: artifact.acceptanceCriteria ?? null,
     evidenceChunkIds: artifact.evidenceChunkIds ?? null,
@@ -487,6 +699,11 @@ function buildRunFromArtifact(artifact: SubagentArtifact, id: string, content?: 
     thinking: artifact.thinking ?? null,
     sourceScopeApplied: artifact.sourceScopeApplied ?? false,
     allowedTools: artifact.allowedTools ?? null,
+    preflight: artifact.preflight ?? null,
+    preflightFailure: artifact.preflightFailure ?? null,
+    contextSnapshot: artifact.contextSnapshot ?? null,
+    effectiveModelBudgets: artifact.effectiveModelBudgets ?? null,
+    lifecycleTools: artifact.lifecycleTools ?? null,
     content,
   };
 }
@@ -607,24 +824,31 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
   const artifact = lifecycle.artifact ?? initialArtifact;
   const parsedArgs = parseSubagentArguments(toolCall.arguments);
   const task = artifact?.task ?? parsedArgs?.task ?? 'Delegated task';
-  return {
-    id: artifact?.id ?? toolCall.callId,
-    status: lifecycle.status ?? (artifact?.status === 'running' || artifact?.status === 'queued'
-      ? 'running'
-      : toolCall.status === 'starting'
-      || toolCall.status === 'preparing'
-      || toolCall.status === 'approvalPending'
-      || toolCall.status === 'running'
+  const parentActive = toolCall.status === 'starting'
+    || toolCall.status === 'preparing'
+    || toolCall.status === 'approvalPending'
+    || toolCall.status === 'running';
+  const projectedStatus = lifecycle.status ?? (artifact?.status === 'running' || artifact?.status === 'queued'
+    ? 'running'
+    : parentActive
       ? 'running'
       : toolCall.status === 'cancelled'
         ? 'cancelled'
-      : toolCall.status === 'done'
-        ? 'done'
-        : 'error'),
+        : toolCall.status === 'done'
+          ? 'done'
+          : 'error');
+  const interrupted = projectedStatus === 'running' && !parentActive;
+  return {
+    id: artifact?.id ?? toolCall.callId,
+    status: interrupted ? 'cancelled' : projectedStatus,
+    runtimeState: interrupted ? 'interrupted' : projectedStatus === 'running' ? 'live' : 'terminal',
     task,
     roleId: artifact?.roleId ?? parsedArgs?.roleId ?? null,
     roleName: artifact?.roleName ?? null,
     role: artifact?.role ?? parsedArgs?.role ?? null,
+    modelPolicy: artifact?.modelPolicy ?? parsedArgs?.modelPolicy ?? null,
+    effectiveModel: artifact?.effectiveModel ?? artifact?.preflight?.effectiveModel ?? null,
+    modelRouteFallback: artifact?.modelRouteFallback ?? false,
     expectedOutput: artifact?.expectedOutput ?? parsedArgs?.expectedOutput ?? null,
     acceptanceCriteria: artifact?.acceptanceCriteria ?? parsedArgs?.acceptanceCriteria ?? null,
     evidenceChunkIds: artifact?.evidenceChunkIds ?? parsedArgs?.evidenceChunkIds ?? null,
@@ -643,6 +867,11 @@ function buildRunFromToolCall(toolCall: ToolCallEvent): SubagentRun | null {
     thinking: artifact?.thinking ?? (lifecycle.thinking.length > 0 ? lifecycle.thinking : null),
     sourceScopeApplied: artifact?.sourceScopeApplied ?? false,
     allowedTools: artifact?.allowedTools ?? null,
+    preflight: artifact?.preflight ?? null,
+    preflightFailure: artifact?.preflightFailure ?? null,
+    contextSnapshot: artifact?.contextSnapshot ?? null,
+    effectiveModelBudgets: artifact?.effectiveModelBudgets ?? null,
+    lifecycleTools: artifact?.lifecycleTools ?? null,
     argumentsText: toolCall.arguments,
     isError: lifecycle.status === 'error' ? true : toolCall.isError,
     content: lifecycle.errorMessage ?? toolCall.content,

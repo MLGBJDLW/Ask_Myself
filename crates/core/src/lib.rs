@@ -94,6 +94,7 @@ pub mod rag;
 pub mod run_event_outbox;
 pub mod runtime;
 pub mod search;
+mod sensitive_data;
 pub mod settings_schema_v2;
 pub mod skills;
 pub mod source_tree;
@@ -125,6 +126,7 @@ pub mod work_plan;
 pub mod workflow_automation;
 pub mod workflow_catalog;
 pub mod workflow_ir;
+pub mod workflow_scheduler;
 
 #[cfg(test)]
 mod architecture_fitness;

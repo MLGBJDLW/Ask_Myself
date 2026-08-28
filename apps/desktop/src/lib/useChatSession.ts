@@ -175,10 +175,24 @@ function mergeLocalMessageState(
   return insertMessagesByCreatedAt(merged, preservedSteering);
 }
 
-async function resolveContextWindowForConfig(config: AgentConfig | null): Promise<number> {
-  if (!config) return 0;
-  if (config.contextWindow && config.contextWindow > 0) return config.contextWindow;
-  return api.getModelContextWindow(config.model).catch(() => 0);
+interface ResolvedContextWindowState {
+  contextWindow: number;
+  authority: api.ContextWindowAuthority;
+}
+
+async function resolveContextWindowForConfig(
+  config: AgentConfig | null,
+): Promise<ResolvedContextWindowState> {
+  if (!config) return { contextWindow: 0, authority: 'provider_managed' };
+  if (config.contextWindow && config.contextWindow > 0) {
+    return { contextWindow: config.contextWindow, authority: 'user_override' };
+  }
+  return api.getModelContextWindowResolution(config.provider, config.baseUrl, config.model)
+    .then(resolution => ({
+      contextWindow: resolution.capacityTokens ?? 0,
+      authority: resolution.authority,
+    }))
+    .catch(() => ({ contextWindow: 0, authority: 'provider_managed' }));
 }
 
 function findConfigForConversation(
@@ -206,6 +220,7 @@ function buildRuntimeProfile(
   config: AgentConfig | null,
   conversation: Conversation | null,
   contextWindow: number,
+  contextAuthority: api.ContextWindowAuthority,
   t: ReturnType<typeof useTranslation>['t'],
 ): RuntimeProfile | null {
   const provider = conversation?.provider ?? config?.provider ?? '';
@@ -227,6 +242,7 @@ function buildRuntimeProfile(
     provider,
     model,
     contextWindow,
+    contextAuthority,
     reasoningEnabled,
     reasoningDetail,
     sourceAuthority: t('chat.contextDefaultSourceAuthority'),
@@ -267,6 +283,7 @@ export interface RuntimeProfile {
   provider: string;
   model: string;
   contextWindow: number;
+  contextAuthority: api.ContextWindowAuthority;
   reasoningEnabled: boolean;
   reasoningDetail: string;
   sourceAuthority: string;
@@ -402,7 +419,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const [loadingConvos, setLoadingConvos] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [defaultContextWindow, setDefaultContextWindow] = useState<number>(0);
+  const [defaultContextAuthority, setDefaultContextAuthority] =
+    useState<api.ContextWindowAuthority>('provider_managed');
   const [contextWindow, setContextWindow] = useState<number>(0);
+  const [contextAuthority, setContextAuthority] =
+    useState<api.ContextWindowAuthority>('provider_managed');
   const [chatError, setChatError] = useState<string | null>(null);
   const [usageSnapshot, setUsageSnapshot] = useState<UsageSnapshot | null>(null);
 
@@ -436,6 +457,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   const autoTitleInFlightRef = useRef<Set<string>>(new Set());
   const systemPromptCacheRef = useRef<Record<string, string>>({});
   const contextWindowCacheRef = useRef<Record<string, number>>({});
+  const contextAuthorityCacheRef = useRef<Record<string, api.ContextWindowAuthority>>({});
   const messageCacheRecencyRef = useRef<Map<string, number>>(new Map());
   const turnCacheRecencyRef = useRef<Map<string, number>>(new Map());
   const taskRunCacheRecencyRef = useRef<Map<string, number>>(new Map());
@@ -591,13 +613,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         ),
       );
     }
-    const cw = await resolveContextWindowForConfig(config);
-    setDefaultContextWindow(cw);
-    setContextWindow(cw);
+    const resolution = await resolveContextWindowForConfig(config);
+    setDefaultContextWindow(resolution.contextWindow);
+    setDefaultContextAuthority(resolution.authority);
+    setContextWindow(resolution.contextWindow);
+    setContextAuthority(resolution.authority);
     if (activeId) {
       contextWindowCacheRef.current = {
         ...contextWindowCacheRef.current,
-        [activeId]: cw,
+        [activeId]: resolution.contextWindow,
+      };
+      contextAuthorityCacheRef.current = {
+        ...contextAuthorityCacheRef.current,
+        [activeId]: resolution.authority,
       };
       systemPromptCacheRef.current = {
         ...systemPromptCacheRef.current,
@@ -615,19 +643,25 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       defaultAgentConfigRef.current = def;
       setAgentConfig(def);
       if (def) {
-        const cw = await resolveContextWindowForConfig(def);
-        setDefaultContextWindow(cw);
-        setContextWindow(cw);
+        const resolution = await resolveContextWindowForConfig(def);
+        setDefaultContextWindow(resolution.contextWindow);
+        setDefaultContextAuthority(resolution.authority);
+        setContextWindow(resolution.contextWindow);
+        setContextAuthority(resolution.authority);
       } else {
         setDefaultContextWindow(0);
+        setDefaultContextAuthority('provider_managed');
         setContextWindow(0);
+        setContextAuthority('provider_managed');
       }
     } catch {
       agentConfigsRef.current = [];
       defaultAgentConfigRef.current = null;
       setAgentConfig(null);
       setDefaultContextWindow(0);
+      setDefaultContextAuthority('provider_managed');
       setContextWindow(0);
+      setContextAuthority('provider_managed');
     } finally {
       setLoadingConfig(false);
     }
@@ -647,6 +681,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       setCustomSystemPrompt(externalSystemPrompt ?? '');
       setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
+      setContextAuthority(defaultContextAuthority);
       setLoadingMsgs(false);
       return;
     }
@@ -656,6 +691,9 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     );
     setCustomSystemPrompt(systemPromptCacheRef.current[activeId] ?? '');
     setContextWindow(contextWindowCacheRef.current[activeId] ?? defaultContextWindow);
+    setContextAuthority(
+      contextAuthorityCacheRef.current[activeId] ?? defaultContextAuthority,
+    );
     setUsageSnapshot(null);
 
     if (isStreaming) {
@@ -725,21 +763,26 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           conv,
           defaultAgentConfigRef.current,
         );
-        const cw = await resolveContextWindowForConfig(selectedConfig);
+        const resolution = await resolveContextWindowForConfig(selectedConfig);
         if (!cancelled && generation === conversationHydrationGenerationRef.current) {
-          const resolvedContextWindow = cw || defaultContextWindow;
           if (selectedConfig) {
             setAgentConfig(selectedConfig);
           }
           contextWindowCacheRef.current = {
             ...contextWindowCacheRef.current,
-            [activeId]: resolvedContextWindow,
+            [activeId]: resolution.contextWindow,
           };
-          setContextWindow(resolvedContextWindow);
+          contextAuthorityCacheRef.current = {
+            ...contextAuthorityCacheRef.current,
+            [activeId]: resolution.authority,
+          };
+          setContextWindow(resolution.contextWindow);
+          setContextAuthority(resolution.authority);
         }
       } catch {
         if (!cancelled && generation === conversationHydrationGenerationRef.current) {
           setContextWindow(defaultContextWindow);
+          setContextAuthority(defaultContextAuthority);
         }
       } finally {
         if (!cancelled && generation === conversationHydrationGenerationRef.current) {
@@ -750,7 +793,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     return () => {
       cancelled = true;
     };
-  }, [activeId, defaultContextWindow, externalSystemPrompt, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
+  }, [activeId, defaultContextAuthority, defaultContextWindow, externalSystemPrompt, setMessagesForConversation, setTaskRunsForConversation, setTurnsForConversation]);
 
   /* ── Reload messages when streaming completes ───────────────────── */
   useEffect(() => {
@@ -897,9 +940,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
     setUsageSnapshot(null);
     setAgentConfig(defaultAgentConfigRef.current);
     setContextWindow(defaultContextWindow);
+    setContextAuthority(defaultContextAuthority);
     setChatError(null);
     lastUserMessageRef.current = null;
-  }, [defaultContextWindow]);
+  }, [defaultContextAuthority, defaultContextWindow]);
 
   const deleteConversation = useCallback(
     async (id: string) => {
@@ -926,17 +970,19 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         });
         delete systemPromptCacheRef.current[id];
         delete contextWindowCacheRef.current[id];
+        delete contextAuthorityCacheRef.current[id];
         if (activeId === id) {
           setInternalConversationId(null);
           setUsageSnapshot(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
+          setContextAuthority(defaultContextAuthority);
         }
       } catch (e) {
         toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
-    [activeId, defaultContextWindow, t],
+    [activeId, defaultContextAuthority, defaultContextWindow, t],
   );
 
   const deleteConversationsBatch = useCallback(
@@ -952,6 +998,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             messageCacheRecencyRef.current.delete(id);
             delete systemPromptCacheRef.current[id];
             delete contextWindowCacheRef.current[id];
+            delete contextAuthorityCacheRef.current[id];
           }
           return next;
         });
@@ -976,12 +1023,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
           setUsageSnapshot(null);
           setAgentConfig(defaultAgentConfigRef.current);
           setContextWindow(defaultContextWindow);
+          setContextAuthority(defaultContextAuthority);
         }
       } catch (e) {
         toast.error(formatUserError(t('chat.deleteError'), e));
       }
     },
-    [activeId, defaultContextWindow, t],
+    [activeId, defaultContextAuthority, defaultContextWindow, t],
   );
 
   const deleteAllConversations = useCallback(async () => {
@@ -997,13 +1045,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       taskRunCacheRecencyRef.current.clear();
       systemPromptCacheRef.current = {};
       contextWindowCacheRef.current = {};
+      contextAuthorityCacheRef.current = {};
       setUsageSnapshot(null);
       setAgentConfig(defaultAgentConfigRef.current);
       setContextWindow(defaultContextWindow);
+      setContextAuthority(defaultContextAuthority);
     } catch (e) {
       toast.error(formatUserError(t('chat.deleteError'), e));
     }
-  }, [defaultContextWindow, t]);
+  }, [defaultContextAuthority, defaultContextWindow, t]);
 
   const renameConversation = useCallback(
     async (id: string, title: string) => {
@@ -1587,13 +1637,15 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       cacheMissTokens: promptTokens,
       cacheCreationTokens: 0,
       lastPromptTokens: promptTokens,
+      contextCapacity: contextWindow || null,
+      contextAuthority,
       providerRaw: {
         kind: 'contextCompactionProjection',
       },
     };
     compactionUsageRef.current.set(conversationId, snapshot);
     setUsageSnapshot(snapshot);
-  }, []);
+  }, [contextAuthority, contextWindow]);
 
   /* ── Computed ────────────────────────────────────────────────────── */
 
@@ -1637,8 +1689,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   // latest run kept by the stream store.
   const isUsingLiveUsage = (shouldShowLivePreview || usageSnapshot == null) && scopedLastUsage != null;
   const usageForView = isUsingLiveUsage ? scopedLastUsage : usageSnapshot ?? scopedLastUsage;
+  const durableContextAuthority = !isUsingLiveUsage ? usageSnapshot?.contextAuthority : null;
+  const usageContextWindow = durableContextAuthority
+    ? usageSnapshot?.contextCapacity ?? 0
+    : contextWindow;
+  const runtimeContextAuthority = durableContextAuthority ?? contextAuthority;
 
-  const tokenUsage = contextWindow > 0
+  const tokenUsage = usageContextWindow > 0
     ? (usageForView
       ? (() => {
           const promptTokens = usageForView.lastPromptTokens ?? usageForView.promptTokens;
@@ -1647,7 +1704,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             promptTokens,
             aggregatePromptTokens: usageForView.promptTokens,
             totalTokens: usageForView.totalTokens,
-            contextWindow,
+            contextWindow: usageContextWindow,
             completionTokens: usageForView.completionTokens,
             thinkingTokens: usageForView.thinkingTokens ?? 0,
             cacheReadTokens: usageForView.cacheReadTokens ?? 0,
@@ -1661,7 +1718,13 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
       : null)
     : null;
 
-  const runtimeProfile = buildRuntimeProfile(agentConfig, activeConversation, contextWindow, t);
+  const runtimeProfile = buildRuntimeProfile(
+    agentConfig,
+    activeConversation,
+    usageContextWindow,
+    runtimeContextAuthority,
+    t,
+  );
 
   return {
     messages,

@@ -1,5 +1,6 @@
 //! Controller-owned isolated Git worktree for Code Ultra writes.
 
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -37,11 +38,222 @@ pub(super) struct IsolationPromotion {
     pub(super) detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IsolationReview {
+    pub(super) changed: bool,
+    pub(super) detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkspaceIsolationCleanupReport {
+    pub removed_worktrees: usize,
+    pub removed_sources: usize,
+    pub retained_unverifiable_entries: usize,
+}
+
+#[derive(Debug)]
+struct WorkspaceIsolationOwnership {
+    id: String,
+    owner_turn_id: Option<String>,
+    original_repo_root: PathBuf,
+    worktree_root: PathBuf,
+    isolated_source_root: PathBuf,
+    source_id: Option<String>,
+    owner_status: Option<String>,
+}
+
+/// Reclaims controller-owned worktrees and temporary Source rows left by a
+/// process crash. Only UUID-named direct children of Nexa's managed temp root
+/// and Source roots beneath that exact directory are eligible.
+pub fn cleanup_orphaned_workspace_isolations(
+    db: &Database,
+) -> Result<WorkspaceIsolationCleanupReport, CoreError> {
+    let base = std::env::temp_dir().join("nexa-code-ultra");
+    let mut report = WorkspaceIsolationCleanupReport::default();
+    let ownerships = load_workspace_isolation_ownerships(db)?;
+    let known_roots = ownerships
+        .iter()
+        .map(|ownership| ownership.worktree_root.clone())
+        .collect::<HashSet<_>>();
+    for ownership in ownerships {
+        if owner_status_preserves_isolation(ownership.owner_status.as_deref()) {
+            report.retained_unverifiable_entries += 1;
+            continue;
+        }
+        let Some(worktree_root) = managed_uuid_worktree_root(&ownership.worktree_root, &base)
+        else {
+            report.retained_unverifiable_entries += 1;
+            continue;
+        };
+        if worktree_root.exists() {
+            let common_dir = match run_git(
+                &worktree_root,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .and_then(|output| canonicalize_git_path(&output.stdout))
+            {
+                Ok(path) => path,
+                Err(_) => {
+                    report.retained_unverifiable_entries += 1;
+                    continue;
+                }
+            };
+            let Some(repo_root) = common_dir.parent() else {
+                report.retained_unverifiable_entries += 1;
+                continue;
+            };
+            let stored_repo_root = match canonicalize_host_path(&ownership.original_repo_root) {
+                Ok(path) => path,
+                Err(_) => {
+                    report.retained_unverifiable_entries += 1;
+                    continue;
+                }
+            };
+            if repo_root != stored_repo_root {
+                report.retained_unverifiable_entries += 1;
+                continue;
+            }
+            if remove_worktree(repo_root, &worktree_root).is_err() {
+                report.retained_unverifiable_entries += 1;
+                continue;
+            }
+            report.removed_worktrees += 1;
+        }
+
+        let mut source_ids = db
+            .list_sources()?
+            .into_iter()
+            .filter(|source| {
+                Path::new(&source.root_path) == ownership.isolated_source_root.as_path()
+            })
+            .map(|source| source.id)
+            .collect::<Vec<_>>();
+        if let Some(source_id) = ownership.source_id {
+            source_ids.push(source_id);
+        }
+        source_ids.sort();
+        source_ids.dedup();
+        for source_id in source_ids {
+            if db.get_source(&source_id).is_ok() {
+                db.delete_source(&source_id)?;
+                report.removed_sources += 1;
+            }
+        }
+        delete_workspace_isolation_ownership(db, &ownership.id)?;
+    }
+
+    let mut legacy_roots = BTreeMap::<PathBuf, ()>::new();
+    for source in db.list_sources()? {
+        let source_root = PathBuf::from(source.root_path);
+        if let Some(worktree_root) = source_root
+            .ancestors()
+            .find(|candidate| candidate.parent() == Some(base.as_path()))
+            .map(Path::to_path_buf)
+            .filter(|root| !known_roots.contains(root))
+        {
+            legacy_roots.insert(worktree_root, ());
+        }
+    }
+    if base.is_dir() {
+        for entry in std::fs::read_dir(&base)? {
+            let path = entry?.path();
+            if !known_roots.contains(&path) {
+                legacy_roots.insert(path, ());
+            }
+        }
+    }
+    report.retained_unverifiable_entries += legacy_roots.len();
+    Ok(report)
+}
+
+fn managed_uuid_worktree_root(path: &Path, base: &Path) -> Option<PathBuf> {
+    (path.parent() == Some(base))
+        .then(|| path.file_name())
+        .flatten()
+        .filter(|name| Uuid::parse_str(&name.to_string_lossy()).is_ok())
+        .map(|_| path.to_path_buf())
+}
+
+fn load_workspace_isolation_ownerships(
+    db: &Database,
+) -> Result<Vec<WorkspaceIsolationOwnership>, CoreError> {
+    let conn = db.conn();
+    let mut statement = conn.prepare(
+        "SELECT w.id, w.owner_turn_id, w.original_repo_root, w.worktree_root,
+                w.isolated_source_root, w.source_id, r.status
+         FROM workspace_isolation_ownership w
+         LEFT JOIN agent_task_runs r ON r.turn_id = w.owner_turn_id
+         ORDER BY w.created_at, w.id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(WorkspaceIsolationOwnership {
+            id: row.get(0)?,
+            owner_turn_id: row.get(1)?,
+            original_repo_root: PathBuf::from(row.get::<_, String>(2)?),
+            worktree_root: PathBuf::from(row.get::<_, String>(3)?),
+            isolated_source_root: PathBuf::from(row.get::<_, String>(4)?),
+            source_id: row.get(5)?,
+            owner_status: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+}
+
+fn insert_workspace_isolation_intent(
+    db: &Database,
+    id: &str,
+    owner_turn_id: Option<&str>,
+    original_repo_root: &Path,
+    worktree_root: &Path,
+    isolated_source_root: &Path,
+) -> Result<(), CoreError> {
+    db.conn().execute(
+        "INSERT INTO workspace_isolation_ownership
+             (id, owner_turn_id, original_repo_root, worktree_root, isolated_source_root)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            id,
+            owner_turn_id,
+            original_repo_root.to_string_lossy(),
+            worktree_root.to_string_lossy(),
+            isolated_source_root.to_string_lossy(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn activate_workspace_isolation_ownership(
+    db: &Database,
+    id: &str,
+    source_id: &str,
+) -> Result<(), CoreError> {
+    db.conn().execute(
+        "UPDATE workspace_isolation_ownership
+         SET source_id = ?2, state = 'active', updated_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![id, source_id],
+    )?;
+    Ok(())
+}
+
+fn delete_workspace_isolation_ownership(db: &Database, id: &str) -> Result<(), CoreError> {
+    db.conn().execute(
+        "DELETE FROM workspace_isolation_ownership WHERE id = ?1",
+        [id],
+    )?;
+    Ok(())
+}
+
+fn owner_status_preserves_isolation(status: Option<&str>) -> bool {
+    status.is_some_and(|status| matches!(status, "paused" | "awaiting_user_input" | "resuming"))
+}
+
 /// A temporary worktree that owns every filesystem mutation for one Code
 /// Ultra turn. The verified patch is promoted to the original clean worktree
 /// only once all other Workflow IR gates have passed.
 pub(super) struct WorkspaceIsolationRuntime {
     db: Database,
+    isolation_id: String,
     original_repo_root: PathBuf,
     original_source_root: PathBuf,
     isolated_worktree_root: PathBuf,
@@ -52,7 +264,11 @@ pub(super) struct WorkspaceIsolationRuntime {
 }
 
 impl WorkspaceIsolationRuntime {
-    pub(super) fn prepare(db: &Database, source_scope: &[String]) -> Result<Self, CoreError> {
+    pub(super) fn prepare(
+        db: &Database,
+        source_scope: &[String],
+        owner_turn_id: Option<&str>,
+    ) -> Result<Self, CoreError> {
         let candidates = if source_scope.is_empty() {
             db.list_sources()?
         } else {
@@ -77,7 +293,7 @@ impl WorkspaceIsolationRuntime {
 
         ensure_process_sandbox_available()?;
 
-        let original_source_root = std::fs::canonicalize(&roots[0])?;
+        let original_source_root = canonicalize_host_path(&roots[0])?;
         let repo_output = run_git(&original_source_root, &["rev-parse", "--show-toplevel"])?;
         let original_repo_root = canonicalize_git_path(&repo_output.stdout)?;
         if !original_source_root.starts_with(&original_repo_root) {
@@ -96,19 +312,53 @@ impl WorkspaceIsolationRuntime {
             ));
         }
 
+        if let Some(owner_turn_id) = owner_turn_id {
+            if let Some(ownership) =
+                load_workspace_isolation_ownerships(db)?
+                    .into_iter()
+                    .find(|ownership| {
+                        ownership.owner_turn_id.as_deref() == Some(owner_turn_id)
+                            && (owner_status_preserves_isolation(ownership.owner_status.as_deref())
+                                || ownership.owner_status.as_deref() == Some("running"))
+                    })
+            {
+                return Self::restore_owned(
+                    db,
+                    ownership,
+                    &original_repo_root,
+                    &original_source_root,
+                );
+            }
+        }
+
         let isolation_base = std::env::temp_dir().join("nexa-code-ultra");
         std::fs::create_dir_all(&isolation_base)?;
-        let isolated_worktree_root = isolation_base.join(Uuid::new_v4().to_string());
-        let worktree_arg = isolated_worktree_root.to_string_lossy().to_string();
-        run_git(
-            &original_repo_root,
-            &["worktree", "add", "--detach", &worktree_arg, "HEAD"],
-        )?;
-
+        let isolation_id = Uuid::new_v4().to_string();
+        let isolated_worktree_root = isolation_base.join(&isolation_id);
         let relative_source_root = original_source_root
             .strip_prefix(&original_repo_root)
             .map_err(|error| CoreError::Internal(error.to_string()))?;
         let isolated_source_root = isolated_worktree_root.join(relative_source_root);
+        insert_workspace_isolation_intent(
+            db,
+            &isolation_id,
+            owner_turn_id,
+            &original_repo_root,
+            &isolated_worktree_root,
+            &isolated_source_root,
+        )?;
+        let worktree_arg = isolated_worktree_root.to_string_lossy().to_string();
+        if let Err(error) = run_git(
+            &original_repo_root,
+            &["worktree", "add", "--detach", &worktree_arg, "HEAD"],
+        ) {
+            // Keep an ownership row if Git left a partial worktree; otherwise
+            // the empty intention can be removed immediately.
+            if !isolated_worktree_root.exists() {
+                let _ = delete_workspace_isolation_ownership(db, &isolation_id);
+            }
+            return Err(error);
+        }
         let source = match db.add_source(CreateSourceInput {
             root_path: isolated_source_root.to_string_lossy().to_string(),
             include_globs: vec!["**/*".to_string()],
@@ -117,18 +367,100 @@ impl WorkspaceIsolationRuntime {
         }) {
             Ok(source) => source,
             Err(error) => {
-                let _ = remove_worktree(&original_repo_root, &isolated_worktree_root);
+                if remove_worktree(&original_repo_root, &isolated_worktree_root).is_ok() {
+                    let _ = delete_workspace_isolation_ownership(db, &isolation_id);
+                }
                 return Err(error);
             }
         };
+        if let Err(error) = activate_workspace_isolation_ownership(db, &isolation_id, &source.id) {
+            if remove_worktree(&original_repo_root, &isolated_worktree_root).is_ok() {
+                let _ = db.delete_source(&source.id);
+                let _ = delete_workspace_isolation_ownership(db, &isolation_id);
+            }
+            return Err(error);
+        }
 
         Ok(Self {
             db: db.clone(),
+            isolation_id,
             original_repo_root,
             original_source_root,
             isolated_worktree_root,
             isolated_source_root,
             isolated_source_id: Some(source.id),
+            saw_mutation_tool: false,
+            finalized: false,
+        })
+    }
+
+    fn restore_owned(
+        db: &Database,
+        ownership: WorkspaceIsolationOwnership,
+        expected_repo_root: &Path,
+        expected_source_root: &Path,
+    ) -> Result<Self, CoreError> {
+        let base = std::env::temp_dir().join("nexa-code-ultra");
+        let worktree_root = managed_uuid_worktree_root(&ownership.worktree_root, &base)
+            .filter(|path| path.is_dir())
+            .ok_or_else(|| {
+                CoreError::InvalidInput(
+                    "The resumable isolated workspace is missing or outside Nexa's managed root."
+                        .to_string(),
+                )
+            })?;
+        let stored_repo_root = canonicalize_host_path(&ownership.original_repo_root)?;
+        if stored_repo_root != expected_repo_root {
+            return Err(CoreError::InvalidInput(
+                "The resumable isolated workspace no longer belongs to the selected repository."
+                    .to_string(),
+            ));
+        }
+        let common_dir = run_git(
+            &worktree_root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .and_then(|output| canonicalize_git_path(&output.stdout))?;
+        if common_dir.parent() != Some(stored_repo_root.as_path()) {
+            return Err(CoreError::InvalidInput(
+                "The resumable isolated workspace failed Git ownership verification.".to_string(),
+            ));
+        }
+        let relative_source_root = ownership
+            .isolated_source_root
+            .strip_prefix(&worktree_root)
+            .map_err(|_| {
+                CoreError::InvalidInput(
+                    "The resumable temporary Source escapes its owned worktree.".to_string(),
+                )
+            })?;
+        if stored_repo_root.join(relative_source_root) != expected_source_root {
+            return Err(CoreError::InvalidInput(
+                "The resumable temporary Source no longer matches the selected Source root."
+                    .to_string(),
+            ));
+        }
+        let source_id = ownership.source_id.ok_or_else(|| {
+            CoreError::InvalidInput(
+                "The resumable isolated workspace has no durable temporary Source binding."
+                    .to_string(),
+            )
+        })?;
+        let source = db.get_source(&source_id)?;
+        if Path::new(&source.root_path) != ownership.isolated_source_root.as_path() {
+            return Err(CoreError::InvalidInput(
+                "The resumable temporary Source binding changed after suspension.".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            db: db.clone(),
+            isolation_id: ownership.id,
+            original_repo_root: stored_repo_root,
+            original_source_root: expected_source_root.to_path_buf(),
+            isolated_worktree_root: worktree_root,
+            isolated_source_root: ownership.isolated_source_root,
+            isolated_source_id: Some(source_id),
             saw_mutation_tool: false,
             finalized: false,
         })
@@ -392,19 +724,9 @@ impl WorkspaceIsolationRuntime {
             });
         }
 
-        run_git(&self.isolated_worktree_root, &["add", "-N", "--", "."])?;
-        let patch = run_git(
-            &self.isolated_worktree_root,
-            &["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
-        )?
-        .stdout;
+        let patch = self.prepare_verified_patch()?;
         let changed = !patch.is_empty();
         if changed {
-            run_git_with_input(
-                &self.original_repo_root,
-                &["apply", "--check", "--whitespace=nowarn", "-"],
-                &patch,
-            )?;
             run_git_with_input(
                 &self.original_repo_root,
                 &["apply", "--whitespace=nowarn", "-"],
@@ -424,6 +746,60 @@ impl WorkspaceIsolationRuntime {
                     .to_string()
             },
         })
+    }
+
+    /// Performs the isolated schedule's independent review without delegation
+    /// or nested writers. It verifies patch structure and applicability but
+    /// deliberately leaves the original checkout untouched.
+    pub(super) fn review_isolated_patch(&self) -> Result<IsolationReview, CoreError> {
+        if self.finalized {
+            return Err(CoreError::InvalidInput(
+                "Cannot review an isolated patch after its workspace was finalized.".to_string(),
+            ));
+        }
+        let patch = self.prepare_verified_patch()?;
+        let changed = !patch.is_empty();
+        Ok(IsolationReview {
+            changed,
+            detail: if changed {
+                "Controller completed a non-delegating independent Git patch review: the isolated diff passed git diff --check and applies cleanly to the original clean HEAD."
+                    .to_string()
+            } else {
+                "Controller completed a non-delegating independent review and found no Git patch to promote."
+                    .to_string()
+            },
+        })
+    }
+
+    fn prepare_verified_patch(&self) -> Result<Vec<u8>, CoreError> {
+        let original_status = run_git(
+            &self.original_repo_root,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )?;
+        if !original_status.stdout.is_empty() {
+            return Err(CoreError::InvalidInput(
+                "The original checkout changed while the isolated patch was running; review and promotion were refused."
+                    .to_string(),
+            ));
+        }
+        run_git(&self.isolated_worktree_root, &["add", "-N", "--", "."])?;
+        run_git(
+            &self.isolated_worktree_root,
+            &["diff", "--check", "HEAD", "--"],
+        )?;
+        let patch = run_git(
+            &self.isolated_worktree_root,
+            &["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+        )?
+        .stdout;
+        if !patch.is_empty() {
+            run_git_with_input(
+                &self.original_repo_root,
+                &["apply", "--check", "--whitespace=nowarn", "-"],
+                &patch,
+            )?;
+        }
+        Ok(patch)
     }
 
     fn rewrite_path_fields(
@@ -501,10 +877,11 @@ impl WorkspaceIsolationRuntime {
     }
 
     fn cleanup(&mut self) -> Result<(), CoreError> {
+        remove_worktree(&self.original_repo_root, &self.isolated_worktree_root)?;
         if let Some(source_id) = self.isolated_source_id.take() {
             self.db.delete_source(&source_id)?;
         }
-        remove_worktree(&self.original_repo_root, &self.isolated_worktree_root)
+        delete_workspace_isolation_ownership(&self.db, &self.isolation_id)
     }
 }
 
@@ -513,10 +890,28 @@ impl Drop for WorkspaceIsolationRuntime {
         if self.finalized {
             return;
         }
-        if let Some(source_id) = self.isolated_source_id.take() {
-            let _ = self.db.delete_source(&source_id);
+        if load_workspace_isolation_ownerships(&self.db)
+            .ok()
+            .and_then(|ownerships| {
+                ownerships
+                    .into_iter()
+                    .find(|ownership| ownership.id == self.isolation_id)
+            })
+            .is_some_and(|ownership| {
+                owner_status_preserves_isolation(ownership.owner_status.as_deref())
+            })
+        {
+            return;
         }
-        let _ = remove_worktree(&self.original_repo_root, &self.isolated_worktree_root);
+        if remove_worktree(&self.original_repo_root, &self.isolated_worktree_root).is_err() {
+            return;
+        }
+        if let Some(source_id) = self.isolated_source_id.take() {
+            if self.db.delete_source(&source_id).is_err() {
+                return;
+            }
+        }
+        let _ = delete_workspace_isolation_ownership(&self.db, &self.isolation_id);
     }
 }
 
@@ -527,7 +922,39 @@ fn canonicalize_git_path(stdout: &[u8]) -> Result<PathBuf, CoreError> {
             "Git did not return a repository root for Code Ultra isolation.".to_string(),
         ));
     }
-    std::fs::canonicalize(path).map_err(CoreError::Io)
+    canonicalize_host_path(Path::new(&path))
+}
+
+fn canonicalize_host_path(path: &Path) -> Result<PathBuf, CoreError> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Prefix;
+
+        let mut components = canonical.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return Ok(canonical);
+        };
+        match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => {
+                let mut normalized = PathBuf::from(format!("{}:", char::from(drive)));
+                normalized.extend(components);
+                Ok(normalized)
+            }
+            Prefix::VerbatimUNC(server, share) => {
+                let mut normalized = PathBuf::from(r"\\");
+                normalized.push(server);
+                normalized.push(share);
+                normalized.extend(components);
+                Ok(normalized)
+            }
+            _ => Ok(canonical),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(canonical)
+    }
 }
 
 fn run_background_output(command: &mut Command) -> std::io::Result<Output> {
@@ -686,6 +1113,213 @@ mod tests {
     }
 
     #[test]
+    fn isolated_patch_has_a_non_delegating_review_before_promotion() {
+        if ensure_process_sandbox_available().is_err() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init"]);
+        git(repo.path(), &["config", "user.email", "nexa@example.test"]);
+        git(repo.path(), &["config", "user.name", "Nexa Test"]);
+        git(repo.path(), &["config", "core.autocrlf", "false"]);
+        std::fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
+        git(repo.path(), &["add", "tracked.txt"]);
+        git(repo.path(), &["commit", "-m", "fixture"]);
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: repo.path().to_string_lossy().to_string(),
+                include_globs: vec!["**/*".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+        let mut isolation =
+            WorkspaceIsolationRuntime::prepare(&db, std::slice::from_ref(&source.id), None)
+                .unwrap();
+        std::fs::write(
+            isolation.isolated_source_root.join("tracked.txt"),
+            "after\n",
+        )
+        .unwrap();
+
+        let review = isolation.review_isolated_patch().unwrap();
+        assert!(review.changed);
+        assert!(review.detail.contains("non-delegating"));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+            "before\n",
+            "review must not mutate the original checkout"
+        );
+
+        isolation.promote_verified_patch().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+            "after\n"
+        );
+    }
+
+    #[test]
+    fn startup_cleanup_reclaims_crashed_worktree_and_temporary_source() {
+        if ensure_process_sandbox_available().is_err() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init"]);
+        git(repo.path(), &["config", "user.email", "nexa@example.test"]);
+        git(repo.path(), &["config", "user.name", "Nexa Test"]);
+        std::fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
+        git(repo.path(), &["add", "tracked.txt"]);
+        git(repo.path(), &["commit", "-m", "fixture"]);
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: repo.path().to_string_lossy().to_string(),
+                include_globs: vec!["**/*".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+        let isolation =
+            WorkspaceIsolationRuntime::prepare(&db, std::slice::from_ref(&source.id), None)
+                .unwrap();
+        let worktree_root = isolation.isolated_worktree_root.clone();
+        let isolated_source_id = isolation.isolated_source_id.clone().unwrap();
+        std::mem::forget(isolation);
+
+        let report = cleanup_orphaned_workspace_isolations(&db).unwrap();
+        assert_eq!(report.removed_worktrees, 1);
+        assert_eq!(report.removed_sources, 1);
+        assert!(!worktree_root.exists());
+        assert!(db.get_source(&isolated_source_id).is_err());
+    }
+
+    #[test]
+    fn startup_cleanup_retains_unowned_legacy_temp_sources() {
+        let db = Database::open_memory().unwrap();
+        let legacy_root = std::env::temp_dir()
+            .join("nexa-code-ultra")
+            .join(format!("legacy-unverifiable-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&legacy_root).unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: legacy_root.to_string_lossy().to_string(),
+                include_globs: vec!["**/*".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+
+        let report = cleanup_orphaned_workspace_isolations(&db).unwrap();
+
+        assert!(report.retained_unverifiable_entries >= 1);
+        assert!(db.get_source(&source.id).is_ok());
+        assert!(legacy_root.exists());
+        db.delete_source(&source.id).unwrap();
+        std::fs::remove_dir(&legacy_root).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_preserves_resumable_isolation_until_owner_is_terminal() {
+        if ensure_process_sandbox_available().is_err() {
+            return;
+        }
+        use crate::conversation::{ConversationMessage, CreateConversationInput};
+        use crate::llm::Role;
+
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init"]);
+        git(repo.path(), &["config", "user.email", "nexa@example.test"]);
+        git(repo.path(), &["config", "user.name", "Nexa Test"]);
+        std::fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
+        git(repo.path(), &["add", "tracked.txt"]);
+        git(repo.path(), &["commit", "-m", "fixture"]);
+        let db = Database::open_memory().unwrap();
+        let source = db
+            .add_source(CreateSourceInput {
+                root_path: repo.path().to_string_lossy().to_string(),
+                include_globs: vec!["**/*".to_string()],
+                exclude_globs: Vec::new(),
+                watch_enabled: false,
+            })
+            .unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "mock".into(),
+                model: "mock".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let message = ConversationMessage {
+            id: Uuid::new_v4().to_string(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "isolated task".into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            artifacts: None,
+            token_count: 2,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).unwrap();
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO agent_task_runs
+                     (id, conversation_id, turn_id, user_message_id, status, phase)
+                 VALUES (?1, ?2, ?3, ?4, 'paused', 'paused')",
+                rusqlite::params![
+                    Uuid::new_v4().to_string(),
+                    conversation.id,
+                    turn.id,
+                    message.id
+                ],
+            )
+            .unwrap();
+        let isolation = WorkspaceIsolationRuntime::prepare(
+            &db,
+            std::slice::from_ref(&source.id),
+            Some(&turn.id),
+        )
+        .unwrap();
+        let worktree_root = isolation.isolated_worktree_root.clone();
+        let isolated_source_id = isolation.isolated_source_id.clone().unwrap();
+        std::mem::forget(isolation);
+
+        let retained = cleanup_orphaned_workspace_isolations(&db).unwrap();
+        assert_eq!(retained.removed_worktrees, 0);
+        assert!(worktree_root.exists());
+        assert!(db.get_source(&isolated_source_id).is_ok());
+        let resumed = WorkspaceIsolationRuntime::prepare(
+            &db,
+            std::slice::from_ref(&source.id),
+            Some(&turn.id),
+        )
+        .unwrap();
+        assert_eq!(resumed.isolated_worktree_root, worktree_root);
+        std::mem::forget(resumed);
+
+        db.conn()
+            .execute(
+                "UPDATE agent_task_runs SET status = 'cancelled' WHERE turn_id = ?1",
+                [&turn.id],
+            )
+            .unwrap();
+        let removed = cleanup_orphaned_workspace_isolations(&db).unwrap();
+        assert_eq!(removed.removed_worktrees, 1);
+        assert!(!worktree_root.exists());
+        assert!(db.get_source(&isolated_source_id).is_err());
+    }
+
+    #[test]
     fn isolated_patch_is_routed_verified_and_promoted() {
         if ensure_process_sandbox_available().is_err() {
             return;
@@ -694,6 +1328,7 @@ mod tests {
         git(repo.path(), &["init"]);
         git(repo.path(), &["config", "user.email", "nexa@example.test"]);
         git(repo.path(), &["config", "user.name", "Nexa Test"]);
+        git(repo.path(), &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.path().join("tracked.txt"), "before\n").unwrap();
         git(repo.path(), &["add", "tracked.txt"]);
         git(repo.path(), &["commit", "-m", "fixture"]);
@@ -708,7 +1343,8 @@ mod tests {
             })
             .unwrap();
         let mut isolation =
-            WorkspaceIsolationRuntime::prepare(&db, std::slice::from_ref(&source.id)).unwrap();
+            WorkspaceIsolationRuntime::prepare(&db, std::slice::from_ref(&source.id), None)
+                .unwrap();
         let isolated_source_id = isolation.source_id().unwrap().to_string();
         assert!(isolation.route_path("../escape.txt").is_err());
         assert!(isolation

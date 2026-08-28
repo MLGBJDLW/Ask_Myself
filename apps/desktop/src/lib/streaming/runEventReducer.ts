@@ -178,7 +178,7 @@ export function applyAgentRunEvent(
       applyStreamResetProjection(
         state,
         stringValue(payload.reason) ?? runEvent.label,
-        { clearTools: true },
+        { clearTools: true, discardSample: payload.discardSample === true },
       );
       return;
 

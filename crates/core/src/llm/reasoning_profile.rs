@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider_catalog::model_capabilities_from_catalog;
+use crate::provider_catalog::{find_provider_preset, model_capabilities_from_catalog};
 
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
@@ -296,7 +296,7 @@ fn profile(
 fn catalog_reasoning_effort_policy(
     provider: ProviderType,
     model: &str,
-) -> Option<(Vec<ReasoningEffort>, Option<ReasoningEffort>)> {
+) -> Option<(Vec<ReasoningEffort>, Option<ReasoningEffort>, bool)> {
     let reasoning = model_capabilities_from_catalog(provider, model)?.reasoning?;
     let accepted = reasoning
         .effort_levels
@@ -307,7 +307,14 @@ fn catalog_reasoning_effort_policy(
         .default_effort
         .as_deref()
         .and_then(ReasoningEffort::from_wire);
-    Some((accepted, default))
+    let mandatory = reasoning.mode.as_deref() == Some("always");
+    Some((accepted, default, mandatory))
+}
+
+fn is_alibaba_model_studio_payg_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
+    provider == ProviderType::AlibabaModelStudio
+        && find_provider_preset("alibaba_model_studio", base_url)
+            .is_some_and(|preset| preset.id == "alibaba-model-studio")
 }
 
 pub fn resolve_reasoning_profile(
@@ -533,26 +540,34 @@ pub fn resolve_reasoning_profile(
     }
 
     if provider == ProviderType::OpenRouter && is_openrouter_public_endpoint(provider, base_url) {
-        let catalog_default = catalog_reasoning_effort_policy(provider, &model)
-            .and_then(|(_, default_effort)| default_effort);
+        let gateway_efforts = vec![
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+            ReasoningEffort::XHigh,
+        ];
+        let (catalog_efforts, catalog_default, mandatory) =
+            catalog_reasoning_effort_policy(provider, &model)
+                .unwrap_or_else(|| (Vec::new(), None, false));
+        let accepted_efforts = if catalog_efforts.is_empty() {
+            gateway_efforts.as_slice()
+        } else {
+            catalog_efforts.as_slice()
+        };
         let mut value = profile(
             key,
             "openrouter-normalized-reasoning-v1",
-            ThinkingModeControl::ProviderDefault,
+            if mandatory {
+                ThinkingModeControl::AlwaysOn
+            } else {
+                ThinkingModeControl::ProviderDefault
+            },
             ReasoningEffortField::NestedReasoning,
             ReasoningEffortMapping::OpenAiCompatible,
-            (
-                &[
-                    ReasoningEffort::None,
-                    ReasoningEffort::Minimal,
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::High,
-                    ReasoningEffort::Max,
-                    ReasoningEffort::XHigh,
-                ],
-                catalog_default,
-            ),
+            (accepted_efforts, catalog_default),
             ReasoningBudgetField::NestedReasoning,
         );
         value.effort_budget_exclusive = true;
@@ -565,7 +580,7 @@ pub fn resolve_reasoning_profile(
     }
 
     if provider == ProviderType::DeepSeek && is_deepseek_public_endpoint(provider, base_url) {
-        if let Some((accepted_efforts, default_effort)) =
+        if let Some((accepted_efforts, default_effort, _)) =
             catalog_reasoning_effort_policy(provider, &model)
         {
             let mut value = profile(
@@ -637,7 +652,7 @@ pub fn resolve_reasoning_profile(
     }
 
     if is_zhipu_model_api_endpoint(provider, base_url) {
-        if model != "glm-5.3" {
+        if !matches!(model.as_str(), "glm-5.3" | "glm-5.3-flash") {
             return ReasoningProfile::unsupported(key);
         }
         let mut value = profile(
@@ -662,7 +677,32 @@ pub fn resolve_reasoning_profile(
     }
 
     if is_alibaba_chat_endpoint(provider, base_url) {
-        if matches!(model.as_str(), "qwen3.8-max" | "qwen3.8-max-preview") {
+        if model == "zhipu/glm-5.3" && is_alibaba_model_studio_payg_endpoint(provider, base_url) {
+            let mut value = profile(
+                key,
+                "alibaba-zhipu-glm53-v1",
+                ThinkingModeControl::AlwaysOnThinkingType,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::High,
+                        ReasoningEffort::Max,
+                    ],
+                    Some(ReasoningEffort::Max),
+                ),
+                ReasoningBudgetField::None,
+            );
+            value.preserve_reasoning_history = true;
+            value.omit_temperature_when_reasoning = true;
+            return value;
+        }
+
+        if matches!(
+            model.as_str(),
+            "qwen3.8-max" | "qwen3.8-max-preview" | "qwen3.8-flash"
+        ) {
             let mode_control = if model == "qwen3.8-max-preview" {
                 ThinkingModeControl::AlwaysOn
             } else {
@@ -687,6 +727,25 @@ pub fn resolve_reasoning_profile(
             value.min_budget_tokens = Some(0);
             value.max_budget_tokens = Some(262_144);
             value.effort_budget_exclusive = true;
+            value.preserve_reasoning_history = true;
+            return value;
+        }
+
+        if matches!(model.as_str(), "qwen3.8-2.4t-a95b" | "qwen3.8-27b") {
+            let mut value = profile(
+                key,
+                "alibaba-qwen3.8-open-hybrid-v1",
+                ThinkingModeControl::EnableThinking,
+                ReasoningEffortField::None,
+                ReasoningEffortMapping::Exact,
+                (&[], None),
+                ReasoningBudgetField::ThinkingBudget,
+            );
+            value.max_budget_tokens = Some(if model == "qwen3.8-2.4t-a95b" {
+                131_072
+            } else {
+                262_144
+            });
             value.preserve_reasoning_history = true;
             return value;
         }
@@ -927,6 +986,32 @@ mod tests {
         );
         assert_eq!(value.wire_budget(Some(300_000), false), Some(262_144));
         assert_eq!(value.wire_budget(Some(16_384), true), None);
+
+        let flash = resolve_reasoning_profile(
+            ProviderType::Qwen,
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "qwen3.8-flash",
+        );
+        assert_eq!(flash.id, "alibaba-qwen3.8-chat-v1");
+        assert_eq!(
+            flash.wire_effort(Some(&ReasoningEffort::High)).as_deref(),
+            Some("xhigh")
+        );
+        assert_eq!(flash.wire_budget(Some(300_000), false), Some(262_144));
+
+        for (model, max_budget) in [("qwen3.8-2.4t-a95b", 131_072), ("qwen3.8-27b", 262_144)] {
+            let open = resolve_reasoning_profile(
+                ProviderType::AlibabaModelStudio,
+                Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                model,
+            );
+            assert_eq!(open.id, "alibaba-qwen3.8-open-hybrid-v1");
+            assert_eq!(open.mode_control, ThinkingModeControl::EnableThinking);
+            assert_eq!(open.wire_budget(Some(300_000), false), Some(max_budget));
+            assert!(open.preserve_reasoning_history);
+        }
     }
 
     #[test]
@@ -1027,28 +1112,43 @@ mod tests {
             "https://open.bigmodel.cn/api/paas/v4",
             "https://api.z.ai/api/paas/v4",
         ] {
-            let value = resolve_reasoning_profile(
-                ProviderType::Zhipu,
-                Some(endpoint),
-                ReasoningApiStyle::OpenAiChatCompletions,
-                "glm-5.3",
-            );
-            assert_eq!(value.id, "zhipu-glm53-model-api-v1");
-            assert_eq!(
-                value.mode_control,
-                ThinkingModeControl::AlwaysOnThinkingType
-            );
-            assert_eq!(value.effort_field, ReasoningEffortField::TopLevel);
-            assert_eq!(
-                value.accepted_efforts,
-                [
-                    ReasoningEffort::Low,
-                    ReasoningEffort::High,
-                    ReasoningEffort::Max,
-                ]
-            );
-            assert_eq!(value.default_effort, Some(ReasoningEffort::Max));
+            for model in ["glm-5.3", "glm-5.3-flash"] {
+                let value = resolve_reasoning_profile(
+                    ProviderType::Zhipu,
+                    Some(endpoint),
+                    ReasoningApiStyle::OpenAiChatCompletions,
+                    model,
+                );
+                assert_eq!(value.id, "zhipu-glm53-model-api-v1");
+                assert_eq!(
+                    value.mode_control,
+                    ThinkingModeControl::AlwaysOnThinkingType
+                );
+                assert_eq!(value.effort_field, ReasoningEffortField::TopLevel);
+                assert_eq!(
+                    value.accepted_efforts,
+                    [
+                        ReasoningEffort::Low,
+                        ReasoningEffort::High,
+                        ReasoningEffort::Max,
+                    ]
+                );
+                assert_eq!(value.default_effort, Some(ReasoningEffort::Max));
+            }
         }
+        let china = resolve_reasoning_profile(
+            ProviderType::Zhipu,
+            Some("https://open.bigmodel.cn/api/paas/v4"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "glm-5.3",
+        );
+        let international = resolve_reasoning_profile(
+            ProviderType::Zhipu,
+            Some("https://api.z.ai/api/paas/v4"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "glm-5.3",
+        );
+        assert_ne!(china.key.endpoint_id, international.key.endpoint_id);
 
         for endpoint in [
             "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -1060,6 +1160,93 @@ mod tests {
                 Some(endpoint),
                 ReasoningApiStyle::OpenAiChatCompletions,
                 "glm-5.3",
+            );
+            assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
+        }
+    }
+
+    #[test]
+    fn glm53_relay_profiles_keep_exact_mandatory_efforts_and_endpoint_scope() {
+        for endpoint in [
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://workspace123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        ] {
+            let value = resolve_reasoning_profile(
+                ProviderType::AlibabaModelStudio,
+                Some(endpoint),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                "ZHIPU/GLM-5.3",
+            );
+            assert_eq!(value.id, "alibaba-zhipu-glm53-v1");
+            assert_eq!(
+                value.mode_control,
+                ThinkingModeControl::AlwaysOnThinkingType
+            );
+            assert_eq!(
+                value.accepted_efforts,
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]
+            );
+            assert_eq!(value.default_effort, Some(ReasoningEffort::Max));
+        }
+
+        for model in ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"] {
+            let value = resolve_reasoning_profile(
+                ProviderType::OpenRouter,
+                Some("https://openrouter.ai/api/v1"),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                model,
+            );
+            assert_eq!(value.id, "openrouter-normalized-reasoning-v1");
+            assert_eq!(value.mode_control, ThinkingModeControl::AlwaysOn);
+            assert_eq!(
+                value.accepted_efforts,
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]
+            );
+            assert_eq!(value.default_effort, Some(ReasoningEffort::Max));
+            assert_eq!(value.requested_mode(Some(false), None, None), Some(true));
+            assert_eq!(value.wire_effort(Some(&ReasoningEffort::Medium)), None);
+        }
+
+        for (provider, endpoint, model) in [
+            (
+                ProviderType::AlibabaModelStudio,
+                "https://workspace123.cn-beijing.maas.aliyuncs.com.evil.example/compatible-mode/v1",
+                "ZHIPU/GLM-5.3",
+            ),
+            (
+                ProviderType::OpenRouter,
+                "https://openrouter.example.com/api/v1",
+                "z-ai/glm-5.3",
+            ),
+            (
+                ProviderType::Qwen,
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                "ZHIPU/GLM-5.3",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                "ZHIPU/GLM-5.3",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "https://workspace123.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+                "ZHIPU/GLM-5.3",
+            ),
+        ] {
+            let value = resolve_reasoning_profile(
+                provider,
+                Some(endpoint),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                model,
             );
             assert_eq!(value.mode_control, ThinkingModeControl::Unsupported);
         }

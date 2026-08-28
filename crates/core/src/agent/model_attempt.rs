@@ -123,7 +123,7 @@ pub(super) enum ModelAttemptProgress {
         timing: ModelAttemptTiming,
     },
     Completion(ModelAttemptCompletion),
-    InterruptedAfterVisibleOutput(ModelAttemptInterruption),
+    InterruptedAfterReplayBarrier(ModelAttemptInterruption),
     NeedsContextCompaction(ModelAttemptContextOverflow),
     Failed(ModelAttemptFailure),
     Cancelled(ModelAttemptCancellation),
@@ -196,7 +196,8 @@ pub(super) struct ModelAttempt<'provider, 'events> {
     request_started_at: Instant,
     candidate_sample_id: Option<String>,
     accepted: Option<AcceptedModelAttempt>,
-    visible_output: bool,
+    sample_progress_seen: bool,
+    replay_barrier_crossed: bool,
     disconnect_retries: u32,
     pending_recovery: Option<RecoverySignal>,
     time_to_first_token_ms: Option<u64>,
@@ -235,7 +236,8 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             request_started_at: Instant::now(),
             candidate_sample_id: None,
             accepted: None,
-            visible_output: false,
+            sample_progress_seen: false,
+            replay_barrier_crossed: false,
             disconnect_retries: 0,
             pending_recovery: None,
             time_to_first_token_ms: None,
@@ -354,15 +356,17 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     };
                     match event {
                         Some(ProviderStreamEvent::Chunk { chunk }) => {
-                            let visible = chunk_is_visible(&chunk);
+                            let semantic_progress = chunk_is_visible(&chunk);
                             self.accept_provider_event(
                                 AcceptedProviderEvent::Chunk(chunk),
-                                visible,
+                                semantic_progress,
+                                false,
                             );
                         }
                         Some(ProviderStreamEvent::HostedTool { tool }) => {
                             self.accept_provider_event(
                                 AcceptedProviderEvent::HostedTool(tool),
+                                true,
                                 true,
                             );
                         }
@@ -370,6 +374,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                             self.accept_provider_event(
                                 AcceptedProviderEvent::ReplayState(replay),
                                 true,
+                                false,
                             );
                         }
                         Some(ProviderStreamEvent::RecoverableError { message }) => {
@@ -385,22 +390,46 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                         }
                         Some(ProviderStreamEvent::TerminalError { failure }) => {
                             let error = failure.into_core_error();
-                            if self.visible_output {
-                                // Once output is visible, the at-most-once gate
-                                // is irreversible: even otherwise retryable
-                                // terminal failures become a typed interruption.
-                                self.recover_from_disconnect(error.to_string());
+                            if self.replay_barrier_crossed {
+                                // The side-effect barrier and provider error
+                                // classification are independent. Suppress the
+                                // replay, but preserve whether this was a rate
+                                // limit, transient connection, or provider
+                                // failure in the structured connection state.
+                                self.interrupt_after_replay_barrier(error);
                             } else {
+                                let resettable_progress_seen = self.sample_progress_seen;
+                                let context_overflow =
+                                    StreamRecoveryPolicy::is_context_overflow_error(&error);
                                 match self
                                     .classify_connect_error(error, ModelAttemptFailureStage::Stream)
                                 {
                                     ConnectErrorAction::Retry(delay) => {
-                                        self.discard_unseen_sample();
+                                        if resettable_progress_seen {
+                                            self.pending_agent_events.push_back(
+                                                AgentEvent::StreamReset {
+                                                    reason: "The provider rejected an incomplete draft; Nexa discarded that sample before the typed retry."
+                                                        .to_string(),
+                                                    discard_sample: true,
+                                                },
+                                            );
+                                        }
+                                        self.discard_resettable_sample();
                                         self.phase = AttemptPhase::WaitingToRetryStream(Box::pin(
                                             tokio::time::sleep(delay),
                                         ));
                                     }
                                     ConnectErrorAction::Finish(failure) => {
+                                        if resettable_progress_seen && context_overflow {
+                                            self.pending_agent_events.push_back(
+                                                AgentEvent::StreamReset {
+                                                    reason: "The provider reported context overflow; Nexa discarded the incomplete draft before compaction."
+                                                        .to_string(),
+                                                    discard_sample: true,
+                                                },
+                                            );
+                                            self.discard_resettable_sample();
+                                        }
                                         self.phase = AttemptPhase::Done;
                                         self.pending_progress =
                                             Some(progress_from_connect_failure(*failure));
@@ -421,7 +450,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                                 .accepted
                                 .clone()
                                 .expect("clean stream completion binds empty-sample provenance");
-                            if !self.visible_output {
+                            if !self.sample_progress_seen {
                                 let connect_retries = std::mem::take(&mut self.connect_retries);
                                 self.queue_connected(&accepted, connect_retries);
                             }
@@ -654,13 +683,18 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         }
     }
 
-    fn accept_provider_event(&mut self, event: AcceptedProviderEvent, visible: bool) {
+    fn accept_provider_event(
+        &mut self,
+        event: AcceptedProviderEvent,
+        semantic_progress: bool,
+        crosses_replay_barrier: bool,
+    ) {
         let first_for_sample = self.accepted.is_none();
         if first_for_sample {
             let accepted = self.capture_accepted_route();
             self.accepted = Some(accepted.clone());
         }
-        if visible && !self.visible_output {
+        if semantic_progress && !self.sample_progress_seen {
             let accepted = self
                 .accepted
                 .clone()
@@ -668,11 +702,12 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             let connect_retries = std::mem::take(&mut self.connect_retries);
             self.queue_connected(&accepted, connect_retries);
         }
-        if visible {
-            self.visible_output = true;
+        if semantic_progress {
+            self.sample_progress_seen = true;
             self.time_to_first_token_ms
                 .get_or_insert_with(|| elapsed_millis(self.request_started_at));
         }
+        self.replay_barrier_crossed |= crosses_replay_barrier;
         self.pending_progress = Some(ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
             event,
             accepted: self
@@ -687,10 +722,10 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         match self.policy.decide_after_incomplete(
             false,
             self.disconnect_retries,
-            self.visible_output,
+            self.replay_barrier_crossed,
             &detail,
         ) {
-            StreamRecoveryDecision::StopAfterVisibleOutput {
+            StreamRecoveryDecision::StopAfterReplayBarrier {
                 user_message,
                 trace_message,
             } => {
@@ -700,12 +735,12 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     self.policy.max_disconnect_retries(),
                 );
                 self.phase = AttemptPhase::Done;
-                self.pending_progress = Some(ModelAttemptProgress::InterruptedAfterVisibleOutput(
+                self.pending_progress = Some(ModelAttemptProgress::InterruptedAfterReplayBarrier(
                     ModelAttemptInterruption {
                         accepted: self
                             .accepted
                             .clone()
-                            .expect("visible output always has accepted route provenance"),
+                            .expect("a replay barrier always has accepted route provenance"),
                         user_message,
                         trace_message,
                         timing: self.timing(),
@@ -732,8 +767,9 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 self.pending_agent_events
                     .push_back(AgentEvent::StreamReset {
                         reason: reset_reason.clone(),
+                        discard_sample: true,
                     });
-                self.discard_unseen_sample();
+                self.discard_resettable_sample();
                 self.connect_retries = 0;
                 self.phase =
                     AttemptPhase::WaitingToRetryStream(Box::pin(tokio::time::sleep(delay)));
@@ -751,12 +787,13 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 self.pending_agent_events
                     .push_back(AgentEvent::StreamReset {
                         reason: reset_reason.clone(),
+                        discard_sample: true,
                     });
                 self.pending_recovery = Some(RecoverySignal {
                     attempt: self.disconnect_retries,
                     max_attempts: self.policy.max_disconnect_retries(),
                 });
-                self.discard_unseen_sample();
+                self.discard_resettable_sample();
                 self.connect_retries = 0;
                 self.phase = AttemptPhase::ReadyToComplete {
                     fallback_detail: Some(detail),
@@ -764,6 +801,42 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 };
             }
         }
+    }
+
+    fn interrupt_after_replay_barrier(&mut self, error: CoreError) {
+        let category = match &error {
+            CoreError::RateLimited { .. } => ConnectionErrorCategory::RateLimit,
+            CoreError::TransientLlm(_) => ConnectionErrorCategory::Network,
+            CoreError::Llm(_) => ConnectionErrorCategory::ProviderUnavailable,
+            _ => ConnectionErrorCategory::Unknown,
+        };
+        let detail = error.to_string();
+        let StreamRecoveryDecision::StopAfterReplayBarrier {
+            user_message,
+            trace_message,
+        } = self
+            .policy
+            .decide_after_incomplete(false, self.disconnect_retries, true, &detail)
+        else {
+            unreachable!("a replay barrier must always suppress transport replay")
+        };
+        self.queue_failed(
+            category,
+            self.disconnect_retries,
+            self.policy.max_disconnect_retries(),
+        );
+        self.phase = AttemptPhase::Done;
+        self.pending_progress = Some(ModelAttemptProgress::InterruptedAfterReplayBarrier(
+            ModelAttemptInterruption {
+                accepted: self
+                    .accepted
+                    .clone()
+                    .expect("a replay barrier always has accepted route provenance"),
+                user_message,
+                trace_message,
+                timing: self.timing(),
+            },
+        ));
     }
 
     /// Rebuild every physical invocation from the original history, then honor
@@ -813,11 +886,12 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         }
     }
 
-    fn discard_unseen_sample(&mut self) {
+    fn discard_resettable_sample(&mut self) {
         self.candidate_sample_id = None;
         self.candidate_projection_omitted_units = None;
         self.accepted = None;
-        self.visible_output = false;
+        self.sample_progress_seen = false;
+        self.replay_barrier_crossed = false;
     }
 
     fn timing(&self) -> ModelAttemptTiming {
@@ -1357,8 +1431,8 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn visible_text_thinking_tool_delta_and_hosted_tool_each_forbid_resend() {
-        let visible_events = vec![
+    async fn resettable_text_thinking_and_tool_deltas_can_reconnect_before_dispatch() {
+        let resettable_events = vec![
             chunk("visible"),
             ProviderStreamEvent::Chunk {
                 chunk: Box::new(StreamChunk {
@@ -1384,33 +1458,24 @@ mod tests {
                     thinking_delta: None,
                 }),
             },
-            ProviderStreamEvent::HostedTool {
-                tool: Box::new(ProviderHostedToolEvent {
-                    call_id: "hosted-1".to_string(),
-                    tool_name: "web_search".to_string(),
-                    kind: ProviderHostedToolKind::WebSearch,
-                    provider_id: "primary".to_string(),
-                    status: ProviderHostedToolStatus::Running,
-                    arguments: None,
-                    content: None,
-                    artifacts: None,
-                }),
-            },
         ];
 
-        for visible in visible_events {
+        for resettable in resettable_events {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let provider = ScriptedProvider::boxed(
                 "primary",
                 "primary-endpoint",
                 "primary-model",
                 ReasoningReplayPolicy::NotRequired,
-                vec![Invocation::Stream(Ok(vec![
-                    visible,
-                    ProviderStreamEvent::RecoverableError {
-                        message: "late disconnect".to_string(),
-                    },
-                ]))],
+                vec![
+                    Invocation::Stream(Ok(vec![
+                        resettable,
+                        ProviderStreamEvent::RecoverableError {
+                            message: "late disconnect".to_string(),
+                        },
+                    ])),
+                    Invocation::Stream(Ok(vec![chunk("recovered")])),
+                ],
                 Arc::clone(&requests),
                 Arc::new(Mutex::new(0)),
             );
@@ -1421,16 +1486,67 @@ mod tests {
                 attempt.next().await,
                 ModelAttemptProgress::Provider(_)
             ));
+            expect_stream_opened(&mut attempt).await;
             assert!(matches!(
                 attempt.next().await,
-                ModelAttemptProgress::InterruptedAfterVisibleOutput(_)
+                ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
+                    event: AcceptedProviderEvent::Chunk(ref chunk),
+                    ..
+                }) if chunk.delta == "recovered"
+            ));
+            assert!(matches!(
+                attempt.next().await,
+                ModelAttemptProgress::StreamComplete { .. }
             ));
             assert_eq!(
                 requests.lock().unwrap().len(),
-                1,
-                "visible output was resent"
+                2,
+                "resettable draft output should be replayed exactly once"
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_hosted_action_crosses_the_replay_barrier() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            vec![Invocation::Stream(Ok(vec![
+                ProviderStreamEvent::HostedTool {
+                    tool: Box::new(ProviderHostedToolEvent {
+                        call_id: "hosted-1".to_string(),
+                        tool_name: "web_search".to_string(),
+                        kind: ProviderHostedToolKind::WebSearch,
+                        provider_id: "primary".to_string(),
+                        status: ProviderHostedToolStatus::Running,
+                        arguments: None,
+                        content: None,
+                        artifacts: None,
+                    }),
+                },
+                ProviderStreamEvent::RecoverableError {
+                    message: "late disconnect".to_string(),
+                },
+            ]))],
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, _rx) = event_channel();
+        let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false);
+
+        expect_stream_opened(&mut attempt).await;
+        assert!(matches!(
+            attempt.next().await,
+            ModelAttemptProgress::Provider(_)
+        ));
+        assert!(matches!(
+            attempt.next().await,
+            ModelAttemptProgress::InterruptedAfterReplayBarrier(_)
+        ));
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2067,25 +2183,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn terminal_rate_limit_after_visible_output_never_resends() {
+    async fn terminal_rate_limit_after_resettable_draft_reconnects() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let provider = ScriptedProvider::boxed(
             "primary",
             "primary-endpoint",
             "primary-model",
             ReasoningReplayPolicy::NotRequired,
-            vec![Invocation::Stream(Ok(vec![
-                chunk("visible"),
-                ProviderStreamEvent::TerminalError {
-                    failure: crate::llm::ProviderStreamFailure::RateLimited {
-                        retry_after_secs: 7,
+            vec![
+                Invocation::Stream(Ok(vec![
+                    chunk("visible"),
+                    ProviderStreamEvent::TerminalError {
+                        failure: crate::llm::ProviderStreamFailure::RateLimited {
+                            retry_after_secs: 7,
+                        },
                     },
-                },
-            ]))],
+                ])),
+                Invocation::Stream(Ok(vec![chunk("recovered")])),
+            ],
             Arc::clone(&requests),
             Arc::new(Mutex::new(0)),
         );
-        let (tx, _rx) = event_channel();
+        let (tx, mut rx) = event_channel();
         let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false);
         expect_stream_opened(&mut attempt).await;
         assert!(matches!(
@@ -2096,14 +2215,100 @@ mod tests {
             }) if chunk.delta == "visible"
         ));
 
-        let ModelAttemptProgress::InterruptedAfterVisibleOutput(interruption) =
-            attempt.next().await
-        else {
-            panic!("visible output should suppress terminal transport replay")
-        };
+        expect_stream_opened(&mut attempt).await;
+        assert!(matches!(
+            attempt.next().await,
+            ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
+                event: AcceptedProviderEvent::Chunk(ref chunk),
+                ..
+            }) if chunk.delta == "recovered"
+        ));
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ConnectionState { state }
+                if state.state == ConnectionStateKind::Reconnecting
+                    && state.error_category == Some(ConnectionErrorCategory::RateLimit)
+                    && state.next_retry_at.is_some()
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::StreamReset { .. })));
+    }
 
-        assert!(interruption.trace_message.contains("retry suppressed"));
+    #[tokio::test]
+    async fn context_overflow_after_resettable_draft_requests_compaction_without_replay() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            vec![Invocation::Stream(Ok(vec![
+                chunk("incomplete draft"),
+                ProviderStreamEvent::TerminalError {
+                    failure: crate::llm::ProviderStreamFailure::ContextOverflow {
+                        prompt_tokens: 12,
+                        max_tokens: 8,
+                    },
+                },
+            ]))],
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, mut rx) = event_channel();
+        let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false);
+        expect_stream_opened(&mut attempt).await;
+        assert!(matches!(
+            attempt.next().await,
+            ModelAttemptProgress::Provider(ModelAttemptProviderEvent {
+                event: AcceptedProviderEvent::Chunk(ref chunk),
+                ..
+            }) if chunk.delta == "incomplete draft"
+        ));
+
+        let ModelAttemptProgress::NeedsContextCompaction(overflow) = attempt.next().await else {
+            panic!("typed context overflow must go to compaction")
+        };
+        assert!(matches!(overflow.error, CoreError::ContextOverflow(12, 8)));
         assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AgentEvent::StreamReset { .. })));
+    }
+
+    #[tokio::test]
+    async fn permanent_terminal_error_after_resettable_draft_never_replays() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            vec![Invocation::Stream(Ok(vec![
+                chunk("partial answer"),
+                ProviderStreamEvent::TerminalError {
+                    failure: crate::llm::ProviderStreamFailure::provider("fatal"),
+                },
+            ]))],
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, mut rx) = event_channel();
+        let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false);
+        expect_stream_opened(&mut attempt).await;
+        assert!(matches!(
+            attempt.next().await,
+            ModelAttemptProgress::Provider(_)
+        ));
+
+        let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
+            panic!("permanent provider failure must not become a reconnect")
+        };
+        assert!(matches!(failure.error, CoreError::Llm(ref message) if message == "fatal"));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert!(!std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AgentEvent::StreamReset { .. })));
     }
 
     #[tokio::test(start_paused = true)]

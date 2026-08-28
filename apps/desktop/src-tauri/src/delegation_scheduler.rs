@@ -58,12 +58,11 @@ impl DelegationLimitsV2 {
                     .and_then(|capabilities| capabilities.reasoning)
             })
         });
-        let inferred_context_tokens =
-            config.model.as_deref().map(|model| {
-                u64::from(config.context_window.unwrap_or_else(|| {
-                    nexa_core::conversation::memory::model_context_window(model)
-                }))
-            });
+        let inferred_context_tokens = config
+            .context_window_resolution
+            .and_then(|resolved| resolved.capacity_tokens)
+            .or(config.context_window)
+            .map(u64::from);
         let capability_needs_long_prefill = catalog_limits.as_ref().is_some_and(|limits| {
             limits
                 .context_tokens

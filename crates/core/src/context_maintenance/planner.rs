@@ -1,5 +1,5 @@
 use crate::agent::context::build_evicted_recap_from_messages;
-use crate::conversation::memory::{estimate_tokens_for_model, model_context_window};
+use crate::conversation::memory::estimate_tokens_for_model;
 use crate::conversation::{conversation_message_llm_context_content, ConversationMessage};
 use crate::llm::{Message, Role};
 
@@ -55,8 +55,11 @@ pub(crate) fn plan_compaction(
         };
     }
 
-    let context_window = configured_context_window.unwrap_or_else(|| model_context_window(model));
-    let budget = context_window.saturating_sub(max_response_tokens);
+    let budget = configured_context_window
+        .map(|context_window| context_window.saturating_sub(max_response_tokens))
+        // Manual compaction of a provider-managed context should compact the
+        // observed history, not pretend the endpoint has a 32K window.
+        .unwrap_or(tokens_before);
     if budget == 0 {
         return PlanOutcome::Noop {
             messages_before,

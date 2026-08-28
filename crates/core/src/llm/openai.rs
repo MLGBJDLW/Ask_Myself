@@ -67,6 +67,8 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OaiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tool_stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
@@ -87,6 +89,8 @@ struct OaiThinking {
     thinking_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     keep: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clear_thinking: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -556,6 +560,35 @@ fn is_alibaba_hosted_qwen(model: &str, provider_type: Option<&ProviderType>) -> 
     model_lower.starts_with("qwen") || model_lower.starts_with("qwq")
 }
 
+fn is_native_glm53_profile(reasoning_profile_id: &str) -> bool {
+    matches!(
+        reasoning_profile_id,
+        "zhipu-glm53-model-api-v1" | "alibaba-zhipu-glm53-v1"
+    )
+}
+
+fn is_openrouter_glm53_profile(reasoning_profile_id: &str, model: &str) -> bool {
+    reasoning_profile_id == "openrouter-normalized-reasoning-v1"
+        && matches!(
+            model.trim().to_ascii_lowercase().as_str(),
+            "z-ai/glm-5.3" | "z-ai/glm-5.3-flash"
+        )
+}
+
+fn provider_stop_sequences(
+    stop: Option<Vec<String>>,
+    native_glm53_profile: bool,
+    openrouter_glm53_profile: bool,
+) -> Option<Vec<String>> {
+    if openrouter_glm53_profile {
+        return None;
+    }
+    if native_glm53_profile {
+        return stop.and_then(|values| values.into_iter().next().map(|value| vec![value]));
+    }
+    stop
+}
+
 /// Some code-specialized OpenAI-compatible models require tool-call
 /// `function.arguments` to be a JSON object instead of a JSON-encoded string.
 fn requires_raw_tool_arguments(model: &str, provider_type: Option<&ProviderType>) -> bool {
@@ -881,6 +914,18 @@ fn build_request_body_with_config(
         .flatten();
     let include_reasoning_content =
         reasoning_supported && reasoning_profile.should_replay_reasoning(requested_reasoning_mode);
+    let replays_reasoning_history = include_reasoning_content
+        && request.messages.iter().any(|message| {
+            message.role == Role::Assistant
+                && message
+                    .reasoning_content
+                    .as_deref()
+                    .is_some_and(|reasoning| !reasoning.trim().is_empty())
+        });
+    let native_glm53_contract = is_native_glm53_profile(&reasoning_profile.id);
+    let openrouter_glm53_contract =
+        is_openrouter_glm53_profile(&reasoning_profile.id, &request.model);
+    let any_glm53_contract = native_glm53_contract || openrouter_glm53_contract;
     let reasoning_history_encoding = reasoning_profile.reasoning_history_encoding;
     let needs_completion_tokens = reasoning_profile.use_max_completion_tokens
         && is_reasoning_model(&request.model, Some(&provider_type));
@@ -965,18 +1010,22 @@ fn build_request_body_with_config(
                 requested_reasoning_mode.map(|enabled| OaiThinking {
                     thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
                     keep: None,
+                    clear_thinking: (native_glm53_contract && replays_reasoning_history)
+                        .then_some(false),
                 })
             }
             ThinkingModeControl::ThinkingTypeWithKeep => {
                 requested_reasoning_mode.map(|enabled| OaiThinking {
                     thinking_type: if enabled { "enabled" } else { "disabled" }.to_string(),
                     keep: enabled.then(|| "all".to_string()),
+                    clear_thinking: None,
                 })
             }
             ThinkingModeControl::AdaptiveThinking => {
                 requested_reasoning_mode.map(|enabled| OaiThinking {
                     thinking_type: if enabled { "adaptive" } else { "disabled" }.to_string(),
                     keep: None,
+                    clear_thinking: None,
                 })
             }
             _ => None,
@@ -991,14 +1040,31 @@ fn build_request_body_with_config(
             && requested_reasoning_mode != Some(false))
         .then_some(true),
         tools: request.tools.as_ref().map(|t| convert_tools(t)),
+        tool_stream: (native_glm53_contract
+            && stream
+            && request
+                .tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty()))
+        .then_some(true),
         parallel_tool_calls: match request.tools.as_ref() {
-            Some(tools) if !tools.is_empty() && request.parallel_tool_calls => Some(true),
+            // These exact trusted GLM routes do not publish
+            // `parallel_tool_calls` in their current request contract.
+            Some(tools)
+                if !tools.is_empty() && request.parallel_tool_calls && !any_glm53_contract =>
+            {
+                Some(true)
+            }
             _ => None,
         },
         stop: if suppress_stop {
             None
         } else {
-            request.stop.clone()
+            provider_stop_sequences(
+                request.stop.clone(),
+                native_glm53_contract,
+                openrouter_glm53_contract,
+            )
         },
         stream: if stream { Some(true) } else { None },
         stream_options: if stream {
@@ -3519,6 +3585,27 @@ data: [DONE]
         assert_eq!(body["enable_thinking"], true);
         assert_eq!(body["reasoning_effort"], "low");
         assert!(body.get("thinking_budget").is_none());
+
+        let flash = endpoint_reasoning_request("qwen3.8-flash");
+        let flash_body =
+            serde_json::to_value(build_request_body_with_config(&flash, false, Some(&config)))
+                .unwrap();
+        assert_eq!(flash_body["enable_thinking"], true);
+        assert_eq!(flash_body["reasoning_effort"], "low");
+
+        let mut open = endpoint_reasoning_request("qwen3.8-27b");
+        open.reasoning_enabled = Some(true);
+        open.thinking_budget = Some(300_000);
+        let payg = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+        let open_body =
+            serde_json::to_value(build_request_body_with_config(&open, false, Some(&payg)))
+                .unwrap();
+        assert_eq!(open_body["enable_thinking"], true);
+        assert_eq!(open_body["thinking_budget"], 262_144);
+        assert!(open_body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -4825,6 +4912,175 @@ data: [DONE]
         assert!(body.get("enable_thinking").is_none());
         assert!(body.get("temperature").is_none());
         assert_eq!(body["max_tokens"], 131_072);
+    }
+
+    #[test]
+    fn glm53_trusted_routes_gate_wire_extras_and_preserve_thinking() {
+        let assistant = Message {
+            role: Role::Assistant,
+            parts: vec![ContentPart::Text {
+                text: "answer".to_string(),
+            }],
+            name: None,
+            tool_calls: None,
+            reasoning_content: Some("full prior reasoning".to_string()),
+            prompt_cache_hint: None,
+        };
+        let request_for = |provider_type: ProviderType, model: &str| CompletionRequest {
+            model: model.to_string(),
+            messages: vec![Message::text(Role::User, "hello"), assistant.clone()],
+            temperature: Some(0.4),
+            max_tokens: Some(131_072),
+            tools: Some(vec![ToolDefinition {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]),
+            stop: Some(vec!["first".into(), "second".into()]),
+            thinking_budget: None,
+            reasoning_enabled: Some(false),
+            reasoning_effort: None,
+            provider_type: Some(provider_type),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        for (provider, model, endpoint) in [
+            (
+                ProviderType::Zhipu,
+                "glm-5.3",
+                "https://open.bigmodel.cn/api/paas/v4",
+            ),
+            (
+                ProviderType::Zhipu,
+                "glm-5.3-flash",
+                "https://open.bigmodel.cn/api/paas/v4",
+            ),
+            (
+                ProviderType::Zhipu,
+                "glm-5.3",
+                "https://api.z.ai/api/paas/v4",
+            ),
+            (
+                ProviderType::Zhipu,
+                "glm-5.3-flash",
+                "https://api.z.ai/api/paas/v4",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "ZHIPU/GLM-5.3",
+                "https://workspace123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            ),
+        ] {
+            let request = request_for(provider, model);
+            let config = endpoint_config(provider, endpoint);
+            let body = serde_json::to_value(build_request_body_with_config(
+                &request,
+                true,
+                Some(&config),
+            ))
+            .unwrap();
+            assert_eq!(body["thinking"]["type"], "enabled", "{model}");
+            assert_eq!(body["thinking"]["clear_thinking"], false, "{model}");
+            assert_eq!(body["reasoning_effort"], "max", "{model}");
+            assert_eq!(
+                body["messages"][1]["reasoning_content"], "full prior reasoning",
+                "{model}"
+            );
+            assert_eq!(body["tool_stream"], true, "{model}");
+            assert!(body.get("parallel_tool_calls").is_none(), "{model}");
+            assert_eq!(body["stop"], serde_json::json!(["first"]), "{model}");
+        }
+
+        for model in ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"] {
+            let request = request_for(ProviderType::OpenRouter, model);
+            let config = endpoint_config(ProviderType::OpenRouter, "https://openrouter.ai/api/v1");
+            let body = serde_json::to_value(build_request_body_with_config(
+                &request,
+                true,
+                Some(&config),
+            ))
+            .unwrap();
+            assert_eq!(body["reasoning"]["effort"], "max", "{model}");
+            assert!(body.get("thinking").is_none(), "{model}");
+            assert!(body.get("tool_stream").is_none(), "{model}");
+            assert!(body.get("parallel_tool_calls").is_none(), "{model}");
+            assert!(body.get("stop").is_none(), "{model}");
+        }
+    }
+
+    #[test]
+    fn glm53_wire_extras_do_not_leak_to_edited_untrusted_endpoints() {
+        let request_for = |provider_type: ProviderType, model: &str| CompletionRequest {
+            model: model.to_string(),
+            messages: vec![Message::text(Role::User, "hello")],
+            temperature: Some(0.4),
+            max_tokens: Some(100),
+            tools: Some(vec![ToolDefinition {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]),
+            stop: Some(vec!["first".into(), "second".into()]),
+            thinking_budget: None,
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::High),
+            provider_type: Some(provider_type),
+            routing_session_id: None,
+            parallel_tool_calls: true,
+        };
+
+        for (provider, model, endpoint) in [
+            (
+                ProviderType::Zhipu,
+                "glm-5.3",
+                "https://open.bigmodel.cn.evil.example/api/paas/v4",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "ZHIPU/GLM-5.3",
+                "https://workspace123.cn-beijing.maas.aliyuncs.com.evil.example/compatible-mode/v1",
+            ),
+            (
+                ProviderType::OpenRouter,
+                "z-ai/glm-5.3",
+                "https://openrouter.example.com/api/v1",
+            ),
+            (
+                ProviderType::Qwen,
+                "ZHIPU/GLM-5.3",
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "ZHIPU/GLM-5.3",
+                "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            ),
+            (
+                ProviderType::AlibabaModelStudio,
+                "ZHIPU/GLM-5.3",
+                "https://workspace123.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+            ),
+        ] {
+            let request = request_for(provider, model);
+            let config = endpoint_config(provider, endpoint);
+            let body = serde_json::to_value(build_request_body_with_config(
+                &request,
+                true,
+                Some(&config),
+            ))
+            .unwrap();
+            assert!(body.get("thinking").is_none(), "{endpoint}");
+            assert!(body.get("reasoning").is_none(), "{endpoint}");
+            assert!(body.get("reasoning_effort").is_none(), "{endpoint}");
+            assert!(body.get("tool_stream").is_none(), "{endpoint}");
+            assert_eq!(body["parallel_tool_calls"], true, "{endpoint}");
+            assert_eq!(
+                body["stop"],
+                serde_json::json!(["first", "second"]),
+                "{endpoint}"
+            );
+        }
     }
 
     #[test]

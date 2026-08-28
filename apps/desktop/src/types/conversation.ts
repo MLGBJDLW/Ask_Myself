@@ -811,6 +811,8 @@ export interface UsageSnapshot {
   cacheMissTokens: number;
   cacheCreationTokens: number;
   lastPromptTokens: number;
+  contextCapacity?: number | null;
+  contextAuthority?: 'user_override' | 'catalog' | 'model_profile' | 'provider_managed' | null;
   contextBreakdown?: ContextUsageBreakdown;
   providerRaw: unknown;
 }

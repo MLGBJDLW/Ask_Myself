@@ -191,6 +191,11 @@ pub(super) struct ToolDispatchSummary {
     pub(super) artifacts: Option<serde_json::Value>,
 }
 
+pub(super) struct ToolDispatchOutcome {
+    pub(super) summaries: Vec<ToolDispatchSummary>,
+    pub(super) terminal_loop_guard_reason: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum ToolDispatchBlock {
     LoopGuard(String),
@@ -218,7 +223,7 @@ impl AgentExecutor {
         tool_dispatch_block: Option<ToolDispatchBlock>,
         started_call_ids: &mut HashSet<String>,
         tool_run_started_ids: &mut HashSet<String>,
-    ) -> Result<Vec<ToolDispatchSummary>, CoreError> {
+    ) -> Result<ToolDispatchOutcome, CoreError> {
         let tool_calls = verified_tool_calls.as_slice();
         let ToolDispatchContext {
             db,
@@ -367,6 +372,7 @@ impl AgentExecutor {
         let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
             vec![None; tool_calls.len()];
         let mut post_tool_loop_guard_prompt: Option<String> = None;
+        let mut terminal_loop_guard_reason: Option<String> = None;
         let mut interaction_barrier_reached = false;
 
         for tool_batch in tool_batches {
@@ -1034,7 +1040,10 @@ impl AgentExecutor {
                         let (max_definitions, max_tool_tokens) =
                             prompt_layout::cache_stable_tool_surface_limits(
                                 model,
-                                self.config.context_window,
+                                self.config
+                                    .context_window_resolution
+                                    .and_then(|resolved| resolved.capacity_tokens)
+                                    .or(self.config.context_window),
                                 self.config.max_tokens.unwrap_or(4096),
                             );
                         tool_discovery::activate_tool_search_matches_bounded(
@@ -1125,19 +1134,24 @@ impl AgentExecutor {
                     };
                     loop_recorder.record(event.clone());
                     append_persisted_trace_loop_event(persisted_trace_items, event);
+                    let terminal = intervention.action == LoopGuardAction::StopLoop;
                     append_developer_persisted_trace_status(
                         persisted_trace_items,
                         &intervention.reason,
-                        "warning",
+                        if terminal { "error" } else { "warning" },
                     );
                     let _ = tx
                         .send(AgentEvent::ControllerStatus {
                             code: "loop_guard_intervention".to_string(),
                             content: intervention.reason.clone(),
-                            tone: Some("warning".to_string()),
+                            tone: Some(if terminal { "error" } else { "warning" }.to_string()),
                         })
                         .await;
-                    post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
+                    if terminal {
+                        terminal_loop_guard_reason.get_or_insert(intervention.reason);
+                    } else {
+                        post_tool_loop_guard_prompt.get_or_insert(intervention.prompt);
+                    }
                 }
                 if advance_task_plan_for_tool_result(task_plan, &tc.name, tool_is_error) {
                     emit_task_plan_update(
@@ -1334,7 +1348,10 @@ impl AgentExecutor {
                 messages.push(message);
             }
         }
-        Ok(summaries)
+        Ok(ToolDispatchOutcome {
+            summaries,
+            terminal_loop_guard_reason,
+        })
     }
 }
 

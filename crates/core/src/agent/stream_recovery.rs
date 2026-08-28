@@ -7,7 +7,7 @@ pub(super) const MAX_STREAM_DISCONNECT_RETRIES: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StreamRecoveryDecision {
-    StopAfterVisibleOutput {
+    StopAfterReplayBarrier {
         user_message: String,
         trace_message: String,
     },
@@ -169,14 +169,14 @@ impl StreamRecoveryPolicy {
         self,
         force_non_streaming: bool,
         completed_retries: u32,
-        visible_output: bool,
+        replay_barrier_crossed: bool,
         detail: &str,
     ) -> StreamRecoveryDecision {
-        if visible_output {
-            return StreamRecoveryDecision::StopAfterVisibleOutput {
-                user_message: "The provider connection ended after output was already shown. The partial response was kept, and Nexa did not resend the request to avoid duplicate answers or tool execution.".to_string(),
+        if replay_barrier_crossed {
+            return StreamRecoveryDecision::StopAfterReplayBarrier {
+                user_message: "The provider connection ended after a provider-hosted action had already started. Nexa kept the partial trace and did not replay the request because the remote action may have side effects.".to_string(),
                 trace_message: format!(
-                    "provider stream interrupted after visible output; retry suppressed: {detail}"
+                    "provider stream interrupted after irreversible hosted action; retry suppressed: {detail}"
                 ),
             };
         }
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_output_irreversibly_disables_transport_replay() {
+    fn provider_hosted_action_irreversibly_disables_transport_replay() {
         let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
             false,
             0,
@@ -243,8 +243,23 @@ mod tests {
 
         assert!(matches!(
             decision,
-            StreamRecoveryDecision::StopAfterVisibleOutput { ref trace_message, .. }
+            StreamRecoveryDecision::StopAfterReplayBarrier { ref trace_message, .. }
                 if trace_message.contains("retry suppressed")
+        ));
+    }
+
+    #[test]
+    fn resettable_draft_output_keeps_transport_replay_available() {
+        let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
+            false,
+            0,
+            false,
+            "connection closed after draft tool arguments",
+        );
+
+        assert!(matches!(
+            decision,
+            StreamRecoveryDecision::Reconnect { attempt: 1, .. }
         ));
     }
 

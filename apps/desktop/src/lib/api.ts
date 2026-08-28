@@ -124,12 +124,14 @@ import type {
   TaskOrchestratorDeliveryEnvelope,
   TaskOrchestratorExecutionTicket,
   TaskOrchestratorWorkflowLaunch,
+  TaskOrchestratorWorkflowStartOutcome,
   TaskResumeCheckpoint,
   TaskResumePrompt,
   WorkflowAutomation,
   WorkflowAutomationDueRun,
   WorkflowAutomationRun,
   WorkflowAutomationSchedulerEvent,
+  WorkflowSchedulePreview,
 } from "../types/workflows";
 import type {
   DreamArtifact,
@@ -144,7 +146,6 @@ import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
 import {
   buildAgentChatRequest,
   type AgentChatRequestInput,
-  type AgentExecutionMode,
 } from "./agentChatRequest";
 
 export type {
@@ -941,8 +942,13 @@ export const listProviderPresets = () =>
 export const listWorkflowTemplates = () =>
   invoke<WorkflowCatalogTemplate[]>('list_workflow_templates_cmd');
 
-export const saveWorkflowAutomation = (input: SaveWorkflowAutomationInput) =>
-  invoke<WorkflowAutomation>('save_workflow_automation_cmd', { input });
+export const saveWorkflowAutomation = (input: SaveWorkflowAutomationInput) => {
+  const { scheduleConfig, ...coreInput } = input;
+  return invoke<WorkflowAutomation>('save_workflow_automation_cmd', {
+    input: coreInput,
+    scheduleConfig: scheduleConfig ?? null,
+  });
+};
 
 export const listWorkflowAutomations = () =>
   invoke<WorkflowAutomation[]>('list_workflow_automations_cmd');
@@ -959,6 +965,18 @@ export const listDueWorkflowAutomations = (now?: string | null) =>
 export const previewWorkflowAutomationPrompt = (id: string) =>
   invoke<string>('preview_workflow_automation_prompt_cmd', { id });
 
+export const previewWorkflowAutomationSchedule = (
+  cron: string,
+  timezone: string,
+  after?: string | null,
+  limit = 5,
+) => invoke<WorkflowSchedulePreview>('preview_workflow_automation_schedule_cmd', {
+  cron,
+  timezone,
+  after: after ?? null,
+  limit,
+});
+
 export const prepareWorkflowAutomationDelivery = (id: string) =>
   invoke<TaskOrchestratorDeliveryEnvelope>('prepare_workflow_automation_delivery_cmd', { id });
 
@@ -973,6 +991,16 @@ export const queueWorkflowAutomationDelivery = (id: string, summary?: string | n
     id,
     summary: summary ?? null,
   });
+
+export const startWorkflowAutomationRun = (
+  id: string,
+  conversationId?: string | null,
+  summary?: string | null,
+) => invoke<TaskOrchestratorWorkflowStartOutcome>('start_workflow_automation_run_cmd', {
+  id,
+  conversationId: conversationId ?? null,
+  summary: summary ?? null,
+});
 
 export const queueDueWorkflowAutomationDelivery = (
   id: string,
@@ -989,22 +1017,28 @@ export const startDueWorkflowAutomationRun = (
   id: string,
   now?: string | null,
   conversationId?: string | null,
-  agentConfigId?: string | null,
-  personaId?: string | null,
-  skillIds?: string[] | null,
-  executionMode?: AgentExecutionMode | null,
   summary?: string | null,
 ) =>
-  invoke<TaskOrchestratorWorkflowLaunch>('start_due_workflow_automation_run_cmd', {
+  invoke<TaskOrchestratorWorkflowStartOutcome>('start_due_workflow_automation_run_cmd', {
     id,
     now: now ?? null,
     conversationId: conversationId ?? null,
-    agentConfigId: agentConfigId ?? null,
-    personaId: personaId ?? null,
-    skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
-    executionMode: executionMode ?? null,
     summary: summary ?? null,
   });
+
+export const listWorkflowAutomationApprovals = () =>
+  invoke<WorkflowAutomationRun[]>('list_workflow_automation_approvals_cmd');
+
+export const approveWorkflowAutomationRun = (
+  runId: string,
+  conversationId?: string | null,
+) => invoke<TaskOrchestratorWorkflowLaunch>('approve_workflow_automation_run_cmd', {
+  runId,
+  conversationId: conversationId ?? null,
+});
+
+export const denyWorkflowAutomationRun = (runId: string) =>
+  invoke<WorkflowAutomationRun>('deny_workflow_automation_run_cmd', { runId });
 
 export const recordWorkflowAutomationRun = (
   automationId: string,
@@ -1684,8 +1718,26 @@ export const agentSteer = (conversationId: string, message: string) =>
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
 
-export const getModelContextWindow = (model: string) =>
-  invoke<number>('get_model_context_window', { model });
+export type ContextWindowAuthority =
+  | 'user_override'
+  | 'catalog'
+  | 'model_profile'
+  | 'provider_managed';
+
+export interface ModelContextWindowResolution {
+  capacityTokens: number | null;
+  authority: ContextWindowAuthority;
+}
+
+export const getModelContextWindowResolution = (
+  provider: string,
+  baseUrl: string | null | undefined,
+  model: string,
+) => invoke<ModelContextWindowResolution>('get_model_context_window_resolution', {
+  provider,
+  baseUrl: baseUrl ?? null,
+  model,
+});
 
 // ── Image Attachment ────────────────────────────────────────────────────
 

@@ -14,6 +14,7 @@ use crate::desktop_agent_session::{
     DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
     DesktopRunningAgentStopRequest,
 };
+use nexa_core::approval::ToolApprovalMode;
 use nexa_core::llm::ReasoningEffort;
 use nexa_core::mixture_of_agents::{
     AgentCollaborationMode, MoaAdvisor, MoaPreset, MoaPresetId, MoaProvider,
@@ -146,6 +147,12 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub message: String,
     pub attachments: Option<Vec<ImageAttachment>>,
     pub agent_config_id: Option<String>,
+    /// Host-validated per-turn config projection (for example, a scheduled
+    /// execution policy). It is never persisted back to the saved config.
+    pub agent_config_override: Option<DbAgentConfig>,
+    /// When true, the override is the immutable route authority for this run;
+    /// Capability Registry may not silently replace its provider or model.
+    pub agent_config_override_is_authoritative: bool,
     pub persona_id: Option<String>,
     pub skill_ids: Option<Vec<String>>,
     pub execution_mode: Option<String>,
@@ -156,10 +163,20 @@ pub(super) struct DesktopAgentChatLaunchRequest<'a> {
     pub custom_orchestration: Option<CustomOrchestrationOptions>,
     pub vision_turn_override: Option<VisionTurnOverride>,
     pub user_artifacts: Option<serde_json::Value>,
+    pub root_allowed_tools: Option<Vec<String>>,
+    /// Host-authorized per-run grant. Scheduled workflows use AllowAll only
+    /// after the registry has been narrowed to their immutable saved allowlist;
+    /// hard screen/computer/browser confirmations remain non-bypassable.
+    pub tool_approval_mode_override: Option<ToolApprovalMode>,
+    pub force_workspace_isolation: bool,
     pub task_orchestrator_run_id: Option<String>,
     pub resume_checkpoint_id: Option<String>,
     pub retry_from_message_id: Option<String>,
     pub idempotency_key: String,
+}
+
+fn capability_registry_may_select_text_route(agent_config_override_is_authoritative: bool) -> bool {
+    !agent_config_override_is_authoritative
 }
 
 struct InteractionSubmissionArtifact {
@@ -283,6 +300,8 @@ pub async fn agent_chat_cmd(
         message: request.message,
         attachments: Some(request.attachments),
         agent_config_id: request.agent_config_id,
+        agent_config_override: None,
+        agent_config_override_is_authoritative: false,
         persona_id: request.persona_id,
         skill_ids: Some(request.skill_ids),
         execution_mode: Some(request.execution_mode.as_str().to_string()),
@@ -293,6 +312,9 @@ pub async fn agent_chat_cmd(
         custom_orchestration: request.custom_orchestration,
         vision_turn_override: request.vision_turn_override,
         user_artifacts: request.user_artifacts,
+        root_allowed_tools: None,
+        tool_approval_mode_override: None,
+        force_workspace_isolation: false,
         task_orchestrator_run_id: request.task_orchestrator_run_id,
         resume_checkpoint_id: request.resume_checkpoint_id,
         retry_from_message_id: request.retry_from_message_id,
@@ -356,6 +378,8 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         message,
         attachments,
         agent_config_id,
+        agent_config_override,
+        agent_config_override_is_authoritative,
         persona_id,
         skill_ids,
         execution_mode,
@@ -366,6 +390,9 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         custom_orchestration,
         vision_turn_override,
         user_artifacts,
+        root_allowed_tools,
+        tool_approval_mode_override,
+        force_workspace_isolation,
         task_orchestrator_run_id,
         resume_checkpoint_id,
         retry_from_message_id,
@@ -427,8 +454,22 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     )?;
 
     // 2. Resolve the best matching agent config for this conversation.
-    let db_config =
-        select_agent_config_for_conversation(&state.db, &conv, agent_config_id.as_deref())?;
+    if agent_config_override_is_authoritative && agent_config_override.is_none() {
+        return Err(
+            "An authoritative per-turn config requires an agent config override.".to_string(),
+        );
+    }
+    let db_config = if let Some(config_override) = agent_config_override {
+        if agent_config_id
+            .as_deref()
+            .is_some_and(|requested_id| requested_id != config_override.id)
+        {
+            return Err("Per-turn agent config override does not match agentConfigId.".to_string());
+        }
+        config_override
+    } else {
+        select_agent_config_for_conversation(&state.db, &conv, agent_config_id.as_deref())?
+    };
     if conv.provider != db_config.provider || conv.model != db_config.model {
         state
             .db
@@ -481,7 +522,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             .get_workflow_automation_run(run_id)
             .map_err(|err| err.to_string())?;
         let projected_status =
-            nexa_core::task_orchestrator::project_task_status(&workflow_run.status)
+            nexa_core::task_orchestrator::project_task_status(workflow_run.status.as_str())
                 .map_err(|err| err.to_string())?;
         let existing_launch = state
             .db
@@ -715,7 +756,8 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     }
                     Some(bound_run_id)
                         if bound_run_id == launch_record.run_id
-                            && workflow_run.status == "queued" =>
+                            && workflow_run.status
+                                == nexa_core::workflow_automation::WorkflowAutomationRunStatus::Queued =>
                     {
                         state
                             .db
@@ -921,15 +963,20 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 return Err("Agent execution cancelled during initialization.".to_string());
             }
 
-            let app_cfg = db.load_app_config().unwrap_or_default();
+            let mut app_cfg = db.load_app_config().unwrap_or_default();
+            if let Some(approval_mode) = tool_approval_mode_override {
+                app_cfg.tool_approval_mode = approval_mode;
+            }
             let registry_scope = nexa_core::capability_registry::RegistryScope {
                 workspace_id: conv.project_id.clone(),
                 agent_id: Some(db_config.id.clone()),
                 task_id: Some(task_run_id.clone()),
             };
             let mut effective_db_config = db_config.clone();
-            let registry_resolution = db
-                .resolve_or_pin_task_runtime_capability(
+            let registry_resolution = if capability_registry_may_select_text_route(
+                agent_config_override_is_authoritative,
+            ) {
+                db.resolve_or_pin_task_runtime_capability(
                     &registry_scope,
                     "text_generation",
                     &task_run_id,
@@ -938,7 +985,10 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     format!(
                         "Capability Registry resolution failed for run {task_run_id}; explicitly roll back the durable read mode before retrying: {error}"
                     )
-                })?;
+                })?
+            } else {
+                None
+            };
             let (
                 provider_config,
                 registry_fallback_plan,
@@ -1123,10 +1173,27 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 TurnLaunchStage::ContextBuildMs,
                 elapsed_millis(context_started),
             );
+            let context_resolution_payload = serde_json::json!({
+                "contextCapacity": desktop_turn_config.context_window_resolution.capacity_tokens,
+                "contextAuthority": desktop_turn_config.context_window_resolution.authority,
+            });
+            if let Err(error) = db.record_agent_task_run_event(
+                &task_run_id,
+                "telemetry",
+                "context_resolution",
+                Some("resolved"),
+                Some(&context_resolution_payload),
+            ) {
+                warn!("Failed to persist context resolution for {task_run_id}: {error}");
+            }
             let source_scope_ids = desktop_turn_config.source_scope_ids;
             let pinned_skill_ids = desktop_turn_config.pinned_skill_ids;
             let context_pack = desktop_turn_config.context_pack;
             let mut executor_config = desktop_turn_config.executor_config;
+            if force_workspace_isolation {
+                executor_config.request_kind =
+                    nexa_core::agent::AgentRequestKind::ScheduledIsolatedPatch;
+            }
             let summarization_provider = match resolve_desktop_summarization_provider_config(
                 db.as_ref(),
                 &effective_db_config,
@@ -1152,6 +1219,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     pinned_skill_ids: &pinned_skill_ids,
                     provider_config: provider_config.clone(),
                     executor_config: executor_config.clone(),
+                    root_allowed_tools: root_allowed_tools.clone(),
                     subagent_allowed_tools: effective_db_config.subagent_allowed_tools.clone(),
                     subagent_allowed_skill_ids: effective_db_config
                         .subagent_allowed_skill_ids
@@ -1565,10 +1633,10 @@ fn reconcile_pre_executor_launch_failure(
 #[cfg(test)]
 mod initialization_error_tests {
     use super::{
-        desktop_agent_chat_launch, initialization_frontend_message, interaction_run_stop_path,
-        launch_status_needs_executor, reconcile_initialization_terminal_barrier,
-        reconcile_pre_executor_launch_failure, reused_launch_needs_no_executor,
-        InteractionRunStopPath,
+        capability_registry_may_select_text_route, desktop_agent_chat_launch,
+        initialization_frontend_message, interaction_run_stop_path, launch_status_needs_executor,
+        reconcile_initialization_terminal_barrier, reconcile_pre_executor_launch_failure,
+        reused_launch_needs_no_executor, InteractionRunStopPath,
     };
     use nexa_core::conversation::{
         AgentTurnLaunchRecord, ConversationMessage, CreateConversationInput,
@@ -1580,6 +1648,12 @@ mod initialization_error_tests {
         SaveWorkflowAutomationInput, WorkflowAutomationApprovalPolicy, WorkflowAutomationTrigger,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn authoritative_scheduled_config_cannot_be_replaced_by_registry_resolution() {
+        assert!(!capability_registry_may_select_text_route(true));
+        assert!(capability_registry_may_select_text_route(false));
+    }
 
     #[tokio::test]
     async fn lifecycle_barrier_observes_pause_before_executor_spawn_decision() {
@@ -1770,7 +1844,7 @@ mod initialization_error_tests {
         let authoritative_orchestrator = db
             .get_workflow_automation_run(&orchestrator.id)
             .expect("workflow projection");
-        assert_eq!(authoritative_orchestrator.status, "cancelled");
+        assert_eq!(authoritative_orchestrator.status.as_str(), "cancelled");
         assert_eq!(
             authoritative_orchestrator.summary.as_deref(),
             Some("Stopped by user")
@@ -2171,8 +2245,17 @@ fn sync_conversation_goal_from_user_artifacts(
 // ── Model Context Window ─────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_model_context_window(model: String) -> u32 {
-    nexa_core::conversation::memory::model_context_window(&model)
+pub fn get_model_context_window_resolution(
+    provider: String,
+    base_url: Option<String>,
+    model: String,
+) -> nexa_core::conversation::memory::ResolvedContextWindow {
+    nexa_core::provider_catalog::resolve_endpoint_model_context_window(
+        &provider,
+        base_url.as_deref(),
+        &model,
+        None,
+    )
 }
 
 // ── Agent Steering Command ──────────────────────────────────────────────

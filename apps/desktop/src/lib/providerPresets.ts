@@ -67,6 +67,37 @@ function providerKeyForPresetLookup(provider: string, normalizedBaseUrl: string)
   return isLegacyQwenPayg ? "alibaba_model_studio" : provider;
 }
 
+function isAlibabaBeijingWorkspaceEndpoint(
+  provider: string,
+  normalizedBaseUrl: string,
+): boolean {
+  if (provider !== 'alibaba_model_studio' || !normalizedBaseUrl) return false;
+  try {
+    const url = new URL(normalizedBaseUrl);
+    if (
+      url.protocol !== 'https:' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname.replace(/\/+$/, '') !== '/compatible-mode/v1'
+    ) {
+      return false;
+    }
+    const suffix = '.cn-beijing.maas.aliyuncs.com';
+    const host = url.hostname.toLowerCase();
+    if (!host.endsWith(suffix)) return false;
+    const workspaceId = host.slice(0, -suffix.length);
+    return workspaceId.length > 0 &&
+      !workspaceId.includes('.') &&
+      workspaceId !== 'trial' &&
+      workspaceId !== 'token-plan';
+  } catch {
+    return false;
+  }
+}
+
 export function findProviderPreset(input: {
   provider: string;
   baseUrl?: string | null;
@@ -83,6 +114,12 @@ export function findProviderPreset(input: {
     );
     if (exactMatch) {
       return exactMatch;
+    }
+    // Alibaba recommends workspace-dedicated PAYG hosts in production. They
+    // share the Beijing model contract while credentials and cache identities
+    // remain bound to the exact workspace URL elsewhere.
+    if (isAlibabaBeijingWorkspaceEndpoint(lookupProvider, normalizedBaseUrl)) {
+      return PROVIDER_PRESETS.find((preset) => preset.id === 'alibaba-model-studio') ?? null;
     }
     // A configured endpoint is part of the capability identity. Familiar
     // provider labels or hosts must not make an edited endpoint inherit an

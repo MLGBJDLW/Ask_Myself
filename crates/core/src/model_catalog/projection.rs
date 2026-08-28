@@ -570,10 +570,15 @@ fn documentation_ref(provider_id: &str) -> Option<String> {
 
 fn infer_region(base_url: &str) -> String {
     let value = base_url.to_ascii_lowercase();
+    let is_z_ai_international = reqwest::Url::parse(base_url).ok().is_some_and(|url| {
+        url.scheme() == "https" && url.host_str().is_some_and(|host| host == "api.z.ai")
+    });
     if value.is_empty() || value.contains("localhost") || value.contains("127.0.0.1") {
         "local".into()
     } else if value.contains("dashscope-intl") {
         "ap-southeast-1".into()
+    } else if is_z_ai_international {
+        "international".into()
     } else if value.contains("dashscope") || value.contains("cn-beijing") {
         "cn-beijing".into()
     } else if value.contains("eastus") {
@@ -694,5 +699,18 @@ mod tests {
             &serde_json::json!({ "capabilities": { "vision": false } }),
         );
         assert!(!denied.vision);
+    }
+
+    #[test]
+    fn international_z_ai_region_requires_the_exact_https_host() {
+        assert_eq!(
+            infer_region("https://api.z.ai/api/paas/v4"),
+            "international"
+        );
+        assert_eq!(
+            infer_region("https://api.z.ai.evil.example/api/paas/v4"),
+            "global"
+        );
+        assert_eq!(infer_region("http://api.z.ai/api/paas/v4"), "global");
     }
 }

@@ -12,6 +12,47 @@ export interface WorkflowAutomationApprovalPolicy {
   riskLevel: string;
 }
 
+export type WorkflowScheduleMisfirePolicy = 'run_latest' | 'skip';
+export type WorkflowScheduleOverlapPolicy = 'skip' | 'allow';
+export type WorkflowScheduleWorkspacePolicy = 'deny_writes' | 'isolated_patch';
+
+export interface WorkflowAutomationExecutionPolicy {
+  projectId?: string | null;
+  workspacePolicy: WorkflowScheduleWorkspacePolicy;
+  sourceRootFingerprint?: string | null;
+  agentConfigId?: string | null;
+  provider?: string | null;
+  providerEndpointId?: string | null;
+  model?: string | null;
+  /** Null means use the provider/model route default. */
+  contextWindow?: number | null;
+  powerMode: 'standard' | 'nexus';
+  orchestrationProfile: string;
+  collaborationMode: string;
+  executionMode?: string | null;
+}
+
+export interface WorkflowAutomationScheduleConfig {
+  version: number;
+  timezone: string;
+  misfirePolicy: WorkflowScheduleMisfirePolicy;
+  misfireGraceSeconds: number;
+  overlapPolicy: WorkflowScheduleOverlapPolicy;
+  executionPolicy: WorkflowAutomationExecutionPolicy;
+  legacyNeedsReview: boolean;
+}
+
+export interface WorkflowScheduleOccurrencePreview {
+  scheduledFor: string;
+  localTime: string;
+}
+
+export interface WorkflowSchedulePreview {
+  cron: string;
+  timezone: string;
+  occurrences: WorkflowScheduleOccurrencePreview[];
+}
+
 export interface SaveWorkflowAutomationInput {
   id?: string | null;
   name: string;
@@ -21,6 +62,7 @@ export interface SaveWorkflowAutomationInput {
   trigger: WorkflowAutomationTrigger;
   sourceScope: string[];
   approvalPolicy: WorkflowAutomationApprovalPolicy;
+  scheduleConfig?: WorkflowAutomationScheduleConfig;
   enabled: boolean;
 }
 
@@ -34,6 +76,7 @@ export interface WorkflowAutomation {
   trigger: WorkflowAutomationTrigger;
   sourceScope: string[];
   approvalPolicy: WorkflowAutomationApprovalPolicy;
+  scheduleConfig: WorkflowAutomationScheduleConfig;
   enabled: boolean;
   status: string;
   lastRunAt?: string | null;
@@ -46,6 +89,8 @@ export interface WorkflowAutomationDueRun {
   automation: WorkflowAutomation;
   prompt: string;
   dueReason: string;
+  scheduledFor?: string | null;
+  origin: 'schedule' | 'manual_run_now';
 }
 
 export interface WorkflowAutomationRun {
@@ -54,6 +99,10 @@ export interface WorkflowAutomationRun {
   taskRunId?: string | null;
   status: string;
   summary?: string | null;
+  occurrenceId?: string | null;
+  scheduledFor?: string | null;
+  definitionRevision: number;
+  attempt: number;
   createdAt: string;
   finishedAt?: string | null;
 }
@@ -87,6 +136,11 @@ export interface TaskOrchestratorWorkflowLaunch {
   taskRunId: string;
   taskOrchestratorRunId: string;
 }
+
+export type TaskOrchestratorWorkflowStartOutcome =
+  | { status: 'launched'; launch: TaskOrchestratorWorkflowLaunch }
+  | { status: 'pending_approval'; run: WorkflowAutomationRun }
+  | { status: 'skipped'; reason: string };
 
 export interface TaskResumeCheckpoint {
   id: string;

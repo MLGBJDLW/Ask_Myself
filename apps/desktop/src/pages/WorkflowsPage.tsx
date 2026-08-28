@@ -24,7 +24,8 @@ import { toast } from 'sonner';
 import * as api from '../lib/api';
 import { useTranslation, type TranslationKey } from '../i18n';
 import { WorkflowRecorderPanel } from '../features/workflows/WorkflowRecorderPanel';
-import type { Source } from '../types';
+import type { AgentConfig, Source } from '../types';
+import type { Project } from '../types/project';
 import type { WorkflowCatalogTemplate } from '../lib/api';
 import { buildWorkflowBatchPrompt } from '../lib/workflowPrompts';
 import type {
@@ -34,9 +35,46 @@ import type {
   WorkflowAutomation,
   WorkflowAutomationTrigger,
   WorkflowAutomationDueRun,
+  WorkflowAutomationScheduleConfig,
+  WorkflowAutomationRun,
+  WorkflowSchedulePreview,
+  TaskOrchestratorWorkflowStartOutcome,
 } from '../types/workflows';
 
 type Tab = 'templates' | 'automations' | 'recorder' | 'governance' | 'browser';
+
+function detectedTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+function defaultScheduleConfig(): WorkflowAutomationScheduleConfig {
+  return {
+    version: 2,
+    timezone: detectedTimezone(),
+    misfirePolicy: 'run_latest',
+    misfireGraceSeconds: 300,
+    overlapPolicy: 'skip',
+      executionPolicy: {
+        projectId: null,
+        workspacePolicy: 'deny_writes',
+        sourceRootFingerprint: null,
+        agentConfigId: null,
+      provider: null,
+      providerEndpointId: null,
+      model: null,
+      contextWindow: null,
+      powerMode: 'standard',
+      orchestrationProfile: 'balanced',
+      collaborationMode: 'direct',
+      executionMode: null,
+    },
+    legacyNeedsReview: false,
+  };
+}
 
 const emptyForm: SaveWorkflowAutomationInput = {
   id: null,
@@ -51,6 +89,7 @@ const emptyForm: SaveWorkflowAutomationInput = {
     allowedTools: [],
     riskLevel: 'medium',
   },
+  scheduleConfig: defaultScheduleConfig(),
   enabled: true,
 };
 
@@ -96,6 +135,7 @@ function taskRoleLabel(roleId: string, fallback: string, tr: WorkflowT) {
 }
 
 function dueReasonLabel(item: WorkflowAutomationDueRun, tr: WorkflowT) {
+  if (item.origin === 'manual_run_now') return tr('manual');
   if (item.automation.trigger.kind === 'folder') return tr('folderDueReason');
   return triggerLabel(item.automation.trigger, tr);
 }
@@ -173,34 +213,58 @@ export function WorkflowsPage() {
   const [templates, setTemplates] = useState<WorkflowCatalogTemplate[]>([]);
   const [automations, setAutomations] = useState<WorkflowAutomation[]>([]);
   const [dueRuns, setDueRuns] = useState<WorkflowAutomationDueRun[]>([]);
+  const [approvalRuns, setApprovalRuns] = useState<WorkflowAutomationRun[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
+  const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [governance, setGovernance] = useState<LearningGovernanceSnapshot | null>(null);
   const [form, setForm] = useState<SaveWorkflowAutomationInput>(emptyForm);
   const [browserUrl, setBrowserUrl] = useState('');
   const [browserMode, setBrowserMode] = useState('auto');
   const [capture, setCapture] = useState<BrowserEvidenceCapture | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [schedulePreview, setSchedulePreview] = useState<WorkflowSchedulePreview | null>(null);
+  const [schedulePreviewError, setSchedulePreviewError] = useState<string | null>(null);
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === form.workflowTemplateId) ?? templates[0],
     [form.workflowTemplateId, templates],
   );
+  const scheduleConfig = form.scheduleConfig ?? defaultScheduleConfig();
+  const approvalRunsByAutomation = useMemo(() => {
+    const grouped = new Map<string, WorkflowAutomationRun[]>();
+    for (const run of approvalRuns) {
+      const existing = grouped.get(run.automationId) ?? [];
+      existing.push(run);
+      grouped.set(run.automationId, existing);
+    }
+    for (const runs of grouped.values()) {
+      runs.sort((left, right) => (left.scheduledFor ?? '').localeCompare(right.scheduledFor ?? '') || left.id.localeCompare(right.id));
+    }
+    return grouped;
+  }, [approvalRuns]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [templateItems, automationItems, dueItems, sourceItems, governanceSnapshot] = await Promise.all([
+      const [templateItems, automationItems, dueItems, approvalItems, sourceItems, governanceSnapshot, configItems, projectItems] = await Promise.all([
         api.listWorkflowTemplates(),
         api.listWorkflowAutomations(),
         api.listDueWorkflowAutomations(),
+        api.listWorkflowAutomationApprovals(),
         api.listSources(),
         api.getLearningGovernanceSnapshot(),
+        api.listAgentConfigs(),
+        api.listProjects(),
       ]);
       setTemplates(templateItems);
       setAutomations(automationItems);
       setDueRuns(dueItems);
+      setApprovalRuns(approvalItems);
       setSources(sourceItems);
       setGovernance(governanceSnapshot);
+      setAgentConfigs(configItems);
+      setProjects(projectItems);
       setForm((current) => ({
         ...current,
         workflowTemplateId: current.workflowTemplateId || templateItems[0]?.id || 'report_brief',
@@ -215,6 +279,28 @@ export function WorkflowsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (form.trigger.kind !== 'schedule') {
+      setSchedulePreview(null);
+      setSchedulePreviewError(null);
+      return;
+    }
+    const scheduleConfig = form.scheduleConfig ?? defaultScheduleConfig();
+    const timer = window.setTimeout(() => {
+      void api.previewWorkflowAutomationSchedule(
+        form.trigger.kind === 'schedule' ? form.trigger.cron : '',
+        scheduleConfig.timezone,
+      ).then((preview) => {
+        setSchedulePreview(preview);
+        setSchedulePreviewError(null);
+      }).catch((error) => {
+        setSchedulePreview(null);
+        setSchedulePreviewError(String(error));
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [form.scheduleConfig, form.trigger]);
 
   const runPrompt = useCallback((
     prompt: string,
@@ -237,28 +323,74 @@ export function WorkflowsPage() {
   const runAutomation = useCallback(async (automation: WorkflowAutomation) => {
     setBusy(automation.id);
     try {
-      const ticket = await api.queueWorkflowAutomationDelivery(automation.id, tr('queuedFromWorkbench'));
-      const delivery = ticket.delivery;
-      runPrompt(delivery.prompt, delivery.queueItem.ownership.sourceScope, ticket.run.runId);
+      const outcome = await api.startWorkflowAutomationRun(
+        automation.id,
+        null,
+        tr('queuedFromWorkbench'),
+      );
+      if (outcome.status === 'launched') {
+        navigate(`/chat/${outcome.launch.conversationId}`);
+      } else if (outcome.status === 'pending_approval') {
+        toast.success(tr('pendingApproval'));
+        await load();
+      } else {
+        toast.error(outcome.reason);
+        await load();
+      }
     } catch (error) {
       toast.error(String(error));
     } finally {
       setBusy(null);
     }
-  }, [runPrompt, tr]);
+  }, [load, navigate, tr]);
 
   const runDueAutomation = useCallback(async (item: WorkflowAutomationDueRun) => {
     setBusy(item.automation.id);
     try {
-      const ticket = await api.queueDueWorkflowAutomationDelivery(item.automation.id);
-      const delivery = ticket.delivery;
-      runPrompt(delivery.prompt, delivery.queueItem.ownership.sourceScope, ticket.run.runId);
+      const outcome: TaskOrchestratorWorkflowStartOutcome =
+        await api.startDueWorkflowAutomationRun(item.automation.id);
+      if (outcome.status === 'launched') {
+        navigate(`/chat/${outcome.launch.conversationId}`);
+      } else if (outcome.status === 'pending_approval') {
+        toast.success(tr('pendingApproval'));
+        await load();
+      } else {
+        toast.error(outcome.reason);
+        await load();
+      }
     } catch (error) {
       toast.error(String(error));
     } finally {
       setBusy(null);
     }
-  }, [runPrompt]);
+  }, [load, navigate, tr]);
+
+  const approveAutomationRun = useCallback(async (run: WorkflowAutomationRun) => {
+    setBusy(run.id);
+    try {
+      const launch = await api.approveWorkflowAutomationRun(run.id);
+      toast.success(tr('approvalQueued'));
+      navigate(`/chat/${launch.conversationId}`);
+    } catch (error) {
+      toast.error(String(error));
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load, navigate, tr]);
+
+  const denyAutomationRun = useCallback(async (run: WorkflowAutomationRun) => {
+    setBusy(run.id);
+    try {
+      await api.denyWorkflowAutomationRun(run.id);
+      toast.success(tr('approvalDenied'));
+      await load();
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setBusy(null);
+    }
+  }, [load, tr]);
 
   const editAutomation = useCallback((automation: WorkflowAutomation) => {
     setForm({
@@ -270,6 +402,11 @@ export function WorkflowsPage() {
       trigger: automation.trigger,
       sourceScope: automation.sourceScope,
       approvalPolicy: automation.approvalPolicy,
+      scheduleConfig: {
+        ...automation.scheduleConfig,
+        version: 2,
+        legacyNeedsReview: false,
+      },
       enabled: automation.enabled,
     });
     setTab('automations');
@@ -294,6 +431,13 @@ export function WorkflowsPage() {
     }
     setBusy('save');
     try {
+      if (form.trigger.kind === 'schedule') {
+        const scheduleConfig = form.scheduleConfig ?? defaultScheduleConfig();
+        await api.previewWorkflowAutomationSchedule(
+          form.trigger.cron,
+          scheduleConfig.timezone,
+        );
+      }
       await api.saveWorkflowAutomation({ ...form, prompt: effectivePrompt });
       setForm(emptyForm);
       await load();
@@ -470,6 +614,7 @@ export function WorkflowsPage() {
                         <button
                           key={id}
                           type="button"
+                          aria-label={label}
                           onClick={() => updateTriggerKind(id as WorkflowAutomationTrigger['kind'])}
                           className={`h-8 rounded-md text-xs transition-colors ${form.trigger.kind === id ? 'bg-accent-subtle text-accent' : 'text-text-secondary hover:bg-surface-2'}`}
                         >
@@ -479,9 +624,162 @@ export function WorkflowsPage() {
                     </div>
                   </Field>
                   {form.trigger.kind === 'schedule' && (
-                    <Field label={tr('cron')}>
-                      <input className={textInputClass()} value={form.trigger.cron} onChange={(event) => setForm({ ...form, trigger: { kind: 'schedule', cron: event.target.value } })} />
-                    </Field>
+                    <div className="space-y-3 rounded-md border border-border/70 bg-surface-0/50 p-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label={tr('cron')}>
+                          <input className={textInputClass()} value={form.trigger.cron} onChange={(event) => setForm({ ...form, trigger: { kind: 'schedule', cron: event.target.value } })} />
+                        </Field>
+                        <Field label={tr('timezone')}>
+                          <input
+                            className={textInputClass()}
+                            value={scheduleConfig.timezone}
+                            onChange={(event) => setForm({
+                              ...form,
+                              scheduleConfig: { ...scheduleConfig, timezone: event.target.value },
+                            })}
+                            placeholder="Asia/Shanghai"
+                          />
+                        </Field>
+                      </div>
+                      <p className="text-[11px] leading-5 text-text-tertiary">{tr('cronHelp')}</p>
+                      {schedulePreviewError ? (
+                        <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+                          {schedulePreviewError}
+                        </div>
+                      ) : schedulePreview && (
+                        <div className="rounded-md border border-border/60 bg-surface-1 px-3 py-2">
+                          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-tertiary">{tr('nextOccurrences')}</div>
+                          <ol className="mt-1 grid gap-1 text-xs text-text-secondary sm:grid-cols-2">
+                            {schedulePreview.occurrences.map((occurrence) => (
+                              <li key={occurrence.scheduledFor}>{occurrence.localTime}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label={tr('misfirePolicy')}>
+                          <NexaSelect className={textInputClass()} value={scheduleConfig.misfirePolicy} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: { ...scheduleConfig, misfirePolicy: event.target.value as WorkflowAutomationScheduleConfig['misfirePolicy'] },
+                          })}>
+                            <option value="run_latest">{tr('misfireRunLatest')}</option>
+                            <option value="skip">{tr('misfireSkip')}</option>
+                          </NexaSelect>
+                        </Field>
+                        <Field label={tr('overlapPolicy')}>
+                          <NexaSelect className={textInputClass()} value={scheduleConfig.overlapPolicy} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: { ...scheduleConfig, overlapPolicy: event.target.value as WorkflowAutomationScheduleConfig['overlapPolicy'] },
+                          })}>
+                            <option value="skip">{tr('overlapSkip')}</option>
+                            <option value="allow">{tr('overlapAllow')}</option>
+                          </NexaSelect>
+                        </Field>
+                      </div>
+                      <Field label={tr('workspacePolicy')}>
+                        <NexaSelect className={textInputClass()} value={scheduleConfig.executionPolicy.workspacePolicy} onChange={(event) => {
+                          const isolated = event.target.value === 'isolated_patch';
+                          setForm({
+                            ...form,
+                            scheduleConfig: {
+                              ...scheduleConfig,
+                              overlapPolicy: isolated ? 'skip' : scheduleConfig.overlapPolicy,
+                              executionPolicy: {
+                                ...scheduleConfig.executionPolicy,
+                                workspacePolicy: isolated ? 'isolated_patch' : 'deny_writes',
+                                sourceRootFingerprint: null,
+                                orchestrationProfile: isolated ? 'codeUltra' : scheduleConfig.executionPolicy.orchestrationProfile,
+                                executionMode: isolated ? null : scheduleConfig.executionPolicy.executionMode,
+                              },
+                            },
+                          });
+                        }}>
+                          <option value="deny_writes">{tr('workspaceDenyWrites')}</option>
+                          <option value="isolated_patch">{tr('workspaceIsolatedPatch')}</option>
+                        </NexaSelect>
+                      </Field>
+                      {scheduleConfig.executionPolicy.workspacePolicy === 'isolated_patch' && (
+                        <div className="rounded-md border border-accent/25 bg-accent/8 px-3 py-2 text-xs leading-5 text-text-secondary">
+                          {tr('workspaceIsolatedHelp')}
+                        </div>
+                      )}
+                      <Field label={tr('project')}>
+                        <NexaSelect className={textInputClass()} value={scheduleConfig.executionPolicy.projectId ?? ''} onChange={(event) => setForm({
+                          ...form,
+                          scheduleConfig: {
+                            ...scheduleConfig,
+                            executionPolicy: {
+                              ...scheduleConfig.executionPolicy,
+                              projectId: event.target.value || null,
+                            },
+                          },
+                        })}>
+                          <option value="">{tr('projectNone')}</option>
+                          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                        </NexaSelect>
+                      </Field>
+                      <Field label={tr('agentConfig')}>
+                        <NexaSelect className={textInputClass()} value={scheduleConfig.executionPolicy.agentConfigId ?? ''} onChange={(event) => {
+                          const selected = agentConfigs.find((config) => config.id === event.target.value);
+                          setForm({
+                            ...form,
+                            scheduleConfig: {
+                              ...scheduleConfig,
+                              executionPolicy: {
+                                ...scheduleConfig.executionPolicy,
+                                agentConfigId: selected?.id ?? null,
+                                provider: selected?.provider ?? null,
+                                providerEndpointId: selected?.providerEndpointId ?? null,
+                                model: selected?.model ?? null,
+                                contextWindow: null,
+                              },
+                            },
+                          });
+                        }}>
+                          <option value="">{tr('agentConfigDefault')}</option>
+                          {agentConfigs.map((config) => <option key={config.id} value={config.id}>{config.name} · {config.model}</option>)}
+                        </NexaSelect>
+                      </Field>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label={tr('model')}>
+                          <input className={textInputClass()} value={scheduleConfig.executionPolicy.model ?? ''} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: { ...scheduleConfig, executionPolicy: { ...scheduleConfig.executionPolicy, model: event.target.value || null } },
+                          })} placeholder={tr('providerDefault')} />
+                        </Field>
+                        <Field label={tr('contextWindow')}>
+                          <input type="number" min={1024} className={textInputClass()} value={scheduleConfig.executionPolicy.contextWindow ?? ''} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: {
+                              ...scheduleConfig,
+                              executionPolicy: { ...scheduleConfig.executionPolicy, contextWindow: event.target.value ? Number(event.target.value) : null },
+                            },
+                          })} placeholder={tr('providerDefault')} />
+                        </Field>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label={tr('powerMode')}>
+                          <NexaSelect className={textInputClass()} value={scheduleConfig.executionPolicy.powerMode} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: { ...scheduleConfig, executionPolicy: { ...scheduleConfig.executionPolicy, powerMode: event.target.value as 'standard' | 'nexus' } },
+                          })}>
+                            <option value="standard">Standard</option>
+                            <option value="nexus">Nexus</option>
+                          </NexaSelect>
+                        </Field>
+                        <Field label={tr('orchestrationProfile')}>
+                          <NexaSelect className={textInputClass()} value={scheduleConfig.executionPolicy.orchestrationProfile} onChange={(event) => setForm({
+                            ...form,
+                            scheduleConfig: { ...scheduleConfig, executionPolicy: { ...scheduleConfig.executionPolicy, orchestrationProfile: event.target.value } },
+                          })}>
+                            <option value="balanced">Balanced</option>
+                            <option value="deep">Deep</option>
+                            <option value="codeUltra">Code Ultra</option>
+                            <option value="researchUltra">Research Ultra</option>
+                          </NexaSelect>
+                        </Field>
+                      </div>
+                    </div>
                   )}
                   {form.trigger.kind === 'folder' && (
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -525,6 +823,11 @@ export function WorkflowsPage() {
                       {tr('approvalRequired')}
                     </label>
                   </div>
+                  {form.trigger.kind === 'schedule' && form.approvalPolicy.requireBeforeRun && (
+                    <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
+                      {tr('scheduledApprovalWarning')}
+                    </div>
+                  )}
                   <Field label={tr('allowedTools')}>
                     <input
                       className={textInputClass()}
@@ -548,7 +851,9 @@ export function WorkflowsPage() {
               </section>
 
               <section className="space-y-3">
-                {automations.map((automation) => (
+                {automations.map((automation) => {
+                  const pendingApprovals = approvalRunsByAutomation.get(automation.id) ?? [];
+                  return (
                   <article key={automation.id} className="rounded-lg border border-border/70 bg-surface-1 p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -565,11 +870,13 @@ export function WorkflowsPage() {
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-tertiary">
                           <span>{tr('nextRun')}: {formatTime(automation.nextRunAt)}</span>
                           <span>{tr('lastRun')}: {formatTime(automation.lastRunAt)}</span>
+                          {automation.trigger.kind === 'schedule' && <span>{automation.scheduleConfig.timezone}</span>}
+                          {automation.scheduleConfig.legacyNeedsReview && <span className="text-warning">{tr('legacyNeedsReview')}</span>}
                           <span>{automation.workflowTemplateId}</span>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Button disabled={busy === automation.id} onClick={() => void runAutomation(automation)} icon={<Play className="h-4 w-4" />}>{tr('run')}</Button>
+                        <Button disabled={busy === automation.id || pendingApprovals.length > 0} onClick={() => void runAutomation(automation)} icon={<Play className="h-4 w-4" />}>{tr('run')}</Button>
                         <Button onClick={() => editAutomation(automation)} icon={<ClipboardList className="h-4 w-4" />}>{tr('updateAutomation')}</Button>
                         <Button disabled={busy === automation.id} onClick={() => void toggleAutomation(automation)} icon={automation.enabled ? <PauseCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}>
                           {automation.enabled ? tr('disabled') : tr('enabled')}
@@ -577,8 +884,29 @@ export function WorkflowsPage() {
                         <Button variant="danger" disabled={busy === automation.id} onClick={() => void deleteAutomation(automation)} icon={<Trash2 className="h-4 w-4" />}>{tr('delete')}</Button>
                       </div>
                     </div>
+                    {pendingApprovals.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {pendingApprovals.map((pendingApproval) => (
+                          <div key={pendingApproval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/35 bg-warning/10 px-3 py-2">
+                            <div className="text-xs leading-5 text-warning">
+                              <div className="font-semibold">{tr('pendingApproval')}</div>
+                              <div>{formatTime(pendingApproval.scheduledFor)} · rev {pendingApproval.definitionRevision} · {tr('approvalAttempt', { count: pendingApproval.attempt })}</div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button variant="primary" disabled={busy === pendingApproval.id} onClick={() => void approveAutomationRun(pendingApproval)} icon={<ShieldCheck className="h-4 w-4" />}>
+                                {tr('approve')}
+                              </Button>
+                              <Button variant="danger" disabled={busy === pendingApproval.id} onClick={() => void denyAutomationRun(pendingApproval)} icon={<XCircle className="h-4 w-4" />}>
+                                {tr('deny')}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </article>
-                ))}
+                  );
+                })}
               </section>
             </div>
           )}

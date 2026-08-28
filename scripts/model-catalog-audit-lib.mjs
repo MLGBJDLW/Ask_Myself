@@ -63,6 +63,26 @@ export function compareEndpointModels(endpoint, liveModels) {
   return { newIds, missingIds, capabilityChanged, lifecycleChanged, regionChanged };
 }
 
+/** Check a small public availability contract without treating an intentionally
+ * curated provider catalog as an exhaustive mirror of every live model. */
+export function compareRequiredModelIds(requiredIds, liveModels) {
+  const liveIds = new Set((Array.isArray(liveModels) ? liveModels : [])
+    .map((model) => typeof model?.id === 'string' ? model.id.trim().toLowerCase() : '')
+    .filter(Boolean));
+  const missingIds = [...new Set((Array.isArray(requiredIds) ? requiredIds : [])
+    .map((id) => String(id).trim())
+    .filter(Boolean))]
+    .filter((id) => !liveIds.has(id.toLowerCase()))
+    .sort();
+  return {
+    newIds: [],
+    missingIds,
+    capabilityChanged: [],
+    lifecycleChanged: [],
+    regionChanged: [],
+  };
+}
+
 export function driftDetected(comparison) {
   return comparison.newIds.length > 0
     || comparison.missingIds.length > 0

@@ -2,6 +2,7 @@ import {
   attachModelDescriptors,
   catalogEndpointIdForSelection,
   endpointIdForSavedSelection,
+  inferModelCatalogRegion,
   isImplicitDefaultEligible,
   modelDescriptorFacts,
   normalizeModelEndpointUrl,
@@ -264,6 +265,105 @@ function testGlm53AndDeepSeekCurrentModelsExposeOfficialCapabilities(): void {
   assertEqual(rawReasoning?.mode, 'always', 'GLM-5.3 reasoning cannot be disabled');
   assertEqual(rawReasoning?.defaultEffort, 'max', 'GLM-5.3 should default to max effort');
 
+  const directFlash = models.find(candidate => candidate.id === 'glm-5.3-flash');
+  assert(directFlash, 'the direct GLM-5.3-Flash model should be listed');
+  assertEqual(directFlash.descriptor.limits.contextTokens, 1_000_000, 'direct Flash context');
+  assertEqual(directFlash.descriptor.limits.maxOutputTokens, 131_072, 'direct Flash output');
+  assert(directFlash.descriptor.inputModalities.includes('image'), 'direct Flash should accept images');
+  assert(
+    !directFlash.descriptor.inputModalities.includes('video'),
+    'catalog claims must stop at Nexa current text/image wire support',
+  );
+  assertEqual(directFlash.descriptor.capabilities.vision, true, 'direct Flash vision capability');
+
+  const zhipuInternational = findPreset('zhipu', 'https://api.z.ai/api/paas/v4');
+  assert(zhipuInternational, 'the international Z.ai Model API preset should exist');
+  assertEqual(zhipuInternational.id, 'zhipu-intl', 'international Z.ai endpoint identity');
+  assertEqual(
+    inferModelCatalogRegion(zhipuInternational.baseUrl),
+    'international',
+    'international Z.ai endpoint region',
+  );
+  assertEqual(
+    inferModelCatalogRegion('https://api.z.ai.evil.example/api/paas/v4'),
+    'global',
+    'edited lookalike endpoints must not inherit the Z.ai region',
+  );
+  assert(zhipuInternational.id !== zhipu.id, 'China and international presets must stay distinct');
+  const internationalModels = attachModelDescriptors(zhipuInternational.models, {
+    surface: 'text',
+    providerId: zhipuInternational.id,
+    endpointId: `text:${zhipuInternational.id}`,
+    apiStyle: 'openai_chat',
+  });
+  for (const [id, expectedVision] of [
+    ['glm-5.3', false],
+    ['glm-5.3-flash', true],
+  ] as const) {
+    const candidate = internationalModels.find(model => model.id === id);
+    assert(candidate, `${id} should be listed by the international Z.ai Model API`);
+    assertEqual(candidate.descriptor.regions.join(','), 'international', `${id} regional identity`);
+    assertEqual(candidate.descriptor.limits.contextTokens, 1_000_000, `${id} international context`);
+    assertEqual(candidate.descriptor.limits.maxOutputTokens, 131_072, `${id} international output`);
+    assertEqual(candidate.descriptor.capabilities.vision, expectedVision, `${id} international vision`);
+    assert(
+      !candidate.descriptor.inputModalities.includes('video')
+        && !candidate.descriptor.inputModalities.includes('file'),
+      `${id} must stop at Nexa current wire modalities`,
+    );
+  }
+
+  const openrouter = findPreset('openrouter', 'https://openrouter.ai/api/v1');
+  assert(openrouter, 'the OpenRouter preset should exist');
+  const openrouterModels = attachModelDescriptors(openrouter.models, {
+    surface: 'text',
+    providerId: openrouter.id,
+    endpointId: `text:${openrouter.id}`,
+    apiStyle: 'openai_chat',
+  });
+  for (const [id, expectedVision] of [
+    ['z-ai/glm-5.3', false],
+    ['z-ai/glm-5.3-flash', true],
+  ] as const) {
+    const candidate = openrouterModels.find(model => model.id === id);
+    assert(candidate, `${id} should be listed by OpenRouter`);
+    assertEqual(candidate.descriptor.limits.contextTokens, 1_048_576, `${id} safe route context`);
+    assertEqual(candidate.descriptor.limits.maxOutputTokens, 131_072, `${id} output`);
+    assertEqual(candidate.descriptor.capabilities.vision, expectedVision, `${id} vision`);
+    const candidateReasoning = candidate.capabilities?.reasoning as {
+      mode?: string;
+      effortLevels?: string[];
+    } | null | undefined;
+    assertEqual(candidateReasoning?.mode, 'always', `${id} mandatory reasoning`);
+    assertEqual(
+      candidateReasoning?.effortLevels?.join(','),
+      'low,high,max',
+      `${id} native efforts`,
+    );
+  }
+
+  const alibaba = findPreset(
+    'alibaba_model_studio',
+    'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  );
+  assert(alibaba, 'the Alibaba Model Studio PAYG preset should exist');
+  const alibabaModels = attachModelDescriptors(alibaba.models, {
+    surface: 'text',
+    providerId: alibaba.id,
+    endpointId: `text:${alibaba.id}`,
+    apiStyle: 'openai_chat',
+  });
+  const bailianGlm53 = alibabaModels.find(candidate => candidate.id === 'ZHIPU/GLM-5.3');
+  assert(bailianGlm53, 'Alibaba PAYG should expose the exact Zhipu direct-supply ID');
+  assertEqual(bailianGlm53.descriptor.access, 'account_enablement', 'Bailian model enablement');
+  assertEqual(bailianGlm53.descriptor.regions[0], 'cn-beijing', 'Bailian model region');
+  assertEqual(bailianGlm53.descriptor.limits.contextTokens, 1_048_576, 'Bailian context');
+  assertEqual(bailianGlm53.descriptor.limits.maxOutputTokens, 131_072, 'Bailian output');
+  assert(
+    bailianGlm53.descriptor.capabilities.structuredOutput !== true,
+    'conflicting Alibaba docs must not become a positive structured-output guarantee',
+  );
+
   const deepseek = findPreset('deep_seek', 'https://api.deepseek.com');
   assert(deepseek, 'the official DeepSeek API preset should exist');
   const deepseekModels = attachModelDescriptors(deepseek.models, {
@@ -305,8 +405,8 @@ function testGlm53AndDeepSeekCurrentModelsExposeOfficialCapabilities(): void {
   }
 
   for (const route of [
-    { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' },
-    { provider: 'alibaba_model_studio', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+    { provider: 'qwen', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
+    { provider: 'qwen', baseUrl: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1' },
     { provider: 'siliconflow', baseUrl: 'https://api.siliconflow.cn/v1' },
   ]) {
     assert(

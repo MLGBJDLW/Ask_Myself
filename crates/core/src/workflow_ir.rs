@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::intelligence::{AgentTaskPlan, DelegationMode, EvidenceMode, PlanStepStatus};
-use crate::quality_profile::ResolvedOrchestrationProfile;
+use crate::quality_profile::{OrchestrationProfile, ResolvedOrchestrationProfile};
 
 pub const WORKFLOW_IR_VERSION: u8 = 1;
 
@@ -826,6 +826,80 @@ impl WorkflowIr {
             .any(|gate| gate.required && gate.kind == VerificationGateKind::WriteIsolation)
     }
 
+    /// Reconciles planner output with the stronger runtime contract of an
+    /// unattended isolated patch. This removes delegation-only nodes that the
+    /// sandboxed schedule cannot execute and makes worktree promotion plus a
+    /// controller-owned independent patch review authoritative even when the
+    /// planner underpredicts mutation.
+    pub fn configure_for_scheduled_isolated_patch(&mut self) {
+        let removed_reconnaissance = self
+            .nodes
+            .iter()
+            .filter(|node| node.phase == "reconnaissance")
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+        self.nodes.retain(|node| node.phase != "reconnaissance");
+        for node in &mut self.nodes {
+            node.dependencies
+                .retain(|dependency| !removed_reconnaissance.contains(dependency));
+            node.allowed_tools.retain(|tool| {
+                !matches!(
+                    tool.as_str(),
+                    "spawn_subagent" | "spawn_subagent_batch" | "judge_subagent_results"
+                )
+            });
+        }
+        ensure_required_gate(
+            &mut self.verification_gates,
+            "write-isolation",
+            VerificationGateKind::WriteIsolation,
+            "Scheduled isolated patches require controller-owned worktree promotion.",
+        );
+        ensure_required_gate(
+            &mut self.verification_gates,
+            "independent-review",
+            VerificationGateKind::IndependentReview,
+            "Scheduled isolated patches require the controller's non-delegating Git patch review.",
+        );
+        self.completion_contract.require_all_nodes_succeeded = true;
+        self.completion_contract.require_verification_gates = true;
+        self.refresh_checkpoint();
+    }
+
+    /// Returns true only when a controller review can be the final read of the
+    /// patch before promotion. Excluding the review and promotion gates avoids
+    /// circularity while preventing later repair mutations from invalidating a
+    /// review that ran too early.
+    pub fn ready_for_runtime_independent_review(&self) -> bool {
+        let nodes_pass = !self.completion_contract.require_all_nodes_succeeded
+            || self
+                .nodes
+                .iter()
+                .all(|node| node.status == WorkflowNodeStatus::Succeeded);
+        let prerequisite_gates_pass = self
+            .verification_gates
+            .iter()
+            .filter(|gate| {
+                gate.required
+                    && !matches!(
+                        gate.kind,
+                        VerificationGateKind::IndependentReview
+                            | VerificationGateKind::WriteIsolation
+                    )
+            })
+            .all(|gate| gate.passed == Some(true));
+        let evidence_pass = !self.completion_contract.require_evidence_ledger
+            || self
+                .evidence_ledger
+                .iter()
+                .filter(|entry| entry.status == "verified")
+                .flat_map(|entry| entry.source_ids.iter())
+                .collect::<HashSet<_>>()
+                .len()
+                >= usize::from(self.min_evidence_sources.max(1));
+        nodes_pass && prerequisite_gates_pass && evidence_pass
+    }
+
     /// Plan Mode produces an approval handoff and never executes the compiled
     /// mutation workflow. Keep the IR as read-only planning context without
     /// requiring execution nodes, process isolation, or release gates.
@@ -909,6 +983,10 @@ impl WorkflowIr {
         self.record_gate("write-isolation", passed, detail);
     }
 
+    pub fn record_runtime_independent_review(&mut self, passed: bool, detail: impl Into<String>) {
+        self.record_gate("independent-review", passed, detail);
+    }
+
     pub fn to_prompt_section(&self) -> String {
         let workflow = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string());
         format!(
@@ -939,6 +1017,28 @@ impl WorkflowIr {
             .map(|node| node.id.clone())
             .collect();
     }
+}
+
+fn ensure_required_gate(
+    gates: &mut Vec<VerificationGate>,
+    id: &str,
+    kind: VerificationGateKind,
+    detail: &str,
+) {
+    if let Some(gate) = gates.iter_mut().find(|gate| gate.kind == kind) {
+        gate.id = id.to_string();
+        gate.required = true;
+        gate.passed = None;
+        gate.detail = Some(detail.to_string());
+        return;
+    }
+    gates.push(VerificationGate {
+        id: id.to_string(),
+        kind,
+        required: true,
+        passed: None,
+        detail: Some(detail.to_string()),
+    });
 }
 
 pub fn detect_project_verification_support(roots: &[PathBuf]) -> ProjectVerificationSupport {
@@ -1218,7 +1318,14 @@ pub fn compile_workflow_ir(
             remaining_delegated_tokens: profile.delegated_token_budget,
         },
         completion_contract: WorkflowCompletionContract {
-            require_all_nodes_succeeded: true,
+            // Balanced is the default interactive profile. Its task plan is
+            // an observable controller projection, not a mandatory checklist
+            // that can reject an otherwise valid answer or coerce update_plan
+            // calls. Explicit deep/custom/ultra and Nexus runs retain strong
+            // node completion gates; scheduled isolation strengthens them
+            // again in configure_for_scheduled_isolated_patch().
+            require_all_nodes_succeeded: nexus_enabled
+                || profile.profile != OrchestrationProfile::Balanced,
             require_verification_gates: nexus_enabled || profile.require_independent_verifier,
             require_evidence_ledger: plan.evidence_policy.mode == EvidenceMode::Required,
         },
@@ -1322,6 +1429,18 @@ mod tests {
     fn profile() -> ResolvedOrchestrationProfile {
         resolve_orchestration_profile(OrchestrationProfileInput {
             profile: OrchestrationProfile::CodeUltra,
+            custom: None,
+            max_iterations: 20,
+            max_parallel: None,
+            max_calls_per_turn: None,
+            delegated_token_budget: None,
+            verification_reserve_percent: None,
+        })
+    }
+
+    fn balanced_profile() -> ResolvedOrchestrationProfile {
+        resolve_orchestration_profile(OrchestrationProfileInput {
+            profile: OrchestrationProfile::Balanced,
             custom: None,
             max_iterations: 20,
             max_parallel: None,
@@ -1600,6 +1719,34 @@ mod tests {
     }
 
     #[test]
+    fn balanced_task_plan_is_advisory_unless_an_evidence_gate_applies() {
+        let file_plan = build_task_plan(TaskPlanningInput {
+            user_query: "Create the requested file",
+            route_kind: "FileOperation",
+            has_sources: false,
+            source_scope_count: 0,
+            collection_context: false,
+        });
+        let workflow = compile_workflow_ir(&file_plan, &balanced_profile(), false).unwrap();
+
+        assert!(!workflow.completion_contract.require_all_nodes_succeeded);
+        assert!(!workflow.completion_contract.require_verification_gates);
+        assert!(workflow.completion_allowed());
+        assert!(workflow
+            .nodes
+            .iter()
+            .any(|node| { node.status != WorkflowNodeStatus::Succeeded }));
+    }
+
+    #[test]
+    fn explicit_nexus_keeps_strong_task_completion_gates() {
+        let workflow = compile_workflow_ir(&plan(), &balanced_profile(), true).unwrap();
+
+        assert!(workflow.completion_contract.require_all_nodes_succeeded);
+        assert!(!workflow.completion_allowed());
+    }
+
+    #[test]
     fn plan_mode_removes_execution_isolation_and_release_gates() {
         let mut workflow = compile_workflow_ir(&plan(), &profile(), true).unwrap();
         assert!(workflow.requires_runtime_write_isolation());
@@ -1619,6 +1766,55 @@ mod tests {
                     .iter()
                     .all(|tool| !tool_may_mutate_workspace(tool))
         }));
+    }
+
+    #[test]
+    fn scheduled_isolated_patch_overrides_underpredicted_write_and_delegation_plan() {
+        let mut underpredicted = plan();
+        for step in &mut underpredicted.steps {
+            step.required_tools = vec!["read_file".to_string()];
+        }
+        let mut workflow = compile_workflow_ir(&underpredicted, &profile(), true).unwrap();
+        assert!(!workflow.requires_runtime_write_isolation());
+        assert!(workflow
+            .nodes
+            .iter()
+            .any(|node| node.phase == "reconnaissance"));
+
+        workflow.configure_for_scheduled_isolated_patch();
+
+        assert!(workflow.requires_runtime_write_isolation());
+        assert!(workflow
+            .nodes
+            .iter()
+            .all(|node| node.phase != "reconnaissance"));
+        assert!(workflow
+            .nodes
+            .iter()
+            .all(|node| node.allowed_tools.iter().all(|tool| !matches!(
+                tool.as_str(),
+                "spawn_subagent" | "spawn_subagent_batch" | "judge_subagent_results"
+            ))));
+        let independent = workflow
+            .verification_gates
+            .iter()
+            .find(|gate| gate.kind == VerificationGateKind::IndependentReview)
+            .unwrap();
+        assert!(independent.required);
+        assert_eq!(independent.passed, None);
+
+        workflow.record_runtime_independent_review(
+            true,
+            "Controller independently checked the isolated Git patch.",
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::IndependentReview)
+                .and_then(|gate| gate.passed),
+            Some(true)
+        );
     }
 
     #[test]

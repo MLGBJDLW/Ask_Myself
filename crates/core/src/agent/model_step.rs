@@ -490,6 +490,7 @@ impl AgentExecutor {
                                         "Planning deadline reached; restarting with {} before any tool ran.",
                                         recovery_controls.description
                                     ),
+                                    discard_sample: true,
                                 })
                                 .await;
                             append_developer_persisted_trace_status(
@@ -884,7 +885,7 @@ impl AgentExecutor {
                     );
                     break 'model_attempt Some(timing);
                 }
-                model_attempt::ModelAttemptProgress::InterruptedAfterVisibleOutput(
+                model_attempt::ModelAttemptProgress::InterruptedAfterReplayBarrier(
                     interruption,
                 ) => {
                     let model_attempt::ModelAttemptInterruption {
@@ -1182,6 +1183,7 @@ impl AgentExecutor {
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: reason.to_string(),
+                    discard_sample: true,
                 })
                 .await;
             accumulated_content.truncate(accumulated_len_before_iteration);
@@ -1199,16 +1201,14 @@ impl AgentExecutor {
                     Some(&trace),
                 );
             }
-            let max_ctx = self
-                .config
-                .context_window
-                .unwrap_or_else(|| model_context_window(model));
-            let before_trim = prompt_cache::message_sequence_fingerprint(messages);
-            *messages = trim_to_context_window(
-                messages,
-                max_ctx.saturating_sub(context_safety_buffer(max_ctx)),
+            let context_pipeline = ContextPipeline::new_with_resolution(
+                model,
+                self.config.context_window,
+                self.config.context_window_resolution,
                 max_response_tokens,
             );
+            let before_trim = prompt_cache::message_sequence_fingerprint(messages);
+            *messages = context_pipeline.trim_after_tool_results(messages);
             return Ok(ModelStepOutcome::Restart {
                 prompt_was_compacted: before_trim
                     != prompt_cache::message_sequence_fingerprint(messages),
@@ -1506,9 +1506,9 @@ impl AgentExecutor {
                             model_attempt::ModelAttemptProgress::StreamComplete { .. } => {
                                 "stream_complete"
                             }
-                            model_attempt::ModelAttemptProgress::InterruptedAfterVisibleOutput(
+                            model_attempt::ModelAttemptProgress::InterruptedAfterReplayBarrier(
                                 _,
-                            ) => "interrupted_after_visible_output",
+                            ) => "interrupted_after_replay_barrier",
                             model_attempt::ModelAttemptProgress::Completion(_) => "completion",
                             model_attempt::ModelAttemptProgress::NeedsContextCompaction(_) => {
                                 "context_compaction"
@@ -1677,6 +1677,7 @@ impl AgentExecutor {
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: reset_reason,
+                    discard_sample: true,
                 })
                 .await;
             accumulated_content.truncate(accumulated_len_before_iteration);

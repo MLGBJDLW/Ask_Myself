@@ -687,6 +687,70 @@
         }
       },
       {
+        "id": "z-ai/glm-5.3",
+        "name": "Z.AI: GLM 5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-18",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "z-ai/glm-5.3-flash",
+        "name": "Z.AI: GLM 5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["global"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "z-ai/glm-5.2",
         "name": "Z.AI: GLM 5.2",
         "tagKey": "providers.tagLatest",
@@ -749,6 +813,76 @@
               "maxTokens": 262144,
               "step": 1,
               "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-flash",
+        "name": "Qwen: Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "low", "medium", "xhigh"],
+            "defaultEffort": "low",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-2.4t-a95b",
+        "name": "Qwen: Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-27b",
+        "name": "Qwen: Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "contextTokens": 1000000,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
             }
           }
         }
@@ -1040,6 +1174,52 @@
               "high",
               "xhigh"
             ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "google/gemini-3.7-flash",
+        "name": "Google: Gemini 3.7 Flash",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": ["none", "low", "medium", "high"],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "google/gemini-3.6-flash",
+        "name": "Google: Gemini 3.6 Flash",
+        "tagKey": "providers.tagFast",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": ["none", "minimal", "low", "medium", "high"],
             "defaultEffort": "medium",
             "thinkingBudget": {
               "enabled": false
@@ -6718,7 +6898,7 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3.7 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
+    "description": "Direct Gemini API for Google-supported locations. Includes Gemini 3.7/3.6/3.5/3.1/2.5; for an unsupported Google location, select an authorized Gemini route under OpenRouter instead.",
     "nativeWebSearch": {
       "dialect": "geminiGoogleSearch",
       "supportsDomains": false,
@@ -6750,9 +6930,15 @@
         "contextTokens": 1048576,
         "maxOutputTokens": 65536,
         "source": "official",
-        "productReadiness": "known",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
         "recommended": true,
         "capabilities": {
+          "vision": true,
           "reasoning": {
             "effortLevels": [
               "low",
@@ -6780,10 +6966,18 @@
           "canMixClientTools": true
         },
         "tagKey": "providers.tagFast",
-        "source": "curated",
-        "productReadiness": "known",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
         "recommended": false,
         "capabilities": {
+          "vision": true,
           "reasoning": {
             "effortLevels": [
               "minimal",
@@ -7597,7 +7791,7 @@
     "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
     "requiresApiKey": true,
     "icon": "🔵",
-    "description": "GLM-5.3 flagship Model API, plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
+    "description": "GLM-5.3 flagship and GLM-5.3-Flash multimodal Model APIs, plus GLM-5.2, GLM-5.1, GLM-5, GLM-5V-Turbo, GLM-4.7, GLM-4.6V",
     "capabilities": {
       "vision": false
     },
@@ -7613,7 +7807,7 @@
         "availableToCredential": true,
         "recommended": true,
         "regions": ["cn-mainland"],
-        "lastVerifiedAt": "2026-08-22",
+        "lastVerifiedAt": "2026-08-27",
         "releaseDate": "2026-08-14",
         "inputModalities": ["text"],
         "outputModalities": ["text"],
@@ -7623,6 +7817,38 @@
         "maxOutputTokens": 131072,
         "capabilities": {
           "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["cn-mainland"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
           "promptCache": true,
           "reasoning": {
             "mode": "always",
@@ -7715,6 +7941,84 @@
       {
         "id": "glm-4-long",
         "name": "GLM-4 Long (1M Context)"
+      }
+    ]
+  },
+  {
+    "id": "zhipu-intl",
+    "name": "Z.ai (International)",
+    "provider": "zhipu",
+    "baseUrl": "https://api.z.ai/api/paas/v4",
+    "requiresApiKey": true,
+    "icon": "🔵",
+    "description": "International pay-as-you-go Z.ai Model API with its own credential boundary, separate from China and GLM Coding Plan",
+    "capabilities": {
+      "vision": false
+    },
+    "models": [
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": true,
+        "regions": ["international"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-14",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "availableToCredential": true,
+        "recommended": false,
+        "regions": ["international"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-26",
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
       }
     ]
   },
@@ -7923,14 +8227,51 @@
         "status": "active",
         "access": "account_enablement",
         "source": "official",
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "product_ready",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "releaseDate": "2026-08-26",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -7956,11 +8297,11 @@
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
         "recommended": false,
-        "status": "preview",
+        "status": "removed",
         "access": "account_enablement",
         "source": "official",
         "productReadiness": "known",
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "regions": ["cn-beijing"],
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
@@ -8009,14 +8350,14 @@
         "status": "active",
         "access": "account_enablement",
         "source": "official",
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8038,16 +8379,53 @@
         }
       },
       {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "product_ready",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "releaseDate": "2026-08-26",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
         "id": "qwen3.8-max-preview",
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
         "recommended": false,
-        "status": "preview",
+        "status": "removed",
         "access": "account_enablement",
         "source": "official",
         "productReadiness": "known",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
@@ -8094,14 +8472,14 @@
         "source": "official",
         "status": "active",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "recommended": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8118,6 +8496,92 @@
               "maxTokens": 262144,
               "step": 1,
               "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-2.4t-a95b",
+        "name": "Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 131072
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-27b",
+        "name": "Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 262144
             }
           }
         }
@@ -8196,14 +8660,14 @@
         "source": "official",
         "status": "active",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "recommended": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8220,6 +8684,92 @@
               "maxTokens": 262144,
               "step": 1,
               "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-2.4t-a95b",
+        "name": "Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 131072
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-27b",
+        "name": "Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 262144
             }
           }
         }
@@ -8299,6 +8849,36 @@
             "effortLevels": [],
             "thinkingBudget": {
               "enabled": true
+            }
+          }
+        }
+      },
+      {
+        "id": "ZHIPU/GLM-5.3",
+        "name": "Zhipu Direct: GLM-5.3",
+        "tagKey": "providers.tagLatest",
+        "source": "official",
+        "status": "active",
+        "access": "account_enablement",
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-27",
+        "releaseDate": "2026-08-17",
+        "inputModalities": ["text"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "high", "max"],
+            "defaultEffort": "max",
+            "thinkingBudget": {
+              "enabled": false
             }
           }
         }

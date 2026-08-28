@@ -2,6 +2,7 @@
 
 use crate::agent::context::ContextUsageBreakdown;
 use crate::agent_run::{AgentRunEvent, AgentRunEventKind};
+use crate::conversation::memory::ContextWindowAuthority;
 use crate::db::Database;
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,10 @@ pub struct UsageSnapshot {
     pub cache_creation_tokens: u64,
     pub last_prompt_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_capacity: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_authority: Option<ContextWindowAuthority>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_breakdown: Option<ContextUsageBreakdown>,
     pub provider_raw: serde_json::Value,
 }
@@ -34,7 +39,21 @@ pub struct UsageSnapshot {
 impl Database {
     pub fn get_run_usage_snapshot(&self, run_id: &str) -> Result<Option<UsageSnapshot>, CoreError> {
         let events = self.list_agent_run_events(run_id)?;
-        Ok(run_usage_snapshot(&events))
+        let mut snapshot = run_usage_snapshot(&events);
+        if let Some(snapshot) = snapshot.as_mut() {
+            if let Some((capacity, authority)) = self
+                .get_agent_task_run_events(run_id)?
+                .iter()
+                .rev()
+                .find(|event| event.label == "context_resolution")
+                .and_then(|event| event.payload.as_ref())
+                .and_then(context_resolution_from_payload)
+            {
+                snapshot.context_capacity = capacity;
+                snapshot.context_authority = Some(authority);
+            }
+        }
+        Ok(snapshot)
     }
 
     pub fn get_conversation_usage_snapshot(
@@ -105,6 +124,8 @@ fn run_usage_snapshot(events: &[AgentRunEvent]) -> Option<UsageSnapshot> {
             cache_miss_tokens: json_u64(&raw, "cacheMissTokens"),
             cache_creation_tokens: json_u64(&raw, "cacheCreationTokens"),
             last_prompt_tokens,
+            context_capacity: None,
+            context_authority: None,
             context_breakdown,
             provider_raw: raw,
         })
@@ -123,6 +144,8 @@ fn conversation_usage_snapshot(snapshots: &[(String, UsageSnapshot)]) -> Option<
         cache_miss_tokens: 0,
         cache_creation_tokens: 0,
         last_prompt_tokens: latest.last_prompt_tokens,
+        context_capacity: latest.context_capacity,
+        context_authority: latest.context_authority,
         context_breakdown: latest.context_breakdown.clone(),
         provider_raw: serde_json::json!({
             "runs": snapshots
@@ -146,6 +169,17 @@ fn conversation_usage_snapshot(snapshots: &[(String, UsageSnapshot)]) -> Option<
         aggregate.source = merge_source(aggregate.source, snapshot.source);
     }
     Some(aggregate)
+}
+
+fn context_resolution_from_payload(
+    payload: &serde_json::Value,
+) -> Option<(Option<u32>, ContextWindowAuthority)> {
+    let capacity = payload
+        .get("contextCapacity")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let authority = serde_json::from_value(payload.get("contextAuthority")?.clone()).ok()?;
+    Some((capacity, authority))
 }
 
 fn merge_source(left: UsageSnapshotSource, right: UsageSnapshotSource) -> UsageSnapshotSource {
@@ -204,6 +238,24 @@ mod tests {
             }),
             created_at: None,
         }
+    }
+
+    #[test]
+    fn context_resolution_payload_preserves_unknown_provider_authority() {
+        assert_eq!(
+            context_resolution_from_payload(&serde_json::json!({
+                "contextCapacity": null,
+                "contextAuthority": "provider_managed",
+            })),
+            Some((None, ContextWindowAuthority::ProviderManaged))
+        );
+        assert_eq!(
+            context_resolution_from_payload(&serde_json::json!({
+                "contextCapacity": 750_000,
+                "contextAuthority": "user_override",
+            })),
+            Some((Some(750_000), ContextWindowAuthority::UserOverride,))
+        );
     }
 
     #[test]

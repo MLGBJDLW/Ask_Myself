@@ -345,11 +345,19 @@ fn build_startup_recovery_plan(database: &Database) -> Result<StartupRecoveryPla
             if materialize_terminal_boundary(&transaction, &candidate, &terminal)? {
                 recovery.repaired_terminals += 1;
             }
+            let task_status = terminal_projection(
+                terminal.kind.as_str(),
+                terminal.status.as_deref(),
+                &terminal.label,
+            )
+            .0;
+            converge_workflow_run_terminal(&transaction, &candidate.run_id, task_status)?;
             continue;
         }
 
         if is_terminal_task_status(&task_status) {
             materialize_turn_from_task_status(&transaction, &candidate.turn_id, &task_status)?;
+            converge_workflow_run_terminal(&transaction, &candidate.run_id, &task_status)?;
             recovery.repaired_terminals += 1;
             continue;
         }
@@ -566,14 +574,99 @@ fn converge_terminal_projection(database: &Database, run_id: &str) -> Result<(),
         .ok_or_else(|| CoreError::NotFound(format!("Agent task run {run_id}")))?;
     if let Some(terminal) = first_true_terminal(&transaction, run_id)? {
         let _ = materialize_terminal_boundary(&transaction, &run.0, &terminal)?;
+        let task_status = terminal_projection(
+            terminal.kind.as_str(),
+            terminal.status.as_deref(),
+            &terminal.label,
+        )
+        .0;
+        converge_workflow_run_terminal(&transaction, run_id, task_status)?;
     } else if is_terminal_task_status(&run.1) {
         materialize_turn_from_task_status(&transaction, &run.0.turn_id, &run.1)?;
+        converge_workflow_run_terminal(&transaction, run_id, &run.1)?;
     } else {
         return Err(CoreError::Internal(format!(
             "Agent Run {run_id} crossed its terminal barrier without a terminal projection"
         )));
     }
     transaction.commit()?;
+    Ok(())
+}
+
+/// Converges the product-level workflow projection in the same transaction as
+/// its Agent Run terminal. This releases occurrence/source locks after a
+/// restart instead of leaving a permanently `running` scheduler record.
+fn converge_workflow_run_terminal(
+    connection: &rusqlite::Connection,
+    task_run_id: &str,
+    task_status: &str,
+) -> Result<(), CoreError> {
+    let workflow_status = match task_status {
+        "completed" => "completed",
+        "failed" => "failed",
+        "timed_out" => "timed_out",
+        "cancelled" => "cancelled",
+        _ => return Ok(()),
+    };
+    let bindings = {
+        let mut statement = connection.prepare(
+            "SELECT id, automation_id, occurrence_id
+             FROM workflow_automation_runs
+             WHERE task_run_id = ?1
+               AND status IN ('queued', 'running', 'waiting_approval', 'paused',
+                              'resuming', 'cancelling')",
+        )?;
+        let rows = statement
+            .query_map([task_run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (workflow_run_id, automation_id, occurrence_id) in bindings {
+        connection.execute(
+            "UPDATE workflow_automation_runs
+             SET status = ?2,
+                 summary = CASE
+                     WHEN ?2 = 'cancelled'
+                     THEN 'Agent execution was interrupted by app restart'
+                     ELSE summary
+                 END,
+                 finished_at = COALESCE(finished_at, datetime('now'))
+             WHERE id = ?1",
+            rusqlite::params![&workflow_run_id, workflow_status],
+        )?;
+        if let Some(occurrence_id) = occurrence_id {
+            connection.execute(
+                "UPDATE workflow_automation_occurrences
+                 SET status = ?2, retry_at = NULL, lease_token = NULL,
+                     lease_expires_at = NULL,
+                     last_error = CASE
+                         WHEN ?2 = 'cancelled' THEN 'app_restart_interrupted' ELSE last_error
+                     END,
+                     updated_at = datetime('now')
+                 WHERE id = ?1",
+                rusqlite::params![&occurrence_id, workflow_status],
+            )?;
+        }
+        connection.execute(
+            "UPDATE workflow_automations
+             SET status = ?2, updated_at = datetime('now')
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM workflow_automation_runs active
+                   WHERE active.automation_id = ?1
+                     AND active.id != ?3
+                     AND active.status IN ('queued', 'running', 'waiting_approval',
+                                           'paused', 'resuming', 'cancelling')
+               )",
+            rusqlite::params![&automation_id, workflow_status, &workflow_run_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -1256,6 +1349,11 @@ mod tests {
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::db::Database;
     use crate::llm::Role;
+    use crate::workflow_automation::{
+        SaveWorkflowAutomationInput, WorkflowAutomationApprovalPolicy,
+        WorkflowAutomationOccurrenceStatus, WorkflowAutomationRunStatus, WorkflowAutomationTrigger,
+    };
+    use crate::workflow_scheduler::WorkflowAutomationScheduleConfig;
 
     #[derive(Default)]
     struct CaptureDelivery {
@@ -1316,6 +1414,67 @@ mod tests {
             .mark_agent_task_run_started(&run.id, "responding")
             .expect("started task run");
         (conversation.id, turn.id, run.id)
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_terminalizes_bound_workflow_and_occurrence() {
+        let database = Database::open_memory().expect("in-memory database");
+        let (_conversation_id, _turn_id, task_run_id) = create_started_run(&database);
+        let automation = database
+            .save_workflow_automation_with_schedule_config(
+                &SaveWorkflowAutomationInput {
+                    id: None,
+                    name: "restart-bound-workflow".into(),
+                    description: String::new(),
+                    workflow_template_id: "report_brief".into(),
+                    prompt: "Run and survive restart reconciliation.".into(),
+                    trigger: WorkflowAutomationTrigger::Schedule {
+                        cron: "0 9 * * *".into(),
+                    },
+                    source_scope: Vec::new(),
+                    approval_policy: WorkflowAutomationApprovalPolicy {
+                        require_before_run: false,
+                        allowed_tools: Vec::new(),
+                        risk_level: "low".into(),
+                    },
+                    enabled: true,
+                },
+                &WorkflowAutomationScheduleConfig::default(),
+            )
+            .unwrap();
+        let at = "2099-01-01T09:00:00Z";
+        let due = database
+            .list_due_workflow_automations(at)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.automation.id == automation.id)
+            .unwrap();
+        let claim = database
+            .claim_workflow_automation_due_run_at(due, at, None)
+            .unwrap();
+        let workflow_run = claim.run.as_ref().unwrap();
+        database
+            .start_workflow_automation_run_at(&workflow_run.id, &task_run_id, None, at)
+            .unwrap();
+
+        let executor = DatabaseExecutor::new(database.clone(), 8).unwrap();
+        let outboxes = AgentRunEventOutboxes::new(executor, Arc::new(CaptureDelivery::default()));
+        let recovery = outboxes.recover_after_restart().await.unwrap();
+        assert_eq!(recovery.cancelled_runs, 1);
+        assert_eq!(
+            database
+                .get_workflow_automation_run(&workflow_run.id)
+                .unwrap()
+                .status,
+            WorkflowAutomationRunStatus::Cancelled
+        );
+        assert_eq!(
+            database
+                .get_workflow_automation_occurrence(workflow_run.occurrence_id.as_deref().unwrap(),)
+                .unwrap()
+                .status,
+            WorkflowAutomationOccurrenceStatus::Cancelled
+        );
     }
 
     #[tokio::test]

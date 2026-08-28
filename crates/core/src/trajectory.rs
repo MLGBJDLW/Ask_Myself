@@ -355,14 +355,14 @@ pub fn export_workflow_automation_run_trajectory(
                 .summary
                 .clone()
                 .unwrap_or_else(|| summarize_workflow_automation(&automation));
-            trajectory.outcome = Some(workflow_run.status.clone());
+            trajectory.outcome = Some(workflow_run.status.as_str().to_string());
             trajectory
         }
     };
 
     trajectory.trajectory_id = format!("workflow_automation_run:{}", workflow_run.id);
     trajectory.created_at = workflow_run.created_at.clone();
-    trajectory.outcome = Some(workflow_run.status.clone());
+    trajectory.outcome = Some(workflow_run.status.as_str().to_string());
     if !trajectory
         .task_runs
         .iter()

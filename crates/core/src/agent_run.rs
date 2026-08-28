@@ -504,7 +504,7 @@ impl AgentRunEvent {
                 "Assistant response".to_string(),
                 Some("streaming".to_string()),
             ),
-            AgentEvent::StreamReset { reason } => recovery_metadata(reason),
+            AgentEvent::StreamReset { reason, .. } => recovery_metadata(reason),
             AgentEvent::ToolCallPreparing { tool_name, .. }
             | AgentEvent::ToolCallArgsDelta { tool_name, .. } => (
                 AgentRunEventKind::ToolPreparing,
@@ -695,6 +695,13 @@ impl AgentRunEvent {
         if matches!(event, AgentEvent::Steering { .. }) {
             display_kind = AgentRunDisplayKind::Steering;
         }
+        let mut payload = agent_event_payload(event);
+        let label = if matches!(event, AgentEvent::Error { .. }) {
+            payload = crate::sensitive_data::sanitize_json_strings(&payload, None);
+            crate::sensitive_data::sanitize_diagnostic(&label, None)
+        } else {
+            label
+        };
         Self {
             version: AGENT_RUN_EVENT_VERSION,
             run_id: String::new(),
@@ -708,7 +715,7 @@ impl AgentRunEvent {
             importance,
             label,
             status,
-            payload: agent_event_payload(event),
+            payload,
             created_at: None,
         }
     }
@@ -785,7 +792,13 @@ impl AgentRunEvent {
         }
     }
 
-    pub fn stream_reset(run_id: &str, turn_id: Option<&str>, event_seq: u64, reason: &str) -> Self {
+    pub fn stream_reset(
+        run_id: &str,
+        turn_id: Option<&str>,
+        event_seq: u64,
+        reason: &str,
+        discard_sample: bool,
+    ) -> Self {
         let kind = AgentRunEventKind::StreamReset;
         let (visibility, display_kind, importance) = event_presentation(kind);
         Self {
@@ -801,7 +814,10 @@ impl AgentRunEvent {
             importance,
             label: reason.to_string(),
             status: Some("running".to_string()),
-            payload: serde_json::json!({ "reason": reason }),
+            payload: serde_json::json!({
+                "reason": reason,
+                "discardSample": discard_sample,
+            }),
             created_at: None,
         }
     }
@@ -897,13 +913,14 @@ impl AgentRunEvent {
             }
             None => serde_json::Map::new(),
         };
+        let message = crate::sensitive_data::sanitize_diagnostic(message, None);
         payload_map.insert(
             "type".to_string(),
             serde_json::Value::String("error".to_string()),
         );
         payload_map.insert(
             "message".to_string(),
-            serde_json::Value::String(message.to_string()),
+            serde_json::Value::String(message.clone()),
         );
         payload_map.insert(
             "status".to_string(),
@@ -923,9 +940,12 @@ impl AgentRunEvent {
             persistence: AgentRunEventPersistence::Durable,
             display_kind,
             importance,
-            label: message.to_string(),
+            label: message,
             status: Some(status.to_string()),
-            payload: serde_json::Value::Object(payload_map),
+            payload: crate::sensitive_data::sanitize_json_strings(
+                &serde_json::Value::Object(payload_map),
+                None,
+            ),
             created_at: None,
         }
     }
@@ -995,7 +1015,17 @@ impl AgentRunEvent {
                     .get("reason")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Stream restarted.");
-                Some(Self::stream_reset(fallback_run_id, None, event_seq, reason))
+                let discard_sample = payload
+                    .get("discardSample")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                Some(Self::stream_reset(
+                    fallback_run_id,
+                    None,
+                    event_seq,
+                    reason,
+                    discard_sample,
+                ))
             }
             "streamBlockDelta" => {
                 let block_id = payload.get("blockId")?.as_str()?;
@@ -1437,6 +1467,20 @@ mod tests {
     }
 
     #[test]
+    fn error_events_redact_credentials_before_durable_projection() {
+        let leaked = "https://example.test/generate?key=AIza0123456789abcdefghijklmnopqrst";
+        let event = AgentRunEvent::from_agent_event(&AgentEvent::Error {
+            message: format!("request failed: {leaked}"),
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+
+        assert_eq!(event.kind, AgentRunEventKind::Error);
+        assert!(!encoded.contains("AIza"));
+        assert!(!encoded.to_ascii_lowercase().contains("?key="));
+        assert!(encoded.contains("REDACTED"));
+    }
+
+    #[test]
     fn done_event_preserves_cancelled_finish_reason() {
         let run_event = AgentRunEvent::from_agent_event(&AgentEvent::Done {
             message: Message::text(Role::Assistant, "Request cancelled by user."),
@@ -1568,9 +1612,11 @@ mod tests {
             },
             AgentEvent::StreamReset {
                 reason: "provider stream reset".to_string(),
+                discard_sample: true,
             },
             AgentEvent::StreamReset {
                 reason: "retry after provider disconnect".to_string(),
+                discard_sample: false,
             },
             AgentEvent::ToolCallPreparing {
                 call_id: "call-1".to_string(),

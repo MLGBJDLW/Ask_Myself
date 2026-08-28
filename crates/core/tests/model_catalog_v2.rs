@@ -3,8 +3,8 @@ use nexa_core::model_catalog::{
     resolve_or_derive_endpoint_id, resolve_saved_selection, select_implicit_default, AuthStyle,
     CapabilityProbeResult, CatalogCacheKey, CatalogMergeInput, CredentialKind, DiscoveredModel,
     DiscoveryStrategy, EndpointRegistry, EndpointTransport, HealthProbe, ModelAccess,
-    ModelDescriptor, ModelLifecycle, ProductReadiness, ProviderDescriptor, ProviderEndpoint,
-    SavedModelSelection, SelectionResolutionKind, VerifiedModelCapabilities,
+    ModelDescriptor, ModelLifecycle, ModelModality, ProductReadiness, ProviderDescriptor,
+    ProviderEndpoint, SavedModelSelection, SelectionResolutionKind, VerifiedModelCapabilities,
 };
 
 fn descriptor(id: &str) -> ModelDescriptor {
@@ -255,7 +255,7 @@ fn account_enablement_is_never_an_implicit_default() {
 fn builtin_presets_project_every_surface_into_catalog_v2() {
     let catalog = load_builtin_catalog().expect("all built-in preset files should project");
 
-    assert_eq!(catalog.endpoints.len(), 48);
+    assert_eq!(catalog.endpoints.len(), 49);
     assert!(catalog.models.iter().all(|model| model.schema_version == 2));
     assert!(catalog
         .models
@@ -418,4 +418,112 @@ fn shared_schema_tracks_rust_wire_names_and_qwen_replacements() {
     assert_eq!(retired.lifecycle, ModelLifecycle::Deprecated);
     assert_eq!(retired.replacement_model_id.as_deref(), Some("qwen3.7-max"));
     assert!(retired.aliases.iter().any(|alias| alias == "qwen3-max"));
+}
+
+#[test]
+fn builtin_catalog_tracks_exact_glm53_provider_routes_without_plan_or_siliconflow_leaks() {
+    let catalog = load_builtin_catalog().expect("built-in catalog should project");
+    let international_endpoint = catalog
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "text:zhipu-intl")
+        .expect("international Z.ai endpoint identity");
+    assert_eq!(international_endpoint.provider_id, "zhipu");
+    assert_eq!(international_endpoint.region, "international");
+    let find = |id: &str, endpoint_id: &str| {
+        catalog
+            .models
+            .iter()
+            .find(|model| {
+                model.id == id
+                    && model
+                        .endpoint_ids
+                        .iter()
+                        .any(|endpoint| endpoint == endpoint_id)
+            })
+            .unwrap_or_else(|| panic!("missing {id} on {endpoint_id}"))
+    };
+
+    let direct = find("glm-5.3", "text:zhipu");
+    assert_eq!(direct.limits.context_tokens, Some(1_000_000));
+    assert_eq!(direct.limits.max_output_tokens, Some(131_072));
+    assert_eq!(
+        direct
+            .capabilities
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.effort_levels.as_slice()),
+        Some(["low", "high", "max"].map(str::to_string).as_slice())
+    );
+
+    let direct_flash = find("glm-5.3-flash", "text:zhipu");
+    assert_eq!(
+        direct_flash.input_modalities,
+        vec![ModelModality::Text, ModelModality::Image]
+    );
+    assert!(direct_flash.capabilities.vision);
+    assert!(!direct_flash.capabilities.video_input);
+    assert_eq!(direct_flash.limits.context_tokens, Some(1_000_000));
+
+    for id in ["glm-5.3", "glm-5.3-flash"] {
+        let international = find(id, "text:zhipu-intl");
+        assert_eq!(international.regions, ["international"]);
+        assert_eq!(international.endpoint_ids, ["text:zhipu-intl"]);
+        assert_eq!(international.limits.context_tokens, Some(1_000_000));
+        assert_eq!(international.limits.max_output_tokens, Some(131_072));
+        assert!(!international.capabilities.video_input);
+    }
+    let international_flash = find("glm-5.3-flash", "text:zhipu-intl");
+    assert_eq!(
+        international_flash.input_modalities,
+        vec![ModelModality::Text, ModelModality::Image]
+    );
+    assert!(international_flash.capabilities.vision);
+
+    for id in ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"] {
+        let model = find(id, "text:openrouter");
+        assert_eq!(model.limits.context_tokens, Some(1_048_576));
+        assert_eq!(model.limits.max_output_tokens, Some(131_072));
+        let reasoning = model
+            .capabilities
+            .reasoning
+            .as_ref()
+            .expect("OpenRouter GLM-5.3 reasoning metadata");
+        assert_eq!(reasoning.mode.as_deref(), Some("always"));
+        assert_eq!(reasoning.effort_levels, ["low", "high", "max"]);
+        assert_eq!(reasoning.default_effort.as_deref(), Some("max"));
+    }
+    let openrouter_flash = find("z-ai/glm-5.3-flash", "text:openrouter");
+    assert_eq!(
+        openrouter_flash.input_modalities,
+        vec![ModelModality::Text, ModelModality::Image]
+    );
+    assert!(!openrouter_flash.capabilities.video_input);
+
+    let bailian = find("ZHIPU/GLM-5.3", "text:alibaba-model-studio");
+    assert_eq!(bailian.access, ModelAccess::AccountEnablement);
+    assert_eq!(bailian.regions, ["cn-beijing"]);
+    assert_eq!(bailian.limits.context_tokens, Some(1_048_576));
+    assert!(bailian.capabilities.tool_calling);
+    assert!(
+        !bailian.capabilities.structured_output,
+        "conflicting Alibaba docs must remain conservative"
+    );
+
+    for endpoint in [
+        "text:qwen-token-plan-cn",
+        "text:qwen-token-plan-global",
+        "text:siliconflow",
+    ] {
+        assert!(
+            catalog.models.iter().all(|model| {
+                !model
+                    .endpoint_ids
+                    .iter()
+                    .any(|candidate| candidate == endpoint)
+                    || !model.id.to_ascii_lowercase().contains("glm-5.3")
+            }),
+            "{endpoint} must not inherit an unverified GLM-5.3 route"
+        );
+    }
 }

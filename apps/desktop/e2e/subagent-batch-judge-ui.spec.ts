@@ -376,6 +376,7 @@ test('renders batch subagent and judgement artifacts', async ({ page }) => {
   await chatLog.getByRole('button', { name: /Thinking completed/ }).click();
   await expect(chatLog.getByText('Parallel audit of three approaches')).toBeVisible();
   await expect(chatLog.getByText('parallel 2')).toBeVisible();
+  await expect(chatLog.getByTestId('subagent-budget-after')).toContainText('10,200 tokens · 4 calls');
   const firstBatchRun = chatLog.getByRole('button', { name: /Critic\s+Complete\s+Audit approach A/i }).first();
   await expect(firstBatchRun).toBeVisible();
   await firstBatchRun.click();

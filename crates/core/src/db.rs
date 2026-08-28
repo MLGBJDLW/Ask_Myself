@@ -1013,6 +1013,38 @@ mod tests {
         uuid::Uuid::new_v4().to_string()
     }
 
+    #[test]
+    fn agent_trace_errors_are_redacted_before_insert() {
+        let db = Database::open_memory().unwrap();
+        let mut trace = crate::trace::AgentTrace::begin(
+            "redacted-conversation",
+            "test",
+            "gemini-test",
+            128_000,
+        );
+        trace.finish(
+            crate::trace::TraceOutcome::Error,
+            Some(
+                "request https://example.test/generate?key=AIza0123456789abcdefghijklmnopqrst"
+                    .to_string(),
+            ),
+        );
+        db.save_agent_trace(&trace).unwrap();
+
+        let stored: (Option<String>, String) = db
+            .conn()
+            .query_row(
+                "SELECT error_message, trace_json FROM agent_traces WHERE id = ?1",
+                [&trace.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let encoded = format!("{} {}", stored.0.unwrap_or_default(), stored.1);
+        assert!(!encoded.contains("AIza"));
+        assert!(!encoded.to_ascii_lowercase().contains("?key="));
+        assert!(encoded.contains("REDACTED"));
+    }
+
     fn insert_source(conn: &Connection) -> String {
         let id = new_id();
         conn.execute(
@@ -1673,8 +1705,17 @@ mod tests {
 impl Database {
     /// Persist a completed agent trace.
     pub fn save_agent_trace(&self, trace: &crate::trace::AgentTrace) -> Result<(), CoreError> {
-        let trace_json = serde_json::to_string(trace)
+        let trace_value = serde_json::to_value(trace)
             .map_err(|e| CoreError::Internal(format!("serialize agent trace: {e}")))?;
+        let trace_json = serde_json::to_string(&crate::sensitive_data::sanitize_json_strings(
+            &trace_value,
+            None,
+        ))
+        .map_err(|e| CoreError::Internal(format!("serialize sanitized agent trace: {e}")))?;
+        let error_message = trace
+            .error_message
+            .as_deref()
+            .map(|message| crate::sensitive_data::sanitize_diagnostic(message, None));
         let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO agent_traces
@@ -1696,7 +1737,7 @@ impl Database {
                 trace.tools_offered,
                 trace.cache_hit as i32,
                 trace.outcome.to_string(),
-                trace.error_message,
+                error_message,
                 trace_json,
             ],
         )?;

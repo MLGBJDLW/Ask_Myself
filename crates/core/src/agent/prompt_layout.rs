@@ -71,18 +71,21 @@ impl PromptLayout {
 }
 
 pub(super) fn cache_stable_tool_surface_limits(
-    model: &str,
+    _model: &str,
     context_window: Option<u32>,
     max_response_tokens: u32,
 ) -> (usize, u32) {
-    let max_context = context_window.unwrap_or_else(|| model_context_window(model));
-    let usable_prompt = max_context
-        .saturating_sub(max_response_tokens)
-        .saturating_sub(context_safety_buffer(max_context));
-    (
-        MAX_CACHE_STABLE_TOOL_DEFINITIONS,
-        usable_prompt / CACHE_STABLE_TOOL_BUDGET_DIVISOR,
-    )
+    let max_tool_tokens = context_window
+        .map(|max_context| {
+            max_context
+                .saturating_sub(max_response_tokens)
+                .saturating_sub(context_safety_buffer(max_context))
+                / CACHE_STABLE_TOOL_BUDGET_DIVISOR
+        })
+        // Provider-managed capacity is unknown, not a synthetic 32K window.
+        // Definition count remains bounded independently below.
+        .unwrap_or(u32::MAX);
+    (MAX_CACHE_STABLE_TOOL_DEFINITIONS, max_tool_tokens)
 }
 
 pub(super) fn tool_surface_fits_cache_stable_limits(
@@ -173,7 +176,7 @@ fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&
 
 pub(super) fn turn_scaffolding_sections(
     route_prompt_section: &str,
-    task_plan: &AgentTaskPlan,
+    task_plan: Option<&AgentTaskPlan>,
     include_dynamic_tool_discovery: bool,
     layout: PromptLayout,
 ) -> Vec<String> {
@@ -186,7 +189,9 @@ pub(super) fn turn_scaffolding_sections(
         sections.push(route_prompt_section.to_string());
     }
 
-    sections.push(task_plan.to_prompt_section());
+    if let Some(task_plan) = task_plan {
+        sections.push(task_plan.to_prompt_section());
+    }
     if include_dynamic_tool_discovery {
         sections.push(tool_discovery::dynamic_tool_visibility_prompt().to_string());
     }
@@ -329,7 +334,7 @@ mod tests {
     fn deepseek_scaffolding_sections_are_controller_state() {
         let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
-            &plan(),
+            Some(&plan()),
             true,
             PromptLayout::for_provider(Some(ProviderType::DeepSeek)),
         );
@@ -344,7 +349,7 @@ mod tests {
     fn default_scaffolding_sections_are_controller_state() {
         let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
-            &plan(),
+            Some(&plan()),
             true,
             PromptLayout::for_provider(Some(ProviderType::Custom)),
         );
@@ -361,9 +366,26 @@ mod tests {
         layout.include_turn_scaffolding_system_prompts = false;
 
         let sections =
-            turn_scaffolding_sections("## Active Routing Plan\nroute", &plan(), true, layout);
+            turn_scaffolding_sections("## Active Routing Plan\nroute", Some(&plan()), true, layout);
 
         assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn default_execution_can_omit_model_facing_task_plan_scaffolding() {
+        let sections = turn_scaffolding_sections(
+            "## Active Routing Plan\nroute",
+            None,
+            true,
+            PromptLayout::for_provider(Some(ProviderType::Custom)),
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].contains("Active Routing Plan"));
+        assert!(sections[1].contains("Dynamic Tool Discovery"));
+        assert!(!sections
+            .iter()
+            .any(|section| section.contains("Active Task Plan")));
     }
 
     #[test]
@@ -378,6 +400,14 @@ mod tests {
         assert_eq!(surface.mode, CacheStableToolSurfaceMode::FullPinned);
         assert_eq!(surface.definitions.len(), 1);
         assert_eq!(surface.definitions[0].name, "tool_search");
+    }
+
+    #[test]
+    fn provider_managed_context_does_not_invent_a_small_tool_budget() {
+        let (max_definitions, max_tool_tokens) =
+            cache_stable_tool_surface_limits("private-model", None, 4_096);
+        assert_eq!(max_definitions, MAX_CACHE_STABLE_TOOL_DEFINITIONS);
+        assert_eq!(max_tool_tokens, u32::MAX);
     }
 
     #[test]
