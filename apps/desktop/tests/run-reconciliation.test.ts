@@ -204,6 +204,32 @@ test('watchdog preserves expected run identity instead of adopting a newer run',
   assertEqual(outcome.snapshot.taskRun.id, 'run-expected', 'newer unrelated run is ignored');
 });
 
+test('watchdog requests only the durable suffix after the live high-water mark', async () => {
+  let observedAfterEventSeq: number | undefined;
+  const { port } = createPort({
+    async listRunEvents(_runId, afterEventSeq) {
+      observedAfterEventSeq = afterEventSeq;
+      return [runEvent((afterEventSeq ?? 0) + 1)];
+    },
+  });
+
+  const outcome = await new DurableRunReconciler(port).reconcile({
+    reason: 'watchdog',
+    conversationId: 'conversation-1',
+    expectedRunId: 'run-1',
+    expectedTurnId: 'turn-1',
+    missingRunConfirmations: 0,
+    afterEventSeq: 7_095,
+  });
+
+  assertEqual(outcome.kind, 'active', 'watchdog should reconcile the active run');
+  assertEqual(observedAfterEventSeq, 7_095, 'recovery query cursor');
+  assert(
+    outcome.kind === 'active' && outcome.snapshot.runEvents[0]?.eventSeq === 7_096,
+    'only the unseen durable suffix should cross the Tauri seam',
+  );
+});
+
 test('missing expected run becomes terminal only after three durable confirmations', async () => {
   const { port } = createPort({ async listTaskRuns() { return []; } });
   const reconciler = new DurableRunReconciler(port);

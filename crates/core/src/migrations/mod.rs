@@ -2777,6 +2777,46 @@ Every answer that uses knowledge base search results.
         "v124_provider_streaming_config",
         "ALTER TABLE agent_configs ADD COLUMN provider_streaming_json TEXT;",
     ),
+    (
+        "v125_compact_legacy_tool_preview_events",
+        "WITH ranked_previews AS (
+             SELECT rowid AS event_rowid,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY run_id,
+                            CASE
+                              WHEN json_valid(payload_json)
+                              THEN COALESCE(json_extract(payload_json, '$.run.callId'), label)
+                              ELSE label
+                            END
+                        ORDER BY event_seq DESC
+                    ) AS preview_rank
+             FROM agent_run_events
+             WHERE kind = 'toolProgress' AND status = 'preparing'
+         )
+         DELETE FROM agent_run_events
+         WHERE rowid IN (
+             SELECT event_rowid FROM ranked_previews WHERE preview_rank > 1
+         );
+         DELETE FROM agent_run_events
+         WHERE kind = 'toolProgress'
+           AND status = 'preparing'
+           AND run_id IN (
+               SELECT id FROM agent_task_runs
+               WHERE status IN ('completed', 'cancelled', 'failed', 'timed_out')
+           );",
+    ),
+    (
+        "v126_migrate_legacy_deepseek_output_reserve",
+        // The settings UI switched new provider configs from a persisted 4096
+        // default to automatic output limits on 2026-08-04. Migrate only old
+        // DeepSeek rows still at that legacy value (or the adjacent +1 spinner
+        // value); later configs and deliberate larger limits remain untouched.
+        "UPDATE agent_configs
+         SET max_tokens = NULL
+         WHERE provider IN ('deep_seek', 'deepseek')
+           AND max_tokens BETWEEN 4096 AND 4097
+           AND created_at < '2026-08-05 00:00:00';",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -4740,5 +4780,130 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_events, 0);
+    }
+
+    #[test]
+    fn legacy_tool_preview_storms_collapse_to_live_snapshots_and_terminal_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DELETE FROM _migrations
+             WHERE name = 'v125_compact_legacy_tool_preview_events';
+             INSERT INTO conversations (id, provider, model) VALUES
+               ('conv-preview-active', 'deep_seek', 'deepseek-v4-pro'),
+               ('conv-preview-done', 'deep_seek', 'deepseek-v4-pro');
+             INSERT INTO messages (id, conversation_id, role, content) VALUES
+               ('msg-preview-active', 'conv-preview-active', 'user', 'active'),
+               ('msg-preview-done', 'conv-preview-done', 'user', 'done');
+             INSERT INTO conversation_turns
+               (id, conversation_id, user_message_id, status) VALUES
+               ('turn-preview-active', 'conv-preview-active', 'msg-preview-active', 'running'),
+               ('turn-preview-done', 'conv-preview-done', 'msg-preview-done', 'success');
+             INSERT INTO agent_task_runs
+               (id, conversation_id, turn_id, user_message_id, status, phase) VALUES
+               ('run-preview-active', 'conv-preview-active', 'turn-preview-active',
+                'msg-preview-active', 'running', 'tooling'),
+               ('run-preview-done', 'conv-preview-done', 'turn-preview-done',
+                'msg-preview-done', 'completed', 'done');
+             INSERT INTO agent_run_events
+               (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
+             VALUES
+               ('run-preview-active', 'turn-preview-active', 1, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-a'))),
+               ('run-preview-active', 'turn-preview-active', 2, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-a'))),
+               ('run-preview-active', 'turn-preview-active', 3, 2, 'toolProgress',
+                'tooling', 'edit_file', 'preparing', '{}'),
+               ('run-preview-active', 'turn-preview-active', 4, 2, 'toolProgress',
+                'tooling', 'edit_file', 'preparing', '{}'),
+               ('run-preview-active', 'turn-preview-active', 5, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-b'))),
+               ('run-preview-active', 'turn-preview-active', 6, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-b'))),
+               ('run-preview-done', 'turn-preview-done', 1, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing', '{}'),
+               ('run-preview-done', 'turn-preview-done', 2, 2, 'done',
+                'done', 'completed', 'completed', '{}');",
+        )
+        .expect("simulate legacy cumulative tool previews");
+
+        run_migrations(&conn).expect("preview compaction migration should succeed");
+        run_migrations(&conn).expect("preview compaction should remain idempotent");
+
+        let active = conn
+            .prepare(
+                "SELECT event_seq, label FROM agent_run_events
+                 WHERE run_id = 'run-preview-active' ORDER BY event_seq",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            active,
+            vec![
+                (2, "create_file".to_string()),
+                (4, "edit_file".to_string()),
+                (6, "create_file".to_string())
+            ]
+        );
+        let terminal_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_run_events
+                 WHERE run_id = 'run-preview-done' AND kind = 'toolProgress'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_progress, 0);
+    }
+
+    #[test]
+    fn legacy_deepseek_default_output_limit_migrates_to_model_aware_auto() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DELETE FROM _migrations
+             WHERE name = 'v126_migrate_legacy_deepseek_output_reserve';
+             INSERT INTO agent_configs
+               (id, name, provider, api_key, model, max_tokens, created_at) VALUES
+               ('legacy-deepseek', 'Legacy DeepSeek', 'deep_seek', '', 'deepseek-v4-pro',
+                4097, '2026-05-25 23:07:51'),
+               ('explicit-deepseek', 'Explicit DeepSeek', 'deep_seek', '', 'deepseek-v4-pro',
+                8192, '2026-05-25 23:07:51'),
+               ('new-deepseek', 'New DeepSeek', 'deep_seek', '', 'deepseek-v4-pro',
+                4097, '2026-08-28 09:00:00'),
+               ('legacy-openai', 'Legacy OpenAI', 'open_ai', '', 'gpt-5.6',
+                4096, '2026-05-25 23:07:51');",
+        )
+        .expect("simulate legacy and explicit provider limits");
+
+        run_migrations(&conn).expect("legacy DeepSeek output migration should succeed");
+
+        let limits = conn
+            .prepare("SELECT id, max_tokens FROM agent_configs ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            limits,
+            vec![
+                ("explicit-deepseek".to_string(), Some(8192)),
+                ("legacy-deepseek".to_string(), None),
+                ("legacy-openai".to_string(), Some(4096)),
+                ("new-deepseek".to_string(), Some(4097)),
+            ]
+        );
     }
 }

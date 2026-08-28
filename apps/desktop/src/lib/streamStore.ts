@@ -413,6 +413,7 @@ class StreamStoreImpl {
     };
     void durableRunReconciler.recoverGap({
       runId,
+      afterEventSeq: this._streams[conversationId]?._lastEventSeq,
       isCurrent,
       accept: runEvents => {
         for (const runEvent of runEvents) {
@@ -571,6 +572,7 @@ class StreamStoreImpl {
         expectedRunId,
         expectedTurnId,
         missingRunConfirmations: state._watchdogMissingRunConfirmations,
+        afterEventSeq: state._lastEventSeq,
         isCurrent: () => Boolean(
           this.watchdogStateIsCurrent(conversationId, generation, expectedRunId),
         ),

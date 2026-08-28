@@ -609,15 +609,40 @@ impl Database {
         &self,
         run_id: &str,
     ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
+        self.list_agent_run_events_from(run_id, 0, None)
+    }
+
+    /// Read a bounded unseen suffix for live recovery. Full historical replay
+    /// remains available through [`Self::list_agent_run_events`].
+    pub fn list_agent_run_events_after(
+        &self,
+        run_id: &str,
+        after_event_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
+        self.list_agent_run_events_from(run_id, after_event_seq, Some(limit.clamp(1, 4_096)))
+    }
+
+    fn list_agent_run_events_from(
+        &self,
+        run_id: &str,
+        after_event_seq: u64,
+        limit: Option<u32>,
+    ) -> Result<Vec<crate::agent_run::AgentRunEvent>, CoreError> {
+        let after_event_seq = i64::try_from(after_event_seq).map_err(|_| {
+            CoreError::InvalidInput("Run Event recovery cursor exceeds SQLite range".to_string())
+        })?;
+        let limit = limit.map(i64::from).unwrap_or(i64::MAX);
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT version, run_id, turn_id, event_seq, kind, phase, visibility, persistence,
                     display_kind, importance, label, status, payload_json, created_at
              FROM agent_run_events
-             WHERE run_id = ?1
-             ORDER BY event_seq ASC",
+             WHERE run_id = ?1 AND event_seq > ?2
+             ORDER BY event_seq ASC
+             LIMIT ?3",
         )?;
-        let rows = stmt.query_map(rusqlite::params![run_id], |row| {
+        let rows = stmt.query_map(rusqlite::params![run_id, after_event_seq, limit], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,

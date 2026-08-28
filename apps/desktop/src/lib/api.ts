@@ -1182,8 +1182,8 @@ export const listAgentTaskRunSummaries = (
 export const getAgentTaskRunEvents = (runId: string) =>
   invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId });
 
-export const getAgentRunEvents = (runId: string) =>
-  invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId });
+export const getAgentRunEvents = (runId: string, afterEventSeq?: number) =>
+  invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId, afterEventSeq });
 
 export type CompanionState =
   | 'idle'

@@ -16,8 +16,8 @@ import {
 const tauriDurableRunReconciliationPort: DurableRunReconciliationPort = {
   listTaskRuns: conversationId =>
     invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId }),
-  listRunEvents: runId =>
-    invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId }),
+  listRunEvents: (runId, afterEventSeq) =>
+    invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId, afterEventSeq }),
   listTaskEvents: runId =>
     invoke<AgentTaskRunEvent[]>('get_agent_task_run_events_cmd', { runId }),
   loadConversation: conversationId =>

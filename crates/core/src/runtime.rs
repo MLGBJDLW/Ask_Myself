@@ -21,7 +21,7 @@ use crate::conversation::ImageAttachment;
 use crate::error::CoreError;
 use crate::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use crate::quality_profile::{CustomOrchestrationOptions, OrchestrationProfile};
-pub use crate::run_event_outbox::AgentRunEventOutbox;
+pub use crate::run_event_outbox::{AgentRunEventOutbox, AgentRunEventSubmitError};
 
 pub const RUNTIME_PROTOCOL_VERSION: u16 = 1;
 /// Runtime-owned control plane for one active turn.

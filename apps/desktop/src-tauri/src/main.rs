@@ -14,6 +14,7 @@ mod desktop_agent_session;
 mod subagent_lifecycle;
 mod subagent_tool;
 mod terminal_agent_tool;
+mod tool_preview_journal;
 
 use std::io::{self, Read, Write};
 use std::path::Path;

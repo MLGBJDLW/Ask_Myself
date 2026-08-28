@@ -13,7 +13,7 @@ const MAX_GAP_RECOVERY_ATTEMPTS = 4;
 
 export interface DurableRunReconciliationPort {
   listTaskRuns(conversationId: string): Promise<AgentTaskRun[]>;
-  listRunEvents(runId: string): Promise<AgentRunEvent[]>;
+  listRunEvents(runId: string, afterEventSeq?: number): Promise<AgentRunEvent[]>;
   listTaskEvents(runId: string): Promise<AgentTaskRunEvent[]>;
   loadConversation(
     conversationId: string,
@@ -42,6 +42,7 @@ export interface WatchdogReconciliationRequest extends ReconciliationRequestBase
   expectedRunId?: string;
   expectedTurnId?: string;
   missingRunConfirmations: number;
+  afterEventSeq?: number;
 }
 
 export type DurableRunReconciliationRequest =
@@ -65,6 +66,7 @@ export type DurableRunReconciliationOutcome =
 
 export interface GapRecoveryRequest {
   runId: string;
+  afterEventSeq?: number;
   isCurrent: () => boolean;
   /** Apply the canonical replay and return true while a sequence gap remains. */
   accept(events: AgentRunEvent[]): boolean;
@@ -187,7 +189,10 @@ export class DurableRunReconciler {
       };
     }
 
-    const runEventsQuery = this.port.listRunEvents(taskRun.id);
+    const runEventsQuery = this.port.listRunEvents(
+      taskRun.id,
+      request.reason === 'watchdog' ? request.afterEventSeq : undefined,
+    );
     const taskEventsQuery = this.port.listTaskEvents(taskRun.id);
     let runEvents: AgentRunEvent[];
     let taskEvents: AgentTaskRunEvent[];
@@ -246,11 +251,12 @@ export class DurableRunReconciler {
   }
 
   async recoverGap(request: GapRecoveryRequest): Promise<GapRecoveryOutcome> {
+    let afterEventSeq = request.afterEventSeq;
     for (let attempt = 0; attempt < MAX_GAP_RECOVERY_ATTEMPTS; attempt += 1) {
       if (!request.isCurrent()) return { kind: 'stale' };
       try {
         const events = await this.withTimeout(
-          this.port.listRunEvents(request.runId),
+          this.port.listRunEvents(request.runId, afterEventSeq),
           'Settled run-event gap recovery query',
         );
         if (!request.isCurrent()) return { kind: 'stale' };
@@ -258,6 +264,7 @@ export class DurableRunReconciler {
           [...events].sort((left, right) => left.eventSeq - right.eventSeq),
         );
         if (!gapRemains) return { kind: 'recovered' };
+        afterEventSeq = events[events.length - 1]?.eventSeq ?? afterEventSeq;
       } catch {
         if (!request.isCurrent()) return { kind: 'stale' };
       }
