@@ -3529,46 +3529,35 @@ fn isolated_subagent_runtime() -> Result<tokio::runtime::Runtime, CoreError> {
         })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_subagent_isolated(
-    runtime: DelegationRuntime,
-    db: Database,
-    inherited_source_scope: Vec<String>,
-    call_label: String,
-    worker_id: Option<String>,
-    args: SpawnSubagentArgs,
-    batch_slots: Option<Arc<tokio::sync::Semaphore>>,
-    steering_rx: Option<mpsc::UnboundedReceiver<AgentSteeringMessage>>,
-    lifecycle_events: Option<SubagentEventBridge>,
-) -> Result<SubagentRunArtifact, CoreError> {
-    let isolated_runtime = isolated_subagent_runtime()?;
-    let (result_tx, result_rx) = oneshot::channel();
-    std::thread::Builder::new()
-        .name("nexa-subagent-worker".to_string())
-        .spawn(move || {
-            let result = isolated_runtime.block_on(run_subagent_once(
-                runtime,
-                db,
-                inherited_source_scope,
-                call_label,
-                worker_id,
-                args,
-                batch_slots,
-                steering_rx,
-                lifecycle_events,
-            ));
-            let _ = result_tx.send(result);
-        })
-        .map_err(|error| {
-            CoreError::Internal(format!("Failed to start isolated subagent thread: {error}"))
-        })?;
-    result_rx.await.map_err(|_| {
-        CoreError::Agent("Isolated subagent thread exited without a result".to_string())
-    })?
+async fn settle_worker_lifecycle(
+    lifecycle: &SubagentLifecycleRuntime,
+    agent_id: &str,
+    cancellation: &CancellationToken,
+    outcome: Result<&SubagentRunArtifact, &CoreError>,
+) {
+    let (status, result, error) = match outcome {
+        Ok(run) => (
+            SubagentLifecycleStatus::Completed,
+            serde_json::to_value(run).ok(),
+            None,
+        ),
+        Err(error) => (
+            if cancellation.is_cancelled() {
+                SubagentLifecycleStatus::Cancelled
+            } else {
+                SubagentLifecycleStatus::Failed
+            },
+            None,
+            Some(error.to_string()),
+        ),
+    };
+    if let Err(error) = lifecycle.finish(agent_id, status, result, error).await {
+        warn!("Failed to settle lifecycle for subagent {agent_id}: {error}");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_registered_subagent_isolated(
+async fn run_worker_with_lifecycle(
     runtime: DelegationRuntime,
     db: Database,
     inherited_source_scope: Vec<String>,
@@ -3587,7 +3576,7 @@ async fn run_registered_subagent_isolated(
     }
     lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Running)?;
 
-    let outcome = run_subagent_isolated(
+    let outcome = run_subagent_once(
         runtime.scoped_to_worker(registration.cancel_token),
         db,
         inherited_source_scope,
@@ -3599,37 +3588,44 @@ async fn run_registered_subagent_isolated(
         Some(registration.events),
     )
     .await;
-    match &outcome {
-        Ok(run) => {
-            if let Err(error) = lifecycle
-                .finish(
-                    &agent_id,
-                    SubagentLifecycleStatus::Completed,
-                    serde_json::to_value(run).ok(),
-                    None,
-                )
-                .await
-            {
-                warn!("Failed to complete lifecycle for batch subagent {agent_id}: {error}");
-            }
-        }
-        Err(error) => {
-            let status = if cancellation.is_cancelled() {
-                SubagentLifecycleStatus::Cancelled
-            } else {
-                SubagentLifecycleStatus::Failed
-            };
-            if let Err(lifecycle_error) = lifecycle
-                .finish(&agent_id, status, None, Some(error.to_string()))
-                .await
-            {
-                warn!(
-                    "Failed to record lifecycle failure for batch subagent {agent_id}: {lifecycle_error}"
-                );
-            }
-        }
-    }
+    settle_worker_lifecycle(&lifecycle, &agent_id, &cancellation, outcome.as_ref()).await;
     outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_registered_subagent_isolated(
+    runtime: DelegationRuntime,
+    db: Database,
+    inherited_source_scope: Vec<String>,
+    call_label: String,
+    worker_id: Option<String>,
+    args: SpawnSubagentArgs,
+    batch_slots: Option<Arc<tokio::sync::Semaphore>>,
+    registration: crate::subagent_lifecycle::SubagentWorkerRegistration,
+) -> Result<SubagentRunArtifact, CoreError> {
+    let isolated_runtime = isolated_subagent_runtime()?;
+    let (result_tx, result_rx) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("nexa-subagent-worker".to_string())
+        .spawn(move || {
+            let result = isolated_runtime.block_on(run_worker_with_lifecycle(
+                runtime,
+                db,
+                inherited_source_scope,
+                call_label,
+                worker_id,
+                args,
+                batch_slots,
+                registration,
+            ));
+            let _ = result_tx.send(result);
+        })
+        .map_err(|error| {
+            CoreError::Internal(format!("Failed to start isolated subagent thread: {error}"))
+        })?;
+    result_rx.await.map_err(|_| {
+        CoreError::Agent("Isolated subagent thread exited without a result".to_string())
+    })?
 }
 
 fn launch_detached_subagent(
@@ -3640,69 +3636,22 @@ fn launch_detached_subagent(
     registration: crate::subagent_lifecycle::SubagentWorkerRegistration,
 ) -> Result<(), CoreError> {
     let isolated_runtime = isolated_subagent_runtime()?;
-    let lifecycle = runtime.lifecycle.clone();
     let agent_id = registration.agent_id.clone();
-    let cancellation = registration.cancel_token.clone();
-    let worker_runtime = runtime.scoped_to_worker(registration.cancel_token);
     std::thread::Builder::new()
         .name("nexa-subagent-worker".to_string())
         .spawn(move || {
-            isolated_runtime.block_on(async move {
-                if let Err(error) = registration.events.start().await {
-                    warn!("Failed to start lifecycle for subagent {agent_id}: {error}");
-                    let _ = lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Failed);
-                    return;
-                }
-                let _ = lifecycle.set_status(&agent_id, SubagentLifecycleStatus::Running);
-                let outcome = run_subagent_once(
-                    worker_runtime,
-                    db,
-                    inherited_source_scope,
-                    agent_id.clone(),
-                    Some(agent_id.clone()),
-                    args,
-                    None,
-                    Some(registration.steering_rx),
-                    Some(registration.events),
-                )
-                .await;
-                match outcome {
-                    Ok(run) => {
-                        let result = serde_json::to_value(&run).ok();
-                        if let Err(error) = lifecycle
-                            .finish(
-                                &agent_id,
-                                SubagentLifecycleStatus::Completed,
-                                result,
-                                None,
-                            )
-                            .await
-                        {
-                            warn!("Failed to complete lifecycle for subagent {agent_id}: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        let status = if cancellation.is_cancelled() {
-                            SubagentLifecycleStatus::Cancelled
-                        } else {
-                            SubagentLifecycleStatus::Failed
-                        };
-                        if let Err(lifecycle_error) = lifecycle
-                            .finish(
-                                &agent_id,
-                                status,
-                                None,
-                                Some(error.to_string()),
-                            )
-                            .await
-                        {
-                            warn!(
-                                "Failed to record lifecycle failure for subagent {agent_id}: {lifecycle_error}"
-                            );
-                        }
-                    }
-                }
-            });
+            if let Err(error) = isolated_runtime.block_on(run_worker_with_lifecycle(
+                runtime,
+                db,
+                inherited_source_scope,
+                agent_id.clone(),
+                Some(agent_id.clone()),
+                args,
+                None,
+                registration,
+            )) {
+                warn!("Detached subagent {agent_id} failed: {error}");
+            }
         })
         .map_err(|error| {
             CoreError::Internal(format!("Failed to start detached subagent thread: {error}"))
@@ -4572,6 +4521,7 @@ impl Tool for SubagentBatchTool {
             let batch_runtime = runtime.clone();
             let batch_slots = Arc::clone(&batch_slots);
             worker_cancel_tokens.push(worker_cancel.clone());
+            let lifecycle_cancellation_for_join = worker_cancel.clone();
             runtime.add_batch_cancel_token(&batch_id, worker_cancel.clone());
             let worker_batch_id = batch_id.clone();
             let detached_label = worker_id
@@ -4635,14 +4585,13 @@ impl Tool for SubagentBatchTool {
                         let error = CoreError::Agent(format!(
                             "Delegated worker task terminated unexpectedly: {join_error}"
                         ));
-                        let _ = lifecycle_for_join
-                            .finish(
-                                &lifecycle_agent_id_for_join,
-                                SubagentLifecycleStatus::Failed,
-                                None,
-                                Some(error.to_string()),
-                            )
-                            .await;
+                        settle_worker_lifecycle(
+                            &lifecycle_for_join,
+                            &lifecycle_agent_id_for_join,
+                            &lifecycle_cancellation_for_join,
+                            Err(&error),
+                        )
+                        .await;
                         (
                             index,
                             failed_subagent_run_artifact(
