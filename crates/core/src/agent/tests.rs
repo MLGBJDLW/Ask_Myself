@@ -1330,6 +1330,10 @@ struct VisibleThenInterruptedProvider {
     complete_calls: Arc<AtomicUsize>,
 }
 
+struct ToolCallThenInterruptedProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
 struct CancelledStreamProvider {
     stream_calls: Arc<AtomicUsize>,
     visible_output: bool,
@@ -1473,19 +1477,94 @@ impl LlmProvider for VisibleThenInterruptedProvider {
         &self,
         _request: &CompletionRequest,
     ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
-        self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
-            Ok(StreamChunk {
-                delta: "partial answer".to_string(),
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunks = if call_no == 0 {
+            vec![
+                Ok(StreamChunk {
+                    delta: "partial answer".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                }),
+                Err(CoreError::StreamIncomplete(
+                    "stream interrupted after output".to_string(),
+                )),
+            ]
+        } else {
+            vec![Ok(StreamChunk {
+                delta: "complete replayed answer".to_string(),
                 tool_call_delta: None,
-                finish_reason: None,
-                usage: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage::default()),
                 thinking_delta: None,
+            })]
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ToolCallThenInterruptedProvider {
+    fn name(&self) -> &str {
+        "tool-call-then-interrupted-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "stream replay should recover before non-streaming fallback".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let tool_chunk = || StreamChunk {
+            delta: String::new(),
+            tool_call_delta: Some(ToolCallDelta {
+                id: "write-once".to_string(),
+                name: Some("recording_tool".to_string()),
+                arguments_delta: r#"{"value":"write once"}"#.to_string(),
+                index: Some(0),
+                thought_signature: None,
             }),
-            Err(CoreError::StreamIncomplete(
-                "stream interrupted after output".to_string(),
-            )),
-        ])))
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: Some(Usage::default()),
+            thinking_delta: None,
+        };
+        let chunks = match call_no {
+            0 => vec![
+                Ok(StreamChunk {
+                    finish_reason: None,
+                    ..tool_chunk()
+                }),
+                Err(CoreError::StreamIncomplete(
+                    "connection closed while tool arguments were visible".to_string(),
+                )),
+            ],
+            1 => vec![Ok(tool_chunk())],
+            _ => vec![Ok(StreamChunk {
+                delta: "write recovered and verified".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage::default()),
+                thinking_delta: None,
+            })],
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(chunks)))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -2641,9 +2720,11 @@ async fn prefix_cached_provider_pins_full_tool_surface_when_dynamic_visibility_i
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool));
     registry.register(Box::new(DeferredCacheTool));
+    registry.register(Box::new(NamedMockTool("update_plan")));
     let expected = registry
         .definitions()
         .into_iter()
+        .filter(|tool| tool.name != "update_plan")
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -2686,6 +2767,51 @@ async fn prefix_cached_provider_pins_full_tool_surface_when_dynamic_visibility_i
     assert!(requests[0]
         .iter()
         .any(|name| name == "mcp__cache_test__deferred"));
+    assert!(!requests[0].iter().any(|name| name == "update_plan"));
+}
+
+#[tokio::test]
+async fn explicit_nexus_keeps_task_plan_tool_visible() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    registry.register(Box::new(NamedMockTool("update_plan")));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("deepseek-chat".to_string()),
+            provider_type: Some(ProviderType::DeepSeek),
+            dynamic_tool_visibility: false,
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(16);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Plan and verify a multi-stage change.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent turn");
+
+    assert!(captured.lock().unwrap()[0]
+        .iter()
+        .any(|name| name == "update_plan"));
 }
 
 #[tokio::test]
@@ -4376,9 +4502,12 @@ async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
         .iter()
         .any(|message| message.role == Role::System
             && message.content.contains("Active Routing Plan")));
-    assert!(persisted.iter().any(
+    assert!(!persisted.iter().any(
         |message| message.role == Role::System && message.content.contains("Active Task Plan")
     ));
+    assert!(!persisted.iter().any(|message| {
+        message.role == Role::System && message.content.contains("Orchestration Quality Profile")
+    }));
     assert_eq!(persisted.last().unwrap().role, Role::Assistant);
 
     let first_request = requests.lock().unwrap()[0].clone();
@@ -6511,7 +6640,7 @@ async fn empty_metadata_chunks_do_not_reset_context_compaction_circuit_breaker()
 }
 
 #[tokio::test]
-async fn test_stream_incomplete_after_visible_output_never_resends_request() {
+async fn test_stream_incomplete_after_resettable_text_replays_cleanly() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
@@ -6530,7 +6659,7 @@ async fn test_stream_incomplete_after_visible_output_never_resends_request() {
     let db = Database::open_memory().expect("in-memory db");
     let (tx, mut rx) = mpsc::channel(32);
 
-    let error = executor
+    let result = executor
         .run(
             vec![],
             vec![ContentPart::Text {
@@ -6543,10 +6672,10 @@ async fn test_stream_incomplete_after_visible_output_never_resends_request() {
             0,
         )
         .await
-        .expect_err("visible partial output must stop instead of replaying");
+        .expect("resettable partial text should be cleared and replayed");
 
-    assert!(error.to_string().contains("retry suppressed"));
-    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.text_content(), "complete replayed answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
     assert_eq!(complete_calls.load(Ordering::SeqCst), 0);
 
     let mut visible_text = String::new();
@@ -6555,21 +6684,74 @@ async fn test_stream_incomplete_after_visible_output_never_resends_request() {
     while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
         match event {
             Some(AgentEvent::TextDelta { delta }) => visible_text.push_str(&delta),
-            Some(AgentEvent::StreamReset { .. }) => saw_reset = true,
+            Some(AgentEvent::StreamReset { .. }) => {
+                saw_reset = true;
+                visible_text.clear();
+            }
             Some(AgentEvent::Error { .. }) => saw_error = true,
             Some(_) => {}
             None => break,
         }
     }
-    assert_eq!(visible_text, "partial answer");
+    assert_eq!(visible_text, "complete replayed answer");
     assert!(
-        !saw_reset,
-        "visible output must not be erased for a hidden retry"
+        saw_reset,
+        "the partial draft must be visibly cleared before replay"
     );
-    assert!(
-        saw_error,
-        "the interrupted partial response must be terminalized"
+    assert!(!saw_error, "a successful replay must not surface an error");
+}
+
+#[tokio::test]
+async fn interrupted_streamed_tool_arguments_replay_before_single_execution() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ToolCallThenInterruptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
     );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let result = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "Write the requested change with recording_tool.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("interrupted tool assembly should replay before dispatch");
+
+    assert_eq!(result.text_content(), "write recovered and verified");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    let mut saw_reset = false;
+    let mut saw_error = false;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            AgentEvent::StreamReset { .. } => saw_reset = true,
+            AgentEvent::Error { .. } => saw_error = true,
+            _ => {}
+        }
+    }
+    assert!(saw_reset);
+    assert!(!saw_error);
 }
 
 #[tokio::test]

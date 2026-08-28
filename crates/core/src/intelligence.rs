@@ -129,7 +129,7 @@ impl AgentTaskPlan {
         let plan_json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string());
         format!(
             "## Active Task Plan\n\
-             Treat this plan as the current execution contract. Keep it updated mentally while you work: gather only the evidence needed, verify before final synthesis, and avoid unrelated tools.\n\n\
+             This is controller-owned execution guidance for an explicitly deep or isolated run, not a model-owned checklist and not a prerequisite for ordinary tool use. Use it to stay scoped, but call the concrete evidence, file, shell, or verification tool directly when action is needed. Never call `update_plan` merely to satisfy this projection.\n\n\
              ```json\n{plan_json}\n```\n\n\
              Execution rules:\n\
              - If evidencePolicy.mode is required, do not give a final factual answer until the evidence ledger is sufficient or you explicitly state what is missing.\n\

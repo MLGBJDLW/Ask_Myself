@@ -117,6 +117,9 @@ use self::trace_builder::{
 };
 use self::turn_events::{TurnLoopEvent, TurnLoopRecorder};
 use self::workspace_isolation::WorkspaceIsolationRuntime;
+pub use self::workspace_isolation::{
+    cleanup_orphaned_workspace_isolations, WorkspaceIsolationCleanupReport,
+};
 
 pub use self::events::{
     AgentEvent, ConnectionErrorCategory, ConnectionStateEvent, ConnectionStateKind,
@@ -148,6 +151,8 @@ async fn emit_error_and_finalize_turn(
         frontend_message,
         trace_message,
     } = messages;
+    let frontend_message = crate::sensitive_data::sanitize_diagnostic(&frontend_message, None);
+    let trace_message = crate::sensitive_data::sanitize_diagnostic(&trace_message, None);
 
     let _ = tx
         .send(AgentEvent::Error {
@@ -335,6 +340,9 @@ pub enum AgentRequestKind {
     #[default]
     MainAgentStep,
     SubagentWorker,
+    /// Root scheduled run whose filesystem mutations must pass through the
+    /// controller-owned isolated patch workspace.
+    ScheduledIsolatedPatch,
 }
 
 impl AgentRequestKind {
@@ -342,7 +350,16 @@ impl AgentRequestKind {
         match self {
             Self::MainAgentStep => "mainAgentStep",
             Self::SubagentWorker => "subagentWorker",
+            Self::ScheduledIsolatedPatch => "scheduledIsolatedPatch",
         }
+    }
+
+    pub fn is_main_agent(self) -> bool {
+        matches!(self, Self::MainAgentStep | Self::ScheduledIsolatedPatch)
+    }
+
+    pub fn requires_workspace_isolation(self) -> bool {
+        self == Self::ScheduledIsolatedPatch
     }
 }
 

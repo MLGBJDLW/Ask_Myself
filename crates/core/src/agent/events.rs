@@ -70,8 +70,15 @@ pub enum AgentEvent {
         offset: usize,
         delta: String,
     },
-    /// Clear partial stream output before replaying a recovered response.
-    StreamReset { reason: String },
+    /// Reset stream projection before a recovery or controller restart.
+    StreamReset {
+        reason: String,
+        /// True when the current answer/thinking/preparing-tool sample was
+        /// never accepted for execution and must be removed, not retained as
+        /// a cancelled historical round.
+        #[serde(default)]
+        discard_sample: bool,
+    },
     /// The model has started assembling a tool call, but the arguments are not
     /// stable enough to render or execute yet.
     ToolCallPreparing {

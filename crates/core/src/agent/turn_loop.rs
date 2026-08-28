@@ -66,6 +66,19 @@ fn successful_action_reconciliation_observation(
     })
 }
 
+fn successful_executable_action(
+    calls: &[ToolCallRequest],
+    summaries: &[tool_dispatch::ToolDispatchSummary],
+) -> bool {
+    calls.iter().any(|call| {
+        loop_guard::tool_call_is_action_progress(&call.name)
+            && summaries
+                .iter()
+                .find(|summary| summary.call_id == call.id)
+                .is_some_and(|summary| !summary.is_error)
+    })
+}
+
 fn cumulative_run_step_output_budget(
     configured_step_max: u32,
     actual_run_limit: Option<u32>,
@@ -282,6 +295,9 @@ impl AgentExecutor {
         if self.config.execution_mode.is_plan() {
             workflow_ir.configure_for_plan_mode();
         } else {
+            if self.config.request_kind.requires_workspace_isolation() {
+                workflow_ir.configure_for_scheduled_isolated_patch();
+            }
             let verification_roots = if source_scope.is_empty() {
                 let sources = db.list_sources()?;
                 if sources.len() == 1 {
@@ -306,9 +322,14 @@ impl AgentExecutor {
             );
         }
         let mut workspace_isolation = if !self.config.execution_mode.is_plan()
-            && workflow_ir.requires_runtime_write_isolation()
+            && (workflow_ir.requires_runtime_write_isolation()
+                || self.config.request_kind.requires_workspace_isolation())
         {
-            Some(WorkspaceIsolationRuntime::prepare(db, &source_scope)?)
+            Some(WorkspaceIsolationRuntime::prepare(
+                db,
+                &source_scope,
+                turn_id,
+            )?)
         } else {
             None
         };
@@ -361,6 +382,12 @@ impl AgentExecutor {
 
         debug!("Agent route selected: {:?}", route_plan.kind);
 
+        let expose_model_task_plan = self.config.power_mode.is_nexus()
+            || self.config.orchestration_profile != OrchestrationProfile::Balanced
+            || self.config.request_kind.requires_workspace_isolation();
+        let balanced_model_tools =
+            (!expose_model_task_plan).then(|| self.tools.without_names(&["update_plan"]));
+        let model_tool_registry = balanced_model_tools.as_ref().unwrap_or(&self.tools);
         let layout =
             prompt_layout::PromptLayout::for_request(self.config.provider_type, Some(model));
         let effective_context_capacity = self
@@ -372,7 +399,7 @@ impl AgentExecutor {
             None
         } else {
             Some(prompt_layout::select_cache_stable_tool_surface(
-                &self.tools,
+                model_tool_registry,
                 model,
                 effective_context_capacity,
                 max_response_tokens,
@@ -392,10 +419,9 @@ impl AgentExecutor {
             );
             surface.definitions
         } else if effective_dynamic_tool_visibility {
-            self.tools
-                .select_tools_for_decision(&route_plan.visibility_decision)
+            model_tool_registry.select_tools_for_decision(&route_plan.visibility_decision)
         } else {
-            self.tools.definitions()
+            model_tool_registry.definitions()
         };
         if self.config.power_mode.is_nexus() {
             // Nexus orchestration must be available on the first model step.
@@ -431,11 +457,13 @@ impl AgentExecutor {
             .collect::<Vec<_>>();
         let mut controller_state_sections_owned = prompt_layout::turn_scaffolding_sections(
             &route_plan.prompt_section,
-            &task_plan,
-            effective_dynamic_tool_visibility && self.tools.contains("tool_search"),
+            expose_model_task_plan.then_some(&task_plan),
+            effective_dynamic_tool_visibility && model_tool_registry.contains("tool_search"),
             layout,
         );
-        controller_state_sections_owned.push(orchestration_policy.prompt_section());
+        if expose_model_task_plan {
+            controller_state_sections_owned.push(orchestration_policy.prompt_section());
+        }
         if let Some(isolation) = workspace_isolation.as_ref() {
             controller_state_sections_owned.push(isolation.prompt_section());
         }
@@ -765,7 +793,7 @@ impl AgentExecutor {
                 turn_state.transition_to(TurnPhase::ToolDispatch);
                 let mut started_call_ids = HashSet::new();
                 let mut tool_run_started_ids = HashSet::new();
-                let summaries = match self
+                let dispatch_outcome = match self
                     .dispatch_tool_calls(
                         tool_dispatch::ToolDispatchContext {
                             db,
@@ -810,6 +838,26 @@ impl AgentExecutor {
                         return Err(error);
                     }
                 };
+                if let Some(reason) = dispatch_outcome.terminal_loop_guard_reason {
+                    let trace_message =
+                        format!("agent_loop_stopped_during_reconnaissance: {reason}");
+                    emit_error_and_finalize_turn(
+                        &tx,
+                        db,
+                        &mut trace,
+                        turn_id,
+                        route_plan.kind,
+                        &persisted_trace_items,
+                        TurnErrorMessages {
+                            frontend_message: "Nexa stopped the reconnaissance wave after repeated tool failures continued beyond one recovery prompt.".to_string(),
+                            trace_message: trace_message.clone(),
+                        },
+                    )
+                    .await;
+                    turn_state.finish(TurnOutcome::Failed);
+                    return Err(CoreError::Agent(trace_message));
+                }
+                let summaries = dispatch_outcome.summaries;
                 let summary = summaries.iter().find(|summary| summary.call_id == call.id);
                 if summary.is_some_and(|summary| !summary.is_error) {
                     model_action_observed = true;
@@ -1089,7 +1137,7 @@ impl AgentExecutor {
                     continue 'react_loop;
                 }
             };
-            model_action_observed |= !tool_calls.is_empty() || !tool_run_started_ids.is_empty();
+            model_action_observed |= !tool_run_started_ids.is_empty();
             if let Some(isolation) = workspace_isolation.as_mut() {
                 isolation.rewrite_tool_calls(&mut tool_calls)?;
             }
@@ -1334,6 +1382,7 @@ impl AgentExecutor {
                     let _ = tx
                         .send(AgentEvent::StreamReset {
                             reason: "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning.".to_string(),
+                            discard_sample: true,
                         })
                         .await;
                     let trace_message = format!(
@@ -1426,6 +1475,56 @@ impl AgentExecutor {
             messages.push(assistant_msg.clone());
             let loop_guard_intervention =
                 loop_guard.observe_model_step(&assistant_msg.text_content(), &tool_calls);
+
+            if let Some(intervention) = loop_guard_intervention.as_ref() {
+                if intervention.action == LoopGuardAction::StopLoop {
+                    let event = TurnLoopEvent::LoopGuardIntervention {
+                        reason: intervention.reason.clone(),
+                        action: intervention.action.as_str().to_string(),
+                    };
+                    loop_recorder.record(event.clone());
+                    append_persisted_trace_loop_event(&mut persisted_trace_items, event);
+                    append_developer_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &intervention.reason,
+                        "error",
+                    );
+                    append_persisted_trace_thinking(
+                        &mut persisted_trace_items,
+                        &iteration_thinking,
+                    );
+                    messages.pop();
+                    accumulated_content.truncate(
+                        accumulated_content
+                            .len()
+                            .saturating_sub(assistant_msg.text_content().len()),
+                    );
+                    last_iteration_content.clear();
+                    let _ = tx
+                        .send(AgentEvent::StreamReset {
+                            reason: "A repeated agent loop was stopped before another model or tool step."
+                                .to_string(),
+                            discard_sample: true,
+                        })
+                        .await;
+                    let trace_message = format!("agent_loop_stopped: {}", intervention.reason);
+                    emit_error_and_finalize_turn(
+                        &tx,
+                        db,
+                        &mut trace,
+                        turn_id,
+                        route_plan.kind,
+                        &persisted_trace_items,
+                        TurnErrorMessages {
+                            frontend_message: "Nexa stopped this turn after the model repeated the same unproductive step following one bounded recovery prompt. No further repeated tool call was executed; retry with a different strategy or narrower task.".to_string(),
+                            trace_message: trace_message.clone(),
+                        },
+                    )
+                    .await;
+                    turn_state.finish(TurnOutcome::Failed);
+                    return Err(CoreError::Agent(trace_message));
+                }
+            }
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
@@ -1530,7 +1629,38 @@ impl AgentExecutor {
                     )
                     .to_artifact();
                     workflow_ir.observe_final_answer_audit(&final_audit);
-                    if workflow_ir.requires_runtime_write_isolation()
+                    if self.config.request_kind.requires_workspace_isolation()
+                        && workflow_ir.ready_for_runtime_independent_review()
+                    {
+                        let review = workspace_isolation
+                            .as_ref()
+                            .ok_or_else(|| {
+                                CoreError::Internal(
+                                    "scheduled isolated review has no controller runtime"
+                                        .to_string(),
+                                )
+                            })?
+                            .review_isolated_patch();
+                        match review {
+                            Ok(report) => {
+                                workflow_ir
+                                    .record_runtime_independent_review(true, report.detail.clone());
+                                let _ = tx
+                                    .send(AgentEvent::ControllerStatus {
+                                        code: "workspace_isolation_reviewed".to_string(),
+                                        content: report.detail,
+                                        tone: Some("success".to_string()),
+                                    })
+                                    .await;
+                            }
+                            Err(error) => {
+                                workflow_ir
+                                    .record_runtime_independent_review(false, error.to_string());
+                            }
+                        }
+                    }
+                    if (workflow_ir.requires_runtime_write_isolation()
+                        || self.config.request_kind.requires_workspace_isolation())
                         && workflow_ir.ready_to_promote_isolated_writes()
                     {
                         let promotion = workspace_isolation
@@ -1600,7 +1730,7 @@ impl AgentExecutor {
                     }
                 }
                 let active_goal = if self.config.execution_mode.is_plan()
-                    || self.config.request_kind != AgentRequestKind::MainAgentStep
+                    || !self.config.request_kind.is_main_agent()
                     || iteration + 1 >= self.config.max_iterations
                 {
                     None
@@ -1732,7 +1862,7 @@ impl AgentExecutor {
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             turn_state.transition_to(TurnPhase::ToolDispatch);
-            let dispatch_summaries = match self
+            let dispatch_outcome = match self
                 .dispatch_tool_calls(
                     tool_dispatch::ToolDispatchContext {
                         db,
@@ -1777,6 +1907,26 @@ impl AgentExecutor {
                     return Err(error);
                 }
             };
+            let dispatch_summaries = dispatch_outcome.summaries;
+            if let Some(reason) = dispatch_outcome.terminal_loop_guard_reason {
+                let trace_message = format!("agent_loop_stopped_after_tool_errors: {reason}");
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: "Nexa stopped this turn after repeated tool failures continued beyond one recovery prompt. The completed error results were kept, and no additional model request was sent.".to_string(),
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
+            }
+            model_action_observed |= successful_executable_action(&tool_calls, &dispatch_summaries);
             if pending_action_reconciliation
                 && successful_action_reconciliation_observation(&tool_calls, &dispatch_summaries)
             {

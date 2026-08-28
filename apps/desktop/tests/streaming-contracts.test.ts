@@ -1173,7 +1173,10 @@ test('canonical stream reset projection matches live stream dispatch recovered s
       phase: 'responding',
       label: 'Stream interrupted; retrying without streaming.',
       status: 'running',
-      payload: { reason: 'Stream interrupted; retrying without streaming.' },
+      payload: {
+        reason: 'Stream interrupted; retrying without streaming.',
+        discardSample: true,
+      },
     }),
     runEvent({
       eventSeq: 4,
@@ -1201,12 +1204,13 @@ test('canonical stream reset projection matches live stream dispatch recovered s
   assertEqual(projected.toolCalls.length, 0, 'projected stream reset clears active stale tools');
   assertEqual(live.toolCalls.length, projected.toolCalls.length, 'tool reset equivalence');
   assertEqual(live.streamRounds.length, projected.streamRounds.length, 'recovered round count equivalence');
-  assertEqual(live.streamRounds[0].reply, projected.streamRounds[0].reply, 'pre-reset reply preservation equivalence');
-  assertEqual(live.streamRounds[0].reply, 'Checking', 'stream reset should preserve pre-reset reply history');
-  assertEqual(live.streamRounds[0].toolCalls[0].status, 'cancelled', 'pre-reset pending tool should be marked cancelled');
   assert(
-    live.traceEvents.some(event => event.kind === 'reply' && event.text === 'Checking'),
-    'stream reset should preserve pre-reset reply trace',
+    !live.traceEvents.some(event => event.kind === 'reply' && event.text === 'Checking'),
+    'a discard-sample reset should remove the abandoned reply trace',
+  );
+  assert(
+    !live.traceEvents.some(event => event.kind === 'tool' && event.toolCall.callId === 'call-reset'),
+    'a discard-sample reset should remove preparing tools instead of fabricating cancellation',
   );
   assert(
     live.traceEvents.some(event => event.kind === 'reply' && event.text === 'Recovered'),

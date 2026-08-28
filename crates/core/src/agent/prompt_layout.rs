@@ -176,7 +176,7 @@ fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&
 
 pub(super) fn turn_scaffolding_sections(
     route_prompt_section: &str,
-    task_plan: &AgentTaskPlan,
+    task_plan: Option<&AgentTaskPlan>,
     include_dynamic_tool_discovery: bool,
     layout: PromptLayout,
 ) -> Vec<String> {
@@ -189,7 +189,9 @@ pub(super) fn turn_scaffolding_sections(
         sections.push(route_prompt_section.to_string());
     }
 
-    sections.push(task_plan.to_prompt_section());
+    if let Some(task_plan) = task_plan {
+        sections.push(task_plan.to_prompt_section());
+    }
     if include_dynamic_tool_discovery {
         sections.push(tool_discovery::dynamic_tool_visibility_prompt().to_string());
     }
@@ -332,7 +334,7 @@ mod tests {
     fn deepseek_scaffolding_sections_are_controller_state() {
         let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
-            &plan(),
+            Some(&plan()),
             true,
             PromptLayout::for_provider(Some(ProviderType::DeepSeek)),
         );
@@ -347,7 +349,7 @@ mod tests {
     fn default_scaffolding_sections_are_controller_state() {
         let sections = turn_scaffolding_sections(
             "## Active Routing Plan\nroute",
-            &plan(),
+            Some(&plan()),
             true,
             PromptLayout::for_provider(Some(ProviderType::Custom)),
         );
@@ -364,9 +366,26 @@ mod tests {
         layout.include_turn_scaffolding_system_prompts = false;
 
         let sections =
-            turn_scaffolding_sections("## Active Routing Plan\nroute", &plan(), true, layout);
+            turn_scaffolding_sections("## Active Routing Plan\nroute", Some(&plan()), true, layout);
 
         assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn default_execution_can_omit_model_facing_task_plan_scaffolding() {
+        let sections = turn_scaffolding_sections(
+            "## Active Routing Plan\nroute",
+            None,
+            true,
+            PromptLayout::for_provider(Some(ProviderType::Custom)),
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].contains("Active Routing Plan"));
+        assert!(sections[1].contains("Dynamic Tool Discovery"));
+        assert!(!sections
+            .iter()
+            .any(|section| section.contains("Active Task Plan")));
     }
 
     #[test]

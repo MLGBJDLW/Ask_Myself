@@ -490,6 +490,7 @@ impl AgentExecutor {
                                         "Planning deadline reached; restarting with {} before any tool ran.",
                                         recovery_controls.description
                                     ),
+                                    discard_sample: true,
                                 })
                                 .await;
                             append_developer_persisted_trace_status(
@@ -884,7 +885,7 @@ impl AgentExecutor {
                     );
                     break 'model_attempt Some(timing);
                 }
-                model_attempt::ModelAttemptProgress::InterruptedAfterVisibleOutput(
+                model_attempt::ModelAttemptProgress::InterruptedAfterReplayBarrier(
                     interruption,
                 ) => {
                     let model_attempt::ModelAttemptInterruption {
@@ -1182,6 +1183,7 @@ impl AgentExecutor {
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: reason.to_string(),
+                    discard_sample: true,
                 })
                 .await;
             accumulated_content.truncate(accumulated_len_before_iteration);
@@ -1504,9 +1506,9 @@ impl AgentExecutor {
                             model_attempt::ModelAttemptProgress::StreamComplete { .. } => {
                                 "stream_complete"
                             }
-                            model_attempt::ModelAttemptProgress::InterruptedAfterVisibleOutput(
+                            model_attempt::ModelAttemptProgress::InterruptedAfterReplayBarrier(
                                 _,
-                            ) => "interrupted_after_visible_output",
+                            ) => "interrupted_after_replay_barrier",
                             model_attempt::ModelAttemptProgress::Completion(_) => "completion",
                             model_attempt::ModelAttemptProgress::NeedsContextCompaction(_) => {
                                 "context_compaction"
@@ -1675,6 +1677,7 @@ impl AgentExecutor {
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: reset_reason,
+                    discard_sample: true,
                 })
                 .await;
             accumulated_content.truncate(accumulated_len_before_iteration);

@@ -81,7 +81,9 @@ impl AgentExecutor {
         error: &CoreError,
     ) {
         let operation_kind = match self.config.request_kind {
-            AgentRequestKind::MainAgentStep => "agent_main",
+            AgentRequestKind::MainAgentStep | AgentRequestKind::ScheduledIsolatedPatch => {
+                "agent_main"
+            }
             AgentRequestKind::SubagentWorker => "subagent",
         };
         let invocation_id = format!(
@@ -180,7 +182,9 @@ impl AgentExecutor {
         let (prompt_tokens, completion_tokens, _has_actual_usage) =
             model_step_accounting_tokens(chunk_usage.as_ref(), context_breakdown.total_tokens);
         let operation_kind = match self.config.request_kind {
-            AgentRequestKind::MainAgentStep => "agent_main",
+            AgentRequestKind::MainAgentStep | AgentRequestKind::ScheduledIsolatedPatch => {
+                "agent_main"
+            }
             AgentRequestKind::SubagentWorker => "subagent",
         };
         if let Err(error) = db.record_model_step_usage(

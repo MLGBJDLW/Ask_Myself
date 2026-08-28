@@ -97,13 +97,36 @@ export function resetActiveStreamBlocks(state: StreamTerminalProjectionState): v
 export function applyStreamResetProjection(
   state: StreamTerminalProjectionState,
   reason: string,
-  options: { clearTools?: boolean } = {},
+  options: { clearTools?: boolean; discardSample?: boolean } = {},
 ): void {
   state.streamText = '';
   state.thinkingText = '';
   state.isThinking = false;
 
-  if (options.clearTools) {
+  if (options.discardSample) {
+    const pendingToolIds = new Set(
+      state.toolCalls
+        .filter(toolCall => isPendingToolCallStatus(toolCall.status))
+        .map(toolCall => toolCall.callId),
+    );
+    const lastCommittedToolIndex = state.traceEvents.reduce(
+      (latest, event, index) => event.kind === 'tool'
+        && !pendingToolIds.has(event.toolCall.callId)
+        && !isPendingToolCallStatus(event.toolCall.status)
+        ? index
+        : latest,
+      -1,
+    );
+    state.traceEvents = state.traceEvents.filter((event, index) => {
+      if (event.kind === 'tool' && pendingToolIds.has(event.toolCall.callId)) return false;
+      return index <= lastCommittedToolIndex || (event.kind !== 'reply' && event.kind !== 'thinking');
+    });
+    state.toolCalls = state.toolCalls.filter(toolCall => !pendingToolIds.has(toolCall.callId));
+    state.streamRounds = state.streamRounds.filter(round => (
+      round.id !== state._activeRoundId
+      && !round.toolCalls.some(toolCall => pendingToolIds.has(toolCall.callId))
+    ));
+  } else if (options.clearTools) {
     // A reset starts a new model attempt, but it should not erase the
     // already-rendered transcript for this turn. Keep prior trace/round UI
     // intact and make any interrupted tools terminal so the timeline does not
