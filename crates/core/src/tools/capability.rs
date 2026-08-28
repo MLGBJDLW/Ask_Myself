@@ -75,6 +75,62 @@ pub struct ToolCapabilityDescriptor {
     pub access_profile: ToolAccessProfile,
 }
 
+/// Whether a tool can participate in an unattended scheduled workspace.
+/// Unknown and externally hosted tools fail closed until their adapter can
+/// inherit the controller-owned filesystem sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledWorkspaceToolClass {
+    Independent,
+    IsolatableWrite,
+    Unsupported,
+}
+
+pub fn scheduled_workspace_tool_class(name: &str) -> ScheduledWorkspaceToolClass {
+    match name.trim() {
+        "create_file" | "edit_file" | "multi_edit" | "run_shell" => {
+            ScheduledWorkspaceToolClass::IsolatableWrite
+        }
+        "activity_observe"
+        | "browser_evidence_capture"
+        | "code_intelligence"
+        | "compare_documents"
+        | "extract_image_text"
+        | "fetch_url"
+        | "get_chunk_context"
+        | "get_document_info"
+        | "get_related_concepts"
+        | "glob_files"
+        | "grep_files"
+        | "list_dir"
+        | "list_documents"
+        | "list_sources"
+        | "cancel_subagent"
+        | "close_subagent"
+        | "judge_subagent_results"
+        | "observe_subagent"
+        | "observe_subagent_batch"
+        | "query_knowledge_graph"
+        | "read_file"
+        | "read_files"
+        | "retrieve_evidence"
+        | "search_by_date"
+        | "search_files"
+        | "search_knowledge_base"
+        | "search_playbooks"
+        | "search_sessions"
+        | "session_search"
+        | "send_subagent_input"
+        | "spawn_subagent"
+        | "spawn_subagent_batch"
+        | "summarize_document"
+        | "tool_search"
+        | "wait_subagent"
+        | "web_research_context"
+        | "web_search" => ScheduledWorkspaceToolClass::Independent,
+        _ => ScheduledWorkspaceToolClass::Unsupported,
+    }
+}
+
 pub fn category_label(category: ToolCategory) -> &'static str {
     match category {
         ToolCategory::Core => "core",
@@ -838,5 +894,29 @@ pub fn capability_descriptor_for_tool(
         },
         capabilities,
         access_profile,
+    }
+}
+
+#[cfg(test)]
+mod scheduled_workspace_tests {
+    use super::*;
+
+    #[test]
+    fn scheduled_workspace_classification_fails_closed_for_external_mutators() {
+        assert_eq!(
+            scheduled_workspace_tool_class("edit_file"),
+            ScheduledWorkspaceToolClass::IsolatableWrite
+        );
+        assert_eq!(
+            scheduled_workspace_tool_class("read_file"),
+            ScheduledWorkspaceToolClass::Independent
+        );
+        for unsupported in ["office_artifact", "project_tool", "mcp__github__write"] {
+            assert_eq!(
+                scheduled_workspace_tool_class(unsupported),
+                ScheduledWorkspaceToolClass::Unsupported,
+                "{unsupported}"
+            );
+        }
     }
 }

@@ -124,6 +124,7 @@ import type {
   TaskOrchestratorDeliveryEnvelope,
   TaskOrchestratorExecutionTicket,
   TaskOrchestratorWorkflowLaunch,
+  TaskOrchestratorWorkflowStartOutcome,
   TaskResumeCheckpoint,
   TaskResumePrompt,
   WorkflowAutomation,
@@ -145,7 +146,6 @@ import type { ProviderModelCatalogSnapshot } from "./providerModelCatalog";
 import {
   buildAgentChatRequest,
   type AgentChatRequestInput,
-  type AgentExecutionMode,
 } from "./agentChatRequest";
 
 export type {
@@ -996,7 +996,7 @@ export const startWorkflowAutomationRun = (
   id: string,
   conversationId?: string | null,
   summary?: string | null,
-) => invoke<TaskOrchestratorWorkflowLaunch>('start_workflow_automation_run_cmd', {
+) => invoke<TaskOrchestratorWorkflowStartOutcome>('start_workflow_automation_run_cmd', {
   id,
   conversationId: conversationId ?? null,
   summary: summary ?? null,
@@ -1017,22 +1017,28 @@ export const startDueWorkflowAutomationRun = (
   id: string,
   now?: string | null,
   conversationId?: string | null,
-  agentConfigId?: string | null,
-  personaId?: string | null,
-  skillIds?: string[] | null,
-  executionMode?: AgentExecutionMode | null,
   summary?: string | null,
 ) =>
-  invoke<TaskOrchestratorWorkflowLaunch>('start_due_workflow_automation_run_cmd', {
+  invoke<TaskOrchestratorWorkflowStartOutcome>('start_due_workflow_automation_run_cmd', {
     id,
     now: now ?? null,
     conversationId: conversationId ?? null,
-    agentConfigId: agentConfigId ?? null,
-    personaId: personaId ?? null,
-    skillIds: skillIds && skillIds.length > 0 ? skillIds : null,
-    executionMode: executionMode ?? null,
     summary: summary ?? null,
   });
+
+export const listWorkflowAutomationApprovals = () =>
+  invoke<WorkflowAutomationRun[]>('list_workflow_automation_approvals_cmd');
+
+export const approveWorkflowAutomationRun = (
+  runId: string,
+  conversationId?: string | null,
+) => invoke<TaskOrchestratorWorkflowLaunch>('approve_workflow_automation_run_cmd', {
+  runId,
+  conversationId: conversationId ?? null,
+});
+
+export const denyWorkflowAutomationRun = (runId: string) =>
+  invoke<WorkflowAutomationRun>('deny_workflow_automation_run_cmd', { runId });
 
 export const recordWorkflowAutomationRun = (
   automationId: string,
@@ -1711,9 +1717,6 @@ export const agentSteer = (conversationId: string, message: string) =>
 
 export const agentStop = (conversationId: string) =>
   invoke<void>('agent_stop_cmd', { conversationId });
-
-export const getModelContextWindow = (model: string) =>
-  invoke<number>('get_model_context_window', { model });
 
 export type ContextWindowAuthority =
   | 'user_override'

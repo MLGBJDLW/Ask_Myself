@@ -61,9 +61,31 @@ pub enum WorkflowScheduleOverlapPolicy {
     Allow,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowScheduleWorkspacePolicy {
+    /// Scheduled tools may observe external state but cannot mutate a local
+    /// workspace.
+    #[default]
+    DenyWrites,
+    /// Controller creates an isolated Git worktree, verifies the patch, then
+    /// promotes it into the original clean checkout.
+    IsolatedPatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowAutomationExecutionPolicy {
+    /// Optional Nexa project authority. Scheduled conversations bind to this
+    /// project so its instructions, memories, and source boundary are stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub workspace_policy: WorkflowScheduleWorkspacePolicy,
+    /// Fingerprint of the canonical source root captured when the definition
+    /// is saved. Launch fails closed if that Source is later repointed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_config_id: Option<String>,
     /// Provider snapshot used to fail closed if a saved agent config changes route.
@@ -89,6 +111,9 @@ pub struct WorkflowAutomationExecutionPolicy {
 impl Default for WorkflowAutomationExecutionPolicy {
     fn default() -> Self {
         Self {
+            project_id: None,
+            workspace_policy: WorkflowScheduleWorkspacePolicy::DenyWrites,
+            source_root_fingerprint: None,
             agent_config_id: None,
             provider: None,
             provider_endpoint_id: None,
@@ -171,6 +196,33 @@ impl WorkflowAutomationScheduleConfig {
             .map_err(CoreError::InvalidInput)?;
         if let Some(execution_mode) = self.execution_policy.execution_mode.as_deref() {
             AgentExecutionMode::from_wire(Some(execution_mode)).map_err(CoreError::InvalidInput)?;
+        }
+        if self.execution_policy.workspace_policy == WorkflowScheduleWorkspacePolicy::IsolatedPatch
+        {
+            if self.overlap_policy != WorkflowScheduleOverlapPolicy::Skip {
+                return Err(CoreError::InvalidInput(
+                    "Isolated scheduled patches require overlap policy 'skip'".into(),
+                ));
+            }
+            if !matches!(
+                OrchestrationProfile::from_wire(Some(&self.execution_policy.orchestration_profile)),
+                Ok(OrchestrationProfile::CodeUltra)
+            ) {
+                return Err(CoreError::InvalidInput(
+                    "Isolated scheduled patches require the Code Ultra orchestration profile"
+                        .into(),
+                ));
+            }
+            if self
+                .execution_policy
+                .execution_mode
+                .as_deref()
+                .is_some_and(|mode| mode.eq_ignore_ascii_case("plan"))
+            {
+                return Err(CoreError::InvalidInput(
+                    "Isolated scheduled patches cannot run in Plan mode".into(),
+                ));
+            }
         }
         if self.execution_policy.context_window == Some(0) {
             return Err(CoreError::InvalidInput(
@@ -573,6 +625,17 @@ mod tests {
         let mut config = WorkflowAutomationScheduleConfig::default();
         config.execution_policy.execution_mode = Some("unsafe".into());
         assert!(config.validate_for_save("0 9 * * *").is_err());
+
+        let mut isolated = WorkflowAutomationScheduleConfig::default();
+        isolated.execution_policy.workspace_policy = WorkflowScheduleWorkspacePolicy::IsolatedPatch;
+        assert!(isolated.validate_for_save("0 9 * * *").is_err());
+        isolated.execution_policy.orchestration_profile = "codeUltra".into();
+        assert!(isolated.validate_for_save("0 9 * * *").is_ok());
+        isolated.overlap_policy = WorkflowScheduleOverlapPolicy::Allow;
+        assert!(isolated.validate_for_save("0 9 * * *").is_err());
+        isolated.overlap_policy = WorkflowScheduleOverlapPolicy::Skip;
+        isolated.execution_policy.execution_mode = Some("plan".into());
+        assert!(isolated.validate_for_save("0 9 * * *").is_err());
     }
 
     #[test]

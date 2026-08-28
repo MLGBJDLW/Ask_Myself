@@ -528,6 +528,24 @@ fn main() {
                     agent_run_recovery.cancelled_runs,
                 );
             }
+            match nexa_core::agent::cleanup_orphaned_workspace_isolations(db.as_ref()) {
+                Ok(report)
+                    if report.removed_worktrees > 0
+                        || report.removed_sources > 0
+                        || report.retained_unverifiable_entries > 0 =>
+                {
+                    log::info!(
+                        "Recovered scheduled isolation after restart: {} worktree(s) and {} temporary source(s) removed; {} unverifiable entry(s) retained",
+                        report.removed_worktrees,
+                        report.removed_sources,
+                        report.retained_unverifiable_entries,
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => log::warn!(
+                    "Failed to reconcile orphaned scheduled isolation workspaces: {error}"
+                ),
+            }
             let activity_runtime = nexa_core::activity::ActivityRuntime::with_database((*db).clone())
                 .expect("failed to initialize durable activity runtime");
             let context_compaction = nexa_core::context_maintenance::ContextCompactionService::new(
@@ -839,6 +857,9 @@ fn main() {
             commands::queue_due_workflow_automation_delivery_cmd,
             commands::start_workflow_automation_run_cmd,
             commands::start_due_workflow_automation_run_cmd,
+            commands::list_workflow_automation_approvals_cmd,
+            commands::approve_workflow_automation_run_cmd,
+            commands::deny_workflow_automation_run_cmd,
             commands::record_workflow_automation_run_cmd,
             commands::list_workflow_automation_scheduler_events_cmd,
             commands::list_workflow_automation_scheduler_events_for_task_run_cmd,
@@ -878,7 +899,6 @@ fn main() {
             browser::browser_close_tab_cmd,
             browser::browser_close_session_cmd,
             // Model info
-            commands::get_model_context_window,
             commands::get_model_context_window_resolution,
             // Image attachment
             commands::prepare_image_attachment,

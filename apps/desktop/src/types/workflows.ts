@@ -14,8 +14,12 @@ export interface WorkflowAutomationApprovalPolicy {
 
 export type WorkflowScheduleMisfirePolicy = 'run_latest' | 'skip';
 export type WorkflowScheduleOverlapPolicy = 'skip' | 'allow';
+export type WorkflowScheduleWorkspacePolicy = 'deny_writes' | 'isolated_patch';
 
 export interface WorkflowAutomationExecutionPolicy {
+  projectId?: string | null;
+  workspacePolicy: WorkflowScheduleWorkspacePolicy;
+  sourceRootFingerprint?: string | null;
   agentConfigId?: string | null;
   provider?: string | null;
   providerEndpointId?: string | null;
@@ -86,6 +90,7 @@ export interface WorkflowAutomationDueRun {
   prompt: string;
   dueReason: string;
   scheduledFor?: string | null;
+  origin: 'schedule' | 'manual_run_now';
 }
 
 export interface WorkflowAutomationRun {
@@ -131,6 +136,11 @@ export interface TaskOrchestratorWorkflowLaunch {
   taskRunId: string;
   taskOrchestratorRunId: string;
 }
+
+export type TaskOrchestratorWorkflowStartOutcome =
+  | { status: 'launched'; launch: TaskOrchestratorWorkflowLaunch }
+  | { status: 'pending_approval'; run: WorkflowAutomationRun }
+  | { status: 'skipped'; reason: string };
 
 export interface TaskResumeCheckpoint {
   id: string;

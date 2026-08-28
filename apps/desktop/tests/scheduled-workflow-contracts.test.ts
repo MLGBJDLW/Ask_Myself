@@ -10,7 +10,9 @@ function assert(condition: unknown, message: string): asserts condition {
 const root = process.cwd();
 const workflowsPage = readFileSync(join(root, 'src/pages/WorkflowsPage.tsx'), 'utf8');
 const workflowCommands = readFileSync(join(root, 'src-tauri/src/commands/workflows.rs'), 'utf8');
+const workflowCore = readFileSync(join(root, '../../crates/core/src/workflow_automation.rs'), 'utf8');
 const agentChat = readFileSync(join(root, 'src-tauri/src/commands/agent_chat.rs'), 'utf8');
+const agentTurnLoop = readFileSync(join(root, '../../crates/core/src/agent/turn_loop.rs'), 'utf8');
 const runHandler = workflowsPage.slice(
   workflowsPage.indexOf('const runAutomation'),
   workflowsPage.indexOf('const runDueAutomation'),
@@ -29,12 +31,16 @@ assert(
   'Due Now must not claim an occurrence and hand it to unrestricted generic Chat',
 );
 assert(
-  dueHandler.includes("navigate(`/chat/${launch.conversationId}`)"),
+  dueHandler.includes("outcome.status === 'launched'")
+    && dueHandler.includes('outcome.launch.conversationId')
+    && dueHandler.includes("outcome.status === 'pending_approval'")
+    && dueHandler.includes('await load()'),
   'Due Now must open the already-launched authoritative run conversation',
 );
 assert(
   runHandler.includes('api.startWorkflowAutomationRun')
-    && !runHandler.includes('api.queueWorkflowAutomationDelivery'),
+    && !runHandler.includes('api.queueWorkflowAutomationDelivery')
+    && runHandler.includes("outcome.status === 'pending_approval'"),
   'Run now must not bypass a scheduled definition policy through generic Chat',
 );
 
@@ -68,8 +74,46 @@ assert(
   'scheduled route snapshots must remain authoritative over Capability Registry rerouting',
 );
 assert(
-  scheduledLaunchSeam.includes('pause_workflow_automation_for_approval_once'),
-  'approval pauses must use the atomic single-winner core transaction',
+  scheduledLaunchSeam.includes('mark_workflow_automation_run_waiting_approval')
+    && workflowCommands.includes('approve_workflow_automation_run_cmd')
+    && workflowCommands.includes('deny_workflow_automation_run_cmd'),
+  'pre-run approval must create one durable occurrence and expose approve/deny actions',
+);
+assert(
+  workflowCore.includes('workflow_automation_occurrence_approvals')
+    && workflowCore.includes('workflow_automation_occurrence_origins')
+    && workflowCore.includes('ManualRunNow')
+    && workflowCore.includes('definition_superseded')
+    && workflowCore.includes('workflow_automation_definition_revisions'),
+  'approval decisions and definition revision lineage must be durable',
+);
+assert(
+  workflowCommands.includes('let allowed_tools = Some(approval_policy.allowed_tools.clone())'),
+  'an empty scheduled allowed-tools list must remain an explicit deny-all boundary',
+);
+assert(
+  workflowsPage.includes('api.approveWorkflowAutomationRun')
+    && workflowsPage.includes('api.denyWorkflowAutomationRun'),
+  'Workflow Workbench must render actionable approval controls',
+);
+assert(
+  workflowsPage.includes('api.listProjects()')
+    && workflowsPage.includes('projectId: event.target.value || null')
+    && workflowCommands.includes('project_id: project_id.clone()')
+    && workflowCommands.includes('validate_scheduled_workspace_target'),
+  'scheduled runs must bind their conversation to the saved project and fail closed without a write boundary',
+);
+assert(
+  agentChat.includes('AgentRequestKind::ScheduledIsolatedPatch')
+    && agentTurnLoop.includes('self.config.request_kind.requires_workspace_isolation()'),
+  'isolated scheduled patches must force controller-owned worktree isolation independently of planner inference',
+);
+assert(
+  workflowCommands.includes('tool_approval_mode: nexa_core::approval::ToolApprovalMode::AllowAll')
+    && workflowCommands.includes('tool_approval_mode_override: Some(tool_approval_mode)')
+    && workflowCommands.includes('allow_all_within_saved_allowlist')
+    && agentChat.includes('tool_approval_mode_override'),
+  'saved scheduled allowlists must become an unattended per-run grant without widening the tool registry',
 );
 assert(
   workflowCommands.includes('legacy_workflow_schedule_config'),

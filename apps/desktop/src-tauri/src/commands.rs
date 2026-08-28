@@ -1049,6 +1049,7 @@ mod tests {
             prompt: "Run the saved workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
             scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
+            origin: nexa_core::workflow_automation::WorkflowAutomationOccurrenceOrigin::Schedule,
         }
     }
 
@@ -1717,7 +1718,7 @@ mod tests {
         let run = db
             .get_workflow_automation_run(&ticket.run.run_id)
             .expect("persisted workflow run");
-        assert_eq!(run.status, "queued");
+        assert_eq!(run.status.as_str(), "queued");
         assert_eq!(
             run.summary.as_deref(),
             Some(ticket.delivery.queue_item.due_reason.as_str())

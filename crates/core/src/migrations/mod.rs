@@ -2565,7 +2565,213 @@ Every answer that uses knowledge base search results.
                SELECT automation_id
                FROM workflow_automation_schedule_configs
                WHERE json_extract(config_json, '$.legacyNeedsReview') = 1
-           );",
+            );",
+    ),
+    (
+        "v121_workflow_definition_revisions",
+        "CREATE TABLE IF NOT EXISTS workflow_automation_definition_revisions (
+             automation_id TEXT NOT NULL
+                 REFERENCES workflow_automations(id) ON DELETE CASCADE,
+             revision INTEGER NOT NULL,
+             name TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             workflow_template_id TEXT NOT NULL,
+             prompt TEXT NOT NULL,
+             trigger_json TEXT NOT NULL,
+             trigger_kind TEXT NOT NULL,
+             source_scope_json TEXT NOT NULL DEFAULT '[]',
+             approval_policy_json TEXT NOT NULL DEFAULT '{}',
+             schedule_config_json TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (automation_id, revision)
+         );
+         CREATE TABLE IF NOT EXISTS workflow_automation_occurrence_approvals (
+             occurrence_id TEXT PRIMARY KEY NOT NULL
+                 REFERENCES workflow_automation_occurrences(id) ON DELETE CASCADE,
+             state TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (state IN ('not_required', 'pending', 'approved', 'denied')),
+             requested_at TEXT,
+             resolved_at TEXT,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE TABLE IF NOT EXISTS workflow_automation_occurrence_origins (
+             occurrence_id TEXT PRIMARY KEY NOT NULL
+                 REFERENCES workflow_automation_occurrences(id) ON DELETE CASCADE,
+             origin TEXT NOT NULL DEFAULT 'schedule'
+                 CHECK (origin IN ('schedule', 'manual_run_now')),
+             resume_next_run_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         INSERT OR IGNORE INTO workflow_automation_definition_revisions
+             (automation_id, revision, name, description, workflow_template_id,
+              prompt, trigger_json, trigger_kind, source_scope_json,
+              approval_policy_json, schedule_config_json)
+         SELECT a.id, c.revision, a.name, a.description, a.workflow_template_id,
+                a.prompt, a.trigger_json, a.trigger_kind, a.source_scope_json,
+                a.approval_policy_json, c.config_json
+         FROM workflow_automations a
+         JOIN workflow_automation_schedule_configs c ON c.automation_id = a.id;
+         INSERT OR IGNORE INTO workflow_automation_occurrence_approvals
+             (occurrence_id, state)
+         SELECT o.id,
+                CASE
+                    WHEN COALESCE(json_extract(a.approval_policy_json, '$.requireBeforeRun'), 1) = 1
+                    THEN 'pending'
+                    ELSE 'not_required'
+                END
+         FROM workflow_automation_occurrences o
+         JOIN workflow_automations a ON a.id = o.automation_id;
+         INSERT OR IGNORE INTO workflow_automation_occurrence_origins
+             (occurrence_id, origin, resume_next_run_at)
+         SELECT id, 'schedule', NULL
+         FROM workflow_automation_occurrences;
+         UPDATE workflow_automation_runs
+         SET status = CASE
+             WHEN status IN ('ready', 'draft') THEN 'draft'
+             WHEN status IN ('pending', 'queued') THEN 'queued'
+             WHEN status IN ('initializing', 'in_progress', 'running') THEN 'running'
+             WHEN status IN ('cached', 'done', 'completed') THEN 'completed'
+             WHEN status IN ('error', 'failed') THEN 'failed'
+             WHEN status IN ('canceled', 'cancelled') THEN 'cancelled'
+             WHEN status IN ('timeout', 'timed_out') THEN 'timed_out'
+             ELSE status
+         END;
+         UPDATE workflow_automation_occurrences
+         SET status = CASE
+             WHEN status IN ('pending', 'queued') THEN 'queued'
+             WHEN status IN ('initializing', 'in_progress', 'running') THEN 'running'
+             WHEN status IN ('cached', 'done', 'completed') THEN 'completed'
+             WHEN status IN ('error', 'failed') THEN 'failed'
+             WHEN status IN ('canceled', 'cancelled') THEN 'cancelled'
+             WHEN status IN ('timeout', 'timed_out') THEN 'timed_out'
+             ELSE status
+         END;
+         UPDATE workflow_automation_occurrences
+         SET status = 'cancelled',
+             last_error = 'missing_definition_snapshot_migration',
+             retry_at = NULL,
+             lease_token = NULL,
+             lease_expires_at = NULL,
+             updated_at = datetime('now')
+         WHERE status IN ('planned', 'claimed', 'retry_wait', 'waiting_approval', 'queued')
+           AND NOT EXISTS (
+               SELECT 1 FROM workflow_automation_definition_revisions d
+               WHERE d.automation_id = workflow_automation_occurrences.automation_id
+                 AND d.revision = workflow_automation_occurrences.definition_revision
+           );
+         UPDATE workflow_automation_runs
+         SET status = 'cancelled',
+             summary = COALESCE(summary,
+                                'Definition snapshot unavailable after schedule migration'),
+             finished_at = COALESCE(finished_at, datetime('now'))
+         WHERE status IN ('queued', 'waiting_approval')
+           AND NOT EXISTS (
+               SELECT 1 FROM workflow_automation_definition_revisions d
+               WHERE d.automation_id = workflow_automation_runs.automation_id
+                 AND d.revision = workflow_automation_runs.definition_revision
+           );
+         CREATE TRIGGER IF NOT EXISTS validate_workflow_run_status_insert
+         BEFORE INSERT ON workflow_automation_runs
+         WHEN NEW.status NOT IN ('draft', 'queued', 'running', 'waiting_approval',
+                                 'paused', 'resuming', 'completed', 'failed',
+                                 'cancelled', 'timed_out', 'disabled', 'cancelling')
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid workflow run status');
+         END;
+         CREATE TRIGGER IF NOT EXISTS validate_workflow_run_status_update
+         BEFORE UPDATE OF status ON workflow_automation_runs
+         WHEN NEW.status NOT IN ('draft', 'queued', 'running', 'waiting_approval',
+                                 'paused', 'resuming', 'completed', 'failed',
+                                 'cancelled', 'timed_out', 'disabled', 'cancelling')
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid workflow run status');
+         END;
+         CREATE TRIGGER IF NOT EXISTS validate_workflow_occurrence_status_insert
+         BEFORE INSERT ON workflow_automation_occurrences
+         WHEN NEW.status NOT IN ('planned', 'claimed', 'retry_wait', 'waiting_approval',
+                                 'queued', 'running', 'paused', 'resuming', 'completed',
+                                 'skipped', 'failed', 'cancelled', 'timed_out', 'disabled',
+                                 'cancelling')
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid workflow occurrence status');
+         END;
+         CREATE TRIGGER IF NOT EXISTS validate_workflow_occurrence_status_update
+         BEFORE UPDATE OF status ON workflow_automation_occurrences
+         WHEN NEW.status NOT IN ('planned', 'claimed', 'retry_wait', 'waiting_approval',
+                                 'queued', 'running', 'paused', 'resuming', 'completed',
+                                 'skipped', 'failed', 'cancelled', 'timed_out', 'disabled',
+                                 'cancelling')
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid workflow occurrence status');
+         END;",
+    ),
+    (
+        "v122_workspace_isolation_ownership",
+        "CREATE TABLE IF NOT EXISTS workspace_isolation_ownership (
+             id TEXT PRIMARY KEY NOT NULL,
+             owner_turn_id TEXT REFERENCES conversation_turns(id) ON DELETE SET NULL,
+             original_repo_root TEXT NOT NULL,
+             worktree_root TEXT NOT NULL UNIQUE,
+             isolated_source_root TEXT NOT NULL,
+             source_id TEXT,
+             state TEXT NOT NULL DEFAULT 'preparing'
+                 CHECK (state IN ('preparing', 'active')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_workspace_isolation_owner
+             ON workspace_isolation_ownership(owner_turn_id, state);",
+    ),
+    (
+        "v123_scrub_legacy_gemini_query_credentials",
+        "UPDATE agent_task_runs
+         SET error_message = 'Gemini request failed; legacy credential-bearing URL detail was redacted.'
+         WHERE lower(COALESCE(error_message, '')) LIKE '%?key=%'
+            OR lower(COALESCE(error_message, '')) LIKE '%&key=%';
+         UPDATE agent_traces
+         SET error_message = CASE
+                 WHEN error_message IS NULL THEN NULL
+                 ELSE 'Provider error detail redacted because it contained a credential-bearing URL.'
+             END,
+             trace_json = '{\"redacted\":true,\"reason\":\"credential_bearing_url\"}'
+         WHERE lower(COALESCE(error_message, '')) LIKE '%?key=%'
+            OR lower(trace_json) LIKE '%?key=%'
+            OR lower(COALESCE(error_message, '')) LIKE '%&key=%'
+            OR lower(trace_json) LIKE '%&key=%';
+         UPDATE conversation_turns
+         SET trace_json = NULL
+         WHERE lower(COALESCE(trace_json, '')) LIKE '%?key=%'
+            OR lower(COALESCE(trace_json, '')) LIKE '%&key=%';
+         UPDATE agent_task_run_events
+         SET label = 'Provider error detail redacted',
+             payload_json = '{\"redacted\":true,\"reason\":\"credential_bearing_url\"}'
+         WHERE lower(label) LIKE '%?key=%'
+            OR lower(COALESCE(payload_json, '')) LIKE '%?key=%'
+            OR lower(label) LIKE '%&key=%'
+            OR lower(COALESCE(payload_json, '')) LIKE '%&key=%';
+         UPDATE agent_run_events
+         SET label = 'Provider error detail redacted',
+             payload_json = '{\"redacted\":true,\"reason\":\"credential_bearing_url\"}'
+         WHERE lower(label) LIKE '%?key=%'
+            OR lower(payload_json) LIKE '%?key=%'
+            OR lower(label) LIKE '%&key=%'
+            OR lower(payload_json) LIKE '%&key=%';
+         UPDATE workflow_automation_runs
+         SET summary = 'Provider error detail redacted because it contained a credential-bearing URL.'
+         WHERE lower(COALESCE(summary, '')) LIKE '%?key=%'
+            OR lower(COALESCE(summary, '')) LIKE '%&key=%';
+         DELETE FROM agent_trajectories
+         WHERE lower(trajectory_json) LIKE '%?key=%'
+            OR lower(trajectory_json) LIKE '%&key=%';
+         UPDATE ai_usage_records
+         SET provider_raw_json = '{\"redacted\":true,\"reason\":\"credential_bearing_diagnostic\"}'
+         WHERE lower(provider_raw_json) LIKE '%?key=%'
+            OR lower(provider_raw_json) LIKE '%&key=%'
+            OR lower(provider_raw_json) LIKE '%api_key=%'
+            OR lower(provider_raw_json) LIKE '%apikey=%'
+            OR lower(provider_raw_json) LIKE '%access_token=%'
+            OR lower(provider_raw_json) LIKE '%x-amz-signature=%'
+            OR provider_raw_json GLOB '*AIza????????????????*';",
     ),
 ];
 
@@ -2590,6 +2796,7 @@ fn is_idempotent_schema_error(err: &SqlError) -> bool {
 }
 
 const DURABLE_WORKFLOW_SCHEDULES_MIGRATION: &str = "v119_durable_workflow_schedules";
+const WORKFLOW_DEFINITION_REVISIONS_MIGRATION: &str = "v121_workflow_definition_revisions";
 
 fn workflow_run_columns(conn: &Connection) -> Result<Vec<String>, CoreError> {
     let mut stmt = conn.prepare("PRAGMA table_info(workflow_automation_runs)")?;
@@ -2697,6 +2904,79 @@ fn ensure_durable_workflow_schedule_schema(conn: &Connection) -> Result<(), Core
     Ok(())
 }
 
+fn ensure_workflow_definition_revision_schema(
+    conn: &Connection,
+    migration_sql: &str,
+) -> Result<(), CoreError> {
+    // v121 is intentionally composed only of CREATE IF NOT EXISTS and INSERT
+    // OR IGNORE statements, so replay is safe even if a prior startup stopped
+    // between schema creation, backfill, and migration-marker persistence.
+    conn.execute_batch(migration_sql)?;
+    let missing_snapshots: i64 = conn.query_row(
+        "SELECT COUNT(*)
+         FROM workflow_automation_schedule_configs c
+         LEFT JOIN workflow_automation_definition_revisions d
+           ON d.automation_id = c.automation_id AND d.revision = c.revision
+         WHERE d.automation_id IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_approvals: i64 = conn.query_row(
+        "SELECT
+             (SELECT COUNT(*)
+              FROM workflow_automation_occurrences o
+              LEFT JOIN workflow_automation_occurrence_approvals p ON p.occurrence_id = o.id
+              WHERE p.occurrence_id IS NULL)
+           + (SELECT COUNT(*)
+              FROM workflow_automation_occurrences o
+              LEFT JOIN workflow_automation_occurrence_origins g ON g.occurrence_id = o.id
+              WHERE g.occurrence_id IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    let invalid_statuses: i64 = conn.query_row(
+        "SELECT
+             (SELECT COUNT(*) FROM workflow_automation_runs
+              WHERE status NOT IN ('draft', 'queued', 'running', 'waiting_approval',
+                                   'paused', 'resuming', 'completed', 'failed',
+                                   'cancelled', 'timed_out', 'disabled', 'cancelling'))
+           + (SELECT COUNT(*) FROM workflow_automation_occurrences
+              WHERE status NOT IN ('planned', 'claimed', 'retry_wait', 'waiting_approval',
+                                   'queued', 'running', 'paused', 'resuming', 'completed',
+                                   'skipped', 'failed', 'cancelled', 'timed_out', 'disabled',
+                                   'cancelling'))",
+        [],
+        |row| row.get(0),
+    )?;
+    let active_without_snapshot: i64 = conn.query_row(
+        "SELECT
+             (SELECT COUNT(*)
+              FROM workflow_automation_occurrences o
+              LEFT JOIN workflow_automation_definition_revisions d
+                ON d.automation_id = o.automation_id AND d.revision = o.definition_revision
+              WHERE o.status IN ('planned', 'claimed', 'retry_wait', 'waiting_approval', 'queued')
+                AND d.automation_id IS NULL)
+           + (SELECT COUNT(*)
+              FROM workflow_automation_runs r
+              LEFT JOIN workflow_automation_definition_revisions d
+                ON d.automation_id = r.automation_id AND d.revision = r.definition_revision
+              WHERE r.status IN ('queued', 'waiting_approval')
+                AND d.automation_id IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if missing_snapshots != 0
+        || missing_approvals != 0
+        || invalid_statuses != 0
+        || active_without_snapshot != 0
+    {
+        return Err(CoreError::Internal(
+            "Workflow definition revision migration failed its lineage postcondition".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Runs all pending migrations against the given connection.
 ///
 /// - Fresh DB (empty `_migrations`): runs the consolidated schema and
@@ -2744,6 +3024,14 @@ pub fn run_migrations(conn: &Connection) -> Result<(), CoreError> {
 
         if *name == DURABLE_WORKFLOW_SCHEDULES_MIGRATION {
             ensure_durable_workflow_schedule_schema(conn)?;
+            if !already_applied {
+                conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
+            }
+            continue;
+        }
+
+        if *name == WORKFLOW_DEFINITION_REVISIONS_MIGRATION {
+            ensure_workflow_definition_revision_schema(conn, sql)?;
             if !already_applied {
                 conn.execute("INSERT INTO _migrations (name) VALUES (?1)", [name])?;
             }
@@ -2835,6 +3123,9 @@ mod tests {
         assert!(tables.contains(&"workflow_automations".to_string()));
         assert!(tables.contains(&"workflow_automation_schedule_configs".to_string()));
         assert!(tables.contains(&"workflow_automation_occurrences".to_string()));
+        assert!(tables.contains(&"workflow_automation_definition_revisions".to_string()));
+        assert!(tables.contains(&"workflow_automation_occurrence_approvals".to_string()));
+        assert!(tables.contains(&"workflow_automation_occurrence_origins".to_string()));
         assert!(tables.contains(&"workflow_automation_runs".to_string()));
         assert!(tables.contains(&"workflow_automation_scheduler_events".to_string()));
         assert!(tables.contains(&"task_resume_checkpoints".to_string()));
@@ -2996,6 +3287,195 @@ mod tests {
             )
             .unwrap();
         assert!(attempt_index_exists);
+    }
+
+    #[test]
+    fn legacy_gemini_query_credentials_are_removed_from_durable_diagnostics() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute(
+            "DELETE FROM _migrations
+             WHERE name = 'v123_scrub_legacy_gemini_query_credentials'",
+            [],
+        )
+        .unwrap();
+        let leaked = "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent?key=secret-fixture";
+        conn.execute(
+            "INSERT INTO agent_traces
+                 (id, conversation_id, started_at, model_id, error_message, trace_json)
+             VALUES ('trace-secret', 'conversation', datetime('now'), 'gemini-test', ?1, ?2)",
+            rusqlite::params![
+                format!("request failed: {leaked}"),
+                format!("{{\"error\":\"{leaked}\"}}")
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_run_events
+                 (run_id, turn_id, event_seq, version, kind, phase, label, payload_json)
+             VALUES ('run-secret', 'turn-secret', 1, 2, 'error', 'done', ?1, ?2)",
+            rusqlite::params![
+                format!("request failed: {leaked}"),
+                format!("{{\"message\":\"{leaked}\"}}")
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ai_usage_records
+                 (id, invocation_id, provider_raw_json)
+             VALUES ('usage-secret', 'invocation-secret', ?1)",
+            [format!("{{\"requestUrl\":\"{leaked}\"}}")],
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("credential scrub migration should rerun");
+
+        let trace: (Option<String>, String) = conn
+            .query_row(
+                "SELECT error_message, trace_json FROM agent_traces WHERE id = 'trace-secret'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let event: (String, String) = conn
+            .query_row(
+                "SELECT label, payload_json FROM agent_run_events
+                 WHERE run_id = 'run-secret' AND event_seq = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let usage: String = conn
+            .query_row(
+                "SELECT provider_raw_json FROM ai_usage_records WHERE id = 'usage-secret'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for value in [
+            trace.0.unwrap_or_default(),
+            trace.1,
+            event.0,
+            event.1,
+            usage,
+        ] {
+            assert!(!value.contains("secret-fixture"));
+            assert!(!value.to_ascii_lowercase().contains("?key="));
+        }
+    }
+
+    #[test]
+    fn workflow_definition_revision_migration_repairs_missing_backfill_with_marker_present() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "INSERT INTO workflow_automations
+                 (id, name, description, workflow_template_id, prompt, trigger_json,
+                  trigger_kind, source_scope_json, approval_policy_json, enabled, status)
+             VALUES ('repair-definition', 'Repair', '', 'report_brief', 'Run.',
+                     '{\"kind\":\"schedule\",\"cron\":\"0 9 * * *\"}', 'schedule', '[]',
+                     '{\"requireBeforeRun\":true,\"allowedTools\":[],\"riskLevel\":\"medium\"}',
+                     1, 'ready');
+             INSERT INTO workflow_automation_schedule_configs
+                 (automation_id, config_json, revision)
+             VALUES ('repair-definition',
+                     '{\"version\":2,\"timezone\":\"UTC\",\"misfirePolicy\":\"run_latest\",\"misfireGraceSeconds\":300,\"overlapPolicy\":\"skip\",\"executionPolicy\":{\"powerMode\":\"standard\",\"orchestrationProfile\":\"balanced\",\"collaborationMode\":\"direct\"},\"legacyNeedsReview\":false}',
+                     4);
+             INSERT INTO workflow_automation_occurrences
+                 (id, automation_id, definition_revision, scheduled_for, status)
+             VALUES ('repair-occurrence', 'repair-definition', 4, '2099-01-01T09:00:00Z', 'planned');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("v121 backfill repair should run despite its marker");
+
+        let snapshot_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM workflow_automation_definition_revisions
+                               WHERE automation_id = 'repair-definition' AND revision = 4)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let approval_state: String = conn
+            .query_row(
+                "SELECT state FROM workflow_automation_occurrence_approvals
+                 WHERE occurrence_id = 'repair-occurrence'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let origin: String = conn
+            .query_row(
+                "SELECT origin FROM workflow_automation_occurrence_origins
+                 WHERE occurrence_id = 'repair-occurrence'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(snapshot_exists);
+        assert_eq!(approval_state, "pending");
+        assert_eq!(origin, "schedule");
+        conn.execute_batch(
+            "INSERT INTO workflow_automation_occurrences
+                 (id, automation_id, definition_revision, scheduled_for, status)
+             VALUES ('orphan-occurrence', 'repair-definition', 3,
+                     '2098-01-01T09:00:00Z', 'planned');
+             INSERT INTO workflow_automation_runs
+                 (id, automation_id, status, occurrence_id, scheduled_for,
+                  definition_revision, attempt)
+             VALUES ('orphan-run', 'repair-definition', 'queued', 'orphan-occurrence',
+                     '2098-01-01T09:00:00Z', 3, 1);",
+        )
+        .unwrap();
+        run_migrations(&conn).expect("v121 should explicitly cancel orphaned revisions");
+        let orphan_states: (String, String) = conn
+            .query_row(
+                "SELECT o.status, r.status
+                 FROM workflow_automation_occurrences o
+                 JOIN workflow_automation_runs r ON r.occurrence_id = o.id
+                 WHERE o.id = 'orphan-occurrence'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(orphan_states, ("cancelled".into(), "cancelled".into()));
+        conn.execute_batch(
+            "DROP TRIGGER validate_workflow_run_status_insert;
+             DROP TRIGGER validate_workflow_run_status_update;
+             DROP TRIGGER validate_workflow_occurrence_status_insert;
+             DROP TRIGGER validate_workflow_occurrence_status_update;
+             INSERT INTO workflow_automation_occurrences
+                 (id, automation_id, definition_revision, scheduled_for, status)
+             VALUES ('legacy-alias-occurrence', 'repair-definition', 2,
+                     '2097-01-01T09:00:00Z', 'pending');
+             INSERT INTO workflow_automation_runs
+                 (id, automation_id, status, occurrence_id, scheduled_for,
+                  definition_revision, attempt)
+             VALUES ('legacy-alias-run', 'repair-definition', 'pending',
+                     'legacy-alias-occurrence', '2097-01-01T09:00:00Z', 2, 1);",
+        )
+        .unwrap();
+        run_migrations(&conn).expect("v121 should normalize aliases before orphan cancellation");
+        let alias_states: (String, String) = conn
+            .query_row(
+                "SELECT o.status, r.status
+                 FROM workflow_automation_occurrences o
+                 JOIN workflow_automation_runs r ON r.occurrence_id = o.id
+                 WHERE o.id = 'legacy-alias-occurrence'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(alias_states, ("cancelled".into(), "cancelled".into()));
+        assert!(conn
+            .execute(
+                "INSERT INTO workflow_automation_runs
+                     (id, automation_id, status)
+                 VALUES ('invalid-status-run', 'repair-definition', 'mystery')",
+                [],
+            )
+            .is_err());
     }
 
     #[test]

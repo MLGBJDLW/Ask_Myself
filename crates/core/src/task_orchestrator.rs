@@ -45,6 +45,8 @@ pub struct TaskRunOwnership {
     #[serde(default)]
     pub profile_id: Option<String>,
     #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub source_scope: Vec<String>,
     #[serde(default)]
     pub package_id: Option<String>,
@@ -165,7 +167,7 @@ pub fn project_task_status(status: &str) -> Result<TaskStatusProjection, TaskOrc
     let state = match raw_status.as_str() {
         "draft" | "ready" => TaskOrchestratorState::Draft,
         "queued" | "pending" => TaskOrchestratorState::Queued,
-        "running" | "initializing" | "in_progress" => TaskOrchestratorState::Running,
+        "running" | "initializing" | "in_progress" | "cancelling" => TaskOrchestratorState::Running,
         "waiting_approval" => TaskOrchestratorState::WaitingApproval,
         "paused" => TaskOrchestratorState::Paused,
         "resuming" => TaskOrchestratorState::Resuming,
@@ -331,7 +333,7 @@ pub fn workflow_automation_run_projection(
         task_run_id: run.task_run_id.clone(),
         task_definition_id: Some(automation.id.clone()),
         kind: TaskOrchestratorRunKind::WorkflowAutomation,
-        status: project_task_status(&run.status)?,
+        status: project_task_status(run.status.as_str())?,
         ownership: workflow_automation_ownership(automation),
         trigger_kind: Some(automation.trigger_kind.clone()),
         approval_required: automation.approval_policy.require_before_run,
@@ -357,6 +359,7 @@ pub fn agent_task_run_projection(
         ownership: TaskRunOwnership {
             user_id: None,
             profile_id: None,
+            project_id: None,
             source_scope,
             package_id: None,
             workflow_id: None,
@@ -376,6 +379,11 @@ fn workflow_automation_ownership(automation: &WorkflowAutomation) -> TaskRunOwne
     TaskRunOwnership {
         user_id: None,
         profile_id: None,
+        project_id: automation
+            .schedule_config
+            .execution_policy
+            .project_id
+            .clone(),
         source_scope: automation.source_scope.clone(),
         package_id: Some(crate::skills::package::BUILTIN_WORKFLOWS_PACKAGE_ID.to_string()),
         workflow_id: Some(automation.workflow_template_id.clone()),
@@ -424,7 +432,7 @@ mod tests {
             id: "workflow-run-1".to_string(),
             automation_id: "automation-1".to_string(),
             task_run_id: Some("task-run-1".to_string()),
-            status: status.to_string(),
+            status: crate::workflow_automation::WorkflowAutomationRunStatus::parse(status).unwrap(),
             summary: Some("done".to_string()),
             occurrence_id: Some("occurrence-1".to_string()),
             scheduled_for: Some("2026-01-01T09:00:00Z".to_string()),
@@ -511,6 +519,7 @@ mod tests {
             prompt: "Run the saved workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
             scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
+            origin: crate::workflow_automation::WorkflowAutomationOccurrenceOrigin::Schedule,
         };
 
         let item = workflow_due_run_queue_item(&due);
@@ -541,6 +550,7 @@ mod tests {
             prompt: "Run the scheduled workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
             scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
+            origin: crate::workflow_automation::WorkflowAutomationOccurrenceOrigin::Schedule,
         };
 
         let envelope = workflow_due_run_delivery_envelope(&due);
@@ -622,6 +632,7 @@ mod tests {
             prompt: "Run the scheduled workflow.".to_string(),
             due_reason: "schedule 0 9 * * *".to_string(),
             scheduled_for: Some("2099-01-01T09:00:00Z".to_string()),
+            origin: crate::workflow_automation::WorkflowAutomationOccurrenceOrigin::Schedule,
         };
         let run = workflow_run("queued");
 

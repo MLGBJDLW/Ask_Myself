@@ -96,6 +96,7 @@ export type TaskOrchestratorState =
 export interface TaskRunOwnership {
   userId?: string | null;
   profileId?: string | null;
+  projectId?: string | null;
   sourceScope: string[];
   packageId?: string | null;
   workflowId?: string | null;
