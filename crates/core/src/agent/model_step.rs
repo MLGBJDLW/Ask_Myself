@@ -330,7 +330,7 @@ impl AgentExecutor {
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
         let mut chunk_count: usize = 0;
-        let discarded_sample_tokens = 0_u32;
+        let mut discarded_sample_tokens = 0_u32;
         let mut stream_interrupted_by_steering: Option<AgentSteeringMessage> = None;
         let mut steering_closed = false;
 
@@ -425,6 +425,20 @@ impl AgentExecutor {
                     if steering.recovery_control
                         == Some(AgentRecoveryControl::LowerReasoningAndRetry)
                     {
+                        let discarded_prompt = context::estimate_context_usage_breakdown_for_model(
+                            model,
+                            &current_request.messages,
+                            tool_defs,
+                            None,
+                        )
+                        .total_tokens;
+                        let discarded_output =
+                            crate::conversation::memory::estimate_tokens_for_model(
+                                model,
+                                &format!("{iteration_thinking}{full_content}"),
+                            );
+                        discarded_sample_tokens = discarded_sample_tokens
+                            .saturating_add(discarded_prompt.saturating_add(discarded_output));
                         let controls = model_progress_watchdog::recovery_controls(
                             current_request.provider_type,
                             &current_request.model,

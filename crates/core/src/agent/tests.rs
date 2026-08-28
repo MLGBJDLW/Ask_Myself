@@ -7554,6 +7554,7 @@ struct ModelProgressEventCounts {
     resets: usize,
     errors: usize,
     done: usize,
+    done_usage: Option<Usage>,
 }
 
 async fn drain_model_progress_events(
@@ -7568,7 +7569,10 @@ async fn drain_model_progress_events(
             }
             AgentEvent::StreamReset { .. } => counts.resets += 1,
             AgentEvent::Error { .. } => counts.errors += 1,
-            AgentEvent::Done { .. } => counts.done += 1,
+            AgentEvent::Done { usage_total, .. } => {
+                counts.done += 1;
+                counts.done_usage = Some(usage_total);
+            }
             _ => {}
         }
     }
@@ -7743,6 +7747,11 @@ async fn model_progress_user_recovery_restarts_with_request_side_controls() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
     assert_eq!(event_counts.resets, 1);
     assert_eq!(event_counts.errors, 0);
+    let done_usage = event_counts.done_usage.as_ref().expect("final usage event");
+    assert!(
+        done_usage.prompt_tokens > 0 && done_usage.total_tokens >= done_usage.prompt_tokens,
+        "the discarded physical sample must count toward prompt and total usage"
+    );
     let captured = requests.lock().unwrap();
     assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].reasoning_enabled, Some(true));
