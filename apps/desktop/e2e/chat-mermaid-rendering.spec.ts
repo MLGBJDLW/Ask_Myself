@@ -94,6 +94,17 @@ test.beforeEach(async ({ page }) => {
           '  C --> G[RSV=实际试剂含税, RST=年初试剂销售指标]',
           '  D --> H[三级医院开发/新项目/装机等]',
           '```',
+          '',
+          '```mermaid',
+          '%%{init: {"theme":"base","themeVariables":{"primaryColor":"#000000","primaryTextColor":"#000000","lineColor":"#000000"}}}%%',
+          'flowchart TD',
+          '  classDef default fill:#000000,color:#000000,stroke:#000000',
+          '  ROOT[核心要素] --> A[因果链路]',
+          '  ROOT --> B[反馈效应]',
+          '  ROOT --> C[速度变化]',
+          '  A --> D[事件子环]',
+          '  B --> E[算法逃逸]',
+          '```',
         ].join('\n'),
         toolCallId: null,
         toolCalls: [],
@@ -231,7 +242,7 @@ test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
   await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(6);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
 });
 
@@ -241,9 +252,9 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
 
   const surfaces = page.getByTestId('mermaid-surface');
   await expect(page.locator('html')).toHaveAttribute('data-custom-theme', 'true');
-  await expect(surfaces).toHaveCount(4);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
-  await expect(page.locator('svg style')).toHaveCount(4);
+  await expect(surfaces).toHaveCount(5);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
+  await expect(page.locator('svg style')).toHaveCount(5);
   await expect(page.locator('svg foreignObject')).toHaveCount(0);
   await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
 
@@ -280,9 +291,20 @@ test('isolates Mermaid geometry and palette from extreme custom typography', asy
   await page.goto('/chat/conv-mermaid');
 
   const surfaces = page.getByTestId('mermaid-surface');
-  await expect(surfaces).toHaveCount(4);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(4);
+  await expect(surfaces).toHaveCount(5);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
   const diagnostics = await surfaces.evaluateAll((elements) => elements.map((surface) => {
+    const luminance = (value: string) => {
+      const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      if (!channels || channels.length !== 3) throw new Error(`Unsupported color: ${value}`);
+      const linear = channels.map((channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+    };
     const svg = surface.querySelector('svg');
     if (!svg) throw new Error('missing Mermaid SVG');
     const nodeDiagnostics = Array.from(svg.querySelectorAll<SVGGElement>('g.node'))
@@ -294,12 +316,17 @@ test('isolates Mermaid geometry and palette from extreme custom typography', asy
         const shapeBox = shape.getBoundingClientRect();
         const labelBox = label.getBoundingClientRect();
         const fill = getComputedStyle(shape).fill;
+        const labelFill = getComputedStyle(label).fill;
+        const lighter = Math.max(luminance(fill), luminance(labelFill));
+        const darker = Math.min(luminance(fill), luminance(labelFill));
         const labelCenter = {
           x: labelBox.x + labelBox.width / 2,
           y: labelBox.y + labelBox.height / 2,
         };
         return {
           fill,
+          labelFill,
+          contrast: (lighter + 0.05) / (darker + 0.05),
           label: label.textContent ?? '',
           shapeBox: { x: shapeBox.x, y: shapeBox.y, width: shapeBox.width, height: shapeBox.height },
           labelBox: { x: labelBox.x, y: labelBox.y, width: labelBox.width, height: labelBox.height },
@@ -312,6 +339,8 @@ test('isolates Mermaid geometry and palette from extreme custom typography', asy
       })
       .filter((value): value is {
         fill: string;
+        labelFill: string;
+        contrast: number;
         label: string;
         shapeBox: { x: number; y: number; width: number; height: number };
         labelBox: { x: number; y: number; width: number; height: number };
@@ -333,6 +362,10 @@ test('isolates Mermaid geometry and palette from extreme custom typography', asy
       JSON.stringify(diagram.nodes.filter((node) => !node.centered), null, 2),
     ).toBe(true);
     expect(diagram.nodes.every((node) => !/^rgb\(0, 0, 0\)$/.test(node.fill))).toBe(true);
+    expect(
+      diagram.nodes.every((node) => node.contrast >= 4.5),
+      JSON.stringify(diagram.nodes.filter((node) => node.contrast < 4.5), null, 2),
+    ).toBe(true);
   }
   expect(diagnostics.flatMap((diagram) => diagram.nodes).length).toBeGreaterThan(0);
 });

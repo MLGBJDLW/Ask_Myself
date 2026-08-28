@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { startTransition, useState, useCallback, useRef, useEffect } from 'react';
 import * as api from './api';
 import { streamStore } from './streamStore';
 import type {
@@ -83,32 +83,37 @@ export function useAgentStream(watchConversationId?: string | null): UseAgentStr
       const convId = watchIdRef.current ?? activeConversationRef.current;
       if (!convId || changedId !== convId) return;
       const next = streamStore.getStream(convId) ?? null;
-      setStoreState(prev => {
-        if (prev === null && next === null) return prev;
-        if (prev === null || next === null) return next;
-        if (
-          prev.isStreaming === next.isStreaming &&
-          prev.turnHandle === next.turnHandle &&
-          prev.streamText === next.streamText &&
-          prev.thinkingText === next.thinkingText &&
-          prev.isThinking === next.isThinking &&
-          prev.streamRounds === next.streamRounds &&
-          prev.toolCalls === next.toolCalls &&
-          prev.traceEvents === next.traceEvents &&
-          prev.error === next.error &&
-          prev.lastUsage === next.lastUsage &&
-          prev.lastCached === next.lastCached &&
-          prev.finishReason === next.finishReason &&
-          prev.contextOverflow === next.contextOverflow &&
-          prev.rateLimited === next.rateLimited &&
-          prev.connectionState === next.connectionState &&
-          prev.autoCompacted === next.autoCompacted &&
-          prev.pendingApprovals === next.pendingApprovals &&
-          prev.taskRun === next.taskRun &&
-          prev.taskEvents === next.taskEvents &&
-          prev.turnTiming === next.turnTiming
-        ) return prev;
-        return next;
+      // Stream projection is background work. Marking it as a transition lets
+      // navigation, sidebar, stop, and input interactions interrupt a large
+      // transcript render instead of waiting behind it on the main thread.
+      startTransition(() => {
+        setStoreState(prev => {
+          if (prev === null && next === null) return prev;
+          if (prev === null || next === null) return next;
+          if (
+            prev.isStreaming === next.isStreaming &&
+            prev.turnHandle === next.turnHandle &&
+            prev.streamText === next.streamText &&
+            prev.thinkingText === next.thinkingText &&
+            prev.isThinking === next.isThinking &&
+            prev.streamRounds === next.streamRounds &&
+            prev.toolCalls === next.toolCalls &&
+            prev.traceEvents === next.traceEvents &&
+            prev.error === next.error &&
+            prev.lastUsage === next.lastUsage &&
+            prev.lastCached === next.lastCached &&
+            prev.finishReason === next.finishReason &&
+            prev.contextOverflow === next.contextOverflow &&
+            prev.rateLimited === next.rateLimited &&
+            prev.connectionState === next.connectionState &&
+            prev.autoCompacted === next.autoCompacted &&
+            prev.pendingApprovals === next.pendingApprovals &&
+            prev.taskRun === next.taskRun &&
+            prev.taskEvents === next.taskEvents &&
+            prev.turnTiming === next.turnTiming
+          ) return prev;
+          return next;
+        });
       });
     });
   }, []);

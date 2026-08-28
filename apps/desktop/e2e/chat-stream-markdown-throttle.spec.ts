@@ -202,9 +202,10 @@ test.beforeEach(async ({ page }) => {
             imageAttachments: null,
           };
 
-          const longAnswer = Array.from({ length: 60 }, (_, index) =>
+          const answerTokens = Array.from({ length: 60 }, (_, index) =>
             `token${String(index + 1).padStart(2, '0')}`,
-          ).join(' ');
+          );
+          const longAnswer = answerTokens.join(' ');
 
           const assistantMessage: Message = {
             id: nextId('m-assistant'),
@@ -224,13 +225,15 @@ test.beforeEach(async ({ page }) => {
           messagesByConversation[conversationId] = [userMessage];
           conversations[conversationId].updatedAt = new Date().toISOString();
 
-          setTimeout(() => {
-            emitEvent('agent://run-event', {
-              conversationId,
-              type: 'textDelta',
-              delta: longAnswer,
-            });
-          }, 40);
+          answerTokens.forEach((token, index) => {
+            setTimeout(() => {
+              emitEvent('agent://run-event', {
+                conversationId,
+                type: 'textDelta',
+                delta: `${index === 0 ? '' : ' '}${token}`,
+              });
+            }, 20 + index * 15);
+          });
 
           setTimeout(() => {
             messagesByConversation[conversationId] = [userMessage, assistantMessage];
@@ -287,4 +290,18 @@ test('keeps long streaming markdown advancing before the stream finishes', async
 
   await page.waitForTimeout(700);
   await expect(page.getByText(/token45/i)).toBeVisible();
+});
+
+test('keeps sidebar interaction urgent while transcript transitions are streaming', async ({ page }) => {
+  await page.goto('/chat');
+
+  await expect(page.getByText(/token05/i)).toBeVisible();
+  const sidebar = page.getByTestId('chat-history-sidebar');
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+
+  await page.getByRole('button', { name: 'Toggle sidebar' }).click();
+
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'true');
+  await expect(page.getByText(/token45/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: /stop/i })).toBeVisible();
 });
