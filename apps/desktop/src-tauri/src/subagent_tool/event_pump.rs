@@ -15,8 +15,6 @@ pub(super) struct SubagentEventPumpConfig {
 pub(super) struct SubagentEventPumpHandle {
     pub(super) task: tokio::task::JoinHandle<EventCapture>,
     pub(super) fatal_error_rx: mpsc::UnboundedReceiver<String>,
-    pub(super) provider_connected_rx: mpsc::Receiver<()>,
-    pub(super) first_response_rx: mpsc::Receiver<()>,
 }
 
 pub(super) struct SubagentEventPump;
@@ -27,28 +25,16 @@ impl SubagentEventPump {
         config: SubagentEventPumpConfig,
     ) -> SubagentEventPumpHandle {
         let (fatal_error_tx, fatal_error_rx) = mpsc::unbounded_channel::<String>();
-        let (provider_connected_tx, provider_connected_rx) = mpsc::channel::<()>(1);
-        let (first_response_tx, first_response_rx) = mpsc::channel::<()>(1);
-        let task = tokio::spawn(Self::run(
-            event_rx,
-            fatal_error_tx,
-            provider_connected_tx,
-            first_response_tx,
-            config,
-        ));
+        let task = tokio::spawn(Self::run(event_rx, fatal_error_tx, config));
         SubagentEventPumpHandle {
             task,
             fatal_error_rx,
-            provider_connected_rx,
-            first_response_rx,
         }
     }
 
     async fn run(
         event_rx: mpsc::Receiver<AgentEvent>,
         fatal_error_tx: mpsc::UnboundedSender<String>,
-        provider_connected_tx: mpsc::Sender<()>,
-        first_response_tx: mpsc::Sender<()>,
         config: SubagentEventPumpConfig,
     ) -> EventCapture {
         let SubagentEventPumpConfig {
@@ -119,13 +105,14 @@ impl SubagentEventPump {
                 first_provider_byte_recorded = false;
                 first_visible_token_recorded = false;
                 if let Some((parent_run_id, subtask_run_id)) = telemetry_identity.as_ref() {
+                    let connect_ms = instant_elapsed_ms(launch_started);
                     record_subagent_launch_metric(
                         &telemetry_db,
                         parent_run_id,
                         subtask_run_id,
                         &telemetry_call_label,
                         "provider_connect_ms",
-                        Some(instant_elapsed_ms(launch_started)),
+                        Some(connect_ms),
                         Some(&invocation_id),
                         if non_streaming_completion {
                             "completion_boundary"
@@ -133,12 +120,21 @@ impl SubagentEventPump {
                             "measured"
                         },
                     );
+                    record_subtask_event(
+                        &telemetry_db,
+                        parent_run_id,
+                        &format!("Subagent connected to provider: {telemetry_call_label}"),
+                        "connected",
+                        Some(&serde_json::json!({
+                            "subtaskRunId": subtask_run_id,
+                            "callLabel": &telemetry_call_label,
+                            "connectMs": connect_ms,
+                        })),
+                    );
                 }
-                signal_progress_latch(&provider_connected_tx);
             }
             if event_marks_provider_response_byte(&event) && active_provider_invocation_id.is_some()
             {
-                signal_progress_latch(&first_response_tx);
                 if !first_provider_byte_recorded {
                     first_provider_byte_recorded = true;
                     if let (Some((parent_run_id, subtask_run_id)), Some(provider_invocation_id)) = (
@@ -192,6 +188,17 @@ impl SubagentEventPump {
                         None,
                         Some(provider_invocation_id),
                         "not_applicable_background_worker",
+                    );
+                    record_subtask_event(
+                        &telemetry_db,
+                        parent_run_id,
+                        &format!("Subagent received first token: {telemetry_call_label}"),
+                        "first_token",
+                        Some(&serde_json::json!({
+                            "subtaskRunId": subtask_run_id,
+                            "callLabel": &telemetry_call_label,
+                            "firstTokenMs": elapsed_ms,
+                        })),
                     );
                 }
             }

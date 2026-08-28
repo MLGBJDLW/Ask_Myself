@@ -749,13 +749,6 @@ fn instant_elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-fn signal_progress_latch(sender: &mpsc::Sender<()>) {
-    // Provider-connect and first-response signals are edge-triggered latches,
-    // not event logs. Coalesce repeated stream deltas into the single pending
-    // slot so a long response cannot grow an unbounded notification queue.
-    let _ = sender.try_send(());
-}
-
 async fn acquire_batch_slot(
     batch_slots: Arc<tokio::sync::Semaphore>,
     cancel_token: &CancellationToken,

@@ -1,4 +1,36 @@
 use super::*;
+
+pub(super) async fn await_subagent_worker_completion<T, F>(
+    call_label: &str,
+    cancel_token: &CancellationToken,
+    fatal_error_rx: &mut mpsc::UnboundedReceiver<String>,
+    run_future: F,
+    run_deadline_ms: u64,
+) -> Result<T, CoreError>
+where
+    F: std::future::Future<Output = Result<T, CoreError>>,
+{
+    let run_deadline = tokio::time::Instant::now() + Duration::from_millis(run_deadline_ms);
+    tokio::pin!(run_future);
+    tokio::select! {
+        biased;
+        error = fatal_error_rx.recv() => Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' failed: {}",
+            error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
+        ))),
+        _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
+            "Delegated execution '{call_label}' was cancelled by the parent turn."
+        ))),
+        result = &mut run_future => result,
+        _ = tokio::time::sleep_until(run_deadline) => {
+            cancel_token.cancel();
+            Err(CoreError::Agent(format!(
+                "Delegated execution '{call_label}' timed out after {run_deadline_ms}ms."
+            )))
+        }
+    }
+}
+
 pub(super) async fn run_subagent_once(
     runtime: DelegationRuntime,
     db: Database,
@@ -469,23 +501,7 @@ pub(super) async fn run_subagent_once(
         },
     );
     let mut fatal_error_rx = pump.fatal_error_rx;
-    let mut provider_connected_rx = pump.provider_connected_rx;
-    let mut first_response_rx = pump.first_response_rx;
     let mut event_task = pump.task;
-    let run_deadline = tokio::time::Instant::now() + Duration::from_millis(run_deadline_ms);
-    let provider_wait_started = Instant::now();
-    let connect_deadline = if non_streaming_completion {
-        // `complete()` cannot expose a connection boundary: its
-        // provider_connected event is emitted only after the full response.
-        // Let the overall run deadline govern this mode.
-        run_deadline
-    } else {
-        std::cmp::min(
-            run_deadline,
-            tokio::time::Instant::now()
-                + Duration::from_millis(delegation_limits.connect_deadline_ms),
-        )
-    };
     let run_future = executor.run_with_source_scope(
         context_snapshot.messages.as_ref().to_vec(),
         vec![ContentPart::Text { text: request_text }],
@@ -496,101 +512,14 @@ pub(super) async fn run_subagent_once(
         tx,
         0,
     );
-    tokio::pin!(run_future);
-    let connect_stage = tokio::select! {
-        biased;
-        error = fatal_error_rx.recv() => Some(Err(CoreError::Agent(format!(
-            "Delegated execution '{call_label}' failed: {}",
-            error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
-        )))),
-        _ = worker_cancel_token.cancelled() => Some(Err(CoreError::Agent(format!(
-            "Delegated execution '{call_label}' was cancelled by the parent turn."
-        )))),
-        result = &mut run_future => Some(result),
-        _ = provider_connected_rx.recv() => {
-            subtask.emit(
-                format!("Subagent connected to provider: {call_label}"),
-                "connected",
-                &serde_json::json!({
-                    "subtaskRunId": &subtask_run_id,
-                    "callLabel": &call_label,
-                    "connectMs": u64::try_from(provider_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                }),
-            );
-            None
-        },
-        _ = tokio::time::sleep_until(connect_deadline) => {
-            worker_cancel_token.cancel();
-            Some(Err(CoreError::Agent(if non_streaming_completion {
-                format!("Delegated execution '{call_label}' timed out after {run_deadline_ms}ms.")
-            } else {
-                format!(
-                    "Delegated execution '{call_label}' exceeded its {}ms provider-connect deadline.",
-                    delegation_limits.connect_deadline_ms
-                )
-            })))
-        }
-    };
-    let first_stage = match connect_stage {
-        Some(result) => Some(result),
-        None => {
-            let first_response_deadline = std::cmp::min(
-                run_deadline,
-                tokio::time::Instant::now()
-                    + Duration::from_millis(delegation_limits.first_token_deadline_ms),
-            );
-            tokio::select! {
-                biased;
-                error = fatal_error_rx.recv() => Some(Err(CoreError::Agent(format!(
-                    "Delegated execution '{call_label}' failed: {}",
-                    error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
-                )))),
-                _ = worker_cancel_token.cancelled() => Some(Err(CoreError::Agent(format!(
-                    "Delegated execution '{call_label}' was cancelled by the parent turn."
-                )))),
-                result = &mut run_future => Some(result),
-                _ = first_response_rx.recv() => {
-                    subtask.emit(
-                        format!("Subagent received first token: {call_label}"),
-                        "first_token",
-                        &serde_json::json!({
-                            "subtaskRunId": &subtask_run_id,
-                            "callLabel": &call_label,
-                            "firstTokenMs": u64::try_from(provider_wait_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        }),
-                    );
-                    None
-                },
-                _ = tokio::time::sleep_until(first_response_deadline) => {
-                    worker_cancel_token.cancel();
-                    Some(Err(CoreError::Agent(format!(
-                        "Delegated execution '{call_label}' exceeded its {}ms first-token deadline.",
-                        delegation_limits.first_token_deadline_ms
-                    ))))
-                }
-            }
-        }
-    };
-    let final_result = match first_stage {
-        Some(result) => result,
-        None => tokio::select! {
-            biased;
-            error = fatal_error_rx.recv() => Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' failed: {}",
-                error.unwrap_or_else(|| "worker emitted an unspecified fatal error".to_string())
-            ))),
-            _ = worker_cancel_token.cancelled() => Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' was cancelled by the parent turn."
-            ))),
-            result = &mut run_future => result,
-            _ = tokio::time::sleep_until(run_deadline) => {
-                worker_cancel_token.cancel();
-                Err(CoreError::Agent(format!(
-                    "Delegated execution '{call_label}' timed out after {run_deadline_ms}ms."
-                )))
-            }
-        },
-    };
+    let final_result = await_subagent_worker_completion(
+        &call_label,
+        &worker_cancel_token,
+        &mut fatal_error_rx,
+        run_future,
+        run_deadline_ms,
+    )
+    .await;
     let mut capture = match tokio::time::timeout(Duration::from_millis(500), &mut event_task).await
     {
         Ok(Ok(capture)) => capture,

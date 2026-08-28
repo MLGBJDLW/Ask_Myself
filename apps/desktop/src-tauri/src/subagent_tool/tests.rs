@@ -688,29 +688,41 @@ fn delegated_output_helper_honors_explicit_value_and_catalog_ceiling() {
     assert_eq!(resolve_delegated_max_output(&config, Some(40_000)), 40_000);
 }
 
-#[test]
-fn progress_latch_coalesces_unbounded_stream_deltas() {
-    let (sender, mut receiver) = mpsc::channel(1);
+#[tokio::test]
+async fn parent_worker_watchdog_keeps_only_the_hard_run_deadline() {
+    let (_fatal_tx, mut fatal_rx) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let error = await_subagent_worker_completion(
+        "slow-reasoner",
+        &cancel,
+        &mut fatal_rx,
+        std::future::pending::<Result<(), CoreError>>(),
+        10,
+    )
+    .await
+    .expect_err("the parent must retain a hard total deadline");
 
-    for _ in 0..100_000 {
-        signal_progress_latch(&sender);
-    }
-
-    assert_eq!(receiver.len(), 1);
-    assert_eq!(receiver.try_recv(), Ok(()));
-    assert!(receiver.try_recv().is_err());
+    assert!(error.to_string().contains("timed out after 10ms"));
+    assert!(cancel.is_cancelled());
 }
 
 #[tokio::test]
-async fn provider_connect_does_not_consume_an_already_queued_first_response() {
-    let (connected_tx, mut connected_rx) = mpsc::channel(1);
-    let (response_tx, mut response_rx) = mpsc::channel(1);
+async fn parent_worker_watchdog_preserves_fatal_error_priority() {
+    let (fatal_tx, mut fatal_rx) = mpsc::unbounded_channel();
+    fatal_tx.send("provider failed".to_string()).unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let error = await_subagent_worker_completion(
+        "failed-worker",
+        &cancel,
+        &mut fatal_rx,
+        async { Ok::<_, CoreError>(()) },
+        1_000,
+    )
+    .await
+    .expect_err("biased fatal errors must win over cancellation and completion");
 
-    signal_progress_latch(&connected_tx);
-    signal_progress_latch(&response_tx);
-
-    assert_eq!(connected_rx.recv().await, Some(()));
-    assert_eq!(response_rx.recv().await, Some(()));
+    assert!(error.to_string().contains("provider failed"));
 }
 
 #[tokio::test]
