@@ -44,10 +44,18 @@ The runtime now uses a display-only tolerant parser that extracts complete top-l
 
 ### Bounded streaming
 
+- Provider assembly accepts at most 1 MiB for one model-authored tool argument,
+  and file-mutation validation uses the same shared limit.
+- The Tool input session emits the first semantic preview and then one preview
+  per 2 KiB cumulative-input bucket; provider assembly itself remains lossless.
 - Semantic file diffs include at most the shared diff-line cap.
-- Preparing-state raw arguments are truncated to a small diagnostic prefix before frontend transport.
+- Preparing-state parsing and raw arguments are bounded to a 32 KiB diagnostic
+  prefix before diff construction or frontend transport.
 - `inputProgress.receivedBytes` reports the cumulative provider argument size even when the displayed raw arguments are truncated.
-- Frontend transport compaction is a final safety net, not the primary preview design.
+- The desktop Tool preview journal replaces snapshots by `callId` and publishes
+  only after another 2 KiB of growth or a two-second heartbeat.
+- Preparing updates use sequenced ephemeral Run Events and are never written to
+  the durable SQLite ledger.
 - UI state is patched by `callId`; preparing updates must not create duplicate cards.
 
 ### Event lifecycle
@@ -58,15 +66,15 @@ provider argument delta
         ▼
 accumulate complete argument buffer
         │
-        ├─ strict JSON succeeds ───────────────┐
+        ├─ complete JSON seals execution ──────┐
         │                                      │
-        └─ tolerant display parse              │
+        └─ 2 KiB Tool input session bucket     │
                  │                             │
                  ▼                             │
-       semantic fileChangePreview              │
+       bounded tolerant parse + diff            │
                  │                             │
                  ▼                             │
- ToolRunStarted/ToolRunUpdated(preparing)       │
+ ToolRunStarted + ephemeral ToolRunUpdated       │
                  │                             │
                  ▼                             │
  frontend upsert by callId                     │
@@ -146,16 +154,23 @@ Frontend contract tests cover:
 
 ## Known boundaries and follow-up metrics
 
-The current provider adapter emits cumulative preparing snapshots whenever it receives an argument delta. The snapshots are bounded, but very small provider deltas can still cause unnecessary parse and render work. Instrument these counters before adding adaptive coalescing:
+The current policy intentionally favors deterministic byte buckets over
+content-aware parsing of every fragment. Track these counters before changing
+the bucket or heartbeat policy:
 
 - preparing updates per call;
 - cumulative input bytes versus emitted preview bytes;
 - parser time and diff-build time;
 - frontend reducer updates and rendered frames;
 - time to first semantic preview;
-- time from final delta to authoritative start.
+- time from final delta to authoritative start;
+- ephemeral previews delivered versus dropped under queue pressure;
+- durable Run Event rows per file-tool call.
 
-If measurements show excessive churn, coalesce by time and byte growth while always flushing on a newly completed line, path discovery, approval transition, and final JSON completion. Do not debounce away the first preview or the final state.
+Do not promote previews back into durable history or use preview state to infer
+that a tool executed. The durable started boundary and final authoritative
+lifecycle state must remain observable even if intermediate snapshots are
+dropped.
 
 ## Prompt ownership
 

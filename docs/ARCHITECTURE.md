@@ -33,6 +33,11 @@ only the post-commit delivery adapter. Consequently, a missing main window
 cannot block durable run completion, and presentation code cannot race the core
 ledger with a second sequence or terminal decision.
 
+Replaceable tool-input previews use a separate ephemeral publication method on
+that same outbox. They retain live sequence order but never enter SQLite, and
+queue pressure may drop them without failing the authoritative run. Durable
+lifecycle boundaries still flush and commit before delivery.
+
 Resumable phases such as paused and awaiting user input keep the same outbox
 open. True terminal outcomes close it permanently, and finalization crosses the
 completion barrier only after both the terminal event and task projection are

@@ -5,8 +5,16 @@ Nexa's local-first execution context for turning a user request into a durable, 
 ## Language
 
 **Run Event outbox**:
-The single ordered publication authority owned by one Agent Run. It accepts unsequenced Run Events and is permanently closed by that run's true terminal outcome.
+The single ordered publication authority owned by one Agent Run. It accepts unsequenced durable events and explicitly ephemeral live-preview events through separate interfaces, and is permanently closed by that run's true terminal outcome.
 _Avoid_: publication manager, event service, stream sequencer
+
+**Tool input session**:
+The per-model-sample boundary that keeps provider argument assembly lossless while admitting only bounded, byte-bucketed semantic previews. It resets with a retried sample and never authorizes execution.
+_Avoid_: tool argument debounce, partial tool call executor, diff stream
+
+**Live preview event**:
+A replaceable, sequenced Run Event projection delivered through the outbox but intentionally omitted from the durable ledger. Queue pressure may drop it without failing the Agent Run; lifecycle and terminal events are never live previews.
+_Avoid_: best-effort durable event, preview database row, tool progress history
 
 **Resumable pause**:
 A durable, nonterminal Agent Run phase that records a restartable checkpoint while leaving the Run Event outbox open for continuation.
