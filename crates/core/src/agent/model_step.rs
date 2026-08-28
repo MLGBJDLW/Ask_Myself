@@ -330,7 +330,7 @@ impl AgentExecutor {
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
         let mut chunk_count: usize = 0;
-        let mut discarded_sample_tokens = 0_u32;
+        let discarded_sample_tokens = 0_u32;
         let mut stream_interrupted_by_steering: Option<AgentSteeringMessage> = None;
         let mut steering_closed = false;
 
@@ -350,7 +350,6 @@ impl AgentExecutor {
         if *force_non_streaming_llm {
             progress_watchdog.arm();
         }
-        let mut progress_recovery_active = false;
 
         macro_rules! bind_accepted_attempt {
             ($next:expr, $first_for_sample:expr) => {{
@@ -432,16 +431,15 @@ impl AgentExecutor {
                 }
                 ModelStepWaitSignal::Cancellation => model_attempt.next().await,
                 ModelStepWaitSignal::Progress(progress) => *progress,
-                ModelStepWaitSignal::ProgressDeadline => {
-                    match progress_watchdog.on_deadline() {
-                        model_progress_watchdog::ModelProgressDeadlineAction::StopConnecting => {
-                            let trace_message = "model_progress_watchdog: provider did not establish a model stream or completion before the connect deadline".to_string();
-                            append_developer_persisted_trace_status(
-                                persisted_trace_items,
-                                &trace_message,
-                                "error",
-                            );
-                            emit_error_and_finalize_turn(
+                ModelStepWaitSignal::ProgressDeadline => match progress_watchdog.on_deadline() {
+                    model_progress_watchdog::ModelProgressDeadlineAction::StopConnecting => {
+                        let trace_message = "model_progress_watchdog: provider did not establish a model stream or completion before the connect deadline".to_string();
+                        append_developer_persisted_trace_status(
+                            persisted_trace_items,
+                            &trace_message,
+                            "error",
+                        );
+                        emit_error_and_finalize_turn(
                                 tx,
                                 db,
                                 trace,
@@ -454,152 +452,48 @@ impl AgentExecutor {
                                 },
                             )
                             .await;
-                            return Err(CoreError::Agent(trace_message));
-                        }
-                        model_progress_watchdog::ModelProgressDeadlineAction::RestartWithoutReasoning => {
-                            let discarded_prompt = context::estimate_context_usage_breakdown_for_model(
-                                model,
-                                &current_request.messages,
-                                tool_defs,
-                                None,
-                            )
-                            .total_tokens;
-                            let discarded_output = crate::conversation::memory::estimate_tokens_for_model(
-                                model,
-                                &format!("{iteration_thinking}{full_content}"),
-                            );
-                            discarded_sample_tokens = discarded_sample_tokens
-                                .saturating_add(discarded_prompt.saturating_add(discarded_output));
-                            let recovery_controls = model_progress_watchdog::recovery_controls(
-                                current_request.provider_type,
-                                &current_request.model,
-                            );
-                            let _ = tx
-                                .send(AgentEvent::ControllerStatus {
-                                    code: "model_progress_recovery".to_string(),
-                                    content: format!(
-                                        "The model produced no usable answer or complete tool call before its deadline. Restarting once with {} and an immediate-action instruction.",
-                                        recovery_controls.description
-                                    ),
-                                    tone: Some("warning".to_string()),
-                                })
-                                .await;
-                            let _ = tx
-                                .send(AgentEvent::StreamReset {
-                                    reason: format!(
-                                        "Planning deadline reached; restarting with {} before any tool ran.",
-                                        recovery_controls.description
-                                    ),
-                                    discard_sample: true,
-                                })
-                                .await;
-                            append_developer_persisted_trace_status(
-                                persisted_trace_items,
-                                "model_progress_watchdog: thinking-only planning deadline reached; restarting once with bounded reasoning",
-                                "warning",
-                            );
-                            reset_iteration_capture_for_new_sample(
-                                accumulated_content,
-                                accumulated_len_before_iteration,
-                                &mut full_content,
-                                &mut tool_calls,
-                                &mut tool_call_assembly_rejected,
-                                &mut provider_replay,
-                                &mut chunk_usage,
-                                &mut iteration_thinking,
-                                &mut answer_delta_seen,
-                                &mut thinking_delta_seen,
-                                &mut finish_reason,
-                                &mut preparing_call_ids,
-                                &mut started_call_ids,
-                                &mut tool_run_started_ids,
-                                &mut chunk_count,
-                            );
-                            accepted_attempt = None;
-                            progress_recovery_active = true;
-                            *reasoning_disabled_for_tool_loop = true;
-                            current_request.reasoning_enabled = recovery_controls.reasoning_enabled;
-                            current_request.reasoning_effort = recovery_controls.reasoning_effort;
-                            current_request.thinking_budget = recovery_controls.thinking_budget;
-                            reasoning_was_requested =
-                                request_reasoning_was_requested(&current_request);
-                            current_request.messages = messages.to_vec();
-                            current_request.messages.push(Message::text(
-                                Role::System,
-                                model_progress_watchdog::TOOL_PROGRESS_RECOVERY_PROMPT,
-                            ));
-                            model_attempt = model_attempt::ModelAttempt::new(
-                                self.provider.as_ref(),
-                                current_request.clone(),
-                                tx,
-                                *force_non_streaming_llm,
-                            )
-                            .with_cancel_token(self.cancel_token.clone());
-                            continue 'model_attempt;
-                        }
-                        model_progress_watchdog::ModelProgressDeadlineAction::StopBeforeAction => {
-                            let trace_message = "model_progress_watchdog: recovery sample also produced no answer or tool call before its deadline".to_string();
-                            append_developer_persisted_trace_status(
-                                persisted_trace_items,
-                                &trace_message,
-                                "error",
-                            );
-                            emit_error_and_finalize_turn(
-                                tx,
-                                db,
-                                trace,
-                                turn_id,
-                                route_kind,
-                                persisted_trace_items,
-                                TurnErrorMessages {
-                                    frontend_message: "The model remained stuck in reasoning after one automatic tool-progress recovery. No tools were executed; try a lower reasoning level or steer the task.".to_string(),
-                                    trace_message: trace_message.clone(),
-                                },
-                            )
-                            .await;
-                            return Err(CoreError::Agent(trace_message));
-                        }
-                        model_progress_watchdog::ModelProgressDeadlineAction::StopAfterVisibleOutput => {
-                            let trace_message = "model_progress_watchdog: visible answer or provider-hosted action exceeded its bounded stream deadline; no automatic retry was attempted".to_string();
-                            if let Some(accepted) = accepted_attempt.as_ref() {
-                                self.persist_interrupted_provider_draft(
-                                    assistant_turn::AssistantTurnPersistenceContext {
-                                        db,
-                                        conversation_id,
-                                        turn_id,
-                                        model,
-                                        route_kind,
-                                        persisted_trace_items: &mut *persisted_trace_items,
-                                        sort_order: &mut *sort_order,
-                                    },
-                                    accepted,
-                                    &full_content,
-                                    &iteration_thinking,
-                                    reasoning_was_requested,
-                                );
-                            }
-                            append_developer_persisted_trace_status(
-                                persisted_trace_items,
-                                &trace_message,
-                                "error",
-                            );
-                            emit_error_and_finalize_turn(
-                                tx,
-                                db,
-                                trace,
-                                turn_id,
-                                route_kind,
-                                persisted_trace_items,
-                                TurnErrorMessages {
-                                    frontend_message: "The model stream stopped making bounded task progress after visible output or a provider-hosted action. The partial draft was preserved; no automatic retry was attempted.".to_string(),
-                                    trace_message: trace_message.clone(),
-                                },
-                            )
-                            .await;
-                            return Err(CoreError::StreamIncomplete(trace_message));
-                        }
+                        return Err(CoreError::Agent(trace_message));
                     }
-                }
+                    model_progress_watchdog::ModelProgressDeadlineAction::StopHostedTool => {
+                        let trace_message = "model_progress_watchdog: provider-hosted action exceeded its absolute side-effect deadline; no automatic retry was attempted".to_string();
+                        if let Some(accepted) = accepted_attempt.as_ref() {
+                            self.persist_interrupted_provider_draft(
+                                assistant_turn::AssistantTurnPersistenceContext {
+                                    db,
+                                    conversation_id,
+                                    turn_id,
+                                    model,
+                                    route_kind,
+                                    persisted_trace_items: &mut *persisted_trace_items,
+                                    sort_order: &mut *sort_order,
+                                },
+                                accepted,
+                                &full_content,
+                                &iteration_thinking,
+                                reasoning_was_requested,
+                            );
+                        }
+                        append_developer_persisted_trace_status(
+                            persisted_trace_items,
+                            &trace_message,
+                            "error",
+                        );
+                        emit_error_and_finalize_turn(
+                                tx,
+                                db,
+                                trace,
+                                turn_id,
+                                route_kind,
+                                persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: "The provider-hosted action exceeded its 10-minute safety limit. The partial draft was preserved; no automatic retry was attempted because the remote action may have side effects.".to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                        return Err(CoreError::StreamIncomplete(trace_message));
+                    }
+                },
             };
 
             match progress {
@@ -632,7 +526,11 @@ impl AgentExecutor {
                                 let _ = tx
                                     .send(AgentEvent::ControllerStatus {
                                         code: "model_planning_slow".to_string(),
-                                        content: "The model is still reasoning but has not produced an answer or tool call. A bounded automatic recovery will intervene if this continues.".to_string(),
+                                        content: format!(
+                                            "The model is still reasoning ({}s, about {} tokens). The active stream will continue while data is arriving. You can lower reasoning and retry, or stop the turn.",
+                                            progress_watchdog.elapsed_seconds(),
+                                            iteration_thinking.chars().count().div_ceil(4),
+                                        ),
                                         tone: Some("warning".to_string()),
                                     })
                                     .await;
@@ -1000,12 +898,6 @@ impl AgentExecutor {
                             }
                             accepted_attempt = None;
                             current_request.messages = messages.to_vec();
-                            if progress_recovery_active {
-                                current_request.messages.push(Message::text(
-                                    Role::System,
-                                    model_progress_watchdog::TOOL_PROGRESS_RECOVERY_PROMPT,
-                                ));
-                            }
                             model_attempt = model_attempt::ModelAttempt::new(
                                 self.provider.as_ref(),
                                 current_request.clone(),
