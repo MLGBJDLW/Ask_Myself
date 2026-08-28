@@ -459,7 +459,7 @@ async fn launch_authoritative_scheduled_workflow(
         nexa_core::workflow_execution::ScheduledWorkflowLaunchPreparation::Ready {
             ticket,
             policy,
-        } => (ticket, policy),
+        } => (*ticket, *policy),
     };
     let automation_id = ticket.delivery.queue_item.task_definition_id.clone();
     let run_id = ticket.run.run_id.clone();

@@ -56,8 +56,8 @@ pub struct PreparedWorkflowAutomationSave {
 #[derive(Debug)]
 pub enum ScheduledWorkflowLaunchPreparation {
     Ready {
-        ticket: TaskOrchestratorExecutionTicket,
-        policy: WorkflowLaunchPolicy,
+        ticket: Box<TaskOrchestratorExecutionTicket>,
+        policy: Box<WorkflowLaunchPolicy>,
     },
     PendingApproval {
         run: WorkflowAutomationRun,
@@ -692,7 +692,10 @@ pub fn prepare_scheduled_workflow_launch(
             "attempt": claimed_run.attempt,
         }),
     );
-    Ok(ScheduledWorkflowLaunchPreparation::Ready { ticket, policy })
+    Ok(ScheduledWorkflowLaunchPreparation::Ready {
+        ticket: Box::new(ticket),
+        policy: Box::new(policy),
+    })
 }
 
 #[cfg(test)]

@@ -64,7 +64,7 @@ enum WorkflowApprovalDecision {
 }
 
 enum WorkflowApprovalResolution {
-    Approved(WorkflowAutomationDueRunClaim),
+    Approved(Box<WorkflowAutomationDueRunClaim>),
     Denied(WorkflowAutomationRun),
 }
 
