@@ -21,7 +21,9 @@ const LIVE_JOURNAL_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_JOURNAL_MAX_BATCH: usize = 32;
 const AGENT_STARTED_LABEL: &str = "Agent started";
 
-/// Host delivery seam invoked only after the durable ledger is committed.
+/// Host delivery seam owned by the outbox. Durable events are delivered only
+/// after commit; explicitly ephemeral live snapshots are sequenced and
+/// delivered without entering the ledger.
 pub trait AgentRunEventDelivery: Send + Sync + 'static {
     fn deliver_run_event(&self, conversation_id: &str, event: &AgentRunEvent);
 
@@ -81,7 +83,7 @@ pub enum AgentRunEventSubmitError {
         expected_run_id: String,
         actual_run_id: String,
     },
-    #[error("Run Event producers cannot bypass the durable outbox")]
+    #[error("durable Run Event submission cannot accept an ephemeral preview")]
     EphemeralEvent,
     #[error("Run Event contract is invalid: {message}")]
     InvalidEvent { message: String },
@@ -731,7 +733,8 @@ fn require_materialized_rows(
     Ok(())
 }
 
-/// Non-blocking producer interface for one Agent Run's ordered ledger.
+/// Non-blocking producer interface for one Agent Run's ordered publication
+/// stream and durable ledger.
 #[derive(Clone)]
 pub struct AgentRunEventOutbox {
     run_id: String,
@@ -760,6 +763,30 @@ struct AgentRunEventOutboxActorContext {
 
 impl AgentRunEventOutbox {
     pub fn submit(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
+        if !event.is_durable() {
+            return Err(AgentRunEventSubmitError::EphemeralEvent);
+        }
+        self.enqueue_validated(event)
+    }
+
+    /// Publish a replaceable live snapshot through the same ordered seam as
+    /// durable Run Events without amplifying the SQLite ledger. Terminals and
+    /// resumable lifecycle boundaries must always use [`Self::submit`].
+    pub fn publish_ephemeral(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
+        if event.is_durable() {
+            return Err(AgentRunEventSubmitError::InvalidEvent {
+                message: "ephemeral publication requires persistence=ephemeral".to_string(),
+            });
+        }
+        if event.closes_run() {
+            return Err(AgentRunEventSubmitError::InvalidEvent {
+                message: "terminal Run Events must be durable".to_string(),
+            });
+        }
+        self.enqueue_validated(event)
+    }
+
+    fn enqueue_validated(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
         if event.event_seq != 0 {
             return Err(AgentRunEventSubmitError::SequencedEvent {
                 event_seq: event.event_seq,
@@ -770,9 +797,6 @@ impl AgentRunEventOutbox {
                 expected_run_id: self.run_id.clone(),
                 actual_run_id: event.run_id,
             });
-        }
-        if !event.is_durable() {
-            return Err(AgentRunEventSubmitError::EphemeralEvent);
         }
         validate_producer_lifecycle(&event).map_err(|message| {
             AgentRunEventSubmitError::InvalidEvent {
@@ -797,10 +821,21 @@ impl AgentRunEventOutbox {
             return Err(AgentRunEventSubmitError::Suspended);
         }
         let terminal = event.closes_run();
+        let ephemeral = !event.is_durable();
         if let Err(error) = self
             .sender
             .try_send(AgentRunEventOutboxCommand::Event(event))
         {
+            if ephemeral {
+                return match error {
+                    // Replaceable previews are observational. Saturation must
+                    // drop them without poisoning the authoritative run.
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => Ok(()),
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        Err(AgentRunEventSubmitError::ActorUnavailable)
+                    }
+                };
+            }
             *terminal_submitted = true;
             self.cancellation.cancel();
             return Err(match error {
@@ -992,6 +1027,13 @@ fn spawn_outbox_actor(
                                     )));
                                     break;
                                 }
+                                if !event.is_durable() {
+                                    // Saturation already commits the run to a
+                                    // fail-closed terminal. Replaceable live
+                                    // snapshots may be dropped here; they must
+                                    // never become durable merely while draining.
+                                    continue;
+                                }
                                 pending.push(event);
                                 if pending.len() >= LIVE_JOURNAL_MAX_BATCH {
                                     if let Err(error) = commit_and_deliver(
@@ -1043,6 +1085,7 @@ fn spawn_outbox_actor(
                     };
                     actor.fail_closed(
                         &last_turn_id,
+                        sequence,
                         failure.clone(),
                     ).await;
                     for response in rejected_pause_responses {
@@ -1069,6 +1112,48 @@ fn spawn_outbox_actor(
                             if event.validate_durable_contract().is_err() {
                                 break;
                             }
+                            if !event.is_durable() {
+                                if !pending.is_empty() {
+                                    let durable_high_water = pending
+                                        .last()
+                                        .map(|pending_event| pending_event.event_seq)
+                                        .unwrap_or(sequence.saturating_sub(1));
+                                    if let Err(error) = commit_and_deliver(
+                                        &actor.database,
+                                        actor.delivery.as_ref(),
+                                        &actor.conversation_id,
+                                        &actor.run_id,
+                                        &mut pending,
+                                    ).await {
+                                        actor.fail_closed(
+                                            &last_turn_id,
+                                            sequence,
+                                            AgentRunEventOutboxFailure::Persistence {
+                                                message: error.to_string(),
+                                            },
+                                        ).await;
+                                        break;
+                                    }
+                                    actor.durability.send_replace(
+                                        AgentRunEventOutboxDurability::Committed(
+                                            durable_high_water,
+                                        ),
+                                    );
+                                }
+                                actor.delivery.deliver_run_event(
+                                    &actor.conversation_id,
+                                    &event,
+                                );
+                                // `flush` waits for every accepted command to
+                                // be processed, not for an ephemeral preview to
+                                // materialize in SQLite. All earlier durable
+                                // events were committed above, so this sequence
+                                // is a safe processed-through high-water mark.
+                                actor.durability.send_replace(
+                                    AgentRunEventOutboxDurability::Committed(sequence),
+                                );
+                                continue;
+                            }
                             let deferred = is_deferred_event(&event);
                             let terminal = event.closes_run();
                             pending.push(event);
@@ -1082,6 +1167,7 @@ fn spawn_outbox_actor(
                                 ).await {
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         AgentRunEventOutboxFailure::Persistence {
                                             message: error.to_string(),
                                         },
@@ -1120,6 +1206,7 @@ fn spawn_outbox_actor(
                                     };
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
@@ -1151,6 +1238,7 @@ fn spawn_outbox_actor(
                                     };
                                     actor.fail_closed(
                                         &last_turn_id,
+                                        sequence,
                                         failure.clone(),
                                     ).await;
                                     let _ = response.send(Err(failure));
@@ -1170,6 +1258,7 @@ fn spawn_outbox_actor(
                     ).await {
                         actor.fail_closed(
                             &last_turn_id,
+                            sequence,
                             AgentRunEventOutboxFailure::Persistence {
                                 message: error.to_string(),
                             },
@@ -1185,7 +1274,12 @@ fn spawn_outbox_actor(
 }
 
 impl AgentRunEventOutboxActorContext {
-    async fn fail_closed(&self, turn_id: &str, failure: AgentRunEventOutboxFailure) {
+    async fn fail_closed(
+        &self,
+        turn_id: &str,
+        live_high_water: u64,
+        failure: AgentRunEventOutboxFailure,
+    ) {
         if let Ok(mut closed) = self.terminal_submitted.lock() {
             *closed = true;
         }
@@ -1230,7 +1324,10 @@ impl AgentRunEventOutboxActorContext {
                 return;
             }
         };
-        let terminal_sequence = durable_head.saturating_add(1);
+        // The durable head omits ephemeral previews and may also trail the
+        // durable batch whose commit just failed. Keep the safety terminal
+        // strictly above every sequence this actor has already assigned.
+        let terminal_sequence = durable_head.max(live_high_water).saturating_add(1);
 
         let mut terminal = AgentRunEvent::terminal_error(
             &self.run_id,
@@ -1345,7 +1442,10 @@ fn validate_producer_lifecycle(event: &AgentRunEvent) -> Result<(), &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_run::{AgentRunEventPersistence, AgentRunPhase};
+    use crate::agent_run::{
+        AgentRunDisplayKind, AgentRunEventImportance, AgentRunEventKind, AgentRunEventPersistence,
+        AgentRunEventVisibility, AgentRunPhase, AGENT_RUN_EVENT_VERSION,
+    };
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::db::Database;
     use crate::llm::Role;
@@ -1414,6 +1514,142 @@ mod tests {
             .mark_agent_task_run_started(&run.id, "responding")
             .expect("started task run");
         (conversation.id, turn.id, run.id)
+    }
+
+    #[tokio::test]
+    async fn ephemeral_tool_preview_is_ordered_but_not_written_to_the_durable_ledger() {
+        let database = Database::open_memory().expect("in-memory database");
+        let (conversation_id, turn_id, run_id) = create_started_run(&database);
+        let executor = DatabaseExecutor::new(database.clone(), 8).expect("database executor");
+        let delivery = Arc::new(CaptureDelivery::default());
+        let outboxes = AgentRunEventOutboxes::new(executor, delivery.clone());
+        let outbox = outboxes
+            .open(&conversation_id, &run_id)
+            .await
+            .expect("run outbox");
+
+        outbox
+            .publish_ephemeral(AgentRunEvent {
+                version: AGENT_RUN_EVENT_VERSION,
+                run_id: run_id.clone(),
+                turn_id: turn_id.clone(),
+                event_seq: 0,
+                kind: AgentRunEventKind::ToolProgress,
+                phase: AgentRunPhase::Tooling,
+                visibility: AgentRunEventVisibility::User,
+                persistence: AgentRunEventPersistence::Ephemeral,
+                display_kind: AgentRunDisplayKind::Tool,
+                importance: AgentRunEventImportance::Normal,
+                label: "create_file".to_string(),
+                status: Some("preparing".to_string()),
+                payload: serde_json::json!({
+                    "run": {
+                        "callId": "call-preview",
+                        "toolName": "create_file",
+                        "status": "preparing"
+                    }
+                }),
+                created_at: None,
+            })
+            .expect("ephemeral preview submission");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), outbox.flush())
+                .await
+                .expect("ephemeral publication must not strand flush")
+                .expect("ephemeral publication processed"),
+            1
+        );
+        outbox
+            .submit(AgentRunEvent::terminal_status(
+                &run_id,
+                Some(&turn_id),
+                0,
+                "completed",
+                "completed",
+                None,
+            ))
+            .expect("terminal submission");
+        outbox
+            .wait_for_terminal_commit()
+            .await
+            .expect("terminal durability");
+
+        let stored = database
+            .list_agent_run_events(&run_id)
+            .expect("durable run ledger");
+        assert_eq!(stored.len(), 1, "preview snapshots must not amplify SQLite");
+        assert_eq!(stored[0].kind, AgentRunEventKind::Done);
+        assert_eq!(
+            stored[0].event_seq, 2,
+            "the live sequence remains monotonic"
+        );
+
+        let delivered = delivery.events.lock().expect("capture lock").clone();
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(delivered[0].kind, AgentRunEventKind::ToolProgress);
+        assert_eq!(
+            delivered[0].persistence,
+            AgentRunEventPersistence::Ephemeral
+        );
+        assert_eq!(delivered[0].event_seq, 1);
+        assert_eq!(delivered[1].kind, AgentRunEventKind::Done);
+        assert_eq!(delivered[1].event_seq, 2);
+    }
+
+    #[test]
+    fn saturated_ephemeral_preview_is_dropped_without_closing_the_run() {
+        let run_id = "run-preview-pressure".to_string();
+        let turn_id = "turn-preview-pressure".to_string();
+        let preview = AgentRunEvent {
+            version: AGENT_RUN_EVENT_VERSION,
+            run_id: run_id.clone(),
+            turn_id,
+            event_seq: 0,
+            kind: AgentRunEventKind::ToolProgress,
+            phase: AgentRunPhase::Tooling,
+            visibility: AgentRunEventVisibility::User,
+            persistence: AgentRunEventPersistence::Ephemeral,
+            display_kind: AgentRunDisplayKind::Tool,
+            importance: AgentRunEventImportance::Normal,
+            label: "create_file".to_string(),
+            status: Some("preparing".to_string()),
+            payload: serde_json::json!({
+                "run": {
+                    "callId": "call-preview",
+                    "toolName": "create_file",
+                    "status": "preparing"
+                }
+            }),
+            created_at: None,
+        };
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .try_send(AgentRunEventOutboxCommand::Event(preview.clone()))
+            .expect("fill the synthetic queue");
+        let (_completion_tx, completion) =
+            tokio::sync::watch::channel(AgentRunEventOutboxOutcome::Open);
+        let (_durability_tx, durability) =
+            tokio::sync::watch::channel(AgentRunEventOutboxDurability::Committed(0));
+        let (failure_request, _failure_requests) = tokio::sync::watch::channel(None);
+        let terminal_submitted = Arc::new(Mutex::new(false));
+        let cancellation = CancellationToken::new();
+        let outbox = AgentRunEventOutbox {
+            run_id,
+            conversation_id: "conversation-preview-pressure".to_string(),
+            sender,
+            terminal_submitted: terminal_submitted.clone(),
+            submissions_paused: Arc::new(AtomicBool::new(false)),
+            cancellation: cancellation.clone(),
+            completion,
+            accepted_high_water: Arc::new(AtomicU64::new(0)),
+            durability,
+            failure_request,
+        };
+
+        assert_eq!(outbox.publish_ephemeral(preview), Ok(()));
+        assert!(!cancellation.is_cancelled());
+        assert!(!*terminal_submitted.lock().expect("terminal lock"));
+        assert_eq!(outbox.accepted_high_water.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -1532,7 +1768,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].persistence, AgentRunEventPersistence::Ephemeral);
         assert!(events[0].is_terminal());
-        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[0].event_seq, 2);
         assert_eq!(events[0].payload["reason"], "run_event_persistence_failed");
         let failed_run = database
             .get_agent_task_run(&run_id)
@@ -1563,6 +1799,103 @@ mod tests {
             )),
             Err(AgentRunEventSubmitError::AlreadyClosed)
         ));
+    }
+
+    #[tokio::test]
+    async fn fail_closed_terminal_stays_above_ephemeral_and_failed_sequences() {
+        let database = Database::open_memory().expect("in-memory database");
+        let (conversation_id, turn_id, run_id) = create_started_run(&database);
+        let executor = DatabaseExecutor::new(database.clone(), 8).expect("database executor");
+        let delivery = Arc::new(CaptureDelivery::default());
+        let outboxes = AgentRunEventOutboxes::new(executor, delivery.clone());
+        let outbox = outboxes
+            .open(&conversation_id, &run_id)
+            .await
+            .expect("run outbox");
+
+        outbox
+            .submit(AgentRunEvent::status_update(
+                &run_id,
+                Some(&turn_id),
+                0,
+                AgentRunPhase::Routing,
+                "Stored status",
+                Some("running"),
+                None,
+            ))
+            .expect("durable status");
+        assert_eq!(outbox.flush().await.expect("durable flush"), 1);
+
+        outbox
+            .publish_ephemeral(AgentRunEvent {
+                version: AGENT_RUN_EVENT_VERSION,
+                run_id: run_id.clone(),
+                turn_id: turn_id.clone(),
+                event_seq: 0,
+                kind: AgentRunEventKind::ToolProgress,
+                phase: AgentRunPhase::Tooling,
+                visibility: AgentRunEventVisibility::User,
+                persistence: AgentRunEventPersistence::Ephemeral,
+                display_kind: AgentRunDisplayKind::Tool,
+                importance: AgentRunEventImportance::Normal,
+                label: "create_file".to_string(),
+                status: Some("preparing".to_string()),
+                payload: serde_json::json!({
+                    "run": {
+                        "callId": "call-preview",
+                        "toolName": "create_file",
+                        "status": "preparing"
+                    }
+                }),
+                created_at: None,
+            })
+            .expect("ephemeral preview");
+        assert_eq!(outbox.flush().await.expect("preview publication"), 2);
+
+        database
+            .execute_batch_for_test(
+                "CREATE TRIGGER fail_later_run_event_insert
+                 BEFORE INSERT ON agent_run_events
+                 BEGIN
+                   SELECT RAISE(FAIL, 'forced later persistence failure');
+                 END;",
+            )
+            .expect("failure trigger");
+        outbox
+            .submit(AgentRunEvent::status_update(
+                &run_id,
+                Some(&turn_id),
+                0,
+                AgentRunPhase::Responding,
+                "Cannot store",
+                Some("running"),
+                None,
+            ))
+            .expect("failed durable status");
+        assert!(matches!(
+            outbox.wait_for_terminal_commit().await,
+            Err(AgentRunEventOutboxFailure::Persistence { .. })
+        ));
+
+        let stored = database
+            .list_agent_run_events(&run_id)
+            .expect("durable ledger");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].event_seq, 1);
+        let delivered = delivery.events.lock().expect("capture lock").clone();
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 4],
+            "the safety terminal must exceed the failed durable sequence"
+        );
+        assert!(delivered[2].is_terminal());
+        assert_eq!(
+            delivered[2].persistence,
+            AgentRunEventPersistence::Ephemeral
+        );
     }
 
     #[tokio::test]
@@ -1616,7 +1949,7 @@ mod tests {
         let events = delivery.events.lock().expect("capture lock").clone();
         assert_eq!(events.len(), 1);
         assert!(events[0].is_terminal());
-        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[0].event_seq, 2);
         assert_eq!(events[0].persistence, AgentRunEventPersistence::Ephemeral);
         assert_eq!(events[0].payload["reason"], "run_event_persistence_failed");
 

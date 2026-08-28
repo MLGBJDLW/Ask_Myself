@@ -1,5 +1,6 @@
 import type {
   AgentRunEvent,
+  AgentRunEventPage,
   AgentTaskRun,
   AgentTaskRunEvent,
   Conversation,
@@ -13,7 +14,12 @@ const MAX_GAP_RECOVERY_ATTEMPTS = 4;
 
 export interface DurableRunReconciliationPort {
   listTaskRuns(conversationId: string): Promise<AgentTaskRun[]>;
-  listRunEvents(runId: string): Promise<AgentRunEvent[]>;
+  listRunEvents(runId: string, afterEventSeq?: number): Promise<AgentRunEvent[]>;
+  listRunEventPage(
+    runId: string,
+    afterEventSeq: number,
+    durableHighWater?: number,
+  ): Promise<AgentRunEventPage>;
   listTaskEvents(runId: string): Promise<AgentTaskRunEvent[]>;
   loadConversation(
     conversationId: string,
@@ -42,6 +48,7 @@ export interface WatchdogReconciliationRequest extends ReconciliationRequestBase
   expectedRunId?: string;
   expectedTurnId?: string;
   missingRunConfirmations: number;
+  afterEventSeq?: number;
 }
 
 export type DurableRunReconciliationRequest =
@@ -65,9 +72,17 @@ export type DurableRunReconciliationOutcome =
 
 export interface GapRecoveryRequest {
   runId: string;
+  afterEventSeq?: number;
   isCurrent: () => boolean;
-  /** Apply the canonical replay and return true while a sequence gap remains. */
-  accept(events: AgentRunEvent[]): boolean;
+  /** Highest live sequence already observed before the next database query. */
+  pendingHighWater: () => number | null;
+  /** Apply one canonical page and return true while a sequence gap remains. */
+  accept(events: AgentRunEvent[], page: GapRecoveryPageContext): boolean;
+}
+
+export interface GapRecoveryPageContext {
+  complete: boolean;
+  authoritativeThroughEventSeq: number;
 }
 
 export type GapRecoveryOutcome =
@@ -187,7 +202,10 @@ export class DurableRunReconciler {
       };
     }
 
-    const runEventsQuery = this.port.listRunEvents(taskRun.id);
+    const runEventsQuery = request.reason === 'watchdog'
+      && request.afterEventSeq !== undefined
+      ? this.listRunEventSuffix(taskRun.id, request.afterEventSeq)
+      : this.port.listRunEvents(taskRun.id);
     const taskEventsQuery = this.port.listTaskEvents(taskRun.id);
     let runEvents: AgentRunEvent[];
     let taskEvents: AgentTaskRunEvent[];
@@ -246,17 +264,42 @@ export class DurableRunReconciler {
   }
 
   async recoverGap(request: GapRecoveryRequest): Promise<GapRecoveryOutcome> {
+    let afterEventSeq = request.afterEventSeq;
     for (let attempt = 0; attempt < MAX_GAP_RECOVERY_ATTEMPTS; attempt += 1) {
       if (!request.isCurrent()) return { kind: 'stale' };
+      const confirmedLiveThrough = request.pendingHighWater() ?? afterEventSeq ?? 0;
       try {
-        const events = await this.withTimeout(
-          this.port.listRunEvents(request.runId),
-          'Settled run-event gap recovery query',
-        );
-        if (!request.isCurrent()) return { kind: 'stale' };
-        const gapRemains = request.accept(
-          [...events].sort((left, right) => left.eventSeq - right.eventSeq),
-        );
+        let cursor = afterEventSeq ?? 0;
+        let durableHighWater: number | undefined;
+        let gapRemains = true;
+        for (;;) {
+          const page = await this.withTimeout(
+            this.port.listRunEventPage(request.runId, cursor, durableHighWater),
+            'Settled run-event gap recovery query',
+          );
+          if (!request.isCurrent()) return { kind: 'stale' };
+          durableHighWater = this.validateRecoveryPage(page, durableHighWater, cursor);
+          gapRemains = request.accept(
+            [...page.events].sort((left, right) => left.eventSeq - right.eventSeq),
+            {
+              complete: !page.hasMore,
+              authoritativeThroughEventSeq: Math.max(
+                durableHighWater,
+                confirmedLiveThrough,
+              ),
+            },
+          );
+          const nextCursor = page.nextAfterEventSeq ?? cursor;
+          if (!page.hasMore) {
+            cursor = nextCursor;
+            break;
+          }
+          if (nextCursor <= cursor) {
+            throw new Error('Run Event recovery page did not advance its cursor');
+          }
+          cursor = nextCursor;
+        }
+        afterEventSeq = cursor;
         if (!gapRemains) return { kind: 'recovered' };
       } catch {
         if (!request.isCurrent()) return { kind: 'stale' };
@@ -268,6 +311,59 @@ export class DurableRunReconciler {
       await this.delay(Math.min(250 * (2 ** attempt), 2_000));
     }
     return { kind: 'exhausted' };
+  }
+
+  private async listRunEventSuffix(
+    runId: string,
+    afterEventSeq: number,
+  ): Promise<AgentRunEvent[]> {
+    const events: AgentRunEvent[] = [];
+    let cursor = afterEventSeq;
+    let durableHighWater: number | undefined;
+    for (;;) {
+      const page = await this.port.listRunEventPage(runId, cursor, durableHighWater);
+      durableHighWater = this.validateRecoveryPage(page, durableHighWater, cursor);
+      events.push(...page.events);
+      const nextCursor = page.nextAfterEventSeq ?? cursor;
+      if (!page.hasMore) return events;
+      if (nextCursor <= cursor) {
+        throw new Error('Run Event recovery page did not advance its cursor');
+      }
+      cursor = nextCursor;
+    }
+  }
+
+  private validateRecoveryPage(
+    page: AgentRunEventPage,
+    expectedHighWater: number | undefined,
+    afterEventSeq: number,
+  ): number {
+    if (
+      expectedHighWater !== undefined
+      && page.durableHighWater !== expectedHighWater
+    ) {
+      throw new Error('Run Event recovery page changed its durable high-water mark');
+    }
+    if (page.events.some(event => (
+      event.eventSeq <= afterEventSeq
+      || event.eventSeq > page.durableHighWater
+    ))) {
+      throw new Error('Run Event recovery page exceeded its authoritative bounds');
+    }
+    const lastEventSeq = page.events.reduce(
+      (highWater, event) => Math.max(highWater, event.eventSeq),
+      afterEventSeq,
+    );
+    if (
+      page.nextAfterEventSeq !== null
+      && page.nextAfterEventSeq !== lastEventSeq
+    ) {
+      throw new Error('Run Event recovery page returned an invalid continuation cursor');
+    }
+    if (page.hasMore && page.nextAfterEventSeq === null) {
+      throw new Error('Run Event recovery page omitted its continuation cursor');
+    }
+    return page.durableHighWater;
   }
 
   private selectWatchdogRun(

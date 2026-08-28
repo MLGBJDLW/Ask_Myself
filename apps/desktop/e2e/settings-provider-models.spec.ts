@@ -882,7 +882,7 @@ test("provider output limit is automatic when the explicit cap is cleared", asyn
   await expect(input).toHaveValue("4096");
   await input.fill("");
   await expect(input).toHaveAttribute("placeholder", "Auto (agent-safe reserve)");
-  await expect(maxTokensField).toContainText("currently 4096 for the main agent");
+  await expect(maxTokensField).toContainText("16K generally; 32K for DeepSeek");
 
   await maxTokensField
     .locator("xpath=ancestor::form")

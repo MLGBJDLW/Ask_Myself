@@ -15,6 +15,8 @@ import type {
 import { projectRunEventsToStreamState } from './streaming/durableReplay';
 import {
   enqueueStreamRunEvent,
+  parseStreamEventSeq,
+  takeAuthoritativeRunEventSuffix,
   takeNextStreamRunEvent,
 } from './streaming/ordering';
 import { applyAgentRunEvent } from './streaming/runEventReducer';
@@ -413,15 +415,22 @@ class StreamStoreImpl {
     };
     void durableRunReconciler.recoverGap({
       runId,
+      afterEventSeq: this._streams[conversationId]?._lastEventSeq,
       isCurrent,
-      accept: runEvents => {
-        for (const runEvent of runEvents) {
-          this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
-        }
+      pendingHighWater: () => {
         const state = this._streams[conversationId];
-        return Boolean(state && [...state._pendingRunEvents.values()]
-          .some(event => event.runId === runId));
+        if (!state) return null;
+        return this.pendingRunEventHighWater(state, runId);
       },
+      accept: (runEvents, page) => this.applyAuthoritativeRunEventSuffix(
+        conversationId,
+        runId,
+        runEvents,
+        {
+          includeLivePending: page.complete,
+          authoritativeThroughEventSeq: page.authoritativeThroughEventSeq,
+        },
+      ),
     }).then(outcome => {
       if (outcome.kind !== 'exhausted' || !isCurrent()) return;
       const state = this._streams[conversationId];
@@ -446,6 +455,42 @@ class StreamStoreImpl {
         this._gapRecoveries.delete(conversationId);
       }
     });
+  }
+
+  private applyAuthoritativeRunEventSuffix(
+    conversationId: string,
+    runId: string,
+    runEvents: AgentRunEvent[],
+    options: {
+      includeLivePending: boolean;
+      authoritativeThroughEventSeq: number;
+    },
+  ): boolean {
+    const state = this._streams[conversationId];
+    if (!state || (state.turnHandle?.runId && state.turnHandle.runId !== runId)) return false;
+
+    const ordered = takeAuthoritativeRunEventSuffix(state, runId, runEvents, options);
+    for (const runEvent of ordered) {
+      if (this.applyOrderedRunEvent(conversationId, state, runEvent)) {
+        state._pendingRunEvents.clear();
+        break;
+      }
+    }
+    return [...state._pendingRunEvents.values()].some(event => event.runId === runId);
+  }
+
+  private pendingRunEventHighWater(
+    state: InternalStreamState,
+    runId: string,
+  ): number | null {
+    let highWater: number | null = null;
+    for (const event of state._pendingRunEvents.values()) {
+      if (event.runId !== runId) continue;
+      const eventSeq = parseStreamEventSeq(event.eventSeq);
+      if (eventSeq === null) continue;
+      highWater = Math.max(highWater ?? 0, eventSeq);
+    }
+    return highWater;
   }
 
   private watchdogStateIsCurrent(
@@ -554,6 +599,9 @@ class StreamStoreImpl {
     state._watchdogRecoveryAttempt += 1;
     const expectedRunId = state.turnHandle?.runId;
     const expectedTurnId = state.turnHandle?.turnId;
+    const authoritativeLiveThrough = expectedRunId
+      ? this.pendingRunEventHighWater(state, expectedRunId)
+      : null;
     this.setWatchdogConnectionState(state, 'degraded');
     appendStatusTraceEvent(
       state,
@@ -571,6 +619,7 @@ class StreamStoreImpl {
         expectedRunId,
         expectedTurnId,
         missingRunConfirmations: state._watchdogMissingRunConfirmations,
+        afterEventSeq: state._lastEventSeq,
         isCurrent: () => Boolean(
           this.watchdogStateIsCurrent(conversationId, generation, expectedRunId),
         ),
@@ -622,9 +671,19 @@ class StreamStoreImpl {
 
       state.taskRun = outcome.snapshot.taskRun;
       state.taskEvents = outcome.snapshot.taskEvents;
-      for (const runEvent of outcome.snapshot.runEvents) {
-        this.dispatch(conversationId, { conversationId, runEvent } as AgentFrontendEvent);
-      }
+      this.applyAuthoritativeRunEventSuffix(
+        conversationId,
+        outcome.snapshot.taskRun.id,
+        outcome.snapshot.runEvents,
+        {
+          includeLivePending: true,
+          authoritativeThroughEventSeq: Math.max(
+            authoritativeLiveThrough ?? 0,
+            outcome.snapshot.runEvents[outcome.snapshot.runEvents.length - 1]?.eventSeq
+              ?? state._lastEventSeq,
+          ),
+        },
+      );
 
       state = this._streams[conversationId];
       if (!state || !state.isStreaming) return;

@@ -247,6 +247,13 @@ export interface AgentRunEvent {
   createdAt?: string | null;
 }
 
+export interface AgentRunEventPage {
+  events: AgentRunEvent[];
+  durableHighWater: number;
+  nextAfterEventSeq: number | null;
+  hasMore: boolean;
+}
+
 export type RuntimeTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'paused';
 
 export type AgentTurnState =

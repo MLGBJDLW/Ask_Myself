@@ -286,6 +286,13 @@ test.beforeEach(async ({ page }) => {
           ];
         case 'get_agent_task_run_events_cmd':
           return [];
+        case 'get_agent_run_event_page_cmd':
+          return {
+            events: [],
+            durableHighWater: Number(args.durableHighWater ?? args.afterEventSeq ?? 0),
+            nextAfterEventSeq: null,
+            hasMore: false,
+          };
         case 'get_agent_run_events_cmd':
           if (String(args.runId ?? '') === 'task-paused-hydration') {
             return [

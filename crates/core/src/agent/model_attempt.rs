@@ -1394,7 +1394,7 @@ mod tests {
                     tool_call_delta: Some(crate::llm::ToolCallDelta {
                         id: "call-1".to_string(),
                         name: Some("read_file".to_string()),
-                        arguments_delta: "{}".to_string(),
+                        arguments_delta: "{}".to_string().into(),
                         index: Some(0),
                         thought_signature: None,
                     }),

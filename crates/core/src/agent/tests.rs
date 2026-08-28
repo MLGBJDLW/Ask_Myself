@@ -118,6 +118,31 @@ fn test_accumulate_appends_arguments() {
 }
 
 #[test]
+fn test_accumulate_treats_a_complete_nested_object_as_an_opaque_delta() {
+    let mut calls = vec![ToolCallRequest {
+        id: "call_nested".into(),
+        name: "create_file".into(),
+        arguments: r#"{"metadata":"#.into(),
+        thought_signature: None,
+    }];
+
+    for fragment in [r#"{"language":"rust"}"#, "}"] {
+        assert!(accumulate_tool_call(
+            &mut calls,
+            &ToolCallDelta {
+                id: "call_nested".into(),
+                name: None,
+                arguments_delta: fragment.into(),
+                index: None,
+                thought_signature: None,
+            },
+        ));
+    }
+
+    assert_eq!(calls[0].arguments, r#"{"metadata":{"language":"rust"}}"#);
+}
+
+#[test]
 fn test_accumulate_replaces_cumulative_provider_argument_snapshots() {
     let mut calls = Vec::new();
     assert!(accumulate_tool_call(
@@ -152,6 +177,31 @@ fn test_accumulate_replaces_cumulative_provider_argument_snapshots() {
 }
 
 #[test]
+fn test_accumulate_replaces_repeated_json_object_argument_snapshots() {
+    let mut calls = Vec::new();
+    for arguments in [r#"{"path":"a"}"#, r#"{"path":"b"}"#] {
+        assert!(accumulate_tool_call(
+            &mut calls,
+            &ToolCallDelta {
+                id: "call-object-snapshot".into(),
+                name: Some("create_file".into()),
+                arguments_delta: crate::llm::ToolCallArgumentsDelta::snapshot(
+                    arguments.to_string(),
+                ),
+                index: Some(0),
+                thought_signature: None,
+            },
+        ));
+    }
+
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].arguments, r#"{"path":"b"}"#);
+    assert!(crate::llm::message_validation::is_complete_tool_call(
+        &calls[0]
+    ));
+}
+
+#[test]
 fn test_cumulative_snapshot_limit_applies_to_replacement_not_snapshot_sum() {
     let final_arguments = format!(r#"{{"content":"{}"}}"#, "x".repeat(700_000));
     let partial_arguments = final_arguments[..600_000].to_string();
@@ -162,7 +212,7 @@ fn test_cumulative_snapshot_limit_applies_to_replacement_not_snapshot_sum() {
         &ToolCallDelta {
             id: "call-large-snapshot".into(),
             name: Some("create_file".into()),
-            arguments_delta: partial_arguments,
+            arguments_delta: partial_arguments.into(),
             index: Some(0),
             thought_signature: None,
         },
@@ -172,7 +222,7 @@ fn test_cumulative_snapshot_limit_applies_to_replacement_not_snapshot_sum() {
         &ToolCallDelta {
             id: "call-large-snapshot".into(),
             name: Some("create_file".into()),
-            arguments_delta: final_arguments.clone(),
+            arguments_delta: final_arguments.clone().into(),
             index: Some(0),
             thought_signature: None,
         },
@@ -403,6 +453,62 @@ fn test_default_config() {
 }
 
 #[test]
+fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
+    let standard = AgentConfig::default();
+    assert_eq!(
+        standard.resolved_max_response_tokens("unknown-model"),
+        DEFAULT_AGENT_RESPONSE_TOKENS
+    );
+
+    let deepseek = AgentConfig {
+        provider_type: Some(ProviderType::DeepSeek),
+        ..AgentConfig::default()
+    };
+    assert_eq!(
+        deepseek.resolved_max_response_tokens("deepseek-v4-pro"),
+        DEFAULT_DEEPSEEK_RESPONSE_TOKENS
+    );
+
+    let explicit = AgentConfig {
+        max_tokens: Some(12_000),
+        context_window: Some(16_000),
+        ..deepseek.clone()
+    };
+    assert_eq!(
+        explicit.resolved_max_response_tokens("deepseek-v4-pro"),
+        12_000,
+        "explicit output caps are not reduced to half the context window"
+    );
+
+    for (provider_type, model) in [
+        (
+            Some(ProviderType::OpenRouter),
+            "deepseek/deepseek-v4-pro:free",
+        ),
+        (Some(ProviderType::OpenAi), "deepseek-ai/deepseek-r1"),
+    ] {
+        let routed = AgentConfig {
+            provider_type,
+            ..AgentConfig::default()
+        };
+        assert_eq!(
+            routed.resolved_max_response_tokens(model),
+            DEFAULT_DEEPSEEK_RESPONSE_TOKENS,
+            "routed DeepSeek models retain the reasoning-heavy automatic reserve"
+        );
+    }
+
+    let constrained = AgentConfig {
+        context_window: Some(8_192),
+        ..deepseek
+    };
+    assert_eq!(
+        constrained.resolved_max_response_tokens("deepseek-chat"),
+        4_096
+    );
+}
+
+#[test]
 fn test_build_system_prompt_preserves_core_rules() {
     let prompt = build_system_prompt(
         Some("Prefer terse answers."),
@@ -575,7 +681,7 @@ impl LlmProvider for MockProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "call_1".to_string(),
                     name: Some("mock_tool".to_string()),
-                    arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                    arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -758,7 +864,7 @@ impl LlmProvider for UnknownReplayThinkingProvider {
                     tool_call_delta: Some(ToolCallDelta {
                         id: "call-unverified".to_string(),
                         name: Some("recording_tool".to_string()),
-                        arguments_delta: r#"{"value":"must-not-run"}"#.to_string(),
+                        arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
                         index: Some(0),
                         thought_signature: None,
                     }),
@@ -823,7 +929,7 @@ impl LlmProvider for RouteAwareReplayPolicyProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "call-primary".to_string(),
                     name: Some("recording_tool".to_string()),
-                    arguments_delta: r#"{"value":"safe"}"#.to_string(),
+                    arguments_delta: r#"{"value":"safe"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -948,7 +1054,7 @@ impl LlmProvider for ToolCallingFallbackRouteProvider {
                         tool_call_delta: Some(ToolCallDelta {
                             id: "fallback-call".to_string(),
                             name: Some("recording_tool".to_string()),
-                            arguments_delta: r#"{"value":"fallback"}"#.to_string(),
+                            arguments_delta: r#"{"value":"fallback"}"#.to_string().into(),
                             index: Some(0),
                             thought_signature: None,
                         }),
@@ -1037,7 +1143,7 @@ impl LlmProvider for MissingRequiredReasoningProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "call-stream".to_string(),
                     name: Some("recording_tool".to_string()),
-                    arguments_delta: r#"{"value":"unsafe"}"#.to_string(),
+                    arguments_delta: r#"{"value":"unsafe"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -1116,7 +1222,7 @@ impl LlmProvider for ThinkingMockProvider {
                     tool_call_delta: Some(ToolCallDelta {
                         id: "call_1".to_string(),
                         name: Some("mock_tool".to_string()),
-                        arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                        arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
                         index: Some(0),
                         thought_signature: None,
                     }),
@@ -1537,7 +1643,7 @@ impl LlmProvider for ToolCallThenInterruptedProvider {
             tool_call_delta: Some(ToolCallDelta {
                 id: "write-once".to_string(),
                 name: Some("recording_tool".to_string()),
-                arguments_delta: r#"{"value":"write once"}"#.to_string(),
+                arguments_delta: r#"{"value":"write once"}"#.to_string().into(),
                 index: Some(0),
                 thought_signature: None,
             }),
@@ -1622,7 +1728,7 @@ impl LlmProvider for CancelledStreamProvider {
                         tool_call_delta: Some(ToolCallDelta {
                             id: "cancelled-call".to_string(),
                             name: Some("recording_tool".to_string()),
-                            arguments_delta: r#"{"value":"must-not-run"}"#.to_string(),
+                            arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
                             index: Some(0),
                             thought_signature: None,
                         }),
@@ -1698,8 +1804,8 @@ impl LlmProvider for PendingCancellationProvider {
                                         tool_call_delta: Some(ToolCallDelta {
                                             id: "pending-cancelled-call".to_string(),
                                             name: Some("recording_tool".to_string()),
-                                            arguments_delta: r#"{"value":"must-not-run"}"#
-                                                .to_string(),
+                                            arguments_delta:
+                                                r#"{"value":"must-not-run"}"#.to_string().into(),
                                             index: Some(0),
                                             thought_signature: None,
                                         }),
@@ -1971,7 +2077,7 @@ impl LlmProvider for ParallelProvider {
                     tool_call_delta: Some(ToolCallDelta {
                         id: "fast_call".to_string(),
                         name: Some("fast_tool".to_string()),
-                        arguments_delta: r#"{"value":"fast"}"#.to_string(),
+                        arguments_delta: r#"{"value":"fast"}"#.to_string().into(),
                         index: Some(0),
                         thought_signature: None,
                     }),
@@ -1984,7 +2090,7 @@ impl LlmProvider for ParallelProvider {
                     tool_call_delta: Some(ToolCallDelta {
                         id: "slow_call".to_string(),
                         name: Some("slow_tool".to_string()),
-                        arguments_delta: r#"{"value":"slow"}"#.to_string(),
+                        arguments_delta: r#"{"value":"slow"}"#.to_string().into(),
                         index: Some(1),
                         thought_signature: None,
                     }),
@@ -2179,7 +2285,7 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "recovery-tool-call".to_string(),
                     name: Some("mock_tool".to_string()),
-                    arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                    arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -2291,7 +2397,7 @@ impl LlmProvider for TruncatedToolCallProvider {
                     name: Some("recording_tool".to_string()),
                     // This is valid JSON, but the provider may have cut a longer
                     // string at the output boundary. It is unsafe to execute.
-                    arguments_delta: r#"{"value":"apparently-valid"}"#.to_string(),
+                    arguments_delta: r#"{"value":"apparently-valid"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -2357,7 +2463,7 @@ impl LlmProvider for MalformedToolCallProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "malformed-call".to_string(),
                     name: Some("recording_tool".to_string()),
-                    arguments_delta: r#"{"value":"unterminated""#.to_string(),
+                    arguments_delta: r#"{"value":"unterminated""#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -2440,7 +2546,7 @@ impl LlmProvider for GoalLifecycleProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "complete-goal".to_string(),
                     name: Some("update_goal".to_string()),
-                    arguments_delta: r#"{"status":"complete"}"#.to_string(),
+                    arguments_delta: r#"{"status":"complete"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -2920,7 +3026,7 @@ async fn prefix_cached_provider_uses_bounded_resident_surface_without_dropping_u
     let requests = captured.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].iter().any(|name| name == "tool_search"));
-    assert!(requests[0].iter().any(|name| name == "mock_tool"));
+    assert!(!requests[0].iter().any(|name| name == "mock_tool"));
     assert!(!requests[0]
         .iter()
         .any(|name| name == "mcp__cache_test__oversized"));
@@ -3280,7 +3386,7 @@ impl LlmProvider for ApprovalRequiredProvider {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "approval_call_1".to_string(),
                     name: Some(self.tool_name.to_string()),
-                    arguments_delta: self.arguments.to_string(),
+                    arguments_delta: self.arguments.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -3585,7 +3691,7 @@ async fn test_executes_complete_tool_with_sparse_responses_output_index() {
             tool_call_delta: Some(ToolCallDelta {
                 id: "sparse-call".to_string(),
                 name: Some("mock_tool".to_string()),
-                arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
                 // A Responses reasoning item can occupy provider output slot 0.
                 index: Some(1),
                 thought_signature: None,
@@ -3725,7 +3831,7 @@ async fn complete_tool_envelope_survives_a_clean_stream_close_without_finish_rea
             tool_call_delta: Some(ToolCallDelta {
                 id: "clean-close-call".to_string(),
                 name: Some("recording_tool".to_string()),
-                arguments_delta: r#"{"value":"complete"}"#.to_string(),
+                arguments_delta: r#"{"value":"complete"}"#.to_string().into(),
                 index: Some(0),
                 thought_signature: None,
             }),
@@ -3790,7 +3896,7 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "serial_call".to_string(),
                     name: Some("serial_tool".to_string()),
-                    arguments_delta: r#"{"value":"slow"}"#.to_string(),
+                    arguments_delta: r#"{"value":"slow"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -3803,7 +3909,7 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "fast_call".to_string(),
                     name: Some("fast_tool".to_string()),
-                    arguments_delta: r#"{"value":"fast"}"#.to_string(),
+                    arguments_delta: r#"{"value":"fast"}"#.to_string().into(),
                     index: Some(1),
                     thought_signature: None,
                 }),
@@ -3895,7 +4001,8 @@ async fn request_user_input_defers_every_later_tool_call() {
                             "type": "short"
                         }]
                     })
-                    .to_string(),
+                    .to_string()
+                    .into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -3908,7 +4015,7 @@ async fn request_user_input_defers_every_later_tool_call() {
                 tool_call_delta: Some(ToolCallDelta {
                     id: "later-write".to_string(),
                     name: Some("recording_tool".to_string()),
-                    arguments_delta: r#"{"value":"unsafe without answer"}"#.to_string(),
+                    arguments_delta: r#"{"value":"unsafe without answer"}"#.to_string().into(),
                     index: Some(1),
                     thought_signature: None,
                 }),
@@ -4136,7 +4243,7 @@ async fn test_cancellable_tool_run_completes_as_cancelled() {
             tool_call_delta: Some(ToolCallDelta {
                 id: "slow_call".to_string(),
                 name: Some("slow_tool".to_string()),
-                arguments_delta: r#"{"value":"slow"}"#.to_string(),
+                arguments_delta: r#"{"value":"slow"}"#.to_string().into(),
                 index: Some(0),
                 thought_signature: None,
             }),
@@ -4238,7 +4345,7 @@ async fn test_ui_preview_tool_streams_preparing_arguments_without_legacy_delta()
                 tool_call_delta: Some(ToolCallDelta {
                     id: "preview_call".to_string(),
                     name: Some("generate_image".to_string()),
-                    arguments_delta: r#"{"prompt":"hel"#.to_string(),
+                    arguments_delta: r#"{"prompt":"hel"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -4251,7 +4358,7 @@ async fn test_ui_preview_tool_streams_preparing_arguments_without_legacy_delta()
                 tool_call_delta: Some(ToolCallDelta {
                     id: "preview_call".to_string(),
                     name: Some("generate_image".to_string()),
-                    arguments_delta: r#"lo"}"#.to_string(),
+                    arguments_delta: r#"lo"}"#.to_string().into(),
                     index: Some(0),
                     thought_signature: None,
                 }),
@@ -4765,7 +4872,7 @@ async fn test_tool_result_replay_matches_current_llm_context() {
             tool_call_delta: Some(ToolCallDelta {
                 id: "read_call".to_string(),
                 name: Some("read_file".to_string()),
-                arguments_delta: r#"{"path":"large.txt"}"#.to_string(),
+                arguments_delta: r#"{"path":"large.txt"}"#.to_string().into(),
                 index: Some(0),
                 thought_signature: None,
             }),
@@ -4863,7 +4970,7 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
             tool_call_delta: Some(ToolCallDelta {
                 id: "mock_call".to_string(),
                 name: Some("mock_tool".to_string()),
-                arguments_delta: r#"{"value":"ok"}"#.to_string(),
+                arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
                 index: Some(0),
                 thought_signature: None,
             }),

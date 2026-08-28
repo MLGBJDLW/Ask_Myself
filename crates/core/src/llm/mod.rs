@@ -585,13 +585,83 @@ pub(crate) fn provider_stream_event_from_error(error: CoreError) -> ProviderStre
 }
 
 /// Incremental tool call data received during streaming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ToolCallArgumentsDeltaKind {
+    #[default]
+    Fragment,
+    Snapshot,
+}
+
+/// Provider-neutral tool argument payload with runtime-local assembly semantics.
+///
+/// Most providers send opaque string fragments. Some OpenAI-compatible SSE
+/// endpoints instead send a complete JSON object on every update; retaining
+/// that distinction prevents two valid root snapshots from being concatenated.
+/// The kind is runtime-local because provider replay persists only the final
+/// verified tool request, while the text keeps the existing serialized wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ToolCallArgumentsDelta {
+    text: String,
+    #[serde(skip)]
+    kind: ToolCallArgumentsDeltaKind,
+}
+
+impl ToolCallArgumentsDelta {
+    pub fn snapshot(text: String) -> Self {
+        Self {
+            text,
+            kind: ToolCallArgumentsDeltaKind::Snapshot,
+        }
+    }
+
+    pub fn is_snapshot(&self) -> bool {
+        self.kind == ToolCallArgumentsDeltaKind::Snapshot
+    }
+}
+
+impl std::ops::Deref for ToolCallArgumentsDelta {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.text
+    }
+}
+
+impl AsRef<str> for ToolCallArgumentsDelta {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl From<String> for ToolCallArgumentsDelta {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            kind: ToolCallArgumentsDeltaKind::Fragment,
+        }
+    }
+}
+
+impl From<&str> for ToolCallArgumentsDelta {
+    fn from(text: &str) -> Self {
+        text.to_string().into()
+    }
+}
+
+impl PartialEq<&str> for ToolCallArgumentsDelta {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallDelta {
     pub id: String,
     pub name: Option<String>,
-    /// Partial JSON arguments appended incrementally.
-    pub arguments_delta: String,
+    /// Opaque JSON fragment or a typed complete-object snapshot.
+    pub arguments_delta: ToolCallArgumentsDelta,
     /// Optional tool-call index from providers that stream multiple calls.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,

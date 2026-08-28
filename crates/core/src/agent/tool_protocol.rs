@@ -7,8 +7,7 @@ use std::collections::HashSet;
 
 use crate::llm::message_validation::is_complete_tool_call;
 use crate::llm::ToolCallRequest;
-
-pub(super) const MAX_TOOL_CALL_ARGUMENT_BYTES: usize = 1024 * 1024;
+use crate::tools::MAX_TOOL_CALL_ARGUMENT_BYTES;
 
 #[derive(Debug, Clone)]
 pub(super) struct VerifiedToolCallBatch {

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { memo, useState, useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Archive,
@@ -417,7 +417,7 @@ function ConversationItem({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ChatSidebar({
+function ChatSidebarComponent({
   conversations,
   activeId,
   runningConversationIds,
@@ -1074,3 +1074,6 @@ export function ChatSidebar({
     </div>
   );
 }
+
+export const ChatSidebar = memo(ChatSidebarComponent);
+ChatSidebar.displayName = 'ChatSidebar';

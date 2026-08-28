@@ -199,6 +199,23 @@ Deep/Custom/Ultra, and scheduled-isolation runs retain the stronger contract.
 Tool selection occurs before request assembly and preserves a stable sorted
 schema across every step on prefix-cached providers.
 
+Large context windows do not justify pinning the entire registry. The resident
+surface is capped at 24 definitions and 12,000 estimated tokens, contains the
+small stable coding/read/write/search set plus `tool_search`, and activates
+specialist tools through discovery. Available-skill metadata is relevance
+ranked and capped at 12 unless the user explicitly pins or invokes a skill.
+
+Prompt IR roles are compiled at the provider boundary. For OpenAI-compatible
+Chat Completions routes, every system-plane block is moved into the leading
+control prefix while transcript roles retain their order; controller/runtime
+tails must never be relabelled as a newer `user` request. A missing per-step
+output limit resolves to 16K generally and 32K for the DeepSeek model family,
+including OpenRouter and custom compatible routes. Automatic defaults are
+bounded by both the catalog output capability and half of an explicitly smaller
+context window. An explicit user cap remains authoritative up to the real
+catalog output limit and total context capacity; the automatic half-window
+heuristic must not silently reduce it.
+
 This follows DeepSeek's documented exact-prefix cache semantics and the
 immutable-prefix/append-only-log split in
 [Reasonix](https://github.com/esengine/deepseek-reasonix/blob/main/docs/ARCHITECTURE.md).

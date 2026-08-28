@@ -412,8 +412,10 @@ pub async fn get_agent_task_runs_cmd(
     conversation_id: String,
 ) -> Result<Vec<AgentTaskRun>, String> {
     state
-        .db
-        .get_agent_task_runs_for_conversation(&conversation_id)
+        .db_executor
+        .read(move |db| db.get_agent_task_runs_for_conversation(&conversation_id))
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 
@@ -453,8 +455,10 @@ pub async fn get_agent_task_run_events_cmd(
     run_id: String,
 ) -> Result<Vec<AgentTaskRunEvent>, String> {
     state
-        .db
-        .get_agent_task_run_events(&run_id)
+        .db_executor
+        .read(move |db| db.get_agent_task_run_events(&run_id))
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 
@@ -462,10 +466,35 @@ pub async fn get_agent_task_run_events_cmd(
 pub async fn get_agent_run_events_cmd(
     state: tauri::State<'_, AppState>,
     run_id: String,
+    after_event_seq: Option<u64>,
 ) -> Result<Vec<AgentRunEvent>, String> {
     state
-        .db
-        .list_agent_run_events(&run_id)
+        .db_executor
+        .read(move |db| match after_event_seq {
+            Some(after_event_seq) => {
+                db.list_agent_run_events_after(&run_id, after_event_seq, 2_048)
+            }
+            None => db.list_agent_run_events(&run_id),
+        })
+        .await
+        .map(|execution| execution.value)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_agent_run_event_page_cmd(
+    state: tauri::State<'_, AppState>,
+    run_id: String,
+    after_event_seq: u64,
+    durable_high_water: Option<u64>,
+) -> Result<nexa_core::agent_run::AgentRunEventPage, String> {
+    state
+        .db_executor
+        .read(move |db| {
+            db.list_agent_run_event_page(&run_id, after_event_seq, durable_high_water, 2_048)
+        })
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 

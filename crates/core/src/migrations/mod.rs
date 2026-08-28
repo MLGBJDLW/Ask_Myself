@@ -2777,6 +2777,34 @@ Every answer that uses knowledge base search results.
         "v124_provider_streaming_config",
         "ALTER TABLE agent_configs ADD COLUMN provider_streaming_json TEXT;",
     ),
+    (
+        "v125_compact_legacy_tool_preview_events",
+        "WITH ranked_previews AS (
+             SELECT rowid AS event_rowid,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY run_id,
+                            CASE
+                              WHEN json_valid(payload_json)
+                              THEN COALESCE(json_extract(payload_json, '$.run.callId'), label)
+                              ELSE label
+                            END
+                        ORDER BY event_seq DESC
+                    ) AS preview_rank
+             FROM agent_run_events
+             WHERE kind = 'toolProgress' AND status = 'preparing'
+         )
+         DELETE FROM agent_run_events
+         WHERE rowid IN (
+             SELECT event_rowid FROM ranked_previews WHERE preview_rank > 1
+         );
+         DELETE FROM agent_run_events
+         WHERE kind = 'toolProgress'
+           AND status = 'preparing'
+           AND run_id IN (
+               SELECT id FROM agent_task_runs
+               WHERE status IN ('completed', 'cancelled', 'failed', 'timed_out')
+           );",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -4740,5 +4768,88 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining_events, 0);
+    }
+
+    #[test]
+    fn legacy_tool_preview_storms_collapse_to_live_snapshots_and_terminal_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("baseline migrations should succeed");
+        conn.execute_batch(
+            "DELETE FROM _migrations
+             WHERE name = 'v125_compact_legacy_tool_preview_events';
+             INSERT INTO conversations (id, provider, model) VALUES
+               ('conv-preview-active', 'deep_seek', 'deepseek-v4-pro'),
+               ('conv-preview-done', 'deep_seek', 'deepseek-v4-pro');
+             INSERT INTO messages (id, conversation_id, role, content) VALUES
+               ('msg-preview-active', 'conv-preview-active', 'user', 'active'),
+               ('msg-preview-done', 'conv-preview-done', 'user', 'done');
+             INSERT INTO conversation_turns
+               (id, conversation_id, user_message_id, status) VALUES
+               ('turn-preview-active', 'conv-preview-active', 'msg-preview-active', 'running'),
+               ('turn-preview-done', 'conv-preview-done', 'msg-preview-done', 'success');
+             INSERT INTO agent_task_runs
+               (id, conversation_id, turn_id, user_message_id, status, phase) VALUES
+               ('run-preview-active', 'conv-preview-active', 'turn-preview-active',
+                'msg-preview-active', 'running', 'tooling'),
+               ('run-preview-done', 'conv-preview-done', 'turn-preview-done',
+                'msg-preview-done', 'completed', 'done');
+             INSERT INTO agent_run_events
+               (run_id, turn_id, event_seq, version, kind, phase, label, status, payload_json)
+             VALUES
+               ('run-preview-active', 'turn-preview-active', 1, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-a'))),
+               ('run-preview-active', 'turn-preview-active', 2, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-a'))),
+               ('run-preview-active', 'turn-preview-active', 3, 2, 'toolProgress',
+                'tooling', 'edit_file', 'preparing', '{}'),
+               ('run-preview-active', 'turn-preview-active', 4, 2, 'toolProgress',
+                'tooling', 'edit_file', 'preparing', '{}'),
+               ('run-preview-active', 'turn-preview-active', 5, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-b'))),
+               ('run-preview-active', 'turn-preview-active', 6, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing',
+                json_object('run', json_object('callId', 'call-b'))),
+               ('run-preview-done', 'turn-preview-done', 1, 2, 'toolProgress',
+                'tooling', 'create_file', 'preparing', '{}'),
+               ('run-preview-done', 'turn-preview-done', 2, 2, 'done',
+                'done', 'completed', 'completed', '{}');",
+        )
+        .expect("simulate legacy cumulative tool previews");
+
+        run_migrations(&conn).expect("preview compaction migration should succeed");
+        run_migrations(&conn).expect("preview compaction should remain idempotent");
+
+        let active = conn
+            .prepare(
+                "SELECT event_seq, label FROM agent_run_events
+                 WHERE run_id = 'run-preview-active' ORDER BY event_seq",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            active,
+            vec![
+                (2, "create_file".to_string()),
+                (4, "edit_file".to_string()),
+                (6, "create_file".to_string())
+            ]
+        );
+        let terminal_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_run_events
+                 WHERE run_id = 'run-preview-done' AND kind = 'toolProgress'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(terminal_progress, 0);
     }
 }

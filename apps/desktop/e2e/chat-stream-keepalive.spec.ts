@@ -51,6 +51,9 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
 
     const emitEvent = (eventName: string, payload: Record<string, unknown>) => {
+      if (eventName === 'agent://run-event') {
+        payload = { runId: 'run-keepalive', turnId: 'turn-keepalive', ...payload };
+      }
       const convert = (window as unknown as {
         __toRunEventFixture?: (
           name: string,
@@ -308,6 +311,13 @@ test.beforeEach(async ({ page }) => {
             updatedAt: new Date().toISOString(),
           }];
         }
+        case 'get_agent_run_event_page_cmd':
+          return {
+            events: [],
+            durableHighWater: Number(args.durableHighWater ?? args.afterEventSeq ?? 0),
+            nextAfterEventSeq: null,
+            hasMore: false,
+          };
         case 'get_agent_run_events_cmd':
         case 'get_agent_task_run_events_cmd':
           return [];

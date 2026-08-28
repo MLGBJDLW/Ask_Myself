@@ -1044,7 +1044,7 @@ impl AgentExecutor {
                                     .context_window_resolution
                                     .and_then(|resolved| resolved.capacity_tokens)
                                     .or(self.config.context_window),
-                                self.config.max_tokens.unwrap_or(4096),
+                                self.config.resolved_max_response_tokens(model),
                             );
                         tool_discovery::activate_tool_search_matches_bounded(
                             &self.tools,

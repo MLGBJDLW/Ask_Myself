@@ -4,8 +4,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 use super::{
-    next_stream_item_with_idle_timeout, FinishReason, StreamChunk, ToolCallDelta, Usage,
-    DEFAULT_STREAM_IDLE_TIMEOUT,
+    next_stream_item_with_idle_timeout, FinishReason, StreamChunk, ToolCallArgumentsDelta,
+    ToolCallDelta, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::error::CoreError;
 
@@ -73,12 +73,12 @@ enum SseArgumentsDelta {
 }
 
 impl SseArgumentsDelta {
-    fn to_delta_text(&self) -> String {
+    fn to_tool_arguments_delta(&self) -> ToolCallArgumentsDelta {
         match self {
-            SseArgumentsDelta::Text(text) => text.clone(),
-            SseArgumentsDelta::Json(value) => {
-                serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
-            }
+            SseArgumentsDelta::Text(text) => text.clone().into(),
+            SseArgumentsDelta::Json(value) => ToolCallArgumentsDelta::snapshot(
+                serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string()),
+            ),
         }
     }
 }
@@ -254,7 +254,11 @@ fn map_tool_call_delta(tc: &SseToolCallDelta) -> ToolCallDelta {
         arguments_delta: tc
             .function
             .as_ref()
-            .and_then(|f| f.arguments.as_ref().map(SseArgumentsDelta::to_delta_text))
+            .and_then(|f| {
+                f.arguments
+                    .as_ref()
+                    .map(SseArgumentsDelta::to_tool_arguments_delta)
+            })
             .unwrap_or_default(),
         index: tc.index,
         thought_signature: None,
@@ -1111,6 +1115,7 @@ mod tests {
         assert_eq!(delta.id, "call_1");
         assert_eq!(delta.name.as_deref(), Some("lookup"));
         assert_eq!(delta.arguments_delta, "{\"q\":\"x\"}");
+        assert!(delta.arguments_delta.is_snapshot());
     }
 
     #[test]

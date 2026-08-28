@@ -28,7 +28,7 @@ pub(crate) fn emit_agent_frontend_event(
     event: AgentEvent,
 ) {
     let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
-    if let Err(error) = event_outbox.submit(run_event) {
+    if let Err(error) = publish_run_event(event_outbox, run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
 }
@@ -46,7 +46,7 @@ pub(crate) fn emit_agent_frontend_event_with_presentation(
 ) {
     let (_, run_event) = prepare_agent_run_event_for_frontend(task_run_id, turn_id, event);
     let run_event = run_event.with_presentation(visibility, display_kind, importance);
-    if let Err(error) = event_outbox.submit(run_event) {
+    if let Err(error) = publish_run_event(event_outbox, run_event) {
         warn!("Failed to submit RunEvent for {conversation_id}: {error}");
     }
 }
@@ -351,7 +351,7 @@ impl StreamBlockEmitter {
     }
 
     pub(crate) fn emit_event(&self, conversation_id: &str, run_event: AgentRunEvent) {
-        if let Err(error) = self.event_outbox.submit(run_event) {
+        if let Err(error) = publish_run_event(&self.event_outbox, run_event) {
             warn!("Failed to submit RunEvent for {conversation_id}: {error}");
         }
     }
@@ -418,6 +418,17 @@ impl StreamBlockEmitter {
             StreamBlockChannel::Answer => self.answer_offset = current_offset,
             StreamBlockChannel::Thinking => self.thinking_offset = current_offset,
         }
+    }
+}
+
+fn publish_run_event(
+    event_outbox: &AgentRunEventOutbox,
+    run_event: AgentRunEvent,
+) -> Result<(), nexa_core::runtime::AgentRunEventSubmitError> {
+    if run_event.is_durable() {
+        event_outbox.submit(run_event)
+    } else {
+        event_outbox.publish_ephemeral(run_event)
     }
 }
 

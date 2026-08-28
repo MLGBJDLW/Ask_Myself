@@ -437,7 +437,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "Авто (безопасный резерв агента)",
-  "maxTokensHelp": "Пустое поле использует безопасный лимит на запрос (4096 для главного агента). Контекст, вывод на шаг и общий бюджет Nexus workers настраиваются отдельно ниже.",
+  "maxTokensHelp": "Пустое поле использует лимит на запрос с учётом модели (обычно 16K; 32K для DeepSeek). Контекст, вывод на шаг и общий бюджет Nexus workers настраиваются отдельно ниже.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

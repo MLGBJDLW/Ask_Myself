@@ -508,7 +508,7 @@ fn completion_response_to_stream_chunks(
             tool_call_delta: Some(super::ToolCallDelta {
                 id: tool_call.id,
                 name: Some(tool_call.name),
-                arguments_delta: tool_call.arguments,
+                arguments_delta: tool_call.arguments.into(),
                 index: Some(index as u32),
                 thought_signature: tool_call.thought_signature,
             }),
@@ -612,14 +612,17 @@ fn role_str(role: &Role) -> &'static str {
     }
 }
 
-fn is_leading_system_message(messages: &[Message], index: usize) -> bool {
-    messages
-        .get(index)
-        .is_some_and(|message| message.role == Role::System)
-        && messages
-            .iter()
-            .take(index)
-            .all(|message| message.role == Role::System)
+fn chat_completion_wire_order(messages: &[Message]) -> Vec<usize> {
+    // Nexa's prompt IR may append volatile controller/runtime sections after
+    // the current user turn. OpenAI-compatible Chat Completions endpoints do
+    // not share a portable `developer` role, but relabelling those controls as
+    // `user` makes the harness -- not the human -- the latest requester.
+    // Compile every system-plane message into the leading control prefix while
+    // preserving the relative order of both partitions.
+    (0..messages.len())
+        .filter(|index| messages[*index].role == Role::System)
+        .chain((0..messages.len()).filter(|index| messages[*index].role != Role::System))
+        .collect()
 }
 
 fn parse_finish_reason(s: &str) -> FinishReason {
@@ -669,6 +672,7 @@ fn add_cache_control_to_text_content(message: &mut OaiMessage) -> bool {
 fn add_profile_cache_control_for_request(
     request: &CompletionRequest,
     messages: &mut [OaiMessage],
+    wire_source_indices: &[usize],
     profile: &PromptCacheProfile,
 ) {
     if !profile.uses_message_breakpoints()
@@ -688,8 +692,14 @@ fn add_profile_cache_control_for_request(
     }
     let mut candidates = latest_by_boundary.into_values().collect::<Vec<_>>();
     candidates.sort_unstable();
-    for index in candidates.into_iter().rev().take(limit).rev() {
-        if let Some(message) = messages.get_mut(index) {
+    for source_index in candidates.into_iter().rev().take(limit).rev() {
+        if let Some(wire_index) = wire_source_indices
+            .iter()
+            .position(|index| *index == source_index)
+        {
+            let Some(message) = messages.get_mut(wire_index) else {
+                continue;
+            };
             add_cache_control_to_text_content(message);
         }
     }
@@ -943,27 +953,26 @@ fn build_request_body_with_config(
         PromptCacheApiStyle::OpenAiCompatible,
         &request.model,
     );
-    let mut messages: Vec<OaiMessage> = request
-        .messages
+    let wire_source_indices = chat_completion_wire_order(&request.messages);
+    let mut messages: Vec<OaiMessage> = wire_source_indices
         .iter()
-        .enumerate()
-        .map(|(index, m)| {
-            let wire_role =
-                if m.role == Role::System && !is_leading_system_message(&request.messages, index) {
-                    "user"
-                } else {
-                    role_str(&m.role)
-                };
+        .map(|index| {
+            let message = &request.messages[*index];
             convert_message(
-                m,
-                wire_role,
+                message,
+                role_str(&message.role),
                 include_reasoning_content,
                 reasoning_history_encoding,
                 raw_tool_args,
             )
         })
         .collect();
-    add_profile_cache_control_for_request(request, &mut messages, &cache_profile);
+    add_profile_cache_control_for_request(
+        request,
+        &mut messages,
+        &wire_source_indices,
+        &cache_profile,
+    );
 
     OaiRequest {
         model: request.model.clone(),
@@ -1814,7 +1823,7 @@ fn client_tool_stream_event(
             tool_call_delta: Some(super::ToolCallDelta {
                 id: call_id,
                 name,
-                arguments_delta,
+                arguments_delta: arguments_delta.into(),
                 index,
                 thought_signature: None,
             }),
@@ -5711,9 +5720,9 @@ data: [DONE]
     }
 
     #[test]
-    fn non_leading_system_messages_are_sent_as_user_context() {
+    fn controller_system_tail_stays_control_plane_and_human_remains_latest_user() {
         let request = CompletionRequest {
-            model: "gpt-5.1".to_string(),
+            model: "deepseek-v4-pro".to_string(),
             messages: vec![
                 Message::text(Role::System, "stable system"),
                 Message::text(Role::User, "question"),
@@ -5726,7 +5735,7 @@ data: [DONE]
             thinking_budget: None,
             reasoning_enabled: None,
             reasoning_effort: None,
-            provider_type: Some(ProviderType::OpenAi),
+            provider_type: Some(ProviderType::DeepSeek),
             routing_session_id: None,
             parallel_tool_calls: true,
         };
@@ -5734,9 +5743,11 @@ data: [DONE]
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "stable system");
+        assert_eq!(body["messages"][1]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "runtime tail");
         assert_eq!(body["messages"][2]["role"], "user");
-        assert_eq!(body["messages"][2]["content"], "runtime tail");
+        assert_eq!(body["messages"][2]["content"], "question");
     }
 
     #[test]

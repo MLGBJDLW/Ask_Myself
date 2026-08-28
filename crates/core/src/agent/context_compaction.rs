@@ -435,7 +435,7 @@ impl AgentExecutor {
             model,
             self.config.context_window,
             self.config.context_window_resolution,
-            self.config.max_tokens.unwrap_or(4096),
+            self.config.resolved_max_response_tokens(model),
         );
         *messages = pipeline.trim_after_overflow_recovery(messages);
 
@@ -470,7 +470,7 @@ impl AgentExecutor {
             model,
             self.config.context_window,
             self.config.context_window_resolution,
-            self.config.max_tokens.unwrap_or(4096),
+            self.config.resolved_max_response_tokens(model),
         );
         let target = pipeline
             .context_budget()

@@ -50,6 +50,7 @@ use crate::task_timeline::TaskTimelineEvent;
 use crate::tools::ToolCategory;
 use crate::tools::{
     ToolInputStreamingMode, ToolInterruptBehavior, ToolOutputAttachment, ToolRegistry,
+    MAX_TOOL_CALL_ARGUMENT_BYTES,
 };
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 use crate::workflow_ir::compile_workflow_ir;
@@ -81,6 +82,7 @@ mod steering;
 mod stream_recovery;
 mod tool_discovery;
 mod tool_dispatch;
+mod tool_input_session;
 mod tool_protocol;
 mod tool_runtime;
 pub mod tool_scheduler;
@@ -101,7 +103,7 @@ use self::prompt_cache::PromptCacheTracker;
 use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
 pub use self::sampling::llm_streaming_disabled_by_env;
 use self::stream_recovery::{ContextOverflowRecoveryDecision, StreamRecoveryPolicy};
-use self::tool_protocol::{VerifiedToolCallBatch, MAX_TOOL_CALL_ARGUMENT_BYTES};
+use self::tool_protocol::VerifiedToolCallBatch;
 use self::tool_runtime::{
     build_provider_hosted_tool_run_item, build_tool_run_item, tool_call_execution_batches,
 };
@@ -414,6 +416,59 @@ fn default_dynamic_tool_visibility() -> bool {
     false
 }
 
+const DEFAULT_AGENT_RESPONSE_TOKENS: u32 = 16_384;
+const DEFAULT_DEEPSEEK_RESPONSE_TOKENS: u32 = 32_768;
+
+fn is_deepseek_model_family(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().split('/').any(|segment| {
+        segment == "deepseek"
+            || segment.starts_with("deepseek-")
+            || segment.starts_with("deepseek_")
+            || segment.starts_with("deepseek.")
+    })
+}
+
+impl AgentConfig {
+    /// Resolve one model-step output envelope. Explicit user configuration wins;
+    /// otherwise reasoning-heavy DeepSeek routes get enough room to reach a
+    /// tool call and other main-agent routes use a conservative 16K reserve.
+    /// Known catalog limits remain the hard upper bound.
+    fn resolved_max_response_tokens(&self, model: &str) -> u32 {
+        let automatic = self.max_tokens.is_none();
+        let default = if self.provider_type == Some(ProviderType::DeepSeek)
+            || is_deepseek_model_family(model)
+        {
+            DEFAULT_DEEPSEEK_RESPONSE_TOKENS
+        } else {
+            DEFAULT_AGENT_RESPONSE_TOKENS
+        };
+        let requested = self.max_tokens.unwrap_or(default);
+        let catalog_limit = self
+            .provider_type
+            .and_then(|provider| {
+                crate::provider_catalog::model_limits_from_catalog(provider, model)
+            })
+            .and_then(|limits| limits.max_output_tokens)
+            .and_then(|tokens| u32::try_from(tokens).ok());
+        let context_limit = self
+            .context_window_resolution
+            .and_then(|resolution| resolution.capacity_tokens)
+            .or(self.context_window)
+            .map(|capacity| {
+                if automatic {
+                    capacity.saturating_div(2).max(1)
+                } else {
+                    capacity.max(1)
+                }
+            });
+
+        catalog_limit
+            .into_iter()
+            .chain(context_limit)
+            .fold(requested, u32::min)
+    }
+}
+
 #[cfg(test)]
 fn tool_timeout_for_call(
     configured_timeout_secs: Option<u32>,
@@ -431,10 +486,9 @@ impl Default for AgentConfig {
             volatile_system_sections: Vec::new(),
             model: None,
             temperature: Some(0.3),
-            // `None` selects the agent's conservative response reserve (4096
-            // tokens today). Model steps always send that resolved cap on the
-            // wire so provider-native 100k-1M reasoning limits cannot swallow
-            // an interactive tool round.
+            // `None` selects a model-aware agent response reserve. Model steps
+            // always send that resolved cap on the wire so provider-native
+            // 100k-1M limits cannot swallow an interactive tool round.
             max_tokens: None,
             max_actual_tokens_per_run: None,
             context_window: None,
@@ -839,7 +893,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
                 calls.push(ToolCallRequest {
                     id: delta.id.clone(),
                     name: delta.name.clone().unwrap_or_default(),
-                    arguments: delta.arguments_delta.clone(),
+                    arguments: delta.arguments_delta.to_string(),
                     thought_signature: delta.thought_signature.clone(),
                 });
                 return true;
@@ -849,7 +903,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
         calls.push(ToolCallRequest {
             id: delta.id.clone(),
             name: delta.name.clone().unwrap_or_default(),
-            arguments: delta.arguments_delta.clone(),
+            arguments: delta.arguments_delta.to_string(),
             thought_signature: delta.thought_signature.clone(),
         });
         return true;
@@ -865,7 +919,7 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
             calls.push(ToolCallRequest {
                 id: delta.id.clone(),
                 name: delta.name.clone().unwrap_or_default(),
-                arguments: delta.arguments_delta.clone(),
+                arguments: delta.arguments_delta.to_string(),
                 thought_signature: delta.thought_signature.clone(),
             });
             return true;
@@ -884,8 +938,20 @@ fn accumulate_tool_call(calls: &mut Vec<ToolCallRequest>, delta: &ToolCallDelta)
     false
 }
 
-fn merge_tool_argument_fragment(arguments: &mut String, fragment: &str) -> bool {
+fn merge_tool_argument_fragment(
+    arguments: &mut String,
+    delta: &crate::llm::ToolCallArgumentsDelta,
+) -> bool {
+    let fragment = delta.as_ref();
     if fragment.is_empty() {
+        return true;
+    }
+    if delta.is_snapshot() {
+        if fragment.len() > MAX_TOOL_CALL_ARGUMENT_BYTES {
+            return false;
+        }
+        arguments.clear();
+        arguments.push_str(fragment);
         return true;
     }
     if arguments.is_empty() {
@@ -896,12 +962,11 @@ fn merge_tool_argument_fragment(arguments: &mut String, fragment: &str) -> bool 
         return true;
     }
 
-    let fragment_is_object =
-        serde_json::from_str::<serde_json::Value>(fragment).is_ok_and(|value| value.is_object());
-    let concatenated_is_object =
-        serde_json::from_str::<serde_json::Value>(&format!("{arguments}{fragment}"))
-            .is_ok_and(|value| value.is_object());
-    if fragment.starts_with(arguments.as_str()) || (fragment_is_object && !concatenated_is_object) {
+    // Cumulative-snapshot providers repeat the already assembled prefix.
+    // Every other fragment is an opaque byte delta: parsing the concatenation
+    // here made token-sized file arguments quadratic, and a fragment that was
+    // itself a nested JSON object could be misclassified as a root snapshot.
+    if fragment.starts_with(arguments.as_str()) {
         arguments.clear();
         arguments.push_str(fragment);
     } else {

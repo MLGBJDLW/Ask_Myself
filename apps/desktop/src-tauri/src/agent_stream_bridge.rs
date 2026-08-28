@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use nexa_core::agent::AgentEvent;
-use nexa_core::agent_run::AgentRunPhase;
+use nexa_core::agent::{AgentEvent, ToolRunStatus};
+use nexa_core::agent_run::{AgentRunEventPersistence, AgentRunPhase};
 use nexa_core::runtime::{AgentRunEventOutbox, TurnLaunchStage};
 use tokio::sync::mpsc;
 
@@ -10,9 +10,10 @@ use crate::agent_stream::{
     StreamBlockEmitter,
 };
 use crate::agent_task_events::record_internal_agent_run_status_event;
+use crate::tool_preview_journal::ToolPreviewJournal;
 
-// Rendering does not require one durable SQLite row per display frame. A 20 Hz
-// flush remains responsive while bounding write amplification for long turns.
+// Text rendering stays frame-responsive. Cumulative tool-input previews are
+// independently sampled by ToolPreviewJournal and never enter SQLite.
 const STREAM_FLUSH_INTERVAL_MS: u64 = 50;
 
 pub(crate) struct AgentStreamForwarder {
@@ -42,7 +43,7 @@ impl AgentStreamForwarder {
 
     pub(crate) async fn run(self, mut rx: mpsc::Receiver<AgentEvent>) {
         let mut pending_delta: Option<PendingStreamDelta> = None;
-        let mut pending_tool_updates = Vec::new();
+        let mut pending_tool_updates = ToolPreviewJournal::default();
         let mut stream_emitter = StreamBlockEmitter::new(self.event_outbox.clone());
         let mut reasoning_phase_recorded = false;
         let mut generating_phase_recorded = false;
@@ -87,10 +88,6 @@ impl AgentStreamForwarder {
                                     if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
-                                    self.flush_pending_tool_updates(
-                                        &stream_emitter,
-                                        &mut pending_tool_updates,
-                                    );
                                     if !generating_phase_recorded {
                                         generating_phase_recorded = true;
                                         self.record_progress_phase("generating", "Generating answer");
@@ -108,10 +105,6 @@ impl AgentStreamForwarder {
                                     if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
-                                    self.flush_pending_tool_updates(
-                                        &stream_emitter,
-                                        &mut pending_tool_updates,
-                                    );
                                     if !reasoning_phase_recorded {
                                         reasoning_phase_recorded = true;
                                         self.record_progress_phase("reasoning", "Reasoning");
@@ -134,19 +127,36 @@ impl AgentStreamForwarder {
                                 | AgentEvent::ToolCallResult { .. } => {
                                     // ToolRun is the only public tool lifecycle.
                                 }
-                                event @ AgentEvent::ToolRunUpdated { .. } => {
+                                AgentEvent::ToolRunUpdated { run }
+                                    if run.status == ToolRunStatus::Preparing =>
+                                {
                                     if self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                                    queue_latest_tool_update(&mut pending_tool_updates, event);
+                                    pending_tool_updates.queue(
+                                        AgentEvent::ToolRunUpdated { run },
+                                        Instant::now(),
+                                    );
                                 }
                                 other => {
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                                    self.flush_pending_tool_updates(
-                                        &stream_emitter,
-                                        &mut pending_tool_updates,
-                                    );
+                                    match &other {
+                                        AgentEvent::StreamReset { .. } => {
+                                            pending_tool_updates.reset();
+                                        }
+                                        AgentEvent::ToolRunStarted { run }
+                                        | AgentEvent::ToolRunCompleted { run } => {
+                                            pending_tool_updates.retire(&run.call_id);
+                                        }
+                                        AgentEvent::ToolRunUpdated { run } => {
+                                            pending_tool_updates.retire(&run.call_id);
+                                        }
+                                        _ => self.flush_tool_preview_events(
+                                            &stream_emitter,
+                                            pending_tool_updates.drain_due(Instant::now()),
+                                        ),
+                                    }
                                     let (frontend_event, run_event) =
                                         prepare_agent_run_event_for_frontend(
                                             &self.task_run_id,
@@ -172,9 +182,9 @@ impl AgentStreamForwarder {
                         None => {
                             if !self.event_outbox.is_closed_for_submission() {
                                 self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                                self.flush_pending_tool_updates(
+                                self.flush_tool_preview_events(
                                     &stream_emitter,
-                                    &mut pending_tool_updates,
+                                    pending_tool_updates.drain_all(),
                                 );
                             }
                             break;
@@ -184,9 +194,9 @@ impl AgentStreamForwarder {
                 _ = tick.tick() => {
                     if !self.event_outbox.is_closed_for_submission() {
                         self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                        self.flush_pending_tool_updates(
+                        self.flush_tool_preview_events(
                             &stream_emitter,
-                            &mut pending_tool_updates,
+                            pending_tool_updates.drain_due(Instant::now()),
                         );
                     }
                 }
@@ -244,30 +254,18 @@ impl AgentStreamForwarder {
         );
     }
 
-    fn flush_pending_tool_updates(
+    fn flush_tool_preview_events(
         &self,
         stream_emitter: &StreamBlockEmitter,
-        pending_tool_updates: &mut Vec<AgentEvent>,
+        events: Vec<AgentEvent>,
     ) {
-        for event in pending_tool_updates.drain(..) {
-            let (_, run_event) =
+        for event in events {
+            let (_, mut run_event) =
                 prepare_agent_run_event_for_frontend(&self.task_run_id, Some(&self.turn_id), event);
+            run_event.persistence = AgentRunEventPersistence::Ephemeral;
             stream_emitter.emit_event(&self.conversation_id, run_event);
         }
     }
-}
-
-fn queue_latest_tool_update(pending: &mut Vec<AgentEvent>, event: AgentEvent) {
-    let call_id = match &event {
-        AgentEvent::ToolRunUpdated { run } => run.call_id.as_str(),
-        _ => return,
-    };
-    if let Some(index) = pending.iter().position(|candidate| {
-        matches!(candidate, AgentEvent::ToolRunUpdated { run } if run.call_id == call_id)
-    }) {
-        pending.remove(index);
-    }
-    pending.push(event);
 }
 
 pub(crate) fn event_marks_provider_response_byte(event: &AgentEvent) -> bool {
@@ -300,39 +298,7 @@ pub(crate) fn event_has_visible_token(event: &AgentEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexa_core::agent::{ToolRunItem, ToolRunStatus};
     use nexa_core::llm::{Message, Role, Usage};
-    use nexa_core::tools::{
-        ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
-    };
-
-    fn tool_update(call_id: &str, note: &str) -> AgentEvent {
-        AgentEvent::ToolRunUpdated {
-            run: ToolRunItem {
-                call_id: call_id.to_string(),
-                tool_name: "test_tool".to_string(),
-                owner: nexa_core::plugins::capability_owner_for_tool("test_tool"),
-                provider_executed: false,
-                status: ToolRunStatus::Preparing,
-                arguments: Some(note.to_string()),
-                render_kind: ToolRenderKind::Generic,
-                capabilities: ToolRunCapabilities {
-                    input_streaming: ToolInputStreamingMode::UiPreview,
-                    render_kind: ToolRenderKind::Generic,
-                    read_only: true,
-                    destructive: false,
-                    concurrency_safe: true,
-                    interrupt_behavior: ToolInterruptBehavior::Block,
-                    resource_keys: Vec::new(),
-                },
-                content: None,
-                is_error: None,
-                artifacts: None,
-                progress_note: Some(note.to_string()),
-                duration_ms: None,
-            },
-        }
-    }
 
     #[test]
     fn provider_byte_and_visible_output_contracts_are_distinct() {
@@ -362,24 +328,5 @@ mod tests {
             finish_reason: Some("stop".into()),
         };
         assert!(event_has_visible_token(&done));
-    }
-
-    #[test]
-    fn pending_tool_updates_keep_only_the_latest_state_per_call() {
-        let mut pending = Vec::new();
-        queue_latest_tool_update(&mut pending, tool_update("call-a", "first"));
-        queue_latest_tool_update(&mut pending, tool_update("call-b", "other"));
-        queue_latest_tool_update(&mut pending, tool_update("call-a", "latest"));
-
-        assert_eq!(pending.len(), 2);
-        assert!(matches!(
-            &pending[0],
-            AgentEvent::ToolRunUpdated { run } if run.call_id == "call-b"
-        ));
-        assert!(matches!(
-            &pending[1],
-            AgentEvent::ToolRunUpdated { run }
-                if run.call_id == "call-a" && run.progress_note.as_deref() == Some("latest")
-        ));
     }
 }

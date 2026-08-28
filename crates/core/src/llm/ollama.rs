@@ -420,7 +420,8 @@ async fn parse_ollama_ndjson_stream(
                             id: format!("call_{index}"),
                             name: Some(tc.function.name.clone()),
                             arguments_delta: serde_json::to_string(&tc.function.arguments)
-                                .unwrap_or_default(),
+                                .unwrap_or_default()
+                                .into(),
                             index: Some(index as u32),
                             thought_signature: None,
                         }),

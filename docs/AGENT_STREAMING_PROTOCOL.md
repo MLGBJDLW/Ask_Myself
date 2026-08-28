@@ -11,6 +11,17 @@ unsequenced `AgentRunEvent` values. The outbox alone assigns the monotonic
 arbitrates terminal acceptance. Desktop code is a delivery adapter, not another
 sequence or terminal owner.
 
+One narrow exception exists for replaceable live tool-input snapshots. The
+desktop bridge may call the outbox's explicit ephemeral publication interface;
+the outbox still sequences and orders the event, but deliberately omits it from
+SQLite. Lifecycle, approval, resumable, result, error, and terminal events must
+remain durable and use the normal submission interface.
+
+`flush()` is a processed-through barrier: when an ephemeral publication has
+been delivered or intentionally dropped, its sequence advances that barrier
+after every earlier durable event is committed. It must not wait for a row that
+the protocol deliberately never writes.
+
 The first accepted true terminal event closes the outbox permanently; later
 submissions are rejected as already closed. `paused` and `awaiting_user_input`
 are durable, resumable phases rather than terminal outcomes, so they leave the
@@ -21,12 +32,16 @@ the actor retains its open outbox through suspension. A true terminal or
 fail-closed outcome ends that actor lifetime; reopening then reconstructs the
 closed state from durable storage.
 
-If durable persistence fails or the bounded producer queue saturates, the
+If durable persistence fails or a durable event saturates the bounded producer queue, the
 outbox fails closed: it cancels the run cancellation domain, rejects later
 events, preserves the contiguous accepted prefix that can still be committed,
 and emits exactly one internally generated ephemeral failure terminal for live
-presentation. Runtime producers cannot submit ephemeral events themselves. A
-continuing executor cannot invoke more tools after the ledger becomes unsafe.
+presentation. A replaceable preview is instead dropped under queue pressure; a
+diagnostic snapshot must never poison the authoritative run. A continuing
+executor cannot invoke more tools after the durable ledger becomes unsafe.
+The failure terminal uses `max(durableHead, actorLiveHighWater) + 1`; deriving
+it from SQLite alone could reuse a sequence already assigned to an ephemeral
+preview or to the durable batch whose commit failed.
 
 Provider-native replay envelopes remain backend-only durable state. They are
 never compacted into the public stream payload and are not replaced by this
@@ -43,10 +58,12 @@ presentation protocol.
 - `companion://projection-changed` invalidates the Companion's low-frequency
   projection without exposing chat content.
 
-The desktop delivery adapter is invoked only after the Run Event rows and any
-semantic task projection have completed on the database writer lane. Delivery
-is best effort: an unavailable main window does not roll back durable state or
-hold the run's completion barrier open.
+For durable events, the desktop delivery adapter is invoked only after the Run
+Event rows and any semantic task projection have completed on the database
+writer lane. An ephemeral preview first flushes any earlier durable batch, then
+is delivered directly in sequence. Delivery is best effort: an unavailable
+main window does not roll back durable state or hold the run's completion
+barrier open.
 
 Tool execution is projected through the typed `ToolRun` lifecycle. Provider
 assembly fragments such as partial `ToolCall` arguments are not a public UI
@@ -61,6 +78,16 @@ advance across a missing sequence because historical ledgers can contain gaps
 for events that were intentionally not retained. It never renumbers committed
 events. Answer and thinking block deltas also require the exact UTF-8 byte
 offset. Tool and reset boundaries rotate block identities.
+
+Gap recovery uses the same authority for a bounded durable suffix. It merges
+that suffix with live events buffered while the query was in flight only after
+every page is consumed, then may advance across sequence numbers absent from
+SQLite. The first page freezes a durable high-water mark and each continuation
+is bounded to 2,048 rows, so a busy producer cannot move the recovery target or
+hide a later durable page behind an already-buffered live event. Live events
+that arrive after the query's captured high-water remain buffered for another
+authoritative pass. Strict live dispatch alone never guesses that a gap was
+ephemeral.
 
 Ordering is also bound to `runId`. A different run may replace only a settled,
 unbound retained projection; an event from another run cannot enter a bound
@@ -78,10 +105,21 @@ order. This keeps token-volume traffic off the synchronous SQLite path without
 weakening lifecycle ordering. Every durable batch is written on the dedicated
 database writer lane before main-window delivery.
 
-Replaceable `ToolRunUpdated` previews are likewise coalesced by `callId` on the
-stream cadence. A semantic boundary flushes the latest preview before the next
-tool lifecycle event. Provider argument fragments therefore do not create one
-durable row per transport chunk.
+Provider tool arguments are assembled losslessly, but the Tool input session
+builds semantic previews only on the first observation and each 2 KiB
+cumulative-input bucket. Preparing parsing and raw display are bounded to a
+32 KiB prefix. The desktop Tool preview journal then keeps only the latest
+snapshot per `callId`, publishing after another 2 KiB of growth or a two-second
+slow-stream heartbeat. Only `ToolRunUpdated(status=preparing)` may enter this
+journal. Approval-pending, running, and execution-progress updates bypass it and
+remain durable lifecycle events. The completed `ToolRun` remains the final
+durable authority. Provider argument fragments therefore cannot create one
+parse, full diff, frontend event, or SQLite row per transport chunk.
+
+Argument assembly also preserves the provider wire shape: string values are
+opaque fragments, while object-valued OpenAI-compatible arguments are typed
+complete snapshots and replace the prior snapshot. The runtime never infers
+that distinction by reparsing every growing string.
 
 ## Completion and recovery
 
@@ -141,14 +179,18 @@ non-closing suspension, but new producers must use a `status` event.
 replace an incomplete streamed preview. When the native payload must be bounded,
 `done.payload.messageTruncated` is `true`; only then may the frontend retain a
 non-empty, fully ordered streamed preview instead of replacing it with the
-bounded message. A recovery pass replays the ordered
-durable ledger and confirms completion with the final assistant message joined
-through the conversation turn. A completed task without that message is not
-allowed to settle to a blank answer; recovery remains armed until the durable
-message is available.
+bounded message. A recovery pass requests the unseen durable suffix after the
+frontend's `eventSeq` high-water mark in frozen, 2,048-row pages, exhausts that
+snapshot, replays the ordered ledger, and confirms completion with the final
+assistant message joined through the conversation turn. A completed task
+without that message is not allowed to settle to a blank answer; recovery
+remains armed until the durable message is available.
 
 The chat surface hydrates an active conversation once. Live events and recovery
-patch that projection instead of initiating a second completion fetch.
+patch that projection instead of initiating a second completion fetch. React
+stream projection is scheduled as interruptible transition work; stable sidebar
+state is memoized, and incomplete Mermaid programs are rendered only after the
+stream completes so navigation and stop controls retain the urgent UI lane.
 When a suspended run is replayed after restart, elapsed-time presentation freezes
 at the latest durable suspension event timestamp (falling back to the task
 projection update time for legacy rows), not at the time the UI happens to load.

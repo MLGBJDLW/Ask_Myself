@@ -95,6 +95,7 @@ function createPort(overrides: Partial<DurableRunReconciliationPort> = {}) {
   const calls = {
     taskRuns: 0,
     runEvents: 0,
+    runEventPages: 0,
     taskEvents: 0,
     conversations: 0,
     turns: 0,
@@ -116,6 +117,15 @@ function createPort(overrides: Partial<DurableRunReconciliationPort> = {}) {
     async listRunEvents() {
       calls.runEvents += 1;
       return [runEvent(2), runEvent(1)];
+    },
+    async listRunEventPage(_runId, afterEventSeq, durableHighWater) {
+      calls.runEventPages += 1;
+      return {
+        events: [],
+        durableHighWater: durableHighWater ?? afterEventSeq,
+        nextAfterEventSeq: null,
+        hasMore: false,
+      };
     },
     async listTaskEvents() {
       calls.taskEvents += 1;
@@ -202,6 +212,38 @@ test('watchdog preserves expected run identity instead of adopting a newer run',
 
   assert(outcome.kind === 'active', 'expected active run should be recovered');
   assertEqual(outcome.snapshot.taskRun.id, 'run-expected', 'newer unrelated run is ignored');
+});
+
+test('watchdog requests only the durable suffix after the live high-water mark', async () => {
+  let observedAfterEventSeq: number | undefined;
+  const { port } = createPort({
+    async listRunEventPage(_runId, afterEventSeq) {
+      observedAfterEventSeq = afterEventSeq;
+      const event = runEvent(afterEventSeq + 1);
+      return {
+        events: [event],
+        durableHighWater: event.eventSeq,
+        nextAfterEventSeq: event.eventSeq,
+        hasMore: false,
+      };
+    },
+  });
+
+  const outcome = await new DurableRunReconciler(port).reconcile({
+    reason: 'watchdog',
+    conversationId: 'conversation-1',
+    expectedRunId: 'run-1',
+    expectedTurnId: 'turn-1',
+    missingRunConfirmations: 0,
+    afterEventSeq: 7_095,
+  });
+
+  assertEqual(outcome.kind, 'active', 'watchdog should reconcile the active run');
+  assertEqual(observedAfterEventSeq, 7_095, 'recovery query cursor');
+  assert(
+    outcome.kind === 'active' && outcome.snapshot.runEvents[0]?.eventSeq === 7_096,
+    'only the unseen durable suffix should cross the Tauri seam',
+  );
 });
 
 test('missing expected run becomes terminal only after three durable confirmations', async () => {
@@ -365,9 +407,14 @@ test('gap recovery owns canonical ordering, backoff, and exhaustion', async () =
   let queries = 0;
   const delays: number[] = [];
   const { port } = createPort({
-    async listRunEvents() {
+    async listRunEventPage(_runId, afterEventSeq) {
       queries += 1;
-      return [runEvent(3), runEvent(1), runEvent(2)];
+      return {
+        events: afterEventSeq < 3 ? [runEvent(3), runEvent(1), runEvent(2)] : [],
+        durableHighWater: 3,
+        nextAfterEventSeq: afterEventSeq < 3 ? 3 : null,
+        hasMore: false,
+      };
     },
   });
   const reconciler = new DurableRunReconciler(port, {
@@ -377,6 +424,7 @@ test('gap recovery owns canonical ordering, backoff, and exhaustion', async () =
   const recovered = await reconciler.recoverGap({
     runId: 'run-1',
     isCurrent: () => true,
+    pendingHighWater: () => 3,
     accept(events) {
       observed.push(events.map(event => event.eventSeq));
       return observed.length < 3;
@@ -390,9 +438,65 @@ test('gap recovery owns canonical ordering, backoff, and exhaustion', async () =
   const exhausted = await reconciler.recoverGap({
     runId: 'run-1',
     isCurrent: () => true,
+    pendingHighWater: () => 3,
     accept: () => true,
   });
   assertEqual(exhausted.kind, 'exhausted', 'four unresolved queries exhaust recovery');
+});
+
+test('gap recovery exhausts a frozen suffix before exposing buffered live events', async () => {
+  const firstPage = Array.from({ length: 2_048 }, (_, index) => runEvent(index + 2));
+  const observedCursors: number[] = [];
+  const observedSnapshotHeads: Array<number | undefined> = [];
+  const { port } = createPort({
+    async listRunEventPage(_runId, afterEventSeq, durableHighWater) {
+      observedCursors.push(afterEventSeq);
+      observedSnapshotHeads.push(durableHighWater);
+      if (afterEventSeq === 1) {
+        return {
+          events: firstPage,
+          durableHighWater: 2_050,
+          nextAfterEventSeq: 2_049,
+          hasMore: true,
+        };
+      }
+      return {
+        events: [runEvent(2_050)],
+        durableHighWater: 2_050,
+        nextAfterEventSeq: 2_050,
+        hasMore: false,
+      };
+    },
+  });
+  const pages: Array<{ count: number; complete: boolean; through: number }> = [];
+
+  const outcome = await new DurableRunReconciler(port).recoverGap({
+    runId: 'run-1',
+    afterEventSeq: 1,
+    isCurrent: () => true,
+    pendingHighWater: () => 2_052,
+    accept(events, page) {
+      pages.push({
+        count: events.length,
+        complete: page.complete,
+        through: page.authoritativeThroughEventSeq,
+      });
+      return !page.complete;
+    },
+  });
+
+  assertEqual(outcome.kind, 'recovered', 'all durable pages complete one recovery attempt');
+  assertEqual(observedCursors.join(','), '1,2049', 'page cursor advances without skipping');
+  assertEqual(
+    observedSnapshotHeads.map(value => value ?? 'unset').join(','),
+    'unset,2050',
+    'later pages remain pinned to the first durable head',
+  );
+  assertEqual(pages[0].count, 2_048, 'the bounded first page is complete');
+  assertEqual(pages[0].complete, false, 'live pending events stay hidden before the final page');
+  assertEqual(pages[1].count, 1, 'the second durable page is not dropped');
+  assertEqual(pages[1].complete, true, 'only the exhausted suffix is authoritative');
+  assertEqual(pages[1].through, 2_052, 'pre-query live high-water is confirmed');
 });
 
 async function main(): Promise<void> {

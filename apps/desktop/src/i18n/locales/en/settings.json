@@ -453,7 +453,7 @@
   "temperature": "Temperature",
   "maxTokens": "Max Tokens",
   "maxTokensAutoPlaceholder": "Auto (agent-safe reserve)",
-  "maxTokensHelp": "Leave blank for the agent-safe per-request reserve (currently 4096 for the main agent). Nexus worker context, per-step output, and cumulative budgets are configured separately below.",
+  "maxTokensHelp": "Leave blank for the model-aware per-request reserve (16K generally; 32K for DeepSeek). Nexus worker context, per-step output, and cumulative budgets are configured separately below.",
   "testConnection": "Test Connection",
   "connectionSuccess": "Connection successful",
   "connectionFailed": "Connection failed",

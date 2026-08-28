@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
@@ -365,6 +365,8 @@ async function loadMermaid() {
       'suppressErrorRendering',
       'maxEdges',
       'htmlLabels',
+      'theme',
+      'themeVariables',
     ],
     suppressErrorRendering: true,
     htmlLabels: false,
@@ -426,6 +428,83 @@ function enqueueMermaidRender<T>(task: () => Promise<T>): Promise<T> {
   return result;
 }
 
+type MermaidRgb = readonly [number, number, number];
+
+function parseMermaidComputedColor(value: string): MermaidRgb | null {
+  if (!value || value === 'none' || value === 'transparent') return null;
+  const channels = value.match(/[\d.]+/g)?.map(Number);
+  if (!channels || channels.length < 3) return null;
+  if (channels.length >= 4 && channels[3] === 0) return null;
+  return [channels[0], channels[1], channels[2]];
+}
+
+function mermaidRelativeLuminance(color: MermaidRgb): number {
+  const channels = color.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+
+function mermaidContrastRatio(background: MermaidRgb, foreground: MermaidRgb): number {
+  const backgroundLuminance = mermaidRelativeLuminance(background);
+  const foregroundLuminance = mermaidRelativeLuminance(foreground);
+  const lighter = Math.max(backgroundLuminance, foregroundLuminance);
+  const darker = Math.min(backgroundLuminance, foregroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function enforceReadableMermaidNodePalette(root: Element): void {
+  const probeHost = document.createElement('div');
+  probeHost.style.cssText = [
+    'all: initial',
+    'position: fixed',
+    'left: -100000px',
+    'top: 0',
+    'width: 1200px',
+    'visibility: hidden',
+    'pointer-events: none',
+  ].join(';');
+  document.body.appendChild(probeHost);
+  probeHost.appendChild(root);
+
+  const safeFills = [
+    '#dbeafe',
+    '#dcfce7',
+    '#fef3c7',
+    '#fae8ff',
+    '#ffe4e6',
+    '#e0f2fe',
+  ];
+  try {
+    root.querySelectorAll<SVGGElement>('g.node').forEach((node, index) => {
+      const shape = node.querySelector<SVGElement>('rect, polygon, circle, ellipse, path');
+      const labelProbe = node.querySelector<SVGElement>('text, tspan, .nodeLabel, .label');
+      if (!shape || !labelProbe) return;
+
+      const background = parseMermaidComputedColor(getComputedStyle(shape).fill);
+      const labelStyle = getComputedStyle(labelProbe);
+      const foreground = parseMermaidComputedColor(labelStyle.fill)
+        ?? parseMermaidComputedColor(labelStyle.color);
+      if (!background || !foreground || mermaidContrastRatio(background, foreground) >= 4.5) {
+        return;
+      }
+
+      shape.style.setProperty('fill', safeFills[index % safeFills.length], 'important');
+      shape.style.setProperty('stroke', '#2e75b6', 'important');
+      node.style.setProperty('color', '#0f172a', 'important');
+      node.querySelectorAll<SVGElement>('text, tspan, .nodeLabel, .label').forEach((label) => {
+        label.style.setProperty('fill', '#0f172a', 'important');
+        label.style.setProperty('color', '#0f172a', 'important');
+      });
+    });
+  } finally {
+    probeHost.remove();
+  }
+}
+
 export function sanitizeMermaidSvg(svg: string): string {
   // Mermaid needs its generated <style> element for its palette. The SVG-only
   // DOMPurify profile removes it and leaves black-on-black browser defaults.
@@ -475,6 +554,12 @@ export function sanitizeMermaidSvg(svg: string): string {
       .replace(/url\(\s*(?!['"]?#)[^)]+\)/gi, 'none');
   });
 
+  // Mermaid directives and classDef rules are model-authored content. Keep
+  // valid custom palettes, but repair the exact unreadable case where a node
+  // fill and its label resolve below WCAG AA contrast (including WebView style
+  // loss, whose SVG defaults are black fill plus black text).
+  enforceReadableMermaidNodePalette(root);
+
   return root.outerHTML;
 }
 
@@ -521,6 +606,7 @@ export function MermaidBlock({ chart }: { chart: string }) {
     'rendering',
   );
   const diagramId = useId().replace(/[:]/g, '-');
+  const renderGeneration = useRef(0);
   const normalizedChart = normalizeMermaidChart(chart);
 
   const handleCopy = useCallback(async () => {
@@ -534,25 +620,39 @@ export function MermaidBlock({ chart }: { chart: string }) {
   }, [normalizedChart]);
 
   useEffect(() => {
+    const generation = ++renderGeneration.current;
     let cancelled = false;
+    const isCurrent = () => !cancelled && renderGeneration.current === generation;
+
+    // Parsing and laying out an incomplete Mermaid program can monopolize the
+    // browser main thread and enqueue stale work on every text delta. Keep the
+    // source available, but render the diagram exactly once after streaming.
+    if (isStreaming) {
+      setSvg('');
+      setRenderState('deferred');
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const render = async () => {
       if (!normalizedChart) {
-        if (!cancelled) {
+        if (isCurrent()) {
           setSvg('');
-          setRenderState(isStreaming ? 'deferred' : 'invalid');
+          setRenderState('invalid');
         }
         return;
       }
 
       try {
         const mermaid = await loadMermaid();
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setSvg('');
         setRenderState('rendering');
 
         const renderId = `mermaid-${diagramId}-${++mermaidRenderSequence}`;
         const rendered = await enqueueMermaidRender(async () => {
+          if (!isCurrent()) return null;
           const renderHost = document.createElement('div');
           renderHost.style.cssText = [
             'all: initial',
@@ -578,7 +678,7 @@ export function MermaidBlock({ chart }: { chart: string }) {
             for (const candidate of candidates) {
               try {
                 const parsed = await mermaid.parse(candidate, { suppressErrors: true });
-                if (!parsed) continue;
+                if (!parsed || !isCurrent()) continue;
                 return await mermaid.render(renderId, candidate, renderHost);
               } catch {
                 document.getElementById(renderId)?.remove();
@@ -591,21 +691,21 @@ export function MermaidBlock({ chart }: { chart: string }) {
           }
         });
         if (!rendered) {
-          if (!cancelled) {
-            setRenderState(isStreaming ? 'deferred' : 'invalid');
+          if (isCurrent()) {
+            setRenderState('invalid');
           }
           return;
         }
 
-        if (!cancelled) {
+        if (isCurrent()) {
           const sanitizedSvg = sanitizeMermaidSvg(rendered.svg);
           setSvg(sanitizedSvg);
           setRenderState(sanitizedSvg ? 'ready' : 'invalid');
         }
       } catch {
-        if (!cancelled) {
+        if (isCurrent()) {
           setSvg('');
-          setRenderState(isStreaming ? 'deferred' : 'invalid');
+          setRenderState('invalid');
         }
       }
     };

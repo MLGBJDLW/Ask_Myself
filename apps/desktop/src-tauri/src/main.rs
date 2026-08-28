@@ -14,6 +14,7 @@ mod desktop_agent_session;
 mod subagent_lifecycle;
 mod subagent_tool;
 mod terminal_agent_tool;
+mod tool_preview_journal;
 
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -753,6 +754,7 @@ fn main() {
             commands::list_agent_task_run_summaries_cmd,
             commands::get_agent_task_run_events_cmd,
             commands::get_agent_run_events_cmd,
+            commands::get_agent_run_event_page_cmd,
             commands::get_run_usage_snapshot_cmd,
             commands::get_conversation_usage_snapshot_cmd,
             commands::get_ai_usage_analytics_cmd,

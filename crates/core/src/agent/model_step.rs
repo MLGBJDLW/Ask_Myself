@@ -145,6 +145,7 @@ fn reset_iteration_capture_for_new_sample(
     thinking_delta_seen: &mut bool,
     finish_reason: &mut Option<FinishReason>,
     preparing_call_ids: &mut HashSet<String>,
+    tool_input_session: &mut tool_input_session::ToolInputSession,
     started_call_ids: &mut HashSet<String>,
     tool_run_started_ids: &mut HashSet<String>,
     chunk_count: &mut usize,
@@ -160,6 +161,7 @@ fn reset_iteration_capture_for_new_sample(
     *thinking_delta_seen = false;
     *finish_reason = None;
     preparing_call_ids.clear();
+    tool_input_session.reset();
     started_call_ids.clear();
     tool_run_started_ids.clear();
     *chunk_count = 0;
@@ -327,6 +329,7 @@ impl AgentExecutor {
         let mut thinking_delta_seen = false;
         let mut finish_reason: Option<FinishReason> = None;
         let mut preparing_call_ids: HashSet<String> = HashSet::new();
+        let mut tool_input_session = tool_input_session::ToolInputSession::default();
         let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
         let mut chunk_count: usize = 0;
@@ -371,6 +374,7 @@ impl AgentExecutor {
                         &mut thinking_delta_seen,
                         &mut finish_reason,
                         &mut preparing_call_ids,
+                        &mut tool_input_session,
                         &mut started_call_ids,
                         &mut tool_run_started_ids,
                         &mut chunk_count,
@@ -460,6 +464,7 @@ impl AgentExecutor {
                             &mut thinking_delta_seen,
                             &mut finish_reason,
                             &mut preparing_call_ids,
+                            &mut tool_input_session,
                             &mut started_call_ids,
                             &mut tool_run_started_ids,
                             &mut chunk_count,
@@ -628,24 +633,57 @@ impl AgentExecutor {
                         // generic arguments to the UI; they are often
                         // invalid JSON until the provider finishes the call.
                         if let Some((tc_index, tc)) = resolve_delta_target(&tool_calls, tc_delta) {
-                            let partial_args_value =
-                                serde_json::from_str::<serde_json::Value>(&tc.arguments)
-                                    .unwrap_or(serde_json::Value::Null);
-                            let capabilities =
-                                self.tools.run_capabilities(&tc.name, &partial_args_value);
-                            let preview_arguments = if matches!(
-                                capabilities.input_streaming,
-                                ToolInputStreamingMode::UiPreview
-                                    | ToolInputStreamingMode::ToolConsumesPartial
-                            ) {
-                                Some(tc.arguments.as_str())
-                            } else {
-                                None
-                            };
-                            if !tc.name.is_empty() && preparing_call_ids.insert(tc.id.clone()) {
-                                if tool_run_started_ids.insert(tc.id.clone()) {
+                            let first_preparing =
+                                !tc.name.is_empty() && preparing_call_ids.insert(tc.id.clone());
+                            let should_project = !tc.name.is_empty()
+                                && !tc_delta.arguments_delta.is_empty()
+                                && tool_input_session.should_project(&tc.id, tc.arguments.len());
+                            if first_preparing || should_project {
+                                let partial_args_value =
+                                    serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                                        .unwrap_or(serde_json::Value::Null);
+                                let capabilities =
+                                    self.tools.run_capabilities(&tc.name, &partial_args_value);
+                                let preview_arguments = if matches!(
+                                    capabilities.input_streaming,
+                                    ToolInputStreamingMode::UiPreview
+                                        | ToolInputStreamingMode::ToolConsumesPartial
+                                ) {
+                                    Some(tc.arguments.as_str())
+                                } else {
+                                    None
+                                };
+
+                                if first_preparing {
+                                    if tool_run_started_ids.insert(tc.id.clone()) {
+                                        let _ = tx
+                                            .send(AgentEvent::ToolRunStarted {
+                                                run: build_tool_run_item(
+                                                    &self.tools,
+                                                    &tc.id,
+                                                    &tc.name,
+                                                    ToolRunStatus::Preparing,
+                                                    preview_arguments,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                ),
+                                            })
+                                            .await;
+                                    }
                                     let _ = tx
-                                        .send(AgentEvent::ToolRunStarted {
+                                        .send(AgentEvent::ToolCallPreparing {
+                                            call_id: tc.id.clone(),
+                                            tool_name: tc.name.clone(),
+                                            args_bytes: tc.arguments.len() as u32,
+                                            index: tc_index as u32,
+                                        })
+                                        .await;
+                                } else if preview_arguments.is_some() {
+                                    let _ = tx
+                                        .send(AgentEvent::ToolRunUpdated {
                                             run: build_tool_run_item(
                                                 &self.tools,
                                                 &tc.id,
@@ -661,34 +699,6 @@ impl AgentExecutor {
                                         })
                                         .await;
                                 }
-                                let _ = tx
-                                    .send(AgentEvent::ToolCallPreparing {
-                                        call_id: tc.id.clone(),
-                                        tool_name: tc.name.clone(),
-                                        args_bytes: tc.arguments.len() as u32,
-                                        index: tc_index as u32,
-                                    })
-                                    .await;
-                            } else if !tc.name.is_empty()
-                                && preview_arguments.is_some()
-                                && !tc_delta.arguments_delta.is_empty()
-                            {
-                                let _ = tx
-                                    .send(AgentEvent::ToolRunUpdated {
-                                        run: build_tool_run_item(
-                                            &self.tools,
-                                            &tc.id,
-                                            &tc.name,
-                                            ToolRunStatus::Preparing,
-                                            preview_arguments,
-                                            None,
-                                            None,
-                                            None,
-                                            None,
-                                            None,
-                                        ),
-                                    })
-                                    .await;
                             }
                         }
                     }
@@ -962,6 +972,7 @@ impl AgentExecutor {
                                     &mut thinking_delta_seen,
                                     &mut finish_reason,
                                     &mut preparing_call_ids,
+                                    &mut tool_input_session,
                                     &mut started_call_ids,
                                     &mut tool_run_started_ids,
                                     &mut chunk_count,
