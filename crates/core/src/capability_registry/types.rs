@@ -247,6 +247,8 @@ pub struct RuntimeRouteTargetSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
     pub model_id: String,
+    #[serde(default)]
+    pub provider_streaming: crate::llm::ProviderStreamingConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +284,8 @@ pub struct RuntimeRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
     pub model_id: String,
+    #[serde(default)]
+    pub provider_streaming: crate::llm::ProviderStreamingConfig,
     /// Frozen, policy-eligible automatic fallback plan. The selected target
     /// may advance only forward through this exact list and only before any
     /// response output is exposed.

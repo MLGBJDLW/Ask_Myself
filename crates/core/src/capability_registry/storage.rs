@@ -4,12 +4,12 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::db::Database;
 use crate::error::CoreError;
-use crate::llm::ProviderConfig;
+use crate::llm::{ProviderConfig, ProviderStreamingConfig};
 use crate::model_catalog::{load_builtin_catalog, normalize_endpoint_url};
 use crate::provider_registry::provider_type_for_parts;
 use crate::settings_schema_v2::{
-    resolve_settings_v2, CapabilityFallbackModeV2, SettingsProfileV2, SettingsScopeKindV2,
-    SettingsScopeV2,
+    resolve_settings_v2, CapabilityFallbackModeV2, ResolvedSettingsV2, SettingsProfileV2,
+    SettingsScopeKindV2, SettingsScopeV2,
 };
 
 use super::resolver::{build_registry_projection, selected_profile_chain, stable_id};
@@ -512,7 +512,9 @@ fn resolve_current_runtime_capability(
     }
     let profiles = read_profiles(conn)?;
     let selected_profiles = selected_profile_chain(&profiles, scope);
-    let settings_revisions = resolve_settings_v2(&selected_profiles)?.revisions;
+    let resolved_settings = resolve_settings_v2(&selected_profiles)?;
+    let provider_streaming = resolved_provider_streaming(&resolved_settings)?;
+    let settings_revisions = resolved_settings.revisions;
     let (fallback_index, selected, fallback_reason) = select_runtime_target(&route)?;
     materialize_route_resolution(
         conn,
@@ -521,8 +523,26 @@ fn resolve_current_runtime_capability(
         fallback_index,
         fallback_reason,
         settings_revisions,
+        provider_streaming,
     )
     .map(Some)
+}
+
+fn resolved_provider_streaming(
+    settings: &ResolvedSettingsV2,
+) -> Result<ProviderStreamingConfig, CoreError> {
+    let Some(value) = settings
+        .advanced
+        .get("provider_streaming")
+        .and_then(|setting| setting.value.as_ref())
+    else {
+        return Ok(ProviderStreamingConfig::default());
+    };
+    serde_json::from_value(value.clone()).map_err(|error| {
+        CoreError::InvalidInput(format!(
+            "Resolved provider streaming configuration is invalid: {error}"
+        ))
+    })
 }
 
 fn select_runtime_target(
@@ -587,15 +607,19 @@ fn materialize_route_resolution(
     fallback_index: usize,
     fallback_reason: Option<String>,
     settings_revisions: Vec<crate::settings_schema_v2::SettingsRevisionV2>,
+    provider_streaming: ProviderStreamingConfig,
 ) -> Result<RuntimeCapabilityResolution, CoreError> {
-    let selected_target = snapshot_route_target(conn, selected, fallback_index)?;
+    let selected_target =
+        snapshot_route_target(conn, selected, fallback_index, provider_streaming)?;
     let fallback_targets = if route.fallback_mode == CapabilityFallbackModeV2::Automatic {
         route
             .fallbacks
             .iter()
             .enumerate()
             .filter(|(_, candidate)| candidate.eligibility.eligible)
-            .map(|(index, candidate)| snapshot_route_target(conn, candidate, index + 1))
+            .map(|(index, candidate)| {
+                snapshot_route_target(conn, candidate, index + 1, provider_streaming)
+            })
             .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
@@ -630,6 +654,7 @@ fn materialize_route_resolution(
         base_url: selected_target.base_url.clone(),
         credential_ref: selected_target.credential_ref.clone(),
         model_id: selected_target.model_id.clone(),
+        provider_streaming,
         fallback_targets,
     };
     Ok(RuntimeCapabilityResolution {
@@ -646,6 +671,7 @@ fn snapshot_route_target(
     conn: &Connection,
     candidate: &super::types::ResolvedCapabilityRouteTarget,
     fallback_index: usize,
+    provider_streaming: ProviderStreamingConfig,
 ) -> Result<RuntimeRouteTargetSnapshot, CoreError> {
     let (connection_revision, target_revision, model_definition_revision) =
         validate_persisted_candidate(conn, candidate)?;
@@ -667,6 +693,7 @@ fn snapshot_route_target(
         base_url: candidate.connection.base_url.clone(),
         credential_ref: candidate.connection.credential_ref.clone(),
         model_id: candidate.target.upstream_model_id.clone(),
+        provider_streaming,
     })
 }
 
@@ -702,7 +729,7 @@ fn provider_config_for_route_target(
         api_key: credential,
         org_id: None,
         timeout_secs: None,
-        streaming: Default::default(),
+        streaming: target.provider_streaming,
     })
 }
 
@@ -830,6 +857,7 @@ fn materialize_pinned_resolution(
         base_url: snapshot.base_url.clone(),
         credential_ref: snapshot.credential_ref.clone(),
         model_id: snapshot.model_id.clone(),
+        provider_streaming: snapshot.provider_streaming,
     };
     let provider_config = provider_config_for_route_target(conn, &selected)?;
     let fallbacks = snapshot
@@ -868,6 +896,7 @@ fn apply_selected_route_target(
     snapshot.base_url = target.base_url.clone();
     snapshot.credential_ref = target.credential_ref.clone();
     snapshot.model_id = target.model_id.clone();
+    snapshot.provider_streaming = target.provider_streaming;
 }
 
 fn settings_scope_rank(kind: SettingsScopeKindV2) -> u8 {
@@ -1705,14 +1734,18 @@ mod tests {
     #[test]
     fn migrated_agent_resolves_through_registry_without_exposing_secret() {
         let db = Database::open_memory().unwrap();
-        let saved = db
-            .save_agent_config(&agent(
-                "open_ai",
-                "https://api.openai.com/v1",
-                "gpt-4.1",
-                "sk-registry-secret",
-            ))
-            .unwrap();
+        let mut input = agent(
+            "open_ai",
+            "https://api.openai.com/v1",
+            "gpt-4.1",
+            "sk-registry-secret",
+        );
+        input.provider_streaming = ProviderStreamingConfig {
+            stream_idle_timeout_ms: Some(420_000),
+            connect_timeout_ms: Some(25_000),
+            stream_max_retries: Some(3),
+        };
+        let saved = db.save_agent_config(&input).unwrap();
         let scope = RegistryScope {
             agent_id: Some(saved.id),
             ..RegistryScope::default()
@@ -1743,6 +1776,11 @@ mod tests {
         assert_eq!(
             runtime.provider_config.api_key.as_deref(),
             Some("sk-registry-secret")
+        );
+        assert_eq!(runtime.provider_config.streaming, input.provider_streaming);
+        assert_eq!(
+            runtime.snapshot.provider_streaming,
+            input.provider_streaming
         );
         assert!(db.rollback_settings_schema_v2().unwrap());
         assert!(db
@@ -1958,6 +1996,11 @@ mod tests {
                 Some("gpt-4.1"),
             )
             .unwrap();
+        let provider_streaming = ProviderStreamingConfig {
+            stream_idle_timeout_ms: Some(420_000),
+            connect_timeout_ms: Some(25_000),
+            stream_max_retries: Some(3),
+        };
         let snapshot = RuntimeRegistrySnapshot {
             schema_version: 1,
             settings_revisions: Vec::new(),
@@ -1982,6 +2025,7 @@ mod tests {
             base_url: "https://api.openai.com/v1".to_string(),
             credential_ref: Some(format!("legacy-agent-config:{}", saved.id)),
             model_id: "gpt-4.1".to_string(),
+            provider_streaming,
             fallback_targets: vec![RuntimeRouteTargetSnapshot {
                 fallback_index: 1,
                 target_id: "target:fallback".to_string(),
@@ -1997,6 +2041,7 @@ mod tests {
                 base_url: "https://api.openai.com/v1".to_string(),
                 credential_ref: Some(format!("legacy-agent-config:{}", saved.id)),
                 model_id: "gpt-4.1-mini".to_string(),
+                provider_streaming,
             }],
         };
         db.pin_task_registry_snapshot(&run.id, &snapshot).unwrap();
@@ -2016,6 +2061,7 @@ mod tests {
             .unwrap()
             .expect("existing task pin");
         assert_eq!(resumed.model_id, "gpt-4.1");
+        assert_eq!(resumed.provider_config.streaming, provider_streaming);
         assert_eq!(resumed.snapshot, snapshot);
 
         let advanced = db
@@ -2030,6 +2076,7 @@ mod tests {
         assert_eq!(advanced.target_id, "target:fallback");
         assert_eq!(advanced.model_id, "gpt-4.1-mini");
         assert_eq!(advanced.fallback_index, 1);
+        assert_eq!(advanced.provider_streaming, provider_streaming);
         assert_eq!(
             advanced.fallback_reason.as_deref(),
             Some("primary_invocation_failed_automatic_fallback")
