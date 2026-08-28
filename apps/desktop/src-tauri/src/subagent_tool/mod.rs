@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::delegation_scheduler::{
-    BudgetSnapshot, DelegationLimitPolicy, DelegationScheduler as SubagentBudgetController,
+    BudgetSnapshot, DelegationLimitPolicy, DelegationLimitsV2,
+    DelegationScheduler as SubagentBudgetController,
 };
 use crate::subagent_lifecycle::{
     RegisterSubagentRequest, SubagentEventBridge, SubagentLifecycleEventKind,
@@ -36,8 +37,8 @@ use nexa_core::llm::message_validation::{
     MessageNormalizationContext, MessageSource,
 };
 use nexa_core::llm::{
-    create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart, Message,
-    ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
+    create_provider, provider_uses_non_streaming_fallback, CompletionRequest, ContentPart,
+    LlmProvider, Message, ProviderConfig, ProviderType, ReasoningEffort, Role, Usage,
 };
 use nexa_core::provider_catalog::{
     model_capabilities_from_catalog, model_limits_from_catalog,
@@ -963,6 +964,7 @@ mod judge;
 mod policy;
 mod preflight;
 mod request;
+mod stages;
 mod tools;
 mod worker;
 
@@ -971,6 +973,7 @@ use event_pump::*;
 use policy::*;
 use preflight::*;
 use request::*;
+use stages::*;
 use worker::*;
 
 #[cfg(test)]
