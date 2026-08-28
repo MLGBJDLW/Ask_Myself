@@ -946,8 +946,9 @@ async fn launch_authoritative_scheduled_workflow(
     } = request;
     let automation_id = due.automation.id.clone();
     let due_reason = due.due_reason.clone();
+    let uses_durable_occurrence = due.automation.trigger_kind == "schedule";
 
-    if due.automation.trigger_kind != "schedule" {
+    if !uses_durable_occurrence {
         let retry_decision = state
             .db
             .workflow_automation_scheduler_retry_decision(&automation_id, now)
@@ -975,6 +976,31 @@ async fn launch_authoritative_scheduled_workflow(
                 } else {
                     "retry_backoff".into()
                 },
+            });
+        }
+        // Folder triggers do not have schedule occurrences. Preserve the
+        // pre-claim approval boundary so the matching file change and
+        // `last_run_at` are not consumed before an operator can act.
+        if requires_preclaim_approval_skip(
+            &due.automation.trigger_kind,
+            due.automation.approval_policy.require_before_run,
+        ) {
+            record_task_orchestrator_scheduler_event(
+                state.db.as_ref(),
+                Some(&automation_id),
+                None,
+                "skipped_pre_run_approval",
+                Some("waiting_approval"),
+                "Scheduler skipped due workflow because pre-run approval is required",
+                serde_json::json!({
+                    "dueReason": due_reason,
+                    "triggerKind": due.automation.trigger_kind,
+                    "workflowTemplateId": due.automation.workflow_template_id,
+                    "riskLevel": due.automation.approval_policy.risk_level,
+                }),
+            );
+            return Ok(ScheduledWorkflowLaunchOutcome::Skipped {
+                reason: "approval_required_before_claim".into(),
             });
         }
     }
@@ -1029,32 +1055,33 @@ async fn launch_authoritative_scheduled_workflow(
         .as_ref()
         .expect("launchable workflow claim must include a run");
     let run_id = claimed_run.id.clone();
-    let occurrence_id = claimed_run
-        .occurrence_id
-        .as_deref()
-        .ok_or_else(|| "Scheduled workflow claim did not retain an occurrence id.".to_string())?;
-    let occurrence_approval_state = state
-        .db
-        .workflow_automation_occurrence_approval_state(occurrence_id)
-        .map_err(|error| error.to_string())?;
-    if claim.due_run.automation.approval_policy.require_before_run
-        && occurrence_approval_state
-            != nexa_core::workflow_automation::WorkflowAutomationApprovalState::Approved
-    {
-        let requested = state
+    if uses_durable_occurrence {
+        let occurrence_id = claimed_run.occurrence_id.as_deref().ok_or_else(|| {
+            "Scheduled workflow claim did not retain an occurrence id.".to_string()
+        })?;
+        let occurrence_approval_state = state
             .db
-            .mark_workflow_automation_run_waiting_approval(&run_id)
+            .workflow_automation_occurrence_approval_state(occurrence_id)
             .map_err(|error| error.to_string())?;
-        let waiting_run = state
-            .db
-            .get_workflow_automation_run(&run_id)
-            .map_err(|error| error.to_string())?;
-        if requested || waiting_run.status == WorkflowAutomationRunStatus::WaitingApproval {
-            return Ok(ScheduledWorkflowLaunchOutcome::PendingApproval { run: waiting_run });
+        if claim.due_run.automation.approval_policy.require_before_run
+            && occurrence_approval_state
+                != nexa_core::workflow_automation::WorkflowAutomationApprovalState::Approved
+        {
+            let requested = state
+                .db
+                .mark_workflow_automation_run_waiting_approval(&run_id)
+                .map_err(|error| error.to_string())?;
+            let waiting_run = state
+                .db
+                .get_workflow_automation_run(&run_id)
+                .map_err(|error| error.to_string())?;
+            if requested || waiting_run.status == WorkflowAutomationRunStatus::WaitingApproval {
+                return Ok(ScheduledWorkflowLaunchOutcome::PendingApproval { run: waiting_run });
+            }
+            return Ok(ScheduledWorkflowLaunchOutcome::Skipped {
+                reason: "approval_request_not_actionable".into(),
+            });
         }
-        return Ok(ScheduledWorkflowLaunchOutcome::Skipped {
-            reason: "approval_request_not_actionable".into(),
-        });
     }
     let launch_policy = match resolve_authoritative_workflow_launch_policy(
         state.db.as_ref(),
@@ -1147,6 +1174,10 @@ async fn launch_authoritative_scheduled_workflow(
             Err(error)
         }
     }
+}
+
+fn requires_preclaim_approval_skip(trigger_kind: &str, require_before_run: bool) -> bool {
+    trigger_kind != "schedule" && require_before_run
 }
 
 #[tauri::command]
@@ -1718,6 +1749,13 @@ pub async fn export_workflow_automation_trajectory_cmd(
 #[cfg(test)]
 mod scheduled_execution_policy_tests {
     use super::*;
+
+    #[test]
+    fn only_non_occurrence_triggers_skip_approval_before_claim() {
+        assert!(requires_preclaim_approval_skip("folder", true));
+        assert!(!requires_preclaim_approval_skip("folder", false));
+        assert!(!requires_preclaim_approval_skip("schedule", true));
+    }
 
     fn test_agent_config() -> DbAgentConfig {
         DbAgentConfig {

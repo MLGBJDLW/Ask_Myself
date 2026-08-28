@@ -80,6 +80,13 @@ assert(
   'pre-run approval must create one durable occurrence and expose approve/deny actions',
 );
 assert(
+  scheduledLaunchSeam.includes('let uses_durable_occurrence = due.automation.trigger_kind == "schedule"')
+    && scheduledLaunchSeam.includes('if !uses_durable_occurrence')
+    && scheduledLaunchSeam.includes('requires_preclaim_approval_skip')
+    && scheduledLaunchSeam.includes('if uses_durable_occurrence'),
+  'folder-trigger claims must launch without occurrence IDs and must skip approval before consuming the file change',
+);
+assert(
   workflowCore.includes('workflow_automation_occurrence_approvals')
     && workflowCore.includes('workflow_automation_occurrence_origins')
     && workflowCore.includes('ManualRunNow')
