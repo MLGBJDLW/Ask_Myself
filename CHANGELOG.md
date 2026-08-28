@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.1...nexa-monorepo-v0.13.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **agent:** harden coding and streaming reliability ([011d812](https://github.com/MLGBJDLW/Nexa/commit/011d8123efa9dbee26204890831ff34937d20034))
+* **agent:** honor routed output reserves ([f3a1fbb](https://github.com/MLGBJDLW/Nexa/commit/f3a1fbb473c54ba1e56704d89afc147201e2c5d8))
+* **agent:** preserve object argument snapshots ([6af6566](https://github.com/MLGBJDLW/Nexa/commit/6af65663f63a8f075fe40620fb80a100429cdc86))
+* **agent:** restore coding harness capacity ([b670e0b](https://github.com/MLGBJDLW/Nexa/commit/b670e0b3d8052f86a25591ec7ebfae16fd3980fa))
+* **chat:** keep streaming surfaces interactive ([8b42c8c](https://github.com/MLGBJDLW/Nexa/commit/8b42c8ceca2de4eff95445930e7226d3a783b0aa))
+* **runtime:** bound streamed tool preview recovery ([4bf1d82](https://github.com/MLGBJDLW/Nexa/commit/4bf1d826f236d923e6ee4e8394ed282ecafd4935))
+* **runtime:** harden preview recovery boundaries ([270f045](https://github.com/MLGBJDLW/Nexa/commit/270f045406611312c738db967b89ba0bd77bbdba))
+* **runtime:** keep tool lifecycle updates durable ([c7c16f3](https://github.com/MLGBJDLW/Nexa/commit/c7c16f3deffaa98a07544c7d18068d18430d0114))
+* **runtime:** preserve ephemeral preview recovery ([bedcefe](https://github.com/MLGBJDLW/Nexa/commit/bedcefedc8b5911911f950ba10b975866019b2b6))
+
 ## [0.13.1](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.0...nexa-monorepo-v0.13.1) (2026-08-28)
 
 
