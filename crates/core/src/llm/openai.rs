@@ -1737,8 +1737,9 @@ fn responses_usage_from_value(usage_value: serde_json::Value) -> Usage {
 }
 
 /// Single state machine for projecting one Responses stream into executable
-/// agent events. Tool arguments remain provisional until a provider completion
-/// event supplies a complete JSON object.
+/// agent events. Argument deltas are projected for preview, but remain
+/// provisional until a provider completion event supplies a complete JSON
+/// object and confirms that the streamed prefix was authoritative.
 #[derive(Default)]
 struct ResponsesAssembler {
     answer: String,
@@ -1855,6 +1856,7 @@ fn project_responses_client_tool_event(
         projection
             .client_tool_item_ids
             .insert(item_id.to_string(), call_id.to_string());
+        let initial_arguments = provisional_arguments.clone();
         projection.client_tools.insert(
             call_id.to_string(),
             ResponsesClientToolAssembly {
@@ -1866,7 +1868,7 @@ fn project_responses_client_tool_event(
         return Ok(Some(vec![client_tool_stream_event(
             call_id.to_string(),
             Some(name.to_string()),
-            String::new(),
+            initial_arguments,
             index,
         )]));
     }
@@ -1934,7 +1936,12 @@ fn project_responses_client_tool_event(
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         state.provisional_arguments.push_str(delta);
-        return Ok(Some(Vec::new()));
+        return Ok(Some(vec![client_tool_stream_event(
+            call_id,
+            None,
+            delta.to_string(),
+            state.index.or(index),
+        )]));
     }
 
     let completed_arguments = value
@@ -1959,17 +1966,30 @@ fn project_responses_client_tool_event(
     if state.arguments_emitted {
         return Ok(Some(Vec::new()));
     }
+    let remaining_arguments = completed_arguments
+        .strip_prefix(&state.provisional_arguments)
+        .ok_or_else(|| {
+            CoreError::StreamIncomplete(format!(
+                "Responses function call {call_id} completed with arguments that conflict with its streamed prefix"
+            ))
+        })?
+        .to_string();
+    state.provisional_arguments = completed_arguments;
     state.arguments_emitted = true;
     let name = emit_name
         .then(|| item.get("name").and_then(serde_json::Value::as_str))
         .flatten()
         .map(str::to_string);
-    Ok(Some(vec![client_tool_stream_event(
-        call_id,
-        name,
-        completed_arguments,
-        state.index.or(index),
-    )]))
+    Ok(Some(if remaining_arguments.is_empty() {
+        Vec::new()
+    } else {
+        vec![client_tool_stream_event(
+            call_id,
+            name,
+            remaining_arguments,
+            state.index.or(index),
+        )]
+    }))
 }
 
 fn required_responses_tool_field<'a>(
@@ -2055,6 +2075,15 @@ fn finalize_terminal_client_tools(
             }
         };
         state.final_arguments = Some(authoritative.clone());
+        let remaining_arguments = authoritative
+            .strip_prefix(&state.provisional_arguments)
+            .ok_or_else(|| {
+                CoreError::StreamIncomplete(format!(
+                    "Responses function call {call_id} terminal arguments conflicted with its streamed prefix"
+                ))
+            })?
+            .to_string();
+        state.provisional_arguments = authoritative;
 
         if let Some(item_id) = item
             .get("id")
@@ -2067,12 +2096,14 @@ fn finalize_terminal_client_tools(
         }
         if !state.arguments_emitted {
             state.arguments_emitted = true;
-            events.push(client_tool_stream_event(
-                call_id,
-                (!existed).then_some(name),
-                authoritative,
-                state.index,
-            ));
+            if !remaining_arguments.is_empty() {
+                events.push(client_tool_stream_event(
+                    call_id,
+                    (!existed).then_some(name),
+                    remaining_arguments,
+                    state.index,
+                ));
+            }
         }
     }
     Ok(events)
@@ -4453,7 +4484,7 @@ data: [DONE]
     }
 
     #[test]
-    fn responses_buffers_function_arguments_until_a_completion_event() {
+    fn responses_streams_provisional_arguments_and_completion_confirms_the_prefix() {
         let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
         let capability = crate::model_catalog::NativeWebSearchCapability {
             dialect,
@@ -4518,11 +4549,61 @@ data: [DONE]
             [ProviderStreamEvent::Chunk { chunk }]
                 if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta.is_empty())
         ));
-        assert!(delta.is_empty(), "partial JSON must stay provisional");
+        assert!(matches!(
+            delta.as_slice(),
+            [ProviderStreamEvent::Chunk { chunk }]
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "{\"path\":")
+        ));
         assert!(matches!(
             done.as_slice(),
             [ProviderStreamEvent::Chunk { chunk }]
-                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "{\"path\":\"README.md\"}")
+                if chunk.tool_call_delta.as_ref().is_some_and(|tool| tool.arguments_delta == "\"README.md\"}")
+        ));
+
+        let mut conflicting = ResponsesAssembler::default();
+        project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "fc-conflict",
+                    "type": "function_call",
+                    "call_id": "call-conflict",
+                    "name": "read_file",
+                    "arguments": ""
+                }
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc-conflict",
+                "delta": "{\"path\":\"safe"
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .unwrap();
+        let error = project_responses_stream_event(
+            serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc-conflict",
+                "arguments": "{\"path\":\"other.md\"}"
+            }),
+            &mut conflicting,
+            dialect,
+            capability,
+        )
+        .expect_err("terminal arguments must extend the streamed prefix");
+        assert!(matches!(
+            error,
+            CoreError::StreamIncomplete(ref message)
+                if message.contains("conflict with its streamed prefix")
         ));
     }
 
