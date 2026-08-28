@@ -1521,7 +1521,7 @@ mod tests {
         assert_eq!(
             task_orchestrator_scheduler_retry_skip_event(&backoff),
             (
-                "skipped_backoff",
+                WorkflowSchedulerEventType::SkippedBackoff,
                 "backoff",
                 "Scheduler skipped due workflow until retry backoff expires"
             )
@@ -1535,7 +1535,7 @@ mod tests {
         assert_eq!(
             task_orchestrator_scheduler_retry_skip_event(&retry_limit),
             (
-                "skipped_retry_limit",
+                WorkflowSchedulerEventType::SkippedRetryLimit,
                 "blocked",
                 "Scheduler skipped due workflow because retry attempts are exhausted"
             )
@@ -1642,7 +1642,9 @@ mod tests {
 
         let error =
             select_task_orchestrator_launch_agent_config(&db, Some("missing-config")).unwrap_err();
-        assert!(error.contains("Requested agent config 'missing-config' was not found"));
+        assert!(error
+            .to_string()
+            .contains("Requested agent config 'missing-config' was not found"));
     }
 
     #[test]
@@ -1673,7 +1675,7 @@ mod tests {
 
         policy.provider_endpoint_id = Some("text:edited-endpoint".to_string());
         let error = apply_scheduled_execution_policy(config, &policy).unwrap_err();
-        assert!(error.contains("endpoint drift"));
+        assert!(error.to_string().contains("endpoint drift"));
     }
 
     #[test]
