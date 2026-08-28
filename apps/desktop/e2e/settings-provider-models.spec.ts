@@ -381,6 +381,7 @@ test.beforeEach(async ({ page }) => {
         case "list_sources":
         case "list_workflow_templates_cmd":
         case "list_workflow_automations_cmd":
+        case "list_workflow_automation_approvals_cmd":
         case "list_due_workflow_automations_cmd":
         case "list_projects_cmd":
         case "get_conversation_sources_cmd":
@@ -738,6 +739,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "google");
   modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
+    "Gemini 3.7 Flash",
     "Gemini 3.6 Flash",
     "Gemini 3.5 Flash-Lite",
     "Gemini 3.1 Pro Preview",
@@ -749,6 +751,9 @@ test("settings provider form shows updated preset models for add and edit flows"
   modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
     "Qwen3.8 Max",
+    "Qwen3.8 Flash",
+    "Qwen3.8 2.4T A95B",
+    "Qwen3.8 27B",
     "DeepSeek V4 Pro",
     "Kimi K2.7 Code",
     "GLM-5.2",
@@ -977,7 +982,7 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
 });
 
-test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page }) => {
+test("settings exposes current Qwen3.8 Token Plan models with the retired preview disabled", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
@@ -998,11 +1003,15 @@ test("settings keeps Qwen3.8 isolated to the Token Plan endpoint", async ({ page
     .getByTestId("default-model-field");
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
   await expectNexaValue(modelSelect, "");
-  await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.8 Max Preview"]);
-  await expectNexaOptionCount(modelSelect, 2);
+  await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.8 Flash"]);
+  await expectNexaOptionCount(modelSelect, 3);
   await expectNexaOption(modelSelect, "qwen3.7-flash", "absent");
-  await selectNexaOption(modelSelect, "qwen3.8-max-preview");
-  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Status: preview");
+  await modelSelect.click();
+  const retiredPreview = page.locator('[role="option"][data-value="qwen3.8-max-preview"]');
+  await expect(retiredPreview).toBeVisible();
+  await expect(retiredPreview).toHaveAttribute("data-disabled", "true");
+  await page.keyboard.press("Escape");
+  await selectNexaOption(modelSelect, "qwen3.8-flash");
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");
 });
 
@@ -1011,9 +1020,9 @@ test("settings selects the public GLM-5.3 flagship route by default", async ({ p
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
 
-  await expect(page.getByRole("button", { name: /GLM Coding Plan/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /GLM Coding Plan/ })).toBeVisible();
   const zhipuCard = page.getByRole("button", { name: /^Zhipu \(GLM\)/ });
-  await expect(zhipuCard).toContainText("GLM-5.3 flagship Model API");
+  await expect(zhipuCard).toContainText("GLM-5.3 flagship and GLM-5.3-Flash multimodal Model APIs");
   await zhipuCard.click();
 
   const baseUrlField = page
@@ -1035,7 +1044,7 @@ test("settings selects the public GLM-5.3 flagship route by default", async ({ p
   await page.keyboard.press("Escape");
 });
 
-test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ page }) => {
+test("settings exposes the complete current Qwen3.8 family through QwenCloud international", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
@@ -1055,11 +1064,12 @@ test("settings exposes Qwen3.7 Flash through QwenCloud international", async ({ 
   const modelField = page
     .getByTestId("default-model-field");
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
-  await expectNexaValue(modelSelect, "");
-  await selectNexaOption(modelSelect, "qwen3.7-flash");
-  await expectNexaValue(modelSelect, "qwen3.7-flash");
+  await expectNexaValue(modelSelect, "qwen3.8-max");
   await expectNexaOptions(modelSelect, [
     "Qwen3.8 Max",
+    "Qwen3.8 Flash",
+    "Qwen3.8 2.4T A95B",
+    "Qwen3.8 27B",
     "Qwen3.7 Flash",
     "Qwen3.7 Plus",
     "Qwen3.7 Max",
@@ -1075,7 +1085,14 @@ test("settings migrates legacy Qwen pay-as-you-go configs to the Alibaba catalog
     .getByTestId("default-model-field");
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
   await expectNexaValue(modelSelect, "qwen3.6-plus");
-  await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.7 Max", "DeepSeek V4 Pro"]);
+  await expectNexaOptions(modelSelect, [
+    "Qwen3.8 Max",
+    "Qwen3.8 Flash",
+    "Qwen3.8 2.4T A95B",
+    "Qwen3.8 27B",
+    "Qwen3.7 Max",
+    "DeepSeek V4 Pro",
+  ]);
   await expectNexaOption(modelSelect, "qwen3.8-max-preview", "absent");
 });
 

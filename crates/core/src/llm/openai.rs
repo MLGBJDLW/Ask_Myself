@@ -3585,6 +3585,27 @@ data: [DONE]
         assert_eq!(body["enable_thinking"], true);
         assert_eq!(body["reasoning_effort"], "low");
         assert!(body.get("thinking_budget").is_none());
+
+        let flash = endpoint_reasoning_request("qwen3.8-flash");
+        let flash_body =
+            serde_json::to_value(build_request_body_with_config(&flash, false, Some(&config)))
+                .unwrap();
+        assert_eq!(flash_body["enable_thinking"], true);
+        assert_eq!(flash_body["reasoning_effort"], "low");
+
+        let mut open = endpoint_reasoning_request("qwen3.8-27b");
+        open.reasoning_enabled = Some(true);
+        open.thinking_budget = Some(300_000);
+        let payg = endpoint_config(
+            ProviderType::AlibabaModelStudio,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        );
+        let open_body =
+            serde_json::to_value(build_request_body_with_config(&open, false, Some(&payg)))
+                .unwrap();
+        assert_eq!(open_body["enable_thinking"], true);
+        assert_eq!(open_body["thinking_budget"], 262_144);
+        assert!(open_body.get("reasoning_effort").is_none());
     }
 
     #[test]

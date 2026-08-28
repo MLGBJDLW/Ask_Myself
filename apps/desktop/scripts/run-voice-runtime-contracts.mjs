@@ -300,9 +300,10 @@ test('QwenCloud and Token Plan keep distinct Qwen model catalogs', () => {
 
   assert.ok(qwenCloud, 'QwenCloud international preset should exist');
   assert.equal(qwenCloud.baseUrl, 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1');
-  assert.ok(qwenCloud.models.some((model) => model.id === 'qwen3.7-flash' && model.recommended));
+  assert.ok(qwenCloud.models.some((model) => model.id === 'qwen3.8-flash' && model.recommended));
   assert.deepEqual(tokenPlan.models.map((model) => model.id), [
     'qwen3.8-max',
+    'qwen3.8-flash',
     'qwen3.8-max-preview',
   ]);
 });

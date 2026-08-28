@@ -699,7 +699,10 @@ pub fn resolve_reasoning_profile(
             return value;
         }
 
-        if matches!(model.as_str(), "qwen3.8-max" | "qwen3.8-max-preview") {
+        if matches!(
+            model.as_str(),
+            "qwen3.8-max" | "qwen3.8-max-preview" | "qwen3.8-flash"
+        ) {
             let mode_control = if model == "qwen3.8-max-preview" {
                 ThinkingModeControl::AlwaysOn
             } else {
@@ -724,6 +727,25 @@ pub fn resolve_reasoning_profile(
             value.min_budget_tokens = Some(0);
             value.max_budget_tokens = Some(262_144);
             value.effort_budget_exclusive = true;
+            value.preserve_reasoning_history = true;
+            return value;
+        }
+
+        if matches!(model.as_str(), "qwen3.8-2.4t-a95b" | "qwen3.8-27b") {
+            let mut value = profile(
+                key,
+                "alibaba-qwen3.8-open-hybrid-v1",
+                ThinkingModeControl::EnableThinking,
+                ReasoningEffortField::None,
+                ReasoningEffortMapping::Exact,
+                (&[], None),
+                ReasoningBudgetField::ThinkingBudget,
+            );
+            value.max_budget_tokens = Some(if model == "qwen3.8-2.4t-a95b" {
+                131_072
+            } else {
+                262_144
+            });
             value.preserve_reasoning_history = true;
             return value;
         }
@@ -964,6 +986,32 @@ mod tests {
         );
         assert_eq!(value.wire_budget(Some(300_000), false), Some(262_144));
         assert_eq!(value.wire_budget(Some(16_384), true), None);
+
+        let flash = resolve_reasoning_profile(
+            ProviderType::Qwen,
+            Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "qwen3.8-flash",
+        );
+        assert_eq!(flash.id, "alibaba-qwen3.8-chat-v1");
+        assert_eq!(
+            flash.wire_effort(Some(&ReasoningEffort::High)).as_deref(),
+            Some("xhigh")
+        );
+        assert_eq!(flash.wire_budget(Some(300_000), false), Some(262_144));
+
+        for (model, max_budget) in [("qwen3.8-2.4t-a95b", 131_072), ("qwen3.8-27b", 262_144)] {
+            let open = resolve_reasoning_profile(
+                ProviderType::AlibabaModelStudio,
+                Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                ReasoningApiStyle::OpenAiChatCompletions,
+                model,
+            );
+            assert_eq!(open.id, "alibaba-qwen3.8-open-hybrid-v1");
+            assert_eq!(open.mode_control, ThinkingModeControl::EnableThinking);
+            assert_eq!(open.wire_budget(Some(300_000), false), Some(max_budget));
+            assert!(open.preserve_reasoning_history);
+        }
     }
 
     #[test]

@@ -818,6 +818,76 @@
         }
       },
       {
+        "id": "qwen/qwen3.8-flash",
+        "name": "Qwen: Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "low", "medium", "xhigh"],
+            "defaultEffort": "low",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-2.4t-a95b",
+        "name": "Qwen: Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen/qwen3.8-27b",
+        "name": "Qwen: Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "contextTokens": 1000000,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "moonshotai/kimi-k2.7-code",
         "name": "MoonshotAI: Kimi K2.7 Code",
         "tagKey": "providers.tagCoding",
@@ -1104,6 +1174,52 @@
               "high",
               "xhigh"
             ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "google/gemini-3.7-flash",
+        "name": "Google: Gemini 3.7 Flash",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": ["none", "low", "medium", "high"],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "google/gemini-3.6-flash",
+        "name": "Google: Gemini 3.6 Flash",
+        "tagKey": "providers.tagFast",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "effortLevels": ["none", "minimal", "low", "medium", "high"],
             "defaultEffort": "medium",
             "thinkingBudget": {
               "enabled": false
@@ -6782,7 +6898,7 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Gemini 3.7 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash/Flash-Lite, Gemini 3.1, Gemini 2.5",
+    "description": "Direct Gemini API for Google-supported locations. Includes Gemini 3.7/3.6/3.5/3.1/2.5; for an unsupported Google location, select an authorized Gemini route under OpenRouter instead.",
     "nativeWebSearch": {
       "dialect": "geminiGoogleSearch",
       "supportsDomains": false,
@@ -6814,9 +6930,15 @@
         "contextTokens": 1048576,
         "maxOutputTokens": 65536,
         "source": "official",
-        "productReadiness": "known",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
         "recommended": true,
         "capabilities": {
+          "vision": true,
           "reasoning": {
             "effortLevels": [
               "low",
@@ -6844,10 +6966,18 @@
           "canMixClientTools": true
         },
         "tagKey": "providers.tagFast",
-        "source": "curated",
-        "productReadiness": "known",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
         "recommended": false,
         "capabilities": {
+          "vision": true,
           "reasoning": {
             "effortLevels": [
               "minimal",
@@ -8097,14 +8227,51 @@
         "status": "active",
         "access": "account_enablement",
         "source": "official",
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "product_ready",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "releaseDate": "2026-08-26",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8130,11 +8297,11 @@
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
         "recommended": false,
-        "status": "preview",
+        "status": "removed",
         "access": "account_enablement",
         "source": "official",
         "productReadiness": "known",
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "regions": ["cn-beijing"],
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
@@ -8183,14 +8350,14 @@
         "status": "active",
         "access": "account_enablement",
         "source": "official",
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8212,16 +8379,53 @@
         }
       },
       {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "recommended": true,
+        "status": "active",
+        "access": "account_enablement",
+        "source": "official",
+        "productReadiness": "product_ready",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "releaseDate": "2026-08-26",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "videoInput": true,
+          "promptCache": true,
+          "batch": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
         "id": "qwen3.8-max-preview",
         "name": "Qwen3.8 Max Preview",
         "tagKey": "providers.tagPreview",
         "recommended": false,
-        "status": "preview",
+        "status": "removed",
         "access": "account_enablement",
         "source": "official",
         "productReadiness": "known",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
@@ -8268,14 +8472,14 @@
         "source": "official",
         "status": "active",
         "regions": ["ap-southeast-1"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "recommended": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8292,6 +8496,92 @@
               "maxTokens": 262144,
               "step": 1,
               "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-2.4t-a95b",
+        "name": "Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 131072
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-27b",
+        "name": "Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "regions": ["ap-southeast-1"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 262144
             }
           }
         }
@@ -8370,14 +8660,14 @@
         "source": "official",
         "status": "active",
         "regions": ["cn-beijing"],
-        "lastVerifiedAt": "2026-08-04",
+        "lastVerifiedAt": "2026-08-28",
         "modalities": ["text", "image", "video"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
-        "productReadiness": "known",
+        "productReadiness": "product_ready",
         "recommended": true,
         "contextTokens": 1000000,
-        "maxOutputTokens": 131000,
+        "maxOutputTokens": 131072,
         "capabilities": {
           "vision": true,
           "videoInput": true,
@@ -8394,6 +8684,92 @@
               "maxTokens": 262144,
               "step": 1,
               "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "tagKey": "providers.tagFast",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low",
+            "effortBudgetExclusive": true,
+            "thinkingBudget": {
+              "enabled": true,
+              "minTokens": 0,
+              "maxTokens": 262144,
+              "step": 1,
+              "allowZero": true
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-2.4t-a95b",
+        "name": "Qwen3.8 2.4T A95B",
+        "tagKey": "providers.tagMostIntelligent",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": false,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 131072
+            }
+          }
+        }
+      },
+      {
+        "id": "qwen3.8-27b",
+        "name": "Qwen3.8 27B",
+        "tagKey": "providers.tagCoding",
+        "source": "official",
+        "status": "active",
+        "regions": ["cn-beijing"],
+        "lastVerifiedAt": "2026-08-28",
+        "modalities": ["text", "image", "video"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
+        "contextTokens": 1000000,
+        "maxOutputTokens": 131072,
+        "capabilities": {
+          "vision": true,
+          "reasoning": {
+            "mode": "optional",
+            "effortLevels": [],
+            "thinkingBudget": {
+              "enabled": true,
+              "maxTokens": 262144
             }
           }
         }

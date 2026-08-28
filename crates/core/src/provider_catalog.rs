@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
+use crate::conversation::memory::{ContextWindowAuthority, ResolvedContextWindow};
 use crate::llm::ProviderType;
 use crate::model_catalog::{
     load_builtin_catalog, merge_catalog, resolve_or_derive_endpoint_id, CapabilityProbeResult,
@@ -297,6 +298,46 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
     }
 }
 
+/// Resolve the context capacity owned by one configured provider route.
+///
+/// The provider endpoint and model ID form one capability identity. A model
+/// alias on an edited or custom endpoint must therefore remain
+/// provider-managed instead of borrowing a global model-family guess. Explicit
+/// per-run overrides remain authoritative regardless of the endpoint.
+pub fn resolve_endpoint_model_context_window(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+    context_window_override: Option<u32>,
+) -> ResolvedContextWindow {
+    if let Some(capacity_tokens) = context_window_override {
+        return ResolvedContextWindow {
+            capacity_tokens: Some(capacity_tokens),
+            authority: ContextWindowAuthority::UserOverride,
+        };
+    }
+
+    let normalized_model = normalize_endpoint_model_id(model);
+    let capacity_tokens = find_provider_preset(provider, base_url)
+        .and_then(|preset| {
+            preset
+                .models
+                .into_iter()
+                .find(|candidate| normalize_endpoint_model_id(&candidate.id) == normalized_model)
+        })
+        .and_then(|model| model.context_tokens)
+        .and_then(|tokens| u32::try_from(tokens).ok());
+
+    ResolvedContextWindow {
+        capacity_tokens,
+        authority: if capacity_tokens.is_some() {
+            ContextWindowAuthority::Catalog
+        } else {
+            ContextWindowAuthority::ProviderManaged
+        },
+    }
+}
+
 pub fn preset_model_ids(provider: &str, base_url: Option<&str>) -> Vec<String> {
     find_provider_preset(provider, base_url)
         .map(|preset| preset.models.into_iter().map(|model| model.id).collect())
@@ -572,9 +613,7 @@ fn infer_regions(base_url: Option<&str>) -> Vec<String> {
     let is_z_ai_international = reqwest::Url::parse(&base_url).ok().is_some_and(|url| {
         url.scheme() == "https" && url.host_str().is_some_and(|host| host == "api.z.ai")
     });
-    if base_url.contains("dashscope-intl") {
-        vec!["international".to_string()]
-    } else if is_z_ai_international {
+    if base_url.contains("dashscope-intl") || is_z_ai_international {
         vec!["international".to_string()]
     } else if base_url.contains("dashscope") || base_url.contains("maas.aliyuncs.com") {
         vec!["cn-beijing".to_string()]
@@ -747,9 +786,59 @@ fn normalize_model_id(model: &str) -> String {
     model.trim().to_ascii_lowercase()
 }
 
+fn normalize_endpoint_model_id(model: &str) -> String {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .split([':', '~'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_context_resolution_preserves_route_and_user_authority() {
+        assert_eq!(
+            resolve_endpoint_model_context_window(
+                "openrouter",
+                Some("https://openrouter.ai/api/v1"),
+                "z-ai/glm-5.3:free",
+                None,
+            ),
+            ResolvedContextWindow {
+                capacity_tokens: Some(1_048_576),
+                authority: ContextWindowAuthority::Catalog,
+            }
+        );
+        for (provider, endpoint) in [
+            ("open_ai", "https://private.example/v1"),
+            ("custom", "https://private.example/v1"),
+        ] {
+            assert_eq!(
+                resolve_endpoint_model_context_window(provider, Some(endpoint), "gpt-5.6", None),
+                ResolvedContextWindow {
+                    capacity_tokens: None,
+                    authority: ContextWindowAuthority::ProviderManaged,
+                }
+            );
+        }
+        assert_eq!(
+            resolve_endpoint_model_context_window(
+                "custom",
+                Some("https://private.example/v1"),
+                "gpt-5.6",
+                Some(750_000),
+            ),
+            ResolvedContextWindow {
+                capacity_tokens: Some(750_000),
+                authority: ContextWindowAuthority::UserOverride,
+            }
+        );
+    }
 
     #[test]
     fn catalog_v2_exposes_verified_gemini_context_and_output_limits() {
@@ -928,6 +1017,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids.first(), Some(&"qwen3.8-max"));
+        assert!(ids.contains(&"qwen3.8-flash"));
+        assert!(ids.contains(&"qwen3.8-2.4t-a95b"));
+        assert!(ids.contains(&"qwen3.8-27b"));
         assert!(ids.contains(&"kimi-k2.7-code"));
         assert!(ids.contains(&"glm-5.2"));
         assert!(ids.contains(&"MiniMax-M2.5"));
@@ -1053,23 +1145,33 @@ mod tests {
         )
         .expect("Qwen Token Plan preset should match its dedicated endpoint");
         assert_eq!(token_plan.id, "qwen-token-plan-cn");
-        assert_eq!(token_plan.models.len(), 2);
+        assert_eq!(token_plan.models.len(), 3);
         assert_eq!(token_plan.models[0].id, "qwen3.8-max");
         assert_eq!(token_plan.models[0].recommended, Some(true));
-        assert_eq!(token_plan.models[1].id, "qwen3.8-max-preview");
-        assert_eq!(token_plan.models[1].recommended, Some(false));
-        let preview_reasoning = token_plan.models[1]
+        assert_eq!(token_plan.models[0].max_output_tokens, Some(131_072));
+        assert_eq!(
+            token_plan.models[0].last_verified_at.as_deref(),
+            Some("2026-08-28")
+        );
+        assert_eq!(token_plan.models[1].id, "qwen3.8-flash");
+        assert_eq!(token_plan.models[1].recommended, Some(true));
+        let flash_reasoning = token_plan.models[1]
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
-            .expect("preview should expose its always-thinking contract");
-        assert_eq!(preview_reasoning.mode.as_deref(), Some("always"));
-        assert!(!preview_reasoning
+            .expect("Qwen3.8 Flash should expose its hybrid-thinking contract");
+        assert_eq!(flash_reasoning.mode.as_deref(), Some("optional"));
+        assert!(flash_reasoning
             .effort_levels
             .iter()
             .any(|effort| effort == "none"));
+        assert_eq!(token_plan.models[2].id, "qwen3.8-max-preview");
         assert_eq!(
-            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-max-preview"),
+            token_plan.models[2].status,
+            Some(ModelLifecycleStatus::Removed)
+        );
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-flash"),
             Some(true)
         );
         let global_token_plan = find_provider_preset(
@@ -1079,12 +1181,28 @@ mod tests {
         .expect("global Token Plan should keep its own endpoint identity");
         assert_eq!(global_token_plan.id, "qwen-token-plan-global");
         assert_eq!(global_token_plan.models[0].id, "qwen3.8-max");
+        assert_eq!(global_token_plan.models[0].max_output_tokens, Some(131_072));
+        assert_eq!(global_token_plan.models[1].id, "qwen3.8-flash");
         assert_eq!(
             find_provider_preset("alibaba_model_studio", None)
                 .expect("Alibaba Model Studio should keep its pay-as-you-go default")
                 .id,
             "alibaba-model-studio"
         );
+        for preset_id in ["qwen-cloud-intl", "alibaba-model-studio"] {
+            let preset = load_provider_presets()
+                .unwrap()
+                .into_iter()
+                .find(|preset| preset.id == preset_id)
+                .unwrap();
+            let flagship = preset
+                .models
+                .iter()
+                .find(|model| model.id == "qwen3.8-max")
+                .unwrap();
+            assert_eq!(flagship.max_output_tokens, Some(131_072));
+            assert_eq!(flagship.last_verified_at.as_deref(), Some("2026-08-28"));
+        }
 
         let migrated_qwen = find_provider_preset(
             "qwen",
@@ -1102,8 +1220,8 @@ mod tests {
         let flash = qwen_cloud
             .models
             .iter()
-            .find(|model| model.id == "qwen3.7-flash")
-            .expect("Qwen3.7 Flash should be listed for QwenCloud");
+            .find(|model| model.id == "qwen3.8-flash")
+            .expect("Qwen3.8 Flash should be listed for QwenCloud");
         assert_eq!(flash.recommended, Some(true));
         assert_eq!(
             flash
@@ -1494,7 +1612,7 @@ mod tests {
         let limits = model_limits_from_catalog(ProviderType::Qwen, "qwen3.8-max")
             .expect("Token Plan Qwen identity should resolve canonical catalog limits");
         assert_eq!(limits.context_tokens, Some(1_000_000));
-        assert_eq!(limits.max_output_tokens, Some(131_000));
+        assert_eq!(limits.max_output_tokens, Some(131_072));
         assert!(
             model_limits_from_catalog(ProviderType::AlibabaModelStudio, "qwen3.8-max-preview")
                 .is_none(),
@@ -1516,6 +1634,29 @@ mod tests {
                 .expect("OpenRouter Qwen3.8 should expose its real window");
         assert_eq!(openrouter_qwen.context_tokens, Some(1_000_000));
 
+        let openrouter_flash =
+            model_limits_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.8-flash")
+                .expect("OpenRouter Qwen3.8 Flash should expose its endpoint limits");
+        assert_eq!(openrouter_flash.context_tokens, Some(1_000_000));
+        assert_eq!(openrouter_flash.max_output_tokens, Some(131_072));
+
+        let openrouter_open =
+            model_limits_from_catalog(ProviderType::OpenRouter, "qwen/qwen3.8-2.4t-a95b")
+                .expect("OpenRouter Qwen3.8 open flagship should expose its endpoint limits");
+        assert_eq!(openrouter_open.context_tokens, Some(1_048_576));
+        assert_eq!(openrouter_open.max_output_tokens, Some(131_072));
+
+        for model in ["google/gemini-3.7-flash", "google/gemini-3.6-flash"] {
+            let limits = model_limits_from_catalog(ProviderType::OpenRouter, model)
+                .expect("OpenRouter Gemini route should expose verified limits");
+            assert_eq!(limits.context_tokens, Some(1_048_576));
+            assert_eq!(limits.max_output_tokens, Some(65_536));
+            assert_eq!(
+                model_supports_vision_from_catalog(ProviderType::OpenRouter, model),
+                Some(true)
+            );
+        }
+
         let openrouter_kimi =
             model_limits_from_catalog(ProviderType::OpenRouter, "moonshotai/kimi-k3")
                 .expect("OpenRouter Kimi K3 should expose its real window");
@@ -1536,7 +1677,9 @@ mod tests {
             (ProviderType::DeepSeek, "deepseek-v4-pro"),
             (ProviderType::Moonshot, "kimi-k3"),
             (ProviderType::Qwen, "qwen3.8-max"),
+            (ProviderType::Qwen, "qwen3.8-flash"),
             (ProviderType::AlibabaModelStudio, "qwen3.8-max"),
+            (ProviderType::AlibabaModelStudio, "qwen3.8-27b"),
             (ProviderType::Zhipu, "glm-5.3"),
             (ProviderType::OpenRouter, "moonshotai/kimi-k3"),
         ] {

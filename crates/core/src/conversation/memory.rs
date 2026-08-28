@@ -339,7 +339,7 @@ fn model_profile_context_window(m: &str) -> Option<u32> {
         | "doubao-seed-1-6-flash-250828" => 256_000,
 
         // Qwen / DashScope
-        "qwen3.8-max-preview" => 1_000_000,
+        "qwen3.8-max-preview" | "qwen3.8-flash" | "qwen3.8-2.4t-a95b" | "qwen3.8-27b" => 1_000_000,
         "qwen3.7-max" | "qwen3.7-max-2026-05-20" | "qwen3.7-max-2026-06-08" => 1_000_000,
         "qwen3.7-plus" | "qwen3.7-plus-2026-05-26" => 1_000_000,
         "qwen3.6-max-preview" => 262_144,
@@ -415,7 +415,7 @@ fn parse_context_window_hint(m: &str) -> Option<u32> {
 
 fn qwen_model_context_window(m: &str) -> Option<u32> {
     match m {
-        _ if m.starts_with("qwen3.8-max")
+        _ if m.starts_with("qwen3.8-")
             || m.starts_with("qwen3.5-plus")
             || m.starts_with("qwen3.7-max")
             || m.starts_with("qwen3.7-flash")
@@ -797,6 +797,9 @@ mod tests {
         );
         // Qwen / DashScope
         assert_eq!(model_context_window("qwen3.8-max-preview"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.8-flash"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.8-2.4t-a95b"), 1_000_000);
+        assert_eq!(model_context_window("qwen3.8-27b"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-2026-05-20"), 1_000_000);
         assert_eq!(model_context_window("qwen3.7-max-2026-06-08"), 1_000_000);
