@@ -510,6 +510,7 @@ fn test_agent_config() -> DbAgentConfig {
         delegation_limits_v2: None,
         tool_timeout_secs: None,
         agent_timeout_secs: None,
+        provider_streaming: Default::default(),
         provider_endpoint_id: None,
         model_id: None,
         model_selection_resolution: None,
@@ -525,6 +526,7 @@ fn test_provider_config(provider_type: ProviderType) -> ProviderConfig {
         base_url: None,
         org_id: None,
         timeout_secs: None,
+        streaming: Default::default(),
     }
 }
 

@@ -10,6 +10,7 @@ fn test_runtime() -> DelegationRuntime {
             api_key: None,
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         },
         AgentConfig::default(),
         None,
@@ -131,6 +132,7 @@ fn test_model_policy_routes_only_to_same_provider_auxiliary_model() {
         api_key: None,
         org_id: None,
         timeout_secs: None,
+        streaming: Default::default(),
     };
     assert!(!apply_delegated_model_policy(
         &mut config,
@@ -147,6 +149,7 @@ fn test_model_policy_routes_only_to_same_provider_auxiliary_model() {
         api_key: None,
         org_id: None,
         timeout_secs: None,
+        streaming: Default::default(),
     };
     assert!(apply_delegated_model_policy(
         &mut config,

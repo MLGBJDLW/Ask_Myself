@@ -226,7 +226,8 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             provider,
             events,
             original_request,
-            policy: StreamRecoveryPolicy::default(),
+            policy: StreamRecoveryPolicy::default()
+                .with_stream_max_retries(provider.stream_max_retries()),
             phase,
             request_started_at: Instant::now(),
             candidate_sample_id: None,

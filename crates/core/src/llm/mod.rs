@@ -604,6 +604,35 @@ pub struct ToolCallDelta {
 // ---------------------------------------------------------------------------
 
 /// Configuration for connecting to an LLM provider.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStreamingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_idle_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_max_retries: Option<u32>,
+}
+
+impl ProviderStreamingConfig {
+    pub fn stream_idle_timeout(self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.stream_idle_timeout_ms
+                .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT.as_millis() as u64)
+                .clamp(1_000, 3_600_000),
+        )
+    }
+
+    pub fn connect_timeout(self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.connect_timeout_ms
+                .unwrap_or(10_000)
+                .clamp(1_000, 300_000),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
@@ -623,6 +652,8 @@ pub struct ProviderConfig {
     /// outputs are not capped by total duration. 0 disables the startup timeout.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub streaming: ProviderStreamingConfig,
 }
 
 pub(crate) fn configured_request_timeout(timeout_secs: u64) -> Option<std::time::Duration> {
@@ -748,6 +779,12 @@ pub trait LlmProvider: Send + Sync {
     /// Human-readable provider name (e.g. "OpenAI").
     fn name(&self) -> &str;
 
+    /// Optional provider-scoped retry budget for both stream startup and
+    /// replay-safe disconnect recovery. `None` keeps the runtime defaults.
+    fn stream_max_retries(&self) -> Option<u32> {
+        None
+    }
+
     /// Resolved cache capability for this concrete provider endpoint. Agent
     /// diagnostics consume the same profile as the wire adapter.
     fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
@@ -850,6 +887,10 @@ impl MessageValidatingProvider {
 impl LlmProvider for MessageValidatingProvider {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.inner.stream_max_retries()
     }
 
     fn prompt_cache_profile(&self, model: &str) -> prompt_cache::PromptCacheProfile {
@@ -1131,6 +1172,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com/anthropic".to_string()),
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         };
         assert_eq!(
             provider_adapter_for_config(&config),
@@ -1142,6 +1184,30 @@ mod tests {
                 ..config
             }),
             ProviderAdapterKind::OpenAiCompatible
+        );
+    }
+
+    #[test]
+    fn provider_streaming_defaults_keep_deepseek_idle_at_five_minutes() {
+        let config = ProviderStreamingConfig::default();
+        assert_eq!(
+            config.stream_idle_timeout(),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(config.connect_timeout(), std::time::Duration::from_secs(10));
+
+        let overridden = ProviderStreamingConfig {
+            stream_idle_timeout_ms: Some(420_000),
+            connect_timeout_ms: Some(25_000),
+            stream_max_retries: Some(3),
+        };
+        assert_eq!(
+            overridden.stream_idle_timeout(),
+            std::time::Duration::from_secs(420)
+        );
+        assert_eq!(
+            overridden.connect_timeout(),
+            std::time::Duration::from_secs(25)
         );
     }
 

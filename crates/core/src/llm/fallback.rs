@@ -237,6 +237,12 @@ impl LlmProvider for AutomaticFallbackProvider {
         self.routes[self.active_position()].provider.name()
     }
 
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.routes[self.active_position()]
+            .provider
+            .stream_max_retries()
+    }
+
     fn prompt_cache_profile(&self, _model: &str) -> super::prompt_cache::PromptCacheProfile {
         let position = self.active_position();
         self.routes[position]

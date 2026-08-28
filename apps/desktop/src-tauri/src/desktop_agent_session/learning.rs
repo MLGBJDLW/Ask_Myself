@@ -92,6 +92,7 @@ pub fn desktop_memory_extraction_provider_config(db_config: &DbAgentConfig) -> P
         base_url: db_config.base_url.clone(),
         org_id: None,
         timeout_secs: None,
+        streaming: db_config.provider_streaming,
     }
 }
 

@@ -702,6 +702,7 @@ fn provider_config_for_route_target(
         api_key: credential,
         org_id: None,
         timeout_secs: None,
+        streaming: Default::default(),
     })
 }
 
@@ -1697,6 +1698,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
         }
     }
 

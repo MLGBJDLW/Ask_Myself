@@ -19,7 +19,6 @@ use super::{
     serialized_json_body, with_request_timeout, CompletionRequest, CompletionResponse, ContentPart,
     FinishReason, LlmProvider, Message, ProviderConfig, ProviderStreamEvent, ReasoningEffort, Role,
     StreamChunk, ToolCallDelta, ToolCallRequest, ToolDefinition, Usage,
-    DEFAULT_STREAM_IDLE_TIMEOUT,
 };
 use crate::conversation::memory::estimate_tokens;
 use crate::error::CoreError;
@@ -812,6 +811,7 @@ async fn parse_anthropic_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
     search_mode: super::native_search::SearchExecutionMode,
+    stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -833,7 +833,7 @@ async fn parse_anthropic_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "Anthropic SSE stream",
     )
     .await?
@@ -1223,6 +1223,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com/anthropic".to_string()),
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         })
         .expect("DeepSeek Anthropic provider");
 
@@ -1723,6 +1724,10 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.config.streaming.stream_max_retries
+    }
+
     fn prompt_cache_profile(&self, model: &str) -> super::prompt_cache::PromptCacheProfile {
         super::prompt_cache::resolve_prompt_cache_profile(
             self.config.provider_type,
@@ -2011,12 +2016,13 @@ impl LlmProvider for AnthropicProvider {
 
         let transport = Arc::clone(&self.transport);
         let search_mode = anthropic_search_mode(request);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_anthropic_stream(response, parser_tx, search_mode) => result,
+                result = parse_anthropic_stream(response, parser_tx, search_mode, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());

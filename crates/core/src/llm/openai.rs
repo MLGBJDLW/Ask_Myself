@@ -19,11 +19,11 @@ use super::reasoning_profile::{
 use super::transport::{shared_http_transport, HttpTransport};
 use super::{
     configured_request_timeout, next_stream_item_with_idle_timeout, send_stream_start_request,
-    serialized_json_body, streaming::parse_sse_stream, with_request_timeout, CompletionRequest,
-    CompletionResponse, ContentPart, FinishReason, LlmProvider, Message, ProviderConfig,
-    ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus, ProviderStreamEvent,
-    ProviderType, ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk, ToolCallRequest,
-    ToolDefinition, Usage, DEFAULT_STREAM_IDLE_TIMEOUT,
+    serialized_json_body, streaming::parse_sse_stream_with_idle_timeout, with_request_timeout,
+    CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider, Message,
+    ProviderConfig, ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus,
+    ProviderStreamEvent, ProviderType, ReasoningEffort, ReplayHistoryProjection, Role, StreamChunk,
+    ToolCallRequest, ToolDefinition, Usage,
 };
 #[cfg(test)]
 use super::{CacheBoundaryHint, PromptStability};
@@ -2492,6 +2492,7 @@ async fn parse_responses_sse_stream(
     tx: mpsc::Sender<ProviderStreamEvent>,
     dialect: super::native_search::NativeSearchDialect,
     capability: crate::model_catalog::NativeWebSearchCapability,
+    stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = Vec::new();
@@ -2500,7 +2501,7 @@ async fn parse_responses_sse_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "Responses SSE stream",
     )
     .await?
@@ -2720,12 +2721,13 @@ impl OpenAiProvider {
         let response = self.check_response(response).await?;
         let (tx, rx) = mpsc::channel(64);
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_responses_sse_stream(response, parser_tx, dialect, capability) => result,
+                result = parse_responses_sse_stream(response, parser_tx, dialect, capability, stream_idle_timeout) => result,
             };
             if let Err(error) = result {
                 transport.record_transport_failure(&error.to_string());
@@ -2753,6 +2755,10 @@ impl OpenAiProvider {
 impl LlmProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
+    }
+
+    fn stream_max_retries(&self) -> Option<u32> {
+        self.config.streaming.stream_max_retries
     }
 
     fn prompt_cache_profile(&self, model: &str) -> PromptCacheProfile {
@@ -3107,12 +3113,13 @@ impl LlmProvider for OpenAiProvider {
         info!("SSE stream started");
 
         let transport = Arc::clone(&self.transport);
+        let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
             let result = tokio::select! {
                 biased;
                 _ = tx.closed() => return,
-                result = parse_sse_stream(response, parser_tx) => result,
+                result = parse_sse_stream_with_idle_timeout(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
                 transport.record_transport_failure(&e.to_string());
@@ -3155,6 +3162,7 @@ mod tests {
             base_url: Some(base_url.to_string()),
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         }
     }
 
@@ -3779,6 +3787,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(1),
+            streaming: Default::default(),
         })
         .expect("provider");
 
@@ -3830,6 +3839,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(1),
+            streaming: Default::default(),
         })
         .expect("provider");
 
@@ -3860,6 +3870,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(2),
+            streaming: Default::default(),
         })
         .expect("provider");
         let capability = crate::model_catalog::NativeWebSearchCapability {
@@ -3992,6 +4003,7 @@ data: [DONE]
             api_key: Some("test-key".to_string()),
             org_id: None,
             timeout_secs: Some(2),
+            streaming: Default::default(),
         })
         .expect("provider");
         let capability = crate::model_catalog::NativeWebSearchCapability {
@@ -5735,6 +5747,7 @@ data: [DONE]
             api_key: None,
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         };
         let trusted = ProviderConfig {
             provider_type: ProviderType::Qwen,
@@ -5744,6 +5757,7 @@ data: [DONE]
             api_key: None,
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         };
 
         let unknown_body = serde_json::to_value(build_request_body_with_config(

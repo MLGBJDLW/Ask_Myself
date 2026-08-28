@@ -36,6 +36,7 @@ pub(crate) fn desktop_provider_config(config: &DbAgentConfig) -> ProviderConfig 
         }),
         org_id: None,
         timeout_secs: None,
+        streaming: config.provider_streaming,
     }
 }
 

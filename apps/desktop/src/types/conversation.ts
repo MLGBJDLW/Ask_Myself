@@ -523,6 +523,7 @@ export interface AgentConfig {
   delegationLimitsV2?: DelegationLimitsConfig | null;
   toolTimeoutSecs?: number | null;
   agentTimeoutSecs?: number | null;
+  providerStreaming?: ProviderStreamingConfig;
   dynamicToolVisibility?: boolean | null;
   traceEnabled?: boolean | null;
   requireToolConfirmation?: boolean | null;
@@ -565,9 +566,16 @@ export interface SaveAgentConfigInput {
   subagentTokenBudget?: number | null;
   /** Independent model-aware delegated execution limits. */
   delegationLimitsV2?: DelegationLimitsConfig | null;
+  providerStreaming?: ProviderStreamingConfig;
   dynamicToolVisibility?: boolean | null;
   traceEnabled?: boolean | null;
   requireToolConfirmation?: boolean | null;
+}
+
+export interface ProviderStreamingConfig {
+  streamIdleTimeoutMs?: number | null;
+  connectTimeoutMs?: number | null;
+  streamMaxRetries?: number | null;
 }
 
 export interface AppConfig {

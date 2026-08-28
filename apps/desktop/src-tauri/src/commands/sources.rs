@@ -622,6 +622,7 @@ fn spawn_learned_success_capture(
                     base_url: db_config.base_url.clone(),
                     org_id: None,
                     timeout_secs: None,
+                    streaming: db_config.provider_streaming,
                 };
                 match create_provider(summ_config) {
                     Ok(p) => {

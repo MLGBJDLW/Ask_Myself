@@ -837,6 +837,14 @@ pub async fn parse_sse_stream(
     response: reqwest::Response,
     tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
 ) -> Result<(), CoreError> {
+    parse_sse_stream_with_idle_timeout(response, tx, DEFAULT_STREAM_IDLE_TIMEOUT).await
+}
+
+pub async fn parse_sse_stream_with_idle_timeout(
+    response: reqwest::Response,
+    tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    stream_idle_timeout: std::time::Duration,
+) -> Result<(), CoreError> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
     let mut in_think_block = false;
@@ -846,7 +854,7 @@ pub async fn parse_sse_stream(
 
     while let Some(chunk_result) = next_stream_item_with_idle_timeout(
         &mut byte_stream,
-        DEFAULT_STREAM_IDLE_TIMEOUT,
+        stream_idle_timeout,
         "OpenAI SSE stream",
     )
     .await?

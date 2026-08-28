@@ -915,6 +915,7 @@ struct LegacyAgentConfigSnapshot {
     subagent_max_calls_per_turn: Option<i64>,
     subagent_token_budget: Option<i64>,
     delegation_limits_v2_json: Option<String>,
+    provider_streaming_json: Option<String>,
     tool_timeout_secs: Option<i64>,
     agent_timeout_secs: Option<i64>,
     credential: LegacyCredentialReference,
@@ -1203,6 +1204,11 @@ impl LegacyAgentConfigSnapshot {
             &mut overrides.advanced,
             "delegation_limits_v2",
             self.delegation_limits_v2_json.as_deref(),
+        );
+        insert_legacy_json(
+            &mut overrides.advanced,
+            "provider_streaming",
+            self.provider_streaming_json.as_deref(),
         );
         insert_legacy_value(
             &mut overrides.advanced,
@@ -1574,6 +1580,11 @@ fn verify_legacy_agent_profile(
         "delegation_limits_v2",
         snapshot.delegation_limits_v2_json.as_deref(),
     );
+    insert_legacy_json(
+        &mut expected_advanced,
+        "provider_streaming",
+        snapshot.provider_streaming_json.as_deref(),
+    );
     insert_legacy_value(
         &mut expected_advanced,
         "tool_timeout_seconds",
@@ -1740,7 +1751,7 @@ fn read_legacy_agent_configs(
                       subagent_allowed_skill_ids_json, subagent_max_parallel,
                       subagent_max_calls_per_turn, subagent_token_budget,
                       tool_timeout_secs, agent_timeout_secs, provider_endpoint_id,
-                      model_id, delegation_limits_v2_json
+                      model_id, delegation_limits_v2_json, provider_streaming_json
                FROM agent_configs
                WHERE (?1 IS NULL OR id = ?1)
                ORDER BY id";
@@ -1778,6 +1789,7 @@ fn read_legacy_agent_configs(
                 provider_endpoint_id: row.get(26)?,
                 model_id: row.get(27)?,
                 delegation_limits_v2_json: row.get(28)?,
+                provider_streaming_json: row.get(29)?,
                 credential: LegacyCredentialReference {
                     storage: "agent_configs.api_key".to_string(),
                     source_id: id,
@@ -2628,11 +2640,12 @@ fn restore_legacy_agent_config(
              subagent_allowed_tools_json, subagent_allowed_skill_ids_json,
              subagent_max_parallel, subagent_max_calls_per_turn,
              subagent_token_budget, tool_timeout_secs, agent_timeout_secs,
-             provider_endpoint_id, model_id, delegation_limits_v2_json
+             provider_endpoint_id, model_id, delegation_limits_v2_json,
+             provider_streaming_json
          ) VALUES (
              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
              ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
-             ?28, ?29
+             ?28, ?29, ?30
          ) ON CONFLICT(id) DO UPDATE SET
              name = excluded.name, provider = excluded.provider,
              api_key = excluded.api_key, base_url = excluded.base_url,
@@ -2656,7 +2669,8 @@ fn restore_legacy_agent_config(
              agent_timeout_secs = excluded.agent_timeout_secs,
              provider_endpoint_id = excluded.provider_endpoint_id,
              model_id = excluded.model_id,
-             delegation_limits_v2_json = excluded.delegation_limits_v2_json",
+             delegation_limits_v2_json = excluded.delegation_limits_v2_json,
+             provider_streaming_json = excluded.provider_streaming_json",
         params![
             &value.id,
             &value.name,
@@ -2687,6 +2701,7 @@ fn restore_legacy_agent_config(
             &value.provider_endpoint_id,
             &value.model_id,
             &value.delegation_limits_v2_json,
+            &value.provider_streaming_json,
         ],
     )?;
     Ok(())
@@ -3000,6 +3015,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: Some(60),
             agent_timeout_secs: Some(600),
+            provider_streaming: Default::default(),
         }
     }
 

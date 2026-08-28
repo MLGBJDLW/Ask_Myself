@@ -609,6 +609,7 @@ fn db_config_to_provider_config(
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs,
+        streaming: config.provider_streaming,
     }
 }
 
@@ -879,6 +880,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
             provider_endpoint_id: None,
             model_id: None,
             model_selection_resolution: None,
@@ -1000,6 +1002,7 @@ mod tests {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
+            provider_streaming: Default::default(),
             provider_endpoint_id: None,
             model_id: None,
         })

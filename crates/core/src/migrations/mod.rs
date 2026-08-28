@@ -2773,6 +2773,10 @@ Every answer that uses knowledge base search results.
             OR lower(provider_raw_json) LIKE '%x-amz-signature=%'
             OR provider_raw_json GLOB '*AIza????????????????*';",
     ),
+    (
+        "v124_provider_streaming_config",
+        "ALTER TABLE agent_configs ADD COLUMN provider_streaming_json TEXT;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -4401,6 +4405,20 @@ mod tests {
                 .unwrap();
             assert!(migration_exists, "{migration} should be recorded");
         }
+    }
+
+    #[test]
+    fn provider_streaming_config_column_is_migrated() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_configs') WHERE name = 'provider_streaming_json'",
+                [],
+                |row| row.get::<_, i64>(0).map(|count| count > 0),
+            )
+            .unwrap();
+        assert!(exists);
     }
 
     #[test]

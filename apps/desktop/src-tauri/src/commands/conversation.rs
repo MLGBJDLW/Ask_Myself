@@ -985,6 +985,7 @@ pub async fn generate_title_cmd(
                 base_url: db_config.base_url.clone(),
                 org_id: None,
                 timeout_secs: None,
+                streaming: db_config.provider_streaming,
             };
             match create_provider(summ_config) {
                 Ok(provider) => Ok((
@@ -1666,6 +1667,7 @@ pub async fn test_agent_connection_cmd(
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs: None,
+        streaming: config.provider_streaming,
     };
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
 
@@ -1716,6 +1718,7 @@ pub async fn refresh_provider_model_catalog_cmd(
         base_url: normalize_optional_base_url(config.base_url.clone()),
         org_id: None,
         timeout_secs: None,
+        streaming: config.provider_streaming,
     };
     let provider = create_provider(provider_config).map_err(|e| e.to_string())?;
     let refreshed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);

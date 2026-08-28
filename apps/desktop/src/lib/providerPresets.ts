@@ -1,4 +1,5 @@
 import providerPresets from "../../../../shared/provider-presets.json";
+import type { ProviderStreamingConfig } from '../types/conversation';
 import type {
   ProviderCapabilities,
   ProviderModelPreset,
@@ -33,6 +34,7 @@ export interface ProviderPreset {
   icon: string;
   description: string;
   capabilities?: ProviderCapabilities;
+  streaming?: ProviderStreamingConfig;
 }
 
 type RawProviderPreset = Omit<ProviderPreset, 'models'> & { models: LegacyCatalogModel[] };

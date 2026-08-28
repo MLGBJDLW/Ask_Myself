@@ -11,7 +11,6 @@ pub(crate) const H2_RESET_DOWNGRADE_THRESHOLD: u32 = 2;
 const ADAPTIVE_MODE: u8 = 0;
 const HTTP1_MODE: u8 = 1;
 const TRANSPORT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const TRANSPORT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSPORT_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
 const H2_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(300);
 const MAX_POOLED_TRANSPORTS: usize = 64;
@@ -36,6 +35,7 @@ struct TransportPoolKey {
     endpoint: String,
     proxy_profile: &'static str,
     transport_profile: &'static str,
+    connect_timeout_ms: u64,
 }
 
 impl TransportPoolKey {
@@ -45,6 +45,11 @@ impl TransportPoolKey {
             endpoint: provider_key.endpoint,
             proxy_profile: provider_key.proxy_profile,
             transport_profile: provider_key.transport_profile,
+            connect_timeout_ms: config
+                .streaming
+                .connect_timeout()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
         }
     }
 }
@@ -84,11 +89,13 @@ pub(crate) struct HttpTransport {
 }
 
 impl HttpTransport {
-    fn new(initial_mode: HttpTransportMode) -> Result<Self, CoreError> {
-        let adaptive_client = base_client_builder().build().map_err(|error| {
-            CoreError::Llm(format!("Failed to create adaptive HTTP client: {error}"))
-        })?;
-        let http1_client = base_client_builder()
+    fn new(initial_mode: HttpTransportMode, connect_timeout: Duration) -> Result<Self, CoreError> {
+        let adaptive_client = base_client_builder(connect_timeout)
+            .build()
+            .map_err(|error| {
+                CoreError::Llm(format!("Failed to create adaptive HTTP client: {error}"))
+            })?;
+        let http1_client = base_client_builder(connect_timeout)
             .http1_only()
             .build()
             .map_err(|error| {
@@ -191,10 +198,10 @@ pub(crate) fn shared_http_transport(
             pool.entries.remove(&oldest);
         }
     }
-    let transport = Arc::new(HttpTransport::new(initial_transport_mode(
-        config.provider_type,
-        &key.endpoint,
-    ))?);
+    let transport = Arc::new(HttpTransport::new(
+        initial_transport_mode(config.provider_type, &key.endpoint),
+        config.streaming.connect_timeout(),
+    )?);
     pool.entries.insert(
         key,
         TransportPoolEntry {
@@ -205,9 +212,9 @@ pub(crate) fn shared_http_transport(
     Ok(transport)
 }
 
-fn base_client_builder() -> reqwest::ClientBuilder {
+fn base_client_builder(connect_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
-        .connect_timeout(TRANSPORT_CONNECT_TIMEOUT)
+        .connect_timeout(connect_timeout)
         .pool_idle_timeout(TRANSPORT_IDLE_TIMEOUT)
         .pool_max_idle_per_host(32)
         .tcp_keepalive(TRANSPORT_TCP_KEEPALIVE)
@@ -335,6 +342,7 @@ mod tests {
             api_key: Some(api_key.to_string()),
             org_id: None,
             timeout_secs: None,
+            streaming: Default::default(),
         }
     }
 

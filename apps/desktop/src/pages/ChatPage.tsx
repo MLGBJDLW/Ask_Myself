@@ -287,6 +287,7 @@ function agentConfigToSaveInput(
     subagentMaxCallsPerTurn: config.subagentMaxCallsPerTurn,
     subagentTokenBudget: config.subagentTokenBudget,
     delegationLimitsV2: config.delegationLimitsV2 ?? null,
+    providerStreaming: config.providerStreaming ?? {},
     dynamicToolVisibility: config.dynamicToolVisibility,
     traceEnabled: config.traceEnabled,
     requireToolConfirmation: config.requireToolConfirmation,

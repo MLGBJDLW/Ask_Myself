@@ -65,6 +65,15 @@ impl Default for StreamRecoveryPolicy {
 }
 
 impl StreamRecoveryPolicy {
+    pub(super) fn with_stream_max_retries(mut self, configured: Option<u32>) -> Self {
+        if let Some(max_retries) = configured {
+            let max_retries = max_retries.min(10);
+            self.max_connect_retries = max_retries;
+            self.max_disconnect_retries = max_retries;
+        }
+        self
+    }
+
     pub(super) fn max_connect_retries(self) -> u32 {
         self.max_connect_retries
     }
@@ -238,6 +247,21 @@ mod tests {
                 delay: Duration::from_millis(250),
             }
         );
+    }
+
+    #[test]
+    fn provider_retry_override_controls_connect_and_disconnect_budgets() {
+        let policy = StreamRecoveryPolicy::default().with_stream_max_retries(Some(1));
+        assert_eq!(policy.max_connect_retries(), 1);
+        assert_eq!(policy.max_disconnect_retries(), 1);
+        assert!(matches!(
+            policy.decide_after_incomplete(false, 1, false, "closed"),
+            StreamRecoveryDecision::GiveUp { .. }
+        ));
+        assert!(matches!(
+            policy.decide_after_transient_error(1, "reset"),
+            StreamConnectRetryDecision::GiveUp { .. }
+        ));
     }
 
     #[test]

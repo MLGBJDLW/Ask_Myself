@@ -731,6 +731,7 @@ mod tests {
             agent_timeout_secs: None,
             provider_endpoint_id: Some("text:qwen-workspace-a".into()),
             model_id: Some("qwen3.5-plus".into()),
+            provider_streaming: Default::default(),
         })
         .expect("save agent config")
     }
