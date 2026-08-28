@@ -17,9 +17,9 @@ pub(super) enum StreamRecoveryDecision {
         reset_reason: String,
         delay: Duration,
     },
-    NonStreamingFallback {
-        status_message: String,
-        reset_reason: String,
+    GiveUp {
+        user_message: String,
+        trace_message: String,
     },
 }
 
@@ -58,7 +58,7 @@ impl Default for StreamRecoveryPolicy {
     fn default() -> Self {
         Self {
             max_context_recovery_attempts: MAX_CONTEXT_RECOVERY_ATTEMPTS,
-            max_connect_retries: 3,
+            max_connect_retries: 4,
             max_disconnect_retries: MAX_STREAM_DISCONNECT_RETRIES,
         }
     }
@@ -127,16 +127,16 @@ impl StreamRecoveryPolicy {
             };
         }
 
-        let wait = if retry_after_secs > 0 {
-            retry_after_secs
+        let delay = if retry_after_secs > 0 {
+            Duration::from_secs(retry_after_secs)
         } else {
-            2u64.pow(attempt)
+            retry_backoff_with_jitter(attempt)
         };
 
         StreamConnectRetryDecision::Retry {
             attempt,
-            delay: Duration::from_secs(wait),
-            status_message: format!("Rate limited. Retrying in {wait}s..."),
+            delay,
+            status_message: format!("Rate limited. Retrying in {}s...", delay.as_secs()),
         }
     }
 
@@ -157,11 +157,11 @@ impl StreamRecoveryPolicy {
             };
         }
 
-        let wait = 2u64.pow(attempt - 1);
+        let delay = retry_backoff_with_jitter(attempt);
         StreamConnectRetryDecision::Retry {
             attempt,
-            delay: Duration::from_secs(wait),
-            status_message: format!("Connection error. Retrying in {wait}s..."),
+            delay,
+            status_message: format!("Connection error. Retrying in {}s...", delay.as_secs()),
         }
     }
 
@@ -197,13 +197,21 @@ impl StreamRecoveryPolicy {
             };
         }
 
-        let reset_reason =
-            "Stream interrupted repeatedly; switching this turn to non-streaming mode.".to_string();
-        StreamRecoveryDecision::NonStreamingFallback {
-            status_message: format!("{reset_reason} ({detail})"),
-            reset_reason,
+        StreamRecoveryDecision::GiveUp {
+            user_message: "The model stream disconnected repeatedly. Partial output was preserved; retry when the provider connection is stable.".to_string(),
+            trace_message: format!(
+                "model stream disconnected after {} replay attempt(s): {detail}",
+                self.max_disconnect_retries
+            ),
         }
     }
+}
+
+fn retry_backoff_with_jitter(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3);
+    let base_seconds = 5_u64.saturating_mul(2_u64.saturating_pow(exponent));
+    let jitter_ms = 137_u64.saturating_mul(u64::from(attempt));
+    Duration::from_secs(base_seconds.min(40)) + Duration::from_millis(jitter_ms)
 }
 
 #[cfg(test)]
@@ -305,7 +313,7 @@ mod tests {
     #[test]
     fn rate_limit_retry_uses_retry_after_before_giving_up() {
         let retry = StreamRecoveryPolicy::default().decide_after_rate_limit(0, 7);
-        let give_up = StreamRecoveryPolicy::default().decide_after_rate_limit(3, 0);
+        let give_up = StreamRecoveryPolicy::default().decide_after_rate_limit(4, 0);
 
         assert_eq!(
             retry,
@@ -318,7 +326,7 @@ mod tests {
         assert_eq!(
             give_up,
             StreamConnectRetryDecision::GiveUp {
-                user_message: "Rate limited after 3 retries".to_string(),
+                user_message: "Rate limited after 4 retries".to_string(),
                 trace_message: "rate limited".to_string(),
             }
         );
@@ -327,27 +335,27 @@ mod tests {
     #[test]
     fn transient_retry_uses_exponential_backoff_before_giving_up() {
         let retry = StreamRecoveryPolicy::default().decide_after_transient_error(1, "closed");
-        let give_up = StreamRecoveryPolicy::default().decide_after_transient_error(3, "closed");
+        let give_up = StreamRecoveryPolicy::default().decide_after_transient_error(4, "closed");
 
         assert_eq!(
             retry,
             StreamConnectRetryDecision::Retry {
                 attempt: 2,
-                delay: Duration::from_secs(2),
-                status_message: "Connection error. Retrying in 2s...".to_string(),
+                delay: Duration::from_millis(10_274),
+                status_message: "Connection error. Retrying in 10s...".to_string(),
             }
         );
         assert_eq!(
             give_up,
             StreamConnectRetryDecision::GiveUp {
-                user_message: "Transient error after 3 retries: closed".to_string(),
-                trace_message: "Transient error after 3 retries: closed".to_string(),
+                user_message: "Transient error after 4 retries: closed".to_string(),
+                trace_message: "Transient error after 4 retries: closed".to_string(),
             }
         );
     }
 
     #[test]
-    fn switches_to_non_streaming_after_disconnect_retry_budget() {
+    fn gives_control_back_after_disconnect_retry_budget() {
         let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
             false,
             2,
@@ -357,19 +365,17 @@ mod tests {
 
         assert_eq!(
             decision,
-            StreamRecoveryDecision::NonStreamingFallback {
-                status_message:
-                    "Stream interrupted repeatedly; switching this turn to non-streaming mode. (connection closed)"
-                        .to_string(),
-                reset_reason:
-                    "Stream interrupted repeatedly; switching this turn to non-streaming mode."
+            StreamRecoveryDecision::GiveUp {
+                user_message: "The model stream disconnected repeatedly. Partial output was preserved; retry when the provider connection is stable.".to_string(),
+                trace_message:
+                    "model stream disconnected after 2 replay attempt(s): connection closed"
                         .to_string(),
             }
         );
     }
 
     #[test]
-    fn keeps_forced_non_streaming_mode_on_fallback_path() {
+    fn forced_non_streaming_does_not_create_a_blind_fallback_loop() {
         let decision = StreamRecoveryPolicy::default().decide_after_incomplete(
             true,
             0,
@@ -377,9 +383,24 @@ mod tests {
             "connection closed",
         );
 
-        assert!(matches!(
-            decision,
-            StreamRecoveryDecision::NonStreamingFallback { .. }
-        ));
+        assert!(matches!(decision, StreamRecoveryDecision::GiveUp { .. }));
+    }
+
+    #[test]
+    fn transient_retry_backoff_is_bounded_and_jittered() {
+        let policy = StreamRecoveryPolicy::default();
+        let delays = (0..4)
+            .map(
+                |completed| match policy.decide_after_transient_error(completed, "reset") {
+                    StreamConnectRetryDecision::Retry { delay, .. } => delay,
+                    StreamConnectRetryDecision::GiveUp { .. } => panic!("retry budget ended early"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        assert_eq!(delays[0], Duration::from_millis(5_137));
+        assert_eq!(delays[1], Duration::from_millis(10_274));
+        assert_eq!(delays[2], Duration::from_millis(20_411));
+        assert_eq!(delays[3], Duration::from_millis(40_548));
     }
 }

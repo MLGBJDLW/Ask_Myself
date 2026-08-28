@@ -4766,7 +4766,15 @@ data: [DONE]
             messages: vec![Message::text(Role::User, "make a docx"), assistant, tool],
             temperature: Some(0.4),
             max_tokens: Some(100),
-            tools: None,
+            tools: Some(vec![ToolDefinition {
+                name: "run_shell".to_string(),
+                description: "Run an approved command".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "program": { "type": "string" } },
+                    "required": ["program"]
+                }),
+            }]),
             stop: None,
             thinking_budget: None,
             reasoning_enabled: None,
@@ -4779,6 +4787,8 @@ data: [DONE]
         let body = serde_json::to_value(build_request_body(&request, false)).unwrap();
 
         assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["tools"][0]["function"]["name"], "run_shell");
         assert_eq!(
             body["messages"][1]["reasoning_content"],
             "Need to check whether python-docx is installed."

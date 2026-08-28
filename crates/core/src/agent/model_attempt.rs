@@ -73,7 +73,6 @@ pub(super) enum ModelAttemptFailureStage {
     Connect,
     Stream,
     Completion,
-    NonStreamingFallback,
 }
 
 #[derive(Debug)]
@@ -146,17 +145,14 @@ enum AttemptPhase<'provider> {
     WaitingToRetryStream(Pin<Box<tokio::time::Sleep>>),
     Streaming(BoxStream<'provider, ProviderStreamEvent>),
     ReadyToComplete {
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     OpeningCompletion {
         future: CompletionFuture<'provider>,
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     WaitingToRetryCompletion {
         sleep: Pin<Box<tokio::time::Sleep>>,
-        fallback_detail: Option<String>,
         switched_to_non_streaming: bool,
     },
     Done,
@@ -221,7 +217,6 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         let initial_model_id = original_request.model.clone();
         let phase = if force_non_streaming {
             AttemptPhase::ReadyToComplete {
-                fallback_detail: None,
                 switched_to_non_streaming: false,
             }
         } else {
@@ -463,24 +458,16 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     }
                 }
                 AttemptPhase::ReadyToComplete {
-                    ref fallback_detail,
                     switched_to_non_streaming,
                 } => {
-                    let fallback_detail = fallback_detail.clone();
-                    self.begin_completion(fallback_detail, switched_to_non_streaming);
+                    self.begin_completion(switched_to_non_streaming);
                 }
                 AttemptPhase::OpeningCompletion { .. } => {
-                    let (result, fallback_detail, switched_to_non_streaming) = match &mut self.phase
-                    {
+                    let (result, switched_to_non_streaming) = match &mut self.phase {
                         AttemptPhase::OpeningCompletion {
                             future,
-                            fallback_detail,
                             switched_to_non_streaming,
-                        } => (
-                            future.as_mut().await,
-                            fallback_detail.clone(),
-                            *switched_to_non_streaming,
-                        ),
+                        } => (future.as_mut().await, *switched_to_non_streaming),
                         _ => unreachable!("opening completion phase checked above"),
                     };
                     match result {
@@ -507,41 +494,29 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                             ConnectErrorAction::Retry(delay) => {
                                 self.phase = AttemptPhase::WaitingToRetryCompletion {
                                     sleep: Box::pin(tokio::time::sleep(delay)),
-                                    fallback_detail,
                                     switched_to_non_streaming,
                                 };
                             }
                             ConnectErrorAction::Finish(failure) => {
                                 self.phase = AttemptPhase::Done;
-                                let progress = progress_from_connect_failure(*failure);
-                                self.pending_progress = Some(match progress {
-                                    ModelAttemptProgress::Failed(mut failure) => {
-                                        apply_non_streaming_fallback_failure(
-                                            &mut failure,
-                                            fallback_detail.as_deref(),
-                                        );
-                                        ModelAttemptProgress::Failed(failure)
-                                    }
-                                    progress => progress,
-                                });
+                                self.pending_progress =
+                                    Some(progress_from_connect_failure(*failure));
                             }
                         },
                     }
                 }
                 AttemptPhase::WaitingToRetryCompletion { .. } => {
-                    let (fallback_detail, switched_to_non_streaming) = match &mut self.phase {
+                    let switched_to_non_streaming = match &mut self.phase {
                         AttemptPhase::WaitingToRetryCompletion {
                             sleep,
-                            fallback_detail,
                             switched_to_non_streaming,
                         } => {
                             sleep.as_mut().await;
-                            (fallback_detail.clone(), *switched_to_non_streaming)
+                            *switched_to_non_streaming
                         }
                         _ => unreachable!("completion retry phase checked above"),
                     };
                     self.phase = AttemptPhase::ReadyToComplete {
-                        fallback_detail,
                         switched_to_non_streaming,
                     };
                 }
@@ -587,11 +562,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             ));
     }
 
-    fn begin_completion(
-        &mut self,
-        fallback_detail: Option<String>,
-        switched_to_non_streaming: bool,
-    ) {
+    fn begin_completion(&mut self, switched_to_non_streaming: bool) {
         let request = self.request_for_invocation();
         self.candidate_sample_id = Some(Uuid::new_v4().to_string());
         info!(
@@ -601,7 +572,6 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         let provider = self.provider;
         self.phase = AttemptPhase::OpeningCompletion {
             future: Box::pin(async move { provider.complete(&request).await }),
-            fallback_detail,
             switched_to_non_streaming,
         };
     }
@@ -774,31 +744,22 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 self.phase =
                     AttemptPhase::WaitingToRetryStream(Box::pin(tokio::time::sleep(delay)));
             }
-            StreamRecoveryDecision::NonStreamingFallback { reset_reason, .. } => {
-                self.queue_connection_state(ConnectionNotice {
-                    state: ConnectionStateKind::Degraded,
-                    error_category: Some(ConnectionErrorCategory::Network),
-                    attempt: self.disconnect_retries,
-                    max_attempts: self.policy.max_disconnect_retries(),
-                    delay: None,
-                    recoverable: true,
-                    accepted: self.accepted.clone(),
-                });
-                self.pending_agent_events
-                    .push_back(AgentEvent::StreamReset {
-                        reason: reset_reason.clone(),
-                        discard_sample: true,
-                    });
-                self.pending_recovery = Some(RecoverySignal {
-                    attempt: self.disconnect_retries,
-                    max_attempts: self.policy.max_disconnect_retries(),
-                });
-                self.discard_resettable_sample();
-                self.connect_retries = 0;
-                self.phase = AttemptPhase::ReadyToComplete {
-                    fallback_detail: Some(detail),
-                    switched_to_non_streaming: true,
-                };
+            StreamRecoveryDecision::GiveUp {
+                user_message,
+                trace_message,
+            } => {
+                self.queue_failed(
+                    ConnectionErrorCategory::Network,
+                    self.disconnect_retries,
+                    self.policy.max_disconnect_retries(),
+                );
+                self.phase = AttemptPhase::Done;
+                self.pending_progress = Some(ModelAttemptProgress::Failed(self.failure(
+                    ModelAttemptFailureStage::Stream,
+                    CoreError::StreamIncomplete(trace_message.clone()),
+                    Some(user_message),
+                    Some(trace_message),
+                )));
             }
         }
     }
@@ -1062,23 +1023,6 @@ fn progress_from_connect_failure(failure: ModelAttemptFailure) -> ModelAttemptPr
             timing,
         }),
     }
-}
-
-fn apply_non_streaming_fallback_failure(
-    failure: &mut ModelAttemptFailure,
-    fallback_detail: Option<&str>,
-) {
-    let Some(detail) = fallback_detail else {
-        return;
-    };
-    let fallback_error = format!(
-        "Stream interrupted and non-streaming retry failed: {}",
-        failure.error
-    );
-    failure.stage = ModelAttemptFailureStage::NonStreamingFallback;
-    failure.user_message = fallback_error;
-    failure.trace_message = format!("{detail}; fallback failed: {}", failure.error);
-    failure.error = CoreError::StreamIncomplete(failure.trace_message.clone());
 }
 
 fn chunk_is_visible(chunk: &crate::llm::StreamChunk) -> bool {
@@ -1393,7 +1337,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn disconnect_before_visible_output_reconnects_then_switches_to_completion() {
+    async fn disconnect_before_visible_output_reconnects_then_returns_control() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let route_queries = Arc::new(Mutex::new(0));
         let provider = ScriptedProvider::boxed(
@@ -1422,12 +1366,12 @@ mod tests {
         expect_stream_opened(&mut attempt).await;
         expect_stream_opened(&mut attempt).await;
         expect_stream_opened(&mut attempt).await;
-        let ModelAttemptProgress::Completion(completion) = attempt.next().await else {
-            panic!("completion fallback should succeed")
+        let ModelAttemptProgress::Failed(failure) = attempt.next().await else {
+            panic!("disconnect exhaustion should return an explicit failure")
         };
-        assert_eq!(completion.response.content, "fallback answer");
-        assert!(completion.switched_to_non_streaming);
-        assert_eq!(requests.lock().unwrap().len(), 4);
+        assert!(failure.user_message.contains("disconnected repeatedly"));
+        assert!(matches!(failure.error, CoreError::StreamIncomplete(_)));
+        assert_eq!(requests.lock().unwrap().len(), 3);
     }
 
     #[tokio::test(start_paused = true)]

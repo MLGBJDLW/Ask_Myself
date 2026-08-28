@@ -2309,9 +2309,7 @@ impl LlmProvider for TruncatedToolCallProvider {
             });
             let has_replan_instruction = request.messages.iter().any(|message| {
                 message.role == Role::System
-                    && message
-                        .text_content()
-                        .contains("incomplete tool-call envelope")
+                    && message.text_content().contains("use append operations")
             });
             *self.saw_safe_replan_context.lock().unwrap() =
                 !has_tool_protocol_unit && has_replan_instruction;
@@ -5550,7 +5548,7 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
     );
     assert!(
         *saw_safe_replan_context.lock().unwrap(),
-        "the next model step must receive a controller replan without a fabricated tool unit"
+        "the next model step must receive a safe chunked-write replan without a fabricated tool unit"
     );
 }
 
