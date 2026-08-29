@@ -282,6 +282,10 @@ impl AgentExecutor {
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
         let output_budget_plan = self.config.resolved_output_budget(model);
         let max_response_tokens = output_budget_plan.effective_tokens;
+        // Establish tool authority before schema selection or prompt
+        // accounting. Answer-only turns must not pay context for a tool
+        // surface that can never be transmitted.
+        let mut turn_budget = TurnBudget::new(self.config.max_iterations);
         let mut turn_state = TurnStateMachine::new();
 
         // --- 0. Early cancellation check before any work ----------------------
@@ -501,23 +505,28 @@ impl AgentExecutor {
             .context_window_resolution
             .and_then(|resolved| resolved.capacity_tokens)
             .or(self.config.context_window);
-        let cache_stable_tool_surface = if layout.allow_dynamic_tool_visibility {
-            None
-        } else {
-            Some(prompt_layout::select_cache_stable_tool_surface(
-                model_tool_registry,
-                model,
-                effective_context_capacity,
-                max_response_tokens,
-            )?)
-        };
-        let effective_dynamic_tool_visibility = cache_stable_tool_surface
-            .as_ref()
-            .map(prompt_layout::CacheStableToolSurface::uses_dynamic_discovery)
-            .unwrap_or_else(|| {
-                layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility)
-            });
-        let mut tool_defs = if let Some(surface) = cache_stable_tool_surface {
+        let tools_allowed_initially = turn_budget.can_dispatch_tool_round();
+        let cache_stable_tool_surface =
+            if !tools_allowed_initially || layout.allow_dynamic_tool_visibility {
+                None
+            } else {
+                Some(prompt_layout::select_cache_stable_tool_surface(
+                    model_tool_registry,
+                    model,
+                    effective_context_capacity,
+                    max_response_tokens,
+                )?)
+            };
+        let effective_dynamic_tool_visibility = tools_allowed_initially
+            && cache_stable_tool_surface
+                .as_ref()
+                .map(prompt_layout::CacheStableToolSurface::uses_dynamic_discovery)
+                .unwrap_or_else(|| {
+                    layout.effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility)
+                });
+        let mut tool_defs = if !tools_allowed_initially {
+            Vec::new()
+        } else if let Some(surface) = cache_stable_tool_surface {
             debug!(
                 mode = ?surface.mode,
                 tool_count = surface.definitions.len(),
@@ -529,7 +538,7 @@ impl AgentExecutor {
         } else {
             model_tool_registry.definitions()
         };
-        if self.config.power_mode.is_nexus() {
+        if tools_allowed_initially && self.config.power_mode.is_nexus() {
             // Nexus orchestration must be available on the first model step.
             // Leaving delegation behind dynamic discovery made the high-power
             // mode behave like one large worker whenever routing omitted it.
@@ -663,12 +672,6 @@ impl AgentExecutor {
             sorted.sort();
             Some(sorted.join(","))
         };
-        // Tool-round authority must exist before every controller shortcut,
-        // prefetch, reconnaissance wave, or model-directed dispatch. Keeping
-        // one owner prevents pre-loop tool paths from bypassing answer-only or
-        // finite budgets.
-        let mut turn_budget = TurnBudget::new(self.config.max_iterations);
-
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
         if !self.config.execution_mode.is_plan() && turn_budget.can_dispatch_tool_round() {
             turn_state.transition_to(TurnPhase::DirectDispatch);
@@ -1121,7 +1124,13 @@ impl AgentExecutor {
                     .await
             };
             if !steering_texts.is_empty() {
-                self.expand_tool_defs_for_steering(&mut tool_defs, &steering_texts, has_sources);
+                if step_permit.allows_tools() {
+                    self.expand_tool_defs_for_steering(
+                        &mut tool_defs,
+                        &steering_texts,
+                        has_sources,
+                    );
+                }
                 append_internal_persisted_trace_status(
                     &mut persisted_trace_items,
                     "Applied user steering before the next model step.",
@@ -1974,16 +1983,19 @@ impl AgentExecutor {
                     .await
                 };
                 if !steering_texts.is_empty() {
-                    self.expand_tool_defs_for_steering(
-                        &mut tool_defs,
-                        &steering_texts,
-                        has_sources,
-                    );
+                    if step_permit.allows_tools() {
+                        self.expand_tool_defs_for_steering(
+                            &mut tool_defs,
+                            &steering_texts,
+                            has_sources,
+                        );
+                    }
                     let before_trim = prompt_cache::message_sequence_fingerprint(&messages);
                     messages = context_pipeline.trim_after_tool_results(&messages);
                     prompt_was_compacted |=
                         before_trim != prompt_cache::message_sequence_fingerprint(&messages);
-                    continue;
+                    next_step_purpose = TurnStepPurpose::Recovery;
+                    continue 'react_loop;
                 }
                 if workflow_ir.completion_contract.require_verification_gates {
                     workflow_ir.sync_from_task_plan(&task_plan);

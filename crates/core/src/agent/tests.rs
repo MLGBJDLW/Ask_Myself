@@ -2025,6 +2025,10 @@ struct ErrorNamedMockTool {
     executions: Arc<AtomicUsize>,
 }
 
+struct DefinitionCountingTool {
+    definition_calls: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -2192,6 +2196,42 @@ impl Tool for ErrorNamedMockTool {
             call_id: context.call_id.to_string(),
             content: "direct-dispatch-error".to_string(),
             is_error: true,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for DefinitionCountingTool {
+    fn name(&self) -> &str {
+        "definition_counting_tool"
+    }
+
+    fn description(&self) -> &str {
+        "Tracks whether an answer-only turn constructs its schema"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.definition_calls.fetch_add(1, Ordering::SeqCst);
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "string",
+                    "description": "schema content that answer-only mode must never account ".repeat(300)
+                }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "unexpected".to_string(),
+            is_error: false,
             artifacts: None,
         })
     }
@@ -3391,6 +3431,59 @@ async fn failed_direct_dispatch_consumes_the_finite_tool_round() {
 }
 
 #[tokio::test]
+async fn answer_only_prompt_never_constructs_or_accounts_tool_schemas() {
+    let definition_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(DefinitionCountingTool {
+        definition_calls: Arc::clone(&definition_calls),
+    }));
+    let calls_after_registration = definition_calls.load(Ordering::SeqCst);
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            max_tokens: Some(256),
+            context_window: Some(8_192),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Answer from the supplied conversation without tools.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("answer-only prompt should fit without tool schema reservation");
+
+    assert_eq!(final_message.text_content(), "done");
+    assert_eq!(
+        definition_calls.load(Ordering::SeqCst),
+        calls_after_registration,
+        "answer-only prompt preparation must not even construct the unavailable schema"
+    );
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(captured_tools[0].is_empty());
+}
+
+#[tokio::test]
 async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));
@@ -3635,6 +3728,12 @@ struct LoopGuardSteeringProvider {
     steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
 }
 
+struct PostSynthesisSteeringProvider {
+    stream_calls: Arc<AtomicUsize>,
+    steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+    saw_steering_on_replacement: Arc<Mutex<bool>>,
+}
+
 const LOOP_GUARD_REPEATED_DRAFT: &str = "This repeated stale draft keeps restating the same incomplete conclusion without taking a new action or adding useful evidence.";
 
 #[async_trait]
@@ -3693,6 +3792,73 @@ impl LlmProvider for LoopGuardSteeringProvider {
 
                 if let Some(text) = steering_text {
                     let _ = steering_tx.send(AgentSteeringMessage::text(text));
+                }
+                None
+            },
+        )))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for PostSynthesisSteeringProvider {
+    fn name(&self) -> &str {
+        "post-synthesis-steering-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no > 0 {
+            *self.saw_steering_on_replacement.lock().unwrap() =
+                request.messages.iter().any(|message| {
+                    message.role == Role::User
+                        && message
+                            .text_content()
+                            .contains("Replace the draft with the steered answer")
+                });
+        }
+        let delta = if call_no == 0 {
+            "obsolete synthesis draft"
+        } else {
+            "replacement answer after steering"
+        };
+        let steering =
+            (call_no == 0).then(|| "Replace the draft with the steered answer.".to_string());
+        let steering_tx = self.steering_tx.clone();
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
+            (0u8, Some(delta.to_string()), steering, steering_tx),
+            |(state, delta, steering, steering_tx)| async move {
+                if state == 0 {
+                    return Some((
+                        Ok(StreamChunk {
+                            delta: delta.expect("first stream state should carry text"),
+                            tool_call_delta: None,
+                            finish_reason: Some(FinishReason::Stop),
+                            usage: None,
+                            thinking_delta: None,
+                        }),
+                        (1, None, steering, steering_tx),
+                    ));
+                }
+                if let Some(steering) = steering {
+                    let _ = steering_tx.send(AgentSteeringMessage::text(steering));
                 }
                 None
             },
@@ -5685,6 +5851,54 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
     .collect::<Vec<_>>();
 
     assert_eq!(request_log[1], second_turn);
+}
+
+#[tokio::test]
+async fn answer_only_synthesis_steering_gets_a_replacement_sample() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_steering_on_replacement = Arc::new(Mutex::new(false));
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let executor = AgentExecutor::new(
+        Box::new(PostSynthesisSteeringProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            steering_tx,
+            saw_steering_on_replacement: Arc::clone(&saw_steering_on_replacement),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Produce one answer-only synthesis.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("post-synthesis steering should replace the obsolete draft");
+
+    assert_eq!(
+        final_message.text_content(),
+        "replacement answer after steering"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_steering_on_replacement.lock().unwrap(),
+        "the replacement sample must include the late steering message"
+    );
 }
 
 #[tokio::test]
