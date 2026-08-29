@@ -5,9 +5,11 @@ use super::finalization;
 use super::model_step;
 use super::output_recovery::{
     OutputRecovery, OutputRecoveryCause, OutputRecoveryDecision, OutputRecoveryFailure,
+    ToolRoundRejectionCause,
 };
 use super::steering::SteeringDrainContext;
 use super::tool_dispatch;
+use super::turn_budget::{TurnBudget, TurnStepMode, TurnStepPurpose};
 use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
 use super::usage_accounting;
 use super::*;
@@ -175,7 +177,8 @@ impl AgentExecutor {
         next_sort_order: i64,
     ) -> Result<Message, CoreError> {
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
-        let max_response_tokens = self.config.resolved_max_response_tokens(model);
+        let output_budget_plan = self.config.resolved_output_budget(model);
+        let max_response_tokens = output_budget_plan.effective_tokens;
         let mut turn_state = TurnStateMachine::new();
 
         // --- 0. Early cancellation check before any work ----------------------
@@ -531,6 +534,11 @@ impl AgentExecutor {
         let mut last_iteration_content = String::new();
         let mut last_finish_reason: Option<String> = None;
         let mut persisted_trace_items: Vec<PersistedTraceItem> = Vec::new();
+        append_developer_persisted_trace_status(
+            &mut persisted_trace_items,
+            &output_budget_plan.diagnostic(),
+            "info",
+        );
         let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
@@ -928,16 +936,28 @@ impl AgentExecutor {
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
-        'react_loop: for iteration in 0..self.config.max_iterations {
+        let mut turn_budget = TurnBudget::new(self.config.max_iterations);
+        let mut next_step_purpose = TurnStepPurpose::Normal;
+        'react_loop: loop {
+            let Some(step_permit) = turn_budget.permit(next_step_purpose) else {
+                break 'react_loop;
+            };
+            next_step_purpose = TurnStepPurpose::Normal;
+            let iteration = step_permit.sample_index;
             turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
                 iteration,
-                remaining_iterations: self.config.max_iterations.saturating_sub(iteration),
+                remaining_iterations: step_permit.remaining_tool_rounds.unwrap_or(u32::MAX),
             };
             loop_recorder.record(step_started.clone());
             append_persisted_trace_loop_event(&mut persisted_trace_items, step_started);
             // ── Cancellation checkpoint: before LLM call ─────────────────
-            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
+            check_cancelled!(
+                last_tool_calls,
+                long_task_state,
+                task_plan,
+                step_permit.tool_rounds_used
+            );
             let steering_texts = {
                 let mut steering_ctx = SteeringDrainContext {
                     db,
@@ -963,21 +983,34 @@ impl AgentExecutor {
                     before_trim != prompt_cache::message_sequence_fingerprint(&messages);
             }
             debug!(
-                "Agent iteration {}/{}",
+                "Agent provider sample {}; tool rounds used={}, configured_limit={:?}",
                 iteration + 1,
-                self.config.max_iterations
+                step_permit.tool_rounds_used,
+                turn_budget.configured_tool_round_limit(),
             );
 
-            // Inject iteration-budget hint to help the model plan tool usage.
-            let remaining = self.config.max_iterations - iteration;
-            if iteration > 0 {
-                let budget_hint = if remaining <= 1 {
-                    "[System: This is your FINAL tool-use round. You MUST provide your complete answer now. Do not make additional tool calls — synthesize all evidence gathered so far.]".to_string()
-                } else if iteration >= self.config.max_iterations / 2 {
-                    format!(
-                        "[System: You have {} tool-use round(s) remaining. Start synthesizing if you have sufficient evidence, or make your most critical remaining searches.]",
-                        remaining
-                    )
+            // A finite tool-round policy reserves a distinct answer-only sample
+            // after the final verified tool round. Recovery samples retain that
+            // mode without spending another logical tool round.
+            if iteration > 0 || step_permit.mode == TurnStepMode::FinalAnswerOnly {
+                let budget_hint = if step_permit.mode == TurnStepMode::FinalAnswerOnly {
+                    "[System: The configured tool-round budget is complete. This is the reserved final-answer step. Do not call tools. Synthesize the complete answer from the evidence and tool results already available.]".to_string()
+                } else if step_permit
+                    .remaining_tool_rounds
+                    .is_some_and(|remaining| remaining <= 1)
+                {
+                    "[System: One verified tool round remains before a separate answer-only synthesis step. Use it only for the most critical remaining action.]".to_string()
+                } else if let (Some(remaining), Some(limit)) = (
+                    step_permit.remaining_tool_rounds,
+                    turn_budget.configured_tool_round_limit(),
+                ) {
+                    if remaining <= limit.saturating_div(2) {
+                        format!(
+                            "[System: You have {remaining} verified tool round(s) remaining, followed by a separate answer-only synthesis step.]"
+                        )
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
                 };
@@ -989,7 +1022,7 @@ impl AgentExecutor {
             long_task_state.refresh_plan_recitation(
                 &mut messages,
                 &task_plan,
-                iteration,
+                step_permit.tool_rounds_used,
                 self.config.max_iterations,
                 layout.append_volatile_system_prompt_to_tail,
             );
@@ -1028,7 +1061,8 @@ impl AgentExecutor {
                 WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
 
-            let force_answer_only = output_recovery.reserves_answer_channel();
+            let force_answer_only = output_recovery.reserves_answer_channel()
+                || step_permit.mode == TurnStepMode::FinalAnswerOnly;
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
                     model, &messages, &tool_defs, None,
@@ -1091,6 +1125,7 @@ impl AgentExecutor {
                     force_non_streaming_llm: &mut force_non_streaming_llm,
                     reasoning_disabled_for_tool_loop: &mut reasoning_disabled_for_tool_loop,
                     force_answer_only,
+                    suppress_tools: !step_permit.allows_tools(),
                     requires_first_action: !model_action_observed,
                     total_usage: &mut total_usage,
                 })
@@ -1134,6 +1169,7 @@ impl AgentExecutor {
                     prompt_was_compacted: restart_was_compacted,
                 } => {
                     prompt_was_compacted |= restart_was_compacted;
+                    next_step_purpose = TurnStepPurpose::Recovery;
                     continue 'react_loop;
                 }
             };
@@ -1247,7 +1283,7 @@ impl AgentExecutor {
                 &full_content,
                 !tool_calls.is_empty(),
             );
-            let mut tool_calls_truncated_by_output_limit = false;
+            let mut tool_round_rejection_cause = None;
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
@@ -1257,61 +1293,89 @@ impl AgentExecutor {
                         &mut persisted_trace_items,
                         &iteration_thinking,
                     );
-                    if iteration + 1 < self.config.max_iterations {
-                        if had_visible_content {
-                            messages.push(Message {
-                                role: Role::Assistant,
-                                parts: vec![ContentPart::Text {
-                                    text: full_content.clone(),
-                                }],
-                                name: None,
-                                tool_calls: None,
-                                reasoning_content: self
-                                    .reasoning_content_for_iteration(&iteration_thinking, false),
-                                prompt_cache_hint: None,
-                            });
-                        }
-
-                        let (code, status) = match cause {
-                            OutputRecoveryCause::OutputLimit => (
-                                "output_limit_continuation",
-                                "The provider reached its per-request output limit. Continuing the same turn with answer space reserved.",
-                            ),
-                            OutputRecoveryCause::EmptyTerminal => (
-                                "final_answer_recovery",
-                                "The provider ended without answer text. Continuing once with answer space reserved.",
-                            ),
+                    if had_visible_content
+                        || matches!(
+                            cause,
+                            OutputRecoveryCause::ProviderPause | OutputRecoveryCause::ContextLimit
+                        )
+                    {
+                        let recovery_reasoning =
+                            self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        let mut recovery_message = Message {
+                            role: Role::Assistant,
+                            parts: vec![ContentPart::Text {
+                                text: full_content.clone(),
+                            }],
+                            name: None,
+                            tool_calls: None,
+                            reasoning_content: recovery_reasoning.clone(),
+                            prompt_cache_hint: None,
                         };
-                        append_internal_persisted_trace_status(
-                            &mut persisted_trace_items,
-                            status,
-                            "warning",
+                        recovery_message.set_provider_turn(
+                            crate::llm::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                                Uuid::new_v4().to_string(),
+                                sample_id,
+                                route_snapshot,
+                                recovery_message.text_content(),
+                                crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
+                                    &iteration_thinking,
+                                ))
+                                .as_deref(),
+                                recovery_reasoning.as_deref(),
+                                Vec::new(),
+                                reasoning_was_requested,
+                                provider_replay,
+                            ),
                         );
-                        let _ = tx
-                            .send(AgentEvent::ControllerStatus {
-                                code: code.to_string(),
-                                content: status.to_string(),
-                                tone: Some("warning".to_string()),
-                            })
-                            .await;
-                        if let Some(message) = prompt_ir::controller_state_message(
-                            cause.controller_prompt(had_visible_content),
-                        ) {
-                            messages.push(message);
-                        }
-                        continue 'react_loop;
+                        messages.push(recovery_message);
                     }
 
-                    Some(match cause {
-                        OutputRecoveryCause::OutputLimit => OutputRecoveryFailure::OutputLimit,
-                        OutputRecoveryCause::EmptyTerminal => OutputRecoveryFailure::EmptyTerminal,
-                    })
-                }
-                OutputRecoveryDecision::TruncatedToolRound => {
-                    tool_calls_truncated_by_output_limit = true;
+                    let (code, status) = match cause {
+                        OutputRecoveryCause::OutputLimit => (
+                            "output_limit_continuation",
+                            format!(
+                                "The provider reached its per-request output limit ({model_step_max_response_tokens} tokens; {}). Nexa is continuing automatically; this recovery does not consume a tool round.",
+                                output_budget_plan.authority.label(),
+                            ),
+                        ),
+                        OutputRecoveryCause::EmptyTerminal => (
+                            "final_answer_recovery",
+                            "The provider ended without answer text. Nexa is continuing once; this recovery does not consume a tool round.".to_string(),
+                        ),
+                        OutputRecoveryCause::ProviderPause => (
+                            "provider_pause_continuation",
+                            "The provider paused its server-side tool turn. Nexa is resuming from committed provider state; this does not consume a local tool round.".to_string(),
+                        ),
+                        OutputRecoveryCause::ContextLimit => (
+                            "context_limit_rollover",
+                            "The provider reached the model context limit. Nexa is rolling context forward from committed history; this does not consume a tool round.".to_string(),
+                        ),
+                    };
                     append_internal_persisted_trace_status(
                         &mut persisted_trace_items,
-                        "The provider output limit interrupted a tool-call response. The incomplete calls will be rejected and re-planned without execution.",
+                        &status,
+                        "warning",
+                    );
+                    let _ = tx
+                        .send(AgentEvent::ControllerStatus {
+                            code: code.to_string(),
+                            content: status,
+                            tone: Some("warning".to_string()),
+                        })
+                        .await;
+                    if let Some(message) = prompt_ir::controller_state_message(
+                        cause.controller_prompt(had_visible_content),
+                    ) {
+                        messages.push(message);
+                    }
+                    next_step_purpose = TurnStepPurpose::Recovery;
+                    continue 'react_loop;
+                }
+                OutputRecoveryDecision::RejectToolRound(cause) => {
+                    tool_round_rejection_cause = Some(cause);
+                    append_internal_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        "The provider terminal state did not commit a safe tool-call response. The draft calls will be rejected and re-planned without execution.",
                         "warning",
                     );
                     None
@@ -1324,23 +1388,34 @@ impl AgentExecutor {
                 OutputRecoveryDecision::Reject(failure) => Some(failure),
             };
 
+            if !step_permit.allows_tools()
+                && !tool_calls.is_empty()
+                && tool_round_rejection_cause.is_none()
+            {
+                tool_round_rejection_cause = Some(ToolRoundRejectionCause::ToolsSuppressed);
+                append_internal_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    "The provider returned client tool calls during an answer-only sample. Nexa rejected them at the dispatch boundary.",
+                    "warning",
+                );
+            }
+
             if let Some(recovery_failure) = recovery_failure {
                 let finish_reason = step_finish_reason.as_deref().unwrap_or("unknown");
-                let response_was_filtered =
-                    recovery_failure == OutputRecoveryFailure::ContentFiltered;
-                let frontend_message = if response_was_filtered {
-                    "The provider blocked the response before producing a final answer. Its reasoning was kept separate; revise the request and try again."
-                } else if finish_reason == "length" {
-                    "The provider reached its output limit at the configured final iteration before it could finish the answer. Increase the turn iteration limit or continue the task."
-                } else {
-                    "The provider repeatedly finished without producing a final answer in the answer channel. Its reasoning was kept separate; retry the response or choose another model."
+                let frontend_message = match &recovery_failure {
+                    OutputRecoveryFailure::ContentFiltered => "The provider blocked the response before producing a final answer. Its reasoning was kept separate; revise the request and try again.".to_string(),
+                    OutputRecoveryFailure::OutputLimit => "The provider repeatedly reached its per-request output limit without producing new answer or verified tool progress. Nexa stopped the stalled recovery; the configured tool-round budget was not the cause.".to_string(),
+                    OutputRecoveryFailure::EmptyTerminal => "The provider repeatedly finished without producing a final answer in the answer channel. Its reasoning was kept separate; retry the response or choose another model.".to_string(),
+                    OutputRecoveryFailure::MalformedToolCall => "The provider reported a malformed tool call without a recoverable committed envelope. Nexa executed no draft call; retry with a different model or provider route.".to_string(),
+                    OutputRecoveryFailure::ProtocolIncomplete => "The provider ended without the terminal protocol required by this route. Nexa executed no draft tool call; verify the endpoint dialect or choose another provider route.".to_string(),
+                    OutputRecoveryFailure::UnsupportedTerminal(raw) => format!("The provider returned an unsupported terminal reason ('{raw}'). Nexa treated it conservatively and executed no draft tool call; update this endpoint's compatibility profile or choose another route."),
                 };
                 let trace_message = format!(
-                    "provider_finished_without_answer: finish_reason={finish_reason}, answer_delta_seen={answer_delta_seen}, thinking_delta_seen={thinking_delta_seen}"
+                    "provider_finished_without_answer: finish_reason={finish_reason}, recovery_failure={recovery_failure:?}, answer_delta_seen={answer_delta_seen}, thinking_delta_seen={thinking_delta_seen}"
                 );
                 append_persisted_trace_status(
                     &mut persisted_trace_items,
-                    frontend_message,
+                    &frontend_message,
                     "error",
                 );
                 emit_error_and_finalize_turn(
@@ -1351,7 +1426,7 @@ impl AgentExecutor {
                     route_plan.kind,
                     &persisted_trace_items,
                     TurnErrorMessages {
-                        frontend_message: frontend_message.to_string(),
+                        frontend_message,
                         trace_message: trace_message.clone(),
                     },
                 )
@@ -1360,13 +1435,14 @@ impl AgentExecutor {
                 return Err(CoreError::Agent(trace_message));
             }
 
+            let protocol_guard_calls = tool_calls.clone();
             let verified_tool_calls = match VerifiedToolCallBatch::seal(
                 tool_calls,
                 tool_call_assembly_rejected,
-                matches!(
-                    step_finish_reason_kind,
-                    Some(FinishReason::ToolCalls | FinishReason::Stop)
-                ) && !tool_calls_truncated_by_output_limit,
+                step_finish_reason_kind
+                    .as_ref()
+                    .is_some_and(FinishReason::allows_completed_client_tools)
+                    && tool_round_rejection_cause.is_none(),
             ) {
                 Ok(verified) => verified,
                 Err(rejected) => {
@@ -1379,10 +1455,13 @@ impl AgentExecutor {
                         accumulated_content
                             .truncate(accumulated_content.len().saturating_sub(full_content.len()));
                     }
-                    let rejection_reason = if tool_calls_truncated_by_output_limit {
-                        "The provider reached max_tokens while assembling a tool call. Nexa discarded the truncated parameters before re-planning."
-                    } else {
-                        "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning."
+                    let rejection_reason = match tool_round_rejection_cause {
+                        Some(ToolRoundRejectionCause::OutputLimit) => "The provider reached its output limit while assembling a tool call. Nexa discarded the truncated parameters before re-planning.",
+                        Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before the client tool envelope committed. Nexa discarded the draft call before resuming provider state.",
+                        Some(ToolRoundRejectionCause::ContextLimit) => "The provider reached the context limit before the tool envelope committed. Nexa discarded the draft call before context rollover.",
+                        Some(ToolRoundRejectionCause::MalformedToolCall) => "The provider reported a malformed tool call. Nexa discarded the draft before re-planning.",
+                        Some(ToolRoundRejectionCause::ToolsSuppressed) => "The provider returned tool calls during the reserved answer-only step. Nexa discarded them before re-planning.",
+                        Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning.",
                     };
                     let _ = tx
                         .send(AgentEvent::StreamReset {
@@ -1398,10 +1477,14 @@ impl AgentExecutor {
                         rejected.assembly_rejected,
                         rejected.terminal_rejected,
                     );
-                    let rejection_status = if tool_calls_truncated_by_output_limit {
-                        "The provider output limit truncated tool parameters. Nexa rejected them before execution; large create_file requests should be split into create plus append operations."
-                    } else {
-                        "The provider returned an incomplete tool-call envelope. Nexa discarded it before persistence or execution and requested a fresh plan."
+                    debug!("{trace_message}");
+                    let rejection_status = match tool_round_rejection_cause {
+                        Some(ToolRoundRejectionCause::OutputLimit) => "The provider output limit truncated tool parameters. Nexa rejected them before execution; large create_file requests should be split into create plus append operations.",
+                        Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused with an uncommitted client tool draft. Nexa rejected the draft and will resume only from committed provider state.",
+                        Some(ToolRoundRejectionCause::ContextLimit) => "The model context ended with an uncommitted tool draft. Nexa rejected it before context rollover.",
+                        Some(ToolRoundRejectionCause::MalformedToolCall) => "The provider reported a malformed tool call. Nexa rejected it before persistence or execution and requested a fresh plan.",
+                        Some(ToolRoundRejectionCause::ToolsSuppressed) => "The provider returned a tool call after client tools were suppressed for final synthesis. Nexa rejected it before persistence or execution.",
+                        Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The provider returned an incomplete tool-call envelope. Nexa discarded it before persistence or execution and requested a fresh plan.",
                     };
                     append_internal_persisted_trace_status(
                         &mut persisted_trace_items,
@@ -1410,11 +1493,27 @@ impl AgentExecutor {
                     );
                     let _ = tx
                         .send(AgentEvent::ControllerStatus {
-                            code: if tool_calls_truncated_by_output_limit {
-                                "tool_calls_truncated_by_output_limit".to_string()
-                            } else {
-                                "incomplete_tool_calls_rejected".to_string()
-                            },
+                            code: match tool_round_rejection_cause {
+                                Some(ToolRoundRejectionCause::OutputLimit) => {
+                                    "tool_calls_truncated_by_output_limit"
+                                }
+                                Some(ToolRoundRejectionCause::ProviderPause) => {
+                                    "tool_calls_rejected_at_provider_pause"
+                                }
+                                Some(ToolRoundRejectionCause::ContextLimit) => {
+                                    "tool_calls_rejected_at_context_limit"
+                                }
+                                Some(ToolRoundRejectionCause::MalformedToolCall) => {
+                                    "malformed_tool_calls_rejected"
+                                }
+                                Some(ToolRoundRejectionCause::ToolsSuppressed) => {
+                                    "answer_only_tool_calls_rejected"
+                                }
+                                Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => {
+                                    "incomplete_tool_calls_rejected"
+                                }
+                            }
+                            .to_string(),
                             content: rejection_status.to_string(),
                             tone: Some("warning".to_string()),
                         })
@@ -1424,40 +1523,87 @@ impl AgentExecutor {
                     // previews; keep the rejection as controller/internal trace
                     // state instead of manufacturing a failed chat tool card.
 
-                    if iteration + 1 < self.config.max_iterations {
-                        let replan_instruction = if tool_calls_truncated_by_output_limit {
-                            "The previous provider response hit max_tokens while assembling a tool call and was discarded before execution. Re-plan from the user request. For large file content, create a smaller initial file and use append operations in bounded chunks; otherwise emit one complete tool call with valid JSON arguments."
-                        } else {
-                            "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call."
+                    let protocol_fault_code = match tool_round_rejection_cause {
+                        Some(ToolRoundRejectionCause::OutputLimit) => "output_limit_tool_envelope",
+                        Some(ToolRoundRejectionCause::ProviderPause) => {
+                            "provider_pause_tool_envelope"
+                        }
+                        Some(ToolRoundRejectionCause::ContextLimit) => {
+                            "context_limit_tool_envelope"
+                        }
+                        Some(ToolRoundRejectionCause::MalformedToolCall) => {
+                            "malformed_tool_envelope"
+                        }
+                        Some(ToolRoundRejectionCause::ToolsSuppressed) => {
+                            "answer_only_tool_envelope"
+                        }
+                        Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => {
+                            "incomplete_tool_envelope"
+                        }
+                    };
+                    if let Some(intervention) = loop_guard
+                        .observe_protocol_rejection(protocol_fault_code, &protocol_guard_calls)
+                    {
+                        append_developer_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &intervention.reason,
+                            if intervention.action == LoopGuardAction::StopLoop {
+                                "error"
+                            } else {
+                                "warning"
+                            },
+                        );
+                        if intervention.action == LoopGuardAction::StopLoop {
+                            let trace_message =
+                                format!("provider_tool_protocol_stalled: {}", intervention.reason);
+                            emit_error_and_finalize_turn(
+                                &tx,
+                                db,
+                                &mut trace,
+                                turn_id,
+                                route_plan.kind,
+                                &persisted_trace_items,
+                                TurnErrorMessages {
+                                    frontend_message: "The provider repeatedly returned the same rejected tool envelope without committed progress. Nexa stopped the no-progress loop without executing the draft tool call; the configured tool-round budget was not exhausted.".to_string(),
+                                    trace_message: trace_message.clone(),
+                                },
+                            )
+                            .await;
+                            turn_state.finish(TurnOutcome::Failed);
+                            return Err(CoreError::Agent(trace_message));
+                        }
+                        if let Some(message) =
+                            prompt_ir::controller_state_message(intervention.prompt)
+                        {
+                            messages.push(message);
+                        }
+                    }
+
+                    {
+                        let replan_instruction = match tool_round_rejection_cause {
+                            Some(ToolRoundRejectionCause::OutputLimit) => {
+                                let recommended_chars = output_budget_plan
+                                    .recommended_text_tool_chunk_chars(
+                                        model_step_max_response_tokens,
+                                    );
+                                format!(
+                                    "The previous provider response hit its {model_step_max_response_tokens}-token output limit while assembling a tool call and was discarded before execution. Re-plan from the user request. For create_file/write_note, keep each content value below about {recommended_chars} characters, create a small first chunk, then use append operations with nextExpectedBytes. Otherwise emit one complete tool call with valid JSON arguments. This protocol repair does not consume a verified tool round."
+                                )
+                            }
+                            Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before its client tool draft committed. Resume from committed provider state only; do not execute or continue the partial client call. This recovery does not consume a verified tool round.".to_string(),
+                            Some(ToolRoundRejectionCause::ContextLimit) => "The model context ended before its tool draft committed. Re-plan after context rollover and emit a fresh, complete call; do not continue the partial envelope. This recovery does not consume a verified tool round.".to_string(),
+                            Some(ToolRoundRejectionCause::MalformedToolCall) => "The provider reported a malformed tool call. Emit a fresh call whose id and name are non-empty and whose arguments are one exact JSON object. Do not continue the malformed envelope. This repair does not consume a verified tool round.".to_string(),
+                            Some(ToolRoundRejectionCause::ToolsSuppressed) => "Client tools are unavailable because this is the reserved answer-only synthesis step. Do not emit any tool call. Produce the best complete visible answer from the committed evidence and tool results already in context. This protocol repair does not consume another tool round.".to_string(),
+                            Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call. This protocol repair does not consume a verified tool round.".to_string(),
                         };
                         if let Some(message) =
                             prompt_ir::controller_state_message(replan_instruction)
                         {
                             messages.push(message);
                         }
+                        next_step_purpose = TurnStepPurpose::Recovery;
                         continue 'react_loop;
                     }
-
-                    let frontend_message = if tool_calls_truncated_by_output_limit {
-                        "The provider repeatedly reached max_tokens while assembling tool parameters. Nexa rejected every truncated call without execution; retry with a higher output limit or split large file writes into create plus append operations."
-                    } else {
-                        "The provider repeatedly returned incomplete tool-call data. Nexa rejected it without executing any tool; retry the turn or choose another model."
-                    };
-                    emit_error_and_finalize_turn(
-                        &tx,
-                        db,
-                        &mut trace,
-                        turn_id,
-                        route_plan.kind,
-                        &persisted_trace_items,
-                        TurnErrorMessages {
-                            frontend_message: frontend_message.to_string(),
-                            trace_message: trace_message.clone(),
-                        },
-                    )
-                    .await;
-                    turn_state.finish(TurnOutcome::Failed);
-                    return Err(CoreError::Agent(trace_message));
                 }
             };
             let tool_calls = verified_tool_calls.as_slice().to_vec();
@@ -1553,7 +1699,7 @@ impl AgentExecutor {
             if tool_calls.is_empty() {
                 if let Some(intervention) = loop_guard_intervention.as_ref() {
                     if intervention.action == LoopGuardAction::ChangeStrategy
-                        && iteration + 1 < self.config.max_iterations
+                        && turn_budget.can_start_normal_step()
                     {
                         let event = TurnLoopEvent::LoopGuardIntervention {
                             reason: intervention.reason.clone(),
@@ -1733,7 +1879,7 @@ impl AgentExecutor {
                             .await;
                         let repair_limit = orchestration_policy.retry_limit.max(1);
                         if workflow_gate_repair_rounds >= repair_limit
-                            || iteration + 1 >= self.config.max_iterations
+                            || !turn_budget.can_start_normal_step()
                         {
                             append_persisted_trace_status(
                                 &mut persisted_trace_items,
@@ -1754,7 +1900,7 @@ impl AgentExecutor {
                 }
                 let active_goal = if self.config.execution_mode.is_plan()
                     || !self.config.request_kind.is_main_agent()
-                    || iteration + 1 >= self.config.max_iterations
+                    || !turn_budget.can_start_normal_step()
                 {
                     None
                 } else {
@@ -1852,7 +1998,12 @@ impl AgentExecutor {
             last_tool_calls = Some(tool_calls.clone());
 
             // ── Cancellation checkpoint: before tool execution ────────
-            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
+            check_cancelled!(
+                last_tool_calls,
+                long_task_state,
+                task_plan,
+                turn_budget.tool_rounds_used()
+            );
 
             let loop_guard_block_reason = loop_guard_intervention
                 .as_ref()
@@ -1931,6 +2082,7 @@ impl AgentExecutor {
                 }
             };
             let dispatch_summaries = dispatch_outcome.summaries;
+            turn_budget.record_verified_tool_round();
             if let Some(reason) = dispatch_outcome.terminal_loop_guard_reason {
                 let trace_message = format!("agent_loop_stopped_after_tool_errors: {reason}");
                 emit_error_and_finalize_turn(
@@ -2021,7 +2173,7 @@ impl AgentExecutor {
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
                     Some(&workflow_ir),
-                    iteration,
+                    turn_budget.tool_rounds_used(),
                     self.config.max_iterations,
                     &loop_recorder,
                 );
@@ -2046,7 +2198,12 @@ impl AgentExecutor {
             last_tool_calls = None;
 
             // ── Cancellation checkpoint: after tool execution ─────────
-            check_cancelled!(last_tool_calls, long_task_state, task_plan, iteration);
+            check_cancelled!(
+                last_tool_calls,
+                long_task_state,
+                task_plan,
+                turn_budget.tool_rounds_used()
+            );
 
             // Re-trim messages to fit context window after appending tool results.
             // This prevents unbounded growth across iterations.
@@ -2055,12 +2212,13 @@ impl AgentExecutor {
             prompt_was_compacted |=
                 before_trim != prompt_cache::message_sequence_fingerprint(&messages);
 
-            if long_task_state.should_checkpoint_after_tool_round(iteration) {
-                let reason = format!("auto_tool_round_{}", iteration.saturating_add(1));
+            let completed_tool_round_index = turn_budget.tool_rounds_used().saturating_sub(1);
+            if long_task_state.should_checkpoint_after_tool_round(completed_tool_round_index) {
+                let reason = format!("auto_tool_round_{}", turn_budget.tool_rounds_used());
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
                     Some(&workflow_ir),
-                    iteration,
+                    completed_tool_round_index,
                     self.config.max_iterations,
                     &loop_recorder,
                 );
@@ -2071,10 +2229,10 @@ impl AgentExecutor {
                     Some(&live_state),
                 ) {
                     Ok(Some(_checkpoint_id)) => {
-                        long_task_state.record_checkpoint(iteration);
+                        long_task_state.record_checkpoint(completed_tool_round_index);
                         let summary = format!(
                             "Resume checkpoint saved after tool round {}.",
-                            iteration.saturating_add(1)
+                            turn_budget.tool_rounds_used()
                         );
                         append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
@@ -2099,11 +2257,12 @@ impl AgentExecutor {
 
         // Graceful fallback: return partial answer instead of hard error.
         warn!(
-            "Agent reached max iterations ({}); returning partial answer",
-            self.config.max_iterations
+            "Agent reached the configured tool-round limit ({:?}) after {} verified round(s); returning the reserved partial answer",
+            turn_budget.configured_tool_round_limit(),
+            turn_budget.tool_rounds_used(),
         );
         turn_state.transition_to(TurnPhase::Finalizing);
-        let final_iteration = self.config.max_iterations.saturating_sub(1);
+        let final_iteration = turn_budget.tool_rounds_used().saturating_sub(1);
         let live_state = long_task_state.checkpoint_live_state(
             &task_plan,
             Some(&workflow_ir),
@@ -2114,13 +2273,13 @@ impl AgentExecutor {
         match create_task_checkpoint_for_turn_with_state(
             db,
             turn_id,
-            "max_iterations",
+            "max_tool_rounds",
             Some(&live_state),
         ) {
             Ok(Some(_checkpoint_id)) => {
                 append_persisted_trace_status(
                     &mut persisted_trace_items,
-                    "Saved a resume checkpoint after reaching max iterations.",
+                    "Saved a resume checkpoint after reaching the configured tool-round limit.",
                     "warning",
                 );
             }

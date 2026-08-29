@@ -455,29 +455,73 @@ fn test_default_config() {
 #[test]
 fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     let standard = AgentConfig::default();
+    let standard_plan = standard.resolved_output_budget("unknown-model");
     assert_eq!(
-        standard.resolved_max_response_tokens("unknown-model"),
-        DEFAULT_AGENT_RESPONSE_TOKENS
+        standard_plan.effective_tokens,
+        FALLBACK_AGENT_RESPONSE_TOKENS
+    );
+    assert_eq!(
+        standard_plan.authority,
+        OutputBudgetAuthority::AutomaticFallbackReserve
+    );
+
+    let unknown_deepseek = AgentConfig {
+        provider_type: Some(ProviderType::DeepSeek),
+        ..AgentConfig::default()
+    };
+    assert_eq!(
+        unknown_deepseek.resolved_max_response_tokens("deepseek-unknown"),
+        FALLBACK_DEEPSEEK_RESPONSE_TOKENS
     );
 
     let deepseek = AgentConfig {
         provider_type: Some(ProviderType::DeepSeek),
         ..AgentConfig::default()
     };
+    let catalog_driven = deepseek.resolved_output_budget("deepseek-v4-pro");
     assert_eq!(
-        deepseek.resolved_max_response_tokens("deepseek-v4-pro"),
-        DEFAULT_DEEPSEEK_RESPONSE_TOKENS
+        catalog_driven.authority,
+        OutputBudgetAuthority::VerifiedCatalogCapability
     );
+    assert_eq!(
+        catalog_driven.effective_tokens,
+        catalog_driven.catalog_cap.unwrap()
+    );
+    assert!(catalog_driven.effective_tokens > FALLBACK_DEEPSEEK_RESPONSE_TOKENS);
+
+    for (provider_type, model) in [
+        (ProviderType::OpenAi, "gpt-5.6"),
+        (ProviderType::Anthropic, "claude-fable-5"),
+        (ProviderType::Google, "gemini-3.7-flash"),
+        (ProviderType::DeepSeek, "deepseek-v4-pro"),
+    ] {
+        let plan = AgentConfig {
+            provider_type: Some(provider_type),
+            ..AgentConfig::default()
+        }
+        .resolved_output_budget(model);
+        assert_eq!(
+            plan.authority,
+            OutputBudgetAuthority::VerifiedCatalogCapability,
+            "{provider_type:?}/{model} should use catalog output authority"
+        );
+        assert_eq!(plan.effective_tokens, plan.catalog_cap.unwrap());
+    }
 
     let explicit = AgentConfig {
         max_tokens: Some(12_000),
         context_window: Some(16_000),
         ..deepseek.clone()
     };
+    let explicit_plan = explicit.resolved_output_budget("deepseek-v4-pro");
     assert_eq!(
-        explicit.resolved_max_response_tokens("deepseek-v4-pro"),
-        12_000,
+        explicit_plan.effective_tokens, 12_000,
         "explicit output caps are not reduced to half the context window"
+    );
+    assert_eq!(explicit_plan.requested_tokens, 12_000);
+    assert_eq!(
+        explicit_plan.authority,
+        OutputBudgetAuthority::SavedExplicitOverride
     );
 
     for (provider_type, model) in [
@@ -491,11 +535,13 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
             provider_type,
             ..AgentConfig::default()
         };
-        assert_eq!(
-            routed.resolved_max_response_tokens(model),
-            DEFAULT_DEEPSEEK_RESPONSE_TOKENS,
-            "routed DeepSeek models retain the reasoning-heavy automatic reserve"
-        );
+        let plan = routed.resolved_output_budget(model);
+        assert!(plan.effective_tokens >= FALLBACK_DEEPSEEK_RESPONSE_TOKENS);
+        assert!(matches!(
+            plan.authority,
+            OutputBudgetAuthority::VerifiedCatalogCapability
+                | OutputBudgetAuthority::AutomaticFallbackReserve
+        ));
     }
 
     let constrained = AgentConfig {
@@ -505,6 +551,16 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     assert_eq!(
         constrained.resolved_max_response_tokens("deepseek-chat"),
         4_096
+    );
+    assert_eq!(
+        constrained
+            .resolved_output_budget("deepseek-chat")
+            .context_cap,
+        Some(4_096)
+    );
+    assert_eq!(
+        explicit_plan.recommended_text_tool_chunk_chars(4_097),
+        8_194
     );
 }
 
@@ -2180,9 +2236,22 @@ struct LengthContinuationProvider {
     request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
 }
 
+struct MultiLengthContinuationProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
 struct TruncatedToolCallProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_safe_replan_context: Arc<Mutex<bool>>,
+}
+
+struct TruncatedThenCommittedToolProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct AnswerOnlyToolViolationProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_tools_suppressed: Arc<Mutex<Vec<bool>>>,
 }
 
 struct MalformedToolCallProvider {
@@ -2368,6 +2437,50 @@ impl LlmProvider for LengthContinuationProvider {
 }
 
 #[async_trait]
+impl LlmProvider for MultiLengthContinuationProvider {
+    fn name(&self) -> &str {
+        "multi-length-continuation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let (delta, finish_reason) = match call_no {
+            0 => ("one ", FinishReason::Length),
+            1 => ("two ", FinishReason::Length),
+            2 => ("three ", FinishReason::Length),
+            _ => ("four", FinishReason::Stop),
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: delta.to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(finish_reason),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl LlmProvider for TruncatedToolCallProvider {
     fn name(&self) -> &str {
         "truncated-tool-call-mock"
@@ -2421,6 +2534,128 @@ impl LlmProvider for TruncatedToolCallProvider {
                 !has_tool_protocol_unit && has_replan_instruction;
             StreamChunk {
                 delta: "final answer after re-planning".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for TruncatedThenCommittedToolProvider {
+    fn name(&self) -> &str {
+        "truncated-then-committed-tool-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: "discarded draft".to_string(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "draft-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"draft"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+            1 => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "committed-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"committed"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            },
+            _ => StreamChunk {
+                delta: "final after one verified tool round".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnswerOnlyToolViolationProvider {
+    fn name(&self) -> &str {
+        "answer-only-tool-violation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        self.saw_tools_suppressed
+            .lock()
+            .unwrap()
+            .push(request.tools.as_ref().is_none_or(Vec::is_empty));
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "forbidden-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            StreamChunk {
+                delta: "answer after respecting the synthesis boundary".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -3555,7 +3790,7 @@ async fn test_allow_all_cannot_bypass_computer_control_approval() {
 }
 
 #[tokio::test]
-async fn test_executes_tool_even_when_finish_reason_is_stop() {
+async fn test_one_tool_round_budget_reserves_a_final_answer_sample() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool));
 
@@ -3569,6 +3804,7 @@ async fn test_executes_tool_even_when_finish_reason_is_stop() {
         registry,
         AgentConfig {
             model: Some("mock-model".to_string()),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5363,32 +5599,39 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(non_loop_items.len(), 5);
+    assert_eq!(non_loop_items.len(), 6);
     assert_eq!(
         non_loop_items[0].get("kind").and_then(|v| v.as_str()),
+        Some("status")
+    );
+    assert!(non_loop_items[0]["text"]
+        .as_str()
+        .is_some_and(|content| content.contains("per-request output budget")));
+    assert_eq!(
+        non_loop_items[1].get("kind").and_then(|v| v.as_str()),
         Some("toolVisibility")
     );
     assert_eq!(
-        non_loop_items[0]["decision"]["route"].as_str(),
+        non_loop_items[1]["decision"]["route"].as_str(),
         Some("DirectResponse")
     );
-    assert!(non_loop_items[0]["decision"]["log"]
+    assert!(non_loop_items[1]["decision"]["log"]
         .as_array()
         .is_some_and(|log| !log.is_empty()));
     assert_eq!(
-        non_loop_items[1].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
-    );
-    assert_eq!(
         non_loop_items[2].get("kind").and_then(|v| v.as_str()),
-        Some("tool")
+        Some("thinking")
     );
     assert_eq!(
         non_loop_items[3].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
+        Some("tool")
     );
     assert_eq!(
         non_loop_items[4].get("kind").and_then(|v| v.as_str()),
+        Some("thinking")
+    );
+    assert_eq!(
+        non_loop_items[5].get("kind").and_then(|v| v.as_str()),
         Some("status")
     );
 }
@@ -5541,7 +5784,7 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
 }
 
 #[tokio::test]
-async fn test_length_truncated_visible_answer_continues_and_persists_as_one_reply() {
+async fn test_length_truncated_visible_answer_continues_without_spending_tool_iteration() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let request_reasoning = Arc::new(Mutex::new(Vec::new()));
@@ -5555,6 +5798,7 @@ async fn test_length_truncated_visible_answer_continues_and_persists_as_one_repl
         AgentConfig {
             model: Some("reasoning-model".to_string()),
             reasoning_enabled: Some(true),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5608,7 +5852,43 @@ async fn test_length_truncated_visible_answer_continues_and_persists_as_one_repl
 }
 
 #[tokio::test]
-async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execution() {
+async fn visible_progress_can_continue_past_the_former_global_two_sample_cap() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(MultiLengthContinuationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "produce a response spanning several provider samples".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("visible progress should not hit a hidden continuation count");
+
+    assert_eq!(final_msg.text_content(), "one two three four");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn test_length_truncated_tool_call_replans_without_spending_tool_iteration() {
     let executions = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(RecordingTool {
@@ -5625,6 +5905,7 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         registry,
         AgentConfig {
             model: Some("mock-model".to_string()),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5657,6 +5938,103 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         *saw_safe_replan_context.lock().unwrap(),
         "the next model step must receive a safe chunked-write replan without a fabricated tool unit"
     );
+}
+
+#[tokio::test]
+async fn truncated_draft_then_one_committed_tool_round_still_gets_final_answer() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(TruncatedThenCommittedToolProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "write safely after a truncated draft".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("draft recovery, one tool round, and final synthesis should succeed");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final after one verified tool round"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        1,
+        "only the committed call may execute"
+    );
+}
+
+#[tokio::test]
+async fn answer_only_budget_rejects_provider_tool_calls_at_the_dispatch_boundary() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_tools_suppressed = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(AnswerOnlyToolViolationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_tools_suppressed: Arc::clone(&saw_tools_suppressed),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "answer without tools".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("one protocol repair should recover an answer-only sample");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "answer after respecting the synthesis boundary"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(*saw_tools_suppressed.lock().unwrap(), vec![true, true]);
 }
 
 #[tokio::test]

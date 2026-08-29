@@ -28,6 +28,14 @@ _Avoid_: session registration flag, launch sleep, best-effort pause race
 One provider sample together with its transport-recovery budget, immutable accepted route, and replay projection. It starts from unprojected history and owns every physical retry until it either accepts output or returns a typed failure to the turn loop.
 _Avoid_: sampling retry loop, stream recovery decision plumbing, current provider route
 
+**Turn budget**:
+The per-user-turn authority that counts only complete validated client-tool batches entering dispatch, while assigning independent sequence numbers to physical provider samples and reserving one answer-only sample after a finite tool-round limit. Transport retry, output continuation, context rollover, steering restart, and rejected drafts never spend this budget.
+_Avoid_: max model iterations, shared retry counter, final iteration
+
+**Provider terminal**:
+The provider-adapter fact describing why one physical sample ended, including output limit, context limit, provider pause, client-tool boundary, safety refusal, malformed/protocol-incomplete output, and retained unknown raw reasons. It authorizes no recovery or side effect by itself.
+_Avoid_: generic finish reason, successful EOF, provider error string
+
 **Accepted route**:
 The immutable provider route bound to a model attempt only after that route produces the first accepted stream event, or after a non-streaming completion succeeds. It is the provenance used for replay validation and the durable provider-turn envelope.
 _Avoid_: active route snapshot, latest provider, pre-stream route

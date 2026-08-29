@@ -101,6 +101,7 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) force_non_streaming_llm: &'a mut bool,
     pub(super) reasoning_disabled_for_tool_loop: &'a mut bool,
     pub(super) force_answer_only: bool,
+    pub(super) suppress_tools: bool,
     pub(super) requires_first_action: bool,
     pub(super) total_usage: &'a mut Usage,
 }
@@ -236,14 +237,18 @@ impl AgentExecutor {
             force_non_streaming_llm,
             reasoning_disabled_for_tool_loop,
             force_answer_only,
+            suppress_tools,
             requires_first_action,
             total_usage,
         } = ctx;
 
         // -- 4a. Project one model attempt -----------------------------------
         let context_recovery_policy = StreamRecoveryPolicy::default();
-        let request_tools =
-            request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
+        let request_tools = if suppress_tools {
+            Vec::new()
+        } else {
+            request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?
+        };
         let has_executable_tools = !request_tools.is_empty();
         let cumulative_budget_requires_low_reasoning =
             self.config.max_actual_tokens_per_run.is_some() && max_response_tokens <= 4_096;

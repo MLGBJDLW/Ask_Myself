@@ -201,8 +201,6 @@ struct GeminiCandidate {
     content: Option<GeminiResponseContent>,
     finish_reason: Option<String>,
     #[serde(default)]
-    finish_message: Option<String>,
-    #[serde(default)]
     grounding_metadata: Option<GeminiGroundingMetadata>,
 }
 
@@ -310,6 +308,11 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     match s {
         "STOP" => FinishReason::Stop,
         "MAX_TOKENS" => FinishReason::Length,
+        "MALFORMED_FUNCTION_CALL"
+        | "UNEXPECTED_TOOL_CALL"
+        | "TOO_MANY_TOOL_CALLS"
+        | "MISSING_THOUGHT_SIGNATURE" => FinishReason::MalformedToolCall,
+        "MALFORMED_RESPONSE" => FinishReason::ProtocolIncomplete,
         "SAFETY"
         | "RECITATION"
         | "LANGUAGE"
@@ -319,7 +322,7 @@ fn parse_finish_reason(s: &str) -> FinishReason {
         | "IMAGE_SAFETY"
         | "IMAGE_PROHIBITED_CONTENT"
         | "IMAGE_RECITATION" => FinishReason::ContentFilter,
-        _ => FinishReason::Other,
+        other => FinishReason::Unknown(other.to_string()),
     }
 }
 
@@ -1142,42 +1145,11 @@ fn extract_response(resp: &GeminiResponse) -> Result<GeminiExtractedResponse, Co
         }
     }
 
-    if let Some(candidate) = candidate {
-        if let (Some(reason), Some(message)) = (
-            candidate.finish_reason.as_deref(),
-            candidate
-                .finish_message
-                .as_deref()
-                .filter(|message| !message.trim().is_empty()),
-        ) {
-            if !matches!(reason, "STOP" | "MAX_TOKENS") {
-                return Err(CoreError::Llm(format!(
-                    "Gemini stopped generation ({reason}): {message}"
-                )));
-            }
-        }
-        if text_parts.is_empty() && tool_calls.is_empty() {
-            if let Some(reason) = candidate.finish_reason.as_deref() {
-                if !matches!(reason, "STOP" | "MAX_TOKENS") {
-                    let detail = candidate
-                        .finish_message
-                        .as_deref()
-                        .filter(|message| !message.trim().is_empty())
-                        .map(|message| format!(": {message}"))
-                        .unwrap_or_default();
-                    return Err(CoreError::Llm(format!(
-                        "Gemini stopped generation ({reason}){detail}"
-                    )));
-                }
-            }
-        }
-    }
-
     let finish_reason = candidate
         .and_then(|c| c.finish_reason.as_deref())
         .map(parse_finish_reason)
         .unwrap_or(if tool_calls.is_empty() {
-            FinishReason::Other
+            FinishReason::ProtocolIncomplete
         } else {
             FinishReason::ToolCalls
         });
@@ -2894,7 +2866,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_response_surfaces_candidate_block_message() {
+    fn test_extract_response_types_candidate_safety_terminal() {
         let response: GeminiResponse = serde_json::from_value(serde_json::json!({
             "candidates": [{
                 "finishReason": "SAFETY",
@@ -2903,14 +2875,16 @@ mod tests {
         }))
         .expect("response");
 
-        let error = extract_response(&response).expect_err("blocked response must be an error");
+        let (answer, tool_calls, finish_reason, _, _) =
+            extract_response(&response).expect("typed safety terminal");
 
-        assert!(error.to_string().contains("SAFETY"));
-        assert!(error.to_string().contains("response policy rejected"));
+        assert!(answer.is_empty());
+        assert!(tool_calls.is_empty());
+        assert_eq!(finish_reason, FinishReason::ContentFilter);
     }
 
     #[test]
-    fn test_extract_response_surfaces_finish_message_after_partial_text() {
+    fn test_extract_response_types_malformed_function_call_after_partial_text() {
         let response: GeminiResponse = serde_json::from_value(serde_json::json!({
             "candidates": [{
                 "content": {"parts": [{"text": "partial"}]},
@@ -2920,10 +2894,12 @@ mod tests {
         }))
         .expect("response");
 
-        let error = extract_response(&response).expect_err("protocol failure must be an error");
+        let (answer, tool_calls, finish_reason, _, _) =
+            extract_response(&response).expect("typed malformed tool terminal");
 
-        assert!(error.to_string().contains("MALFORMED_FUNCTION_CALL"));
-        assert!(error.to_string().contains("arguments were invalid"));
+        assert_eq!(answer, "partial");
+        assert!(tool_calls.is_empty());
+        assert_eq!(finish_reason, FinishReason::MalformedToolCall);
     }
 
     #[tokio::test]
@@ -2969,7 +2945,7 @@ mod tests {
         assert!(saw_finish_reason);
         assert_eq!(
             rx.recv().await.unwrap().unwrap().finish_reason,
-            Some(FinishReason::Other)
+            Some(FinishReason::Unknown("FUTURE_REASON".to_string()))
         );
     }
 

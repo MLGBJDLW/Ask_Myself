@@ -343,8 +343,21 @@ fn parse_finish_reason(s: &str) -> FinishReason {
         "tool_use" => FinishReason::ToolCalls,
         "max_tokens" => FinishReason::Length,
         "stop_sequence" => FinishReason::Stop,
-        _ => FinishReason::Other,
+        "pause_turn" => FinishReason::ProviderPause,
+        "model_context_window_exceeded" => FinishReason::ContextLimit,
+        "refusal" => FinishReason::ContentFilter,
+        other => FinishReason::Unknown(other.to_string()),
     }
+}
+
+fn normalized_finish_reason(stop_reason: Option<&str>, has_tool_calls: bool) -> FinishReason {
+    stop_reason.map(parse_finish_reason).unwrap_or_else(|| {
+        if has_tool_calls {
+            FinishReason::ToolCalls
+        } else {
+            FinishReason::ProtocolIncomplete
+        }
+    })
 }
 
 fn replayable_anthropic_thinking_blocks(
@@ -1038,7 +1051,12 @@ async fn parse_anthropic_stream(
                 },
                 AnthropicStreamEvent::MessageDelta { delta, usage } => {
                     let mut finish = delta.stop_reason.as_deref().map(parse_finish_reason);
-                    if delta.stop_reason.is_some() && !pending_server_searches.is_empty() {
+                    if delta.stop_reason.is_some()
+                        && !pending_server_searches.is_empty()
+                        && finish
+                            .as_ref()
+                            .is_some_and(FinishReason::allows_completed_client_tools)
+                    {
                         for (id, input) in drain_server_search_fallbacks(
                             &mut pending_server_searches,
                             search_mode,
@@ -1717,6 +1735,30 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(80));
         assert_eq!(usage.cache_creation_input_tokens, Some(10));
     }
+
+    #[test]
+    fn anthropic_terminal_reason_has_priority_over_tool_content() {
+        assert_eq!(
+            normalized_finish_reason(Some("max_tokens"), true),
+            FinishReason::Length
+        );
+        assert_eq!(
+            normalized_finish_reason(Some("tool_use"), true),
+            FinishReason::ToolCalls
+        );
+        assert_eq!(
+            normalized_finish_reason(Some("pause_turn"), false),
+            FinishReason::ProviderPause
+        );
+        assert_eq!(
+            normalized_finish_reason(Some("model_context_window_exceeded"), false),
+            FinishReason::ContextLimit
+        );
+        assert_eq!(
+            normalized_finish_reason(Some("future_reason"), false),
+            FinishReason::Unknown("future_reason".to_string())
+        );
+    }
 }
 
 #[async_trait]
@@ -1930,14 +1972,8 @@ impl LlmProvider for AnthropicProvider {
         };
         let citation_appendix = super::native_search::render_citation_appendix(&evidence);
 
-        let finish_reason = if !tool_calls.is_empty() {
-            FinishReason::ToolCalls
-        } else {
-            resp.stop_reason
-                .as_deref()
-                .map(parse_finish_reason)
-                .unwrap_or(FinishReason::Other)
-        };
+        let finish_reason =
+            normalized_finish_reason(resp.stop_reason.as_deref(), !tool_calls.is_empty());
 
         let estimated_thinking = if !thinking_parts.is_empty() {
             let thinking_text = thinking_parts.join("");

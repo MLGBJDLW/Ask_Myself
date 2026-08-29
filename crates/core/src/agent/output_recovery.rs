@@ -8,15 +8,17 @@
 
 use crate::llm::FinishReason;
 
-/// A bounded continuation budget prevents an always-on reasoner from ending
-/// every physical sample at `length` forever when the surrounding agent turn
-/// intentionally has no iteration cap.
-const MAX_OUTPUT_LIMIT_CONTINUATIONS: u8 = 2;
+/// Output recovery stops only after repeated samples make no answer or tool
+/// progress. Visible continuation text and verified tool rounds reset this
+/// liveness streak; they are not counted against an arbitrary turn-wide cap.
+const CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OutputRecoveryCause {
     OutputLimit,
     EmptyTerminal,
+    ProviderPause,
+    ContextLimit,
 }
 
 impl OutputRecoveryCause {
@@ -31,6 +33,12 @@ impl OutputRecoveryCause {
             (Self::EmptyTerminal, _) => {
                 "The provider ended without answer-channel text. Continue the unfinished task once, keep hidden reasoning separate, and finish with a concise visible answer."
             }
+            (Self::ProviderPause, _) => {
+                "The provider paused its server-side tool turn. Resume from the committed provider state, do not repeat completed local tools, and continue the unfinished task."
+            }
+            (Self::ContextLimit, _) => {
+                "The provider reached the model context limit. Continue after context rollover, preserve committed tool results, and finish the unfinished task without repeating side effects."
+            }
         }
     }
 }
@@ -40,6 +48,19 @@ pub(super) enum OutputRecoveryFailure {
     ContentFiltered,
     OutputLimit,
     EmptyTerminal,
+    MalformedToolCall,
+    ProtocolIncomplete,
+    UnsupportedTerminal(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ToolRoundRejectionCause {
+    OutputLimit,
+    ProviderPause,
+    ContextLimit,
+    MalformedToolCall,
+    ProtocolIncomplete,
+    ToolsSuppressed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +69,7 @@ pub(super) enum OutputRecoveryDecision {
         cause: OutputRecoveryCause,
         had_visible_content: bool,
     },
-    TruncatedToolRound,
+    RejectToolRound(ToolRoundRejectionCause),
     ToolRound,
     Final(String),
     Reject(OutputRecoveryFailure),
@@ -56,16 +77,15 @@ pub(super) enum OutputRecoveryDecision {
 
 /// Tracks one recovery episode across as many tool and model steps as it needs.
 ///
-/// Output-limit continuations are bounded independently from the surrounding
-/// turn's iteration limit. This matters for active goals, whose model/tool loop
-/// can intentionally be open-ended. Empty successful terminals get one
+/// Output-limit continuations are progress-based and independent from the
+/// surrounding tool-round budget. Empty successful terminals get one
 /// corrective continuation before the anomaly is surfaced.
 #[derive(Debug, Default)]
 pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
     empty_terminal_retried: bool,
-    output_limit_continuations: u8,
+    consecutive_empty_output_limits: u8,
 }
 
 impl OutputRecovery {
@@ -83,18 +103,53 @@ impl OutputRecovery {
             return OutputRecoveryDecision::Reject(OutputRecoveryFailure::ContentFiltered);
         }
 
+        if let Some(FinishReason::Unknown(reason)) = finish_reason {
+            return OutputRecoveryDecision::Reject(OutputRecoveryFailure::UnsupportedTerminal(
+                reason.clone(),
+            ));
+        }
+
+        if matches!(finish_reason, Some(FinishReason::MalformedToolCall)) {
+            return if has_tool_calls {
+                OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::MalformedToolCall)
+            } else {
+                OutputRecoveryDecision::Reject(OutputRecoveryFailure::MalformedToolCall)
+            };
+        }
+
+        if matches!(
+            finish_reason,
+            Some(FinishReason::ProtocolIncomplete | FinishReason::Other)
+        ) {
+            return if has_tool_calls {
+                OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProtocolIncomplete)
+            } else {
+                OutputRecoveryDecision::Reject(OutputRecoveryFailure::ProtocolIncomplete)
+            };
+        }
+
         let has_visible_content = !content.trim().is_empty();
         if matches!(finish_reason, Some(FinishReason::Length)) {
-            if self.output_limit_continuations >= MAX_OUTPUT_LIMIT_CONTINUATIONS {
-                return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
+            if has_tool_calls {
+                // A length-terminated tool envelope is discarded in full. Its
+                // adjacent prose is a draft from the same rejected sample and
+                // must not leak back into the eventual answer.
+                return OutputRecoveryDecision::RejectToolRound(
+                    ToolRoundRejectionCause::OutputLimit,
+                );
             }
-            self.output_limit_continuations += 1;
+
             self.active = true;
             if has_visible_content {
+                self.consecutive_empty_output_limits = 0;
                 self.visible_prefix.push_str(content);
-            }
-            if has_tool_calls {
-                return OutputRecoveryDecision::TruncatedToolRound;
+            } else {
+                self.consecutive_empty_output_limits =
+                    self.consecutive_empty_output_limits.saturating_add(1);
+                if self.consecutive_empty_output_limits >= CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD
+                {
+                    return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
+                }
             }
             return OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::OutputLimit,
@@ -102,7 +157,43 @@ impl OutputRecovery {
             };
         }
 
+        let resumable_terminal = match finish_reason {
+            Some(FinishReason::ProviderPause) => Some(OutputRecoveryCause::ProviderPause),
+            Some(FinishReason::ContextLimit) => Some(OutputRecoveryCause::ContextLimit),
+            _ => None,
+        };
+        if let Some(cause) = resumable_terminal {
+            if has_tool_calls {
+                return OutputRecoveryDecision::RejectToolRound(match cause {
+                    OutputRecoveryCause::ProviderPause => ToolRoundRejectionCause::ProviderPause,
+                    OutputRecoveryCause::ContextLimit => ToolRoundRejectionCause::ContextLimit,
+                    OutputRecoveryCause::OutputLimit | OutputRecoveryCause::EmptyTerminal => {
+                        unreachable!("only resumable provider terminals reach this branch")
+                    }
+                });
+            }
+            self.active = true;
+            if has_visible_content {
+                self.consecutive_empty_output_limits = 0;
+                self.visible_prefix.push_str(content);
+            } else {
+                self.consecutive_empty_output_limits =
+                    self.consecutive_empty_output_limits.saturating_add(1);
+                if self.consecutive_empty_output_limits >= CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD
+                {
+                    return OutputRecoveryDecision::Reject(
+                        OutputRecoveryFailure::ProtocolIncomplete,
+                    );
+                }
+            }
+            return OutputRecoveryDecision::Continue {
+                cause,
+                had_visible_content: has_visible_content,
+            };
+        }
+
         if has_tool_calls {
+            self.consecutive_empty_output_limits = 0;
             return OutputRecoveryDecision::ToolRound;
         }
 
@@ -111,7 +202,7 @@ impl OutputRecovery {
             final_content.push_str(content);
             self.active = false;
             self.empty_terminal_retried = false;
-            self.output_limit_continuations = 0;
+            self.consecutive_empty_output_limits = 0;
             return OutputRecoveryDecision::Final(final_content);
         }
 
@@ -156,23 +247,23 @@ mod tests {
     }
 
     #[test]
-    fn output_limit_marks_tool_calls_as_truncated_and_reserves_answer_channel() {
+    fn truncated_tool_round_does_not_reintroduce_its_discarded_visible_draft() {
         let mut recovery = OutputRecovery::default();
         assert_eq!(
             recovery.observe(Some(&FinishReason::Length), "partial answer; ", true),
-            OutputRecoveryDecision::TruncatedToolRound
+            OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::OutputLimit)
         );
-        assert!(recovery.reserves_answer_channel());
+        assert!(!recovery.reserves_answer_channel());
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "finished", false),
-            OutputRecoveryDecision::Final("partial answer; finished".to_string())
+            OutputRecoveryDecision::Final("finished".to_string())
         );
     }
 
     #[test]
-    fn output_limit_continuations_are_joined_but_bounded() {
+    fn output_limit_continuations_with_visible_progress_are_joined() {
         let mut recovery = OutputRecovery::default();
-        for fragment in ["one ", "two "] {
+        for fragment in ["one ", "two ", "three "] {
             assert!(matches!(
                 recovery.observe(Some(&FinishReason::Length), fragment, false),
                 OutputRecoveryDecision::Continue {
@@ -182,19 +273,27 @@ mod tests {
             ));
         }
         assert_eq!(
-            recovery.observe(Some(&FinishReason::Length), "three ", false),
-            OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit)
+            recovery.observe(Some(&FinishReason::Stop), "four", false),
+            OutputRecoveryDecision::Final("one two three four".to_string())
         );
+    }
 
-        let mut completed = OutputRecovery::default();
-        assert!(matches!(
-            completed.observe(Some(&FinishReason::Length), "one ", false),
-            OutputRecoveryDecision::Continue { .. }
-        ));
-        assert_eq!(
-            completed.observe(Some(&FinishReason::Stop), "two", false),
-            OutputRecoveryDecision::Final("one two".to_string())
-        );
+    #[test]
+    fn successful_tool_progress_resets_empty_output_limit_stalls() {
+        let mut recovery = OutputRecovery::default();
+        for _ in 0..3 {
+            assert!(matches!(
+                recovery.observe(Some(&FinishReason::Length), "", false),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::OutputLimit,
+                    ..
+                }
+            ));
+            assert_eq!(
+                recovery.observe(Some(&FinishReason::ToolCalls), "", true),
+                OutputRecoveryDecision::ToolRound
+            );
+        }
     }
 
     #[test]
@@ -216,6 +315,48 @@ mod tests {
         assert_eq!(
             filtered.observe(Some(&FinishReason::ContentFilter), "", false),
             OutputRecoveryDecision::Reject(OutputRecoveryFailure::ContentFiltered)
+        );
+    }
+
+    #[test]
+    fn provider_pause_and_context_limit_are_typed_continuations() {
+        let mut paused = OutputRecovery::default();
+        assert!(matches!(
+            paused.observe(Some(&FinishReason::ProviderPause), "", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::ProviderPause,
+                ..
+            }
+        ));
+
+        let mut context = OutputRecovery::default();
+        assert!(matches!(
+            context.observe(Some(&FinishReason::ContextLimit), "partial", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::ContextLimit,
+                had_visible_content: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn malformed_and_unknown_terminals_never_become_success() {
+        let mut malformed = OutputRecovery::default();
+        assert_eq!(
+            malformed.observe(Some(&FinishReason::MalformedToolCall), "partial", false),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::MalformedToolCall)
+        );
+
+        let mut unknown = OutputRecovery::default();
+        assert_eq!(
+            unknown.observe(
+                Some(&FinishReason::Unknown("future_reason".to_string())),
+                "apparently complete",
+                false,
+            ),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::UnsupportedTerminal(
+                "future_reason".to_string()
+            ))
         );
     }
 }

@@ -452,7 +452,7 @@ impl AgentExecutor {
         } = ctx;
 
         if !final_content.is_empty() {
-            let note = "\n\n*[Note: I used all available tool calls. The answer above may be incomplete.]*";
+            let note = "\n\n*[Note: The configured verified tool-round budget is complete. The answer above may be incomplete.]*";
             let _ = tx
                 .send(AgentEvent::TextDelta {
                     delta: note.to_string(),
@@ -464,7 +464,7 @@ impl AgentExecutor {
         let final_msg = Message::text(Role::Assistant, final_content);
         append_persisted_trace_status(
             persisted_trace_items,
-            "Reached maximum iterations before producing a final answer.",
+            "Reached the configured verified tool-round limit after using the reserved answer-only sample.",
             "error",
         );
         if finalize_task_plan(task_plan, false) {
@@ -472,7 +472,7 @@ impl AgentExecutor {
                 tx,
                 task_plan,
                 "finalizing",
-                "Execution plan stopped at max iterations",
+                "Execution plan stopped at the configured tool-round limit",
             )
             .await;
         }
