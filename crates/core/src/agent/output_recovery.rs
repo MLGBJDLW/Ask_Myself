@@ -55,7 +55,7 @@ fn longest_suffix_prefix_overlap(existing: &str, fragment: &str) -> usize {
     matched
 }
 
-fn append_with_overlap(existing: &mut String, fragment: &str) -> bool {
+fn append_with_overlap(existing: &mut String, fragment: &str) -> String {
     let overlap = longest_suffix_prefix_overlap(existing, fragment);
     let overlap = if fragment.is_char_boundary(overlap) {
         overlap
@@ -64,18 +64,18 @@ fn append_with_overlap(existing: &mut String, fragment: &str) -> bool {
     };
     let novel = &fragment[overlap..];
     if novel.trim().is_empty() {
-        return false;
+        return String::new();
     }
     existing.push_str(novel);
-    true
+    novel.to_string()
 }
 
 /// Append only answer text that has not already been returned during this
 /// recovery episode. The containment check catches repeated and alternating
 /// provider fragments; suffix/prefix overlap removes normal boundary replay.
-fn append_novel_continuation(existing: &mut String, fragment: &str) -> bool {
+fn append_novel_continuation(existing: &mut String, fragment: &str) -> String {
     if fragment.trim().is_empty() || (!existing.is_empty() && existing.contains(fragment)) {
-        return false;
+        return String::new();
     }
     append_with_overlap(existing, fragment)
 }
@@ -134,11 +134,14 @@ pub(super) enum ToolRoundRejectionCause {
 pub(super) enum OutputRecoveryDecision {
     Continue {
         cause: OutputRecoveryCause,
-        had_visible_content: bool,
+        visible_delta: String,
     },
     RejectToolRound(ToolRoundRejectionCause),
     ToolRound,
-    Final(String),
+    Final {
+        content: String,
+        visible_delta: String,
+    },
     Reject(OutputRecoveryFailure),
 }
 
@@ -153,7 +156,8 @@ pub(super) struct OutputRecovery {
     visible_prefix: String,
     empty_terminal_retried: bool,
     consecutive_no_progress_output_limits: u8,
-    consecutive_empty_resumable_terminals: u8,
+    consecutive_no_progress_resumable_terminals: u8,
+    last_provider_pause_state: Option<String>,
 }
 
 impl OutputRecovery {
@@ -161,11 +165,22 @@ impl OutputRecovery {
         self.active
     }
 
-    pub(super) fn observe(
+    #[cfg(test)]
+    fn observe(
         &mut self,
         finish_reason: Option<&FinishReason>,
         content: &str,
         has_tool_calls: bool,
+    ) -> OutputRecoveryDecision {
+        self.observe_with_provider_state(finish_reason, content, has_tool_calls, None)
+    }
+
+    pub(super) fn observe_with_provider_state(
+        &mut self,
+        finish_reason: Option<&FinishReason>,
+        content: &str,
+        has_tool_calls: bool,
+        provider_state_fingerprint: Option<&str>,
     ) -> OutputRecoveryDecision {
         if matches!(finish_reason, Some(FinishReason::ContentFilter)) {
             return OutputRecoveryDecision::Reject(OutputRecoveryFailure::ContentFiltered);
@@ -198,6 +213,7 @@ impl OutputRecovery {
 
         let has_visible_content = !content.trim().is_empty();
         if matches!(finish_reason, Some(FinishReason::Length)) {
+            self.last_provider_pause_state = None;
             if has_tool_calls {
                 // A length-terminated tool envelope is discarded in full. Its
                 // adjacent prose is a draft from the same rejected sample and
@@ -208,10 +224,13 @@ impl OutputRecovery {
             }
 
             self.active = true;
-            self.consecutive_empty_resumable_terminals = 0;
-            let made_visible_progress =
-                has_visible_content && append_novel_continuation(&mut self.visible_prefix, content);
-            if made_visible_progress {
+            self.consecutive_no_progress_resumable_terminals = 0;
+            let visible_delta = if has_visible_content {
+                append_novel_continuation(&mut self.visible_prefix, content)
+            } else {
+                String::new()
+            };
+            if !visible_delta.is_empty() {
                 self.consecutive_no_progress_output_limits = 0;
             } else {
                 self.consecutive_no_progress_output_limits =
@@ -224,7 +243,7 @@ impl OutputRecovery {
             }
             return OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::OutputLimit,
-                had_visible_content: made_visible_progress,
+                visible_delta,
             };
         }
 
@@ -234,6 +253,20 @@ impl OutputRecovery {
             _ => None,
         };
         if let Some(cause) = resumable_terminal {
+            let provider_state_progress = if cause == OutputRecoveryCause::ProviderPause {
+                provider_state_fingerprint.is_some_and(|fingerprint| {
+                    let changed = self.last_provider_pause_state.as_deref() != Some(fingerprint);
+                    self.last_provider_pause_state = Some(fingerprint.to_string());
+                    changed
+                })
+            } else {
+                self.last_provider_pause_state = None;
+                false
+            };
+            // A resumable provider terminal starts a recovery episode even
+            // when its concurrent client-tool envelope is rejected. The next
+            // sample must still pass through buffered, progress-aware commit.
+            self.active = true;
             if has_tool_calls {
                 return OutputRecoveryDecision::RejectToolRound(match cause {
                     OutputRecoveryCause::ProviderPause => ToolRoundRejectionCause::ProviderPause,
@@ -243,15 +276,19 @@ impl OutputRecovery {
                     }
                 });
             }
-            self.active = true;
             self.consecutive_no_progress_output_limits = 0;
-            if has_visible_content {
-                self.consecutive_empty_resumable_terminals = 0;
-                self.visible_prefix.push_str(content);
+            let visible_delta = if has_visible_content {
+                append_novel_continuation(&mut self.visible_prefix, content)
             } else {
-                self.consecutive_empty_resumable_terminals =
-                    self.consecutive_empty_resumable_terminals.saturating_add(1);
-                if self.consecutive_empty_resumable_terminals
+                String::new()
+            };
+            if !visible_delta.is_empty() || provider_state_progress {
+                self.consecutive_no_progress_resumable_terminals = 0;
+            } else {
+                self.consecutive_no_progress_resumable_terminals = self
+                    .consecutive_no_progress_resumable_terminals
+                    .saturating_add(1);
+                if self.consecutive_no_progress_resumable_terminals
                     >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
                 {
                     return OutputRecoveryDecision::Reject(
@@ -261,24 +298,29 @@ impl OutputRecovery {
             }
             return OutputRecoveryDecision::Continue {
                 cause,
-                had_visible_content: has_visible_content,
+                visible_delta,
             };
         }
 
         if has_tool_calls {
             self.consecutive_no_progress_output_limits = 0;
-            self.consecutive_empty_resumable_terminals = 0;
+            self.consecutive_no_progress_resumable_terminals = 0;
+            self.last_provider_pause_state = None;
             return OutputRecoveryDecision::ToolRound;
         }
 
         if has_visible_content {
             let mut final_content = std::mem::take(&mut self.visible_prefix);
-            append_with_overlap(&mut final_content, content);
+            let visible_delta = append_with_overlap(&mut final_content, content);
             self.active = false;
             self.empty_terminal_retried = false;
             self.consecutive_no_progress_output_limits = 0;
-            self.consecutive_empty_resumable_terminals = 0;
-            return OutputRecoveryDecision::Final(final_content);
+            self.consecutive_no_progress_resumable_terminals = 0;
+            self.last_provider_pause_state = None;
+            return OutputRecoveryDecision::Final {
+                content: final_content,
+                visible_delta,
+            };
         }
 
         if !self.empty_terminal_retried {
@@ -286,7 +328,7 @@ impl OutputRecovery {
             self.empty_terminal_retried = true;
             return OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::EmptyTerminal,
-                had_visible_content: false,
+                visible_delta: String::new(),
             };
         }
 
@@ -316,7 +358,10 @@ mod tests {
         assert!(recovery.reserves_answer_channel());
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "done", false),
-            OutputRecoveryDecision::Final("done".to_string())
+            OutputRecoveryDecision::Final {
+                content: "done".to_string(),
+                visible_delta: "done".to_string(),
+            }
         );
         assert!(!recovery.reserves_answer_channel());
     }
@@ -331,7 +376,10 @@ mod tests {
         assert!(!recovery.reserves_answer_channel());
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "finished", false),
-            OutputRecoveryDecision::Final("finished".to_string())
+            OutputRecoveryDecision::Final {
+                content: "finished".to_string(),
+                visible_delta: "finished".to_string(),
+            }
         );
     }
 
@@ -349,7 +397,10 @@ mod tests {
         }
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "four", false),
-            OutputRecoveryDecision::Final("one two three four".to_string())
+            OutputRecoveryDecision::Final {
+                content: "one two three four".to_string(),
+                visible_delta: "four".to_string(),
+            }
         );
     }
 
@@ -360,7 +411,7 @@ mod tests {
             recovery.observe(Some(&FinishReason::Length), "same fragment", false),
             OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::OutputLimit,
-                had_visible_content: true,
+                visible_delta: "same fragment".to_string(),
             }
         );
         for _ in 0..CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD - 1 {
@@ -368,7 +419,7 @@ mod tests {
                 recovery.observe(Some(&FinishReason::Length), "same fragment", false),
                 OutputRecoveryDecision::Continue {
                     cause: OutputRecoveryCause::OutputLimit,
-                    had_visible_content: false,
+                    visible_delta: String::new(),
                 }
             );
         }
@@ -387,13 +438,16 @@ mod tests {
                 recovery.observe(Some(&FinishReason::Length), fragment, false),
                 OutputRecoveryDecision::Continue {
                     cause: OutputRecoveryCause::OutputLimit,
-                    had_visible_content: true,
+                    ..
                 }
             ));
         }
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "继续前进完成", false),
-            OutputRecoveryDecision::Final("开始你好世界继续前进完成".to_string())
+            OutputRecoveryDecision::Final {
+                content: "开始你好世界继续前进完成".to_string(),
+                visible_delta: "完成".to_string(),
+            }
         );
     }
 
@@ -449,13 +503,104 @@ mod tests {
         ));
 
         let mut context = OutputRecovery::default();
-        assert!(matches!(
+        assert_eq!(
             context.observe(Some(&FinishReason::ContextLimit), "partial", false),
             OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::ContextLimit,
-                had_visible_content: true,
+                visible_delta: "partial".to_string(),
             }
-        ));
+        );
+
+        let mut paused_draft = OutputRecovery::default();
+        assert_eq!(
+            paused_draft.observe_with_provider_state(
+                Some(&FinishReason::ProviderPause),
+                "draft text",
+                true,
+                Some("committed-provider-state"),
+            ),
+            OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProviderPause)
+        );
+        assert!(paused_draft.reserves_answer_channel());
+    }
+
+    #[test]
+    fn repeated_resumable_text_stalls_without_duplicate_growth() {
+        let mut recovery = OutputRecovery::default();
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::ContextLimit), "abc", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::ContextLimit,
+                visible_delta: "abc".to_string(),
+            }
+        );
+        for _ in 0..CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD - 1 {
+            assert_eq!(
+                recovery.observe(Some(&FinishReason::ContextLimit), "abc", false),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::ContextLimit,
+                    visible_delta: String::new(),
+                }
+            );
+        }
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::ContextLimit), "abc", false),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::ProtocolIncomplete)
+        );
+        assert_eq!(recovery.visible_prefix, "abc");
+    }
+
+    #[test]
+    fn provider_pause_native_state_counts_as_progress_without_repeating_text() {
+        let mut recovery = OutputRecovery::default();
+        assert_eq!(
+            recovery.observe_with_provider_state(
+                Some(&FinishReason::ProviderPause),
+                "Searching",
+                false,
+                Some("state-1"),
+            ),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::ProviderPause,
+                visible_delta: "Searching".to_string(),
+            }
+        );
+        assert_eq!(
+            recovery.observe_with_provider_state(
+                Some(&FinishReason::ProviderPause),
+                "Searching",
+                false,
+                Some("state-2"),
+            ),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::ProviderPause,
+                visible_delta: String::new(),
+            }
+        );
+        for _ in 0..CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD - 1 {
+            assert!(matches!(
+                recovery.observe_with_provider_state(
+                    Some(&FinishReason::ProviderPause),
+                    "Searching",
+                    false,
+                    Some("state-2"),
+                ),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::ProviderPause,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(
+            recovery.observe_with_provider_state(
+                Some(&FinishReason::ProviderPause),
+                "Searching",
+                false,
+                Some("state-2"),
+            ),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::ProtocolIncomplete)
+        );
+        assert_eq!(recovery.visible_prefix, "Searching");
     }
 
     #[test]

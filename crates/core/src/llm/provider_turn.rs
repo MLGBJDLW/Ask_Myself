@@ -422,6 +422,17 @@ impl ProviderReplayPayload {
         matches!(self, Self::AnthropicPausedTurnBlocks(_)) && self.is_present()
     }
 
+    /// Stable identity for opaque provider state used by progress-aware
+    /// recovery. This does not expose the replay payload and changes whenever
+    /// the provider advances its committed native turn state.
+    pub fn state_fingerprint(&self) -> Option<String> {
+        if !self.is_present() {
+            return None;
+        }
+        let encoded = serde_json::to_vec(self).ok()?;
+        Some(blake3::hash(&encoded).to_hex().to_string())
+    }
+
     fn authorizes_tool_calls(&self, route: &RouteSnapshot, tool_calls: &[ToolCallRequest]) -> bool {
         match self {
             Self::DeepSeekResponseItems(payload) => {

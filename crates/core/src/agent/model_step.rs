@@ -102,6 +102,9 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) reasoning_disabled_for_tool_loop: &'a mut bool,
     pub(super) force_answer_only: bool,
     pub(super) suppress_tools: bool,
+    /// Recovery samples buffer answer text until the terminal policy accepts
+    /// and de-duplicates it. Thinking and tool protocol events remain live.
+    pub(super) buffer_answer_projection: bool,
     pub(super) requires_first_action: bool,
     pub(super) total_usage: &'a mut Usage,
 }
@@ -238,6 +241,7 @@ impl AgentExecutor {
             reasoning_disabled_for_tool_loop,
             force_answer_only,
             suppress_tools,
+            buffer_answer_projection,
             requires_first_action,
             total_usage,
         } = ctx;
@@ -623,8 +627,10 @@ impl AgentExecutor {
                         progress_watchdog.observe_answer_progress();
                         answer_delta_seen = true;
                         full_content.push_str(&chunk.delta);
-                        accumulated_content.push_str(&chunk.delta);
-                        let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
+                        if !buffer_answer_projection {
+                            accumulated_content.push_str(&chunk.delta);
+                            let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
+                        }
                     }
                     // Accumulate tool-call deltas.
                     if let Some(ref tc_delta) = chunk.tool_call_delta {
@@ -792,7 +798,9 @@ impl AgentExecutor {
                     provider_replay = response.provider_replay;
                     full_content = response.content;
                     answer_delta_seen = !full_content.is_empty();
-                    accumulated_content.push_str(&full_content);
+                    if !buffer_answer_projection {
+                        accumulated_content.push_str(&full_content);
+                    }
                     iteration_thinking = response.thinking.unwrap_or_default();
                     thinking_delta_seen = !iteration_thinking.is_empty();
                     tool_calls = response.tool_calls.unwrap_or_default();
@@ -809,7 +817,7 @@ impl AgentExecutor {
                             })
                             .await;
                     }
-                    if !full_content.is_empty() {
+                    if !buffer_answer_projection && !full_content.is_empty() {
                         let _ = tx
                             .send(AgentEvent::TextDelta {
                                 delta: full_content.clone(),
@@ -1662,7 +1670,9 @@ impl AgentExecutor {
             accumulated_content.truncate(accumulated_len_before_iteration);
             full_content = response.content;
             answer_delta_seen = !full_content.is_empty();
-            accumulated_content.push_str(&full_content);
+            if !buffer_answer_projection {
+                accumulated_content.push_str(&full_content);
+            }
             iteration_thinking = recovered_thinking.unwrap_or_default();
             thinking_delta_seen = !iteration_thinking.is_empty();
             tool_calls = recovered_tool_calls;
@@ -1678,7 +1688,7 @@ impl AgentExecutor {
                     })
                     .await;
             }
-            if !full_content.is_empty() {
+            if !buffer_answer_projection && !full_content.is_empty() {
                 let _ = tx
                     .send(AgentEvent::TextDelta {
                         delta: full_content.clone(),

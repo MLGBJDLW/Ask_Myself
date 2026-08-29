@@ -2379,6 +2379,10 @@ struct MultiLengthContinuationProvider {
     stream_calls: Arc<AtomicUsize>,
 }
 
+struct RepeatedLengthFragmentProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
 struct ContextLimitTerminalProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_compacted_retry: Arc<Mutex<bool>>,
@@ -2583,7 +2587,10 @@ impl LlmProvider for LengthContinuationProvider {
             }
         } else {
             StreamChunk {
-                delta: "second half".to_string(),
+                // Some providers replay a short boundary even when asked to
+                // continue. The recovery projection must expose only the
+                // novel suffix rather than briefly duplicating it.
+                delta: "half, second half".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2631,6 +2638,44 @@ impl LlmProvider for MultiLengthContinuationProvider {
                 delta: delta.to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(finish_reason),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RepeatedLengthFragmentProvider {
+    fn name(&self) -> &str {
+        "repeated-length-fragment-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: "same fragment".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
                 usage: None,
                 thinking_delta: None,
             },
@@ -6900,6 +6945,49 @@ async fn visible_progress_can_continue_past_the_former_global_two_sample_cap() {
 
     assert_eq!(final_msg.text_content(), "one two three four");
     assert_eq!(stream_calls.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn stalled_recovery_does_not_project_repeated_provider_fragments() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(RepeatedLengthFragmentProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "stop if the provider makes no progress".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("repeated output-limit fragments must stop as no progress");
+
+    assert!(error.to_string().contains("recovery_failure=OutputLimit"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 4);
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, "same fragment");
 }
 
 #[tokio::test]

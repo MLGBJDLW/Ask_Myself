@@ -164,6 +164,22 @@ fn effective_tool_surface(tool_defs: &[ToolDefinition], suppress_tools: bool) ->
     }
 }
 
+async fn commit_buffered_answer_projection(
+    tx: &mpsc::Sender<AgentEvent>,
+    accumulated_content: &mut String,
+    visible_delta: &str,
+) {
+    if visible_delta.is_empty() {
+        return;
+    }
+    accumulated_content.push_str(visible_delta);
+    let _ = tx
+        .send(AgentEvent::TextDelta {
+            delta: visible_delta.to_string(),
+        })
+        .await;
+}
+
 async fn emit_tool_dispatch_failure(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -1279,8 +1295,9 @@ impl AgentExecutor {
                 },
             );
 
-            let force_answer_only = output_recovery.reserves_answer_channel()
-                || step_permit.mode == TurnStepMode::FinalAnswerOnly;
+            let buffer_answer_projection = output_recovery.reserves_answer_channel();
+            let force_answer_only =
+                buffer_answer_projection || step_permit.mode == TurnStepMode::FinalAnswerOnly;
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
                     model,
@@ -1347,6 +1364,7 @@ impl AgentExecutor {
                     reasoning_disabled_for_tool_loop: &mut reasoning_disabled_for_tool_loop,
                     force_answer_only,
                     suppress_tools: suppress_tools_for_step,
+                    buffer_answer_projection,
                     requires_first_action: !model_action_observed,
                     total_usage: &mut total_usage,
                 })
@@ -1503,10 +1521,15 @@ impl AgentExecutor {
                 return Err(CoreError::Agent(trace_message));
             }
 
-            let recovery_decision = output_recovery.observe(
+            let provider_state_fingerprint = provider_replay
+                .as_ref()
+                .filter(|replay| replay.resumes_provider_pause())
+                .and_then(|replay| replay.state_fingerprint());
+            let recovery_decision = output_recovery.observe_with_provider_state(
                 step_finish_reason_kind.as_ref(),
                 &full_content,
                 !tool_calls.is_empty(),
+                provider_state_fingerprint.as_deref(),
             );
             let resumes_provider_pause = matches!(
                 &recovery_decision,
@@ -1546,23 +1569,27 @@ impl AgentExecutor {
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
-                    had_visible_content,
+                    visible_delta,
                 } => {
+                    let had_visible_content = !visible_delta.is_empty();
+                    if buffer_answer_projection {
+                        commit_buffered_answer_projection(
+                            &tx,
+                            &mut accumulated_content,
+                            &visible_delta,
+                        )
+                        .await;
+                    }
                     append_persisted_trace_thinking(
                         &mut persisted_trace_items,
                         &iteration_thinking,
                     );
-                    if had_visible_content
-                        || matches!(
-                            cause,
-                            OutputRecoveryCause::ProviderPause | OutputRecoveryCause::ContextLimit
-                        )
-                    {
+                    if had_visible_content || cause == OutputRecoveryCause::ProviderPause {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
                         messages.push(capture_recovery_assistant_message(
                             RecoveryAssistantMessageContext {
-                                full_content: &full_content,
+                                full_content: &visible_delta,
                                 iteration_thinking: &iteration_thinking,
                                 recovery_reasoning,
                                 sample_id: &sample_id,
@@ -1687,9 +1714,30 @@ impl AgentExecutor {
                     }
                     None
                 }
-                OutputRecoveryDecision::ToolRound => None,
-                OutputRecoveryDecision::Final(final_content) => {
-                    full_content = final_content;
+                OutputRecoveryDecision::ToolRound => {
+                    if buffer_answer_projection {
+                        commit_buffered_answer_projection(
+                            &tx,
+                            &mut accumulated_content,
+                            &full_content,
+                        )
+                        .await;
+                    }
+                    None
+                }
+                OutputRecoveryDecision::Final {
+                    content,
+                    visible_delta,
+                } => {
+                    if buffer_answer_projection {
+                        commit_buffered_answer_projection(
+                            &tx,
+                            &mut accumulated_content,
+                            &visible_delta,
+                        )
+                        .await;
+                    }
+                    full_content = content;
                     None
                 }
                 OutputRecoveryDecision::Reject(failure) => Some(failure),
