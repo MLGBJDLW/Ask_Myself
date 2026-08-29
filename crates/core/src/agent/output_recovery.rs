@@ -224,6 +224,25 @@ impl OutputRecovery {
             return ContinuationCommit::Empty;
         }
         if fragment.trim().is_empty() {
+            if !self.pending_ambiguous_fragments.is_empty() {
+                if !acknowledged {
+                    self.pending_ambiguous_fragments.push(fragment.to_string());
+                    return ContinuationCommit::AmbiguousReplay;
+                }
+
+                let mut visible_delta = String::new();
+                for pending in std::mem::take(&mut self.pending_ambiguous_fragments) {
+                    self.visible_prefix.push_str(&pending);
+                    visible_delta.push_str(&pending);
+                }
+                self.visible_prefix.push_str(fragment);
+                visible_delta.push_str(fragment);
+                return if visible_delta.trim().is_empty() {
+                    ContinuationCommit::CommittedWhitespace(visible_delta)
+                } else {
+                    ContinuationCommit::Committed(visible_delta)
+                };
+            }
             self.visible_prefix.push_str(fragment);
             return ContinuationCommit::CommittedWhitespace(fragment.to_string());
         }
@@ -762,6 +781,36 @@ mod tests {
             OutputRecoveryDecision::Final {
                 content: "foo bar".to_string(),
                 visible_delta: "bar".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn whitespace_waits_behind_earlier_ambiguous_fragments() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue {
+                visible_delta,
+                ..
+            } if visible_delta.is_empty()
+        ));
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), " ", false),
+            OutputRecoveryDecision::Continue {
+                visible_delta,
+                ..
+            } if visible_delta.is_empty()
+        ));
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), "bar", false),
+            OutputRecoveryDecision::Final {
+                content: "foofoo bar".to_string(),
+                visible_delta: "foo bar".to_string(),
             }
         );
     }
