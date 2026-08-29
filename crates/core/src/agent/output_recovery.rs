@@ -65,7 +65,7 @@ fn append_with_overlap(existing: &mut String, fragment: &str) -> String {
         0
     };
     let novel = &fragment[overlap..];
-    if novel.trim().is_empty() {
+    if novel.is_empty() {
         return String::new();
     }
     existing.push_str(novel);
@@ -93,6 +93,7 @@ fn strip_expected_continuation_ack<'a>(
 #[derive(Debug, PartialEq, Eq)]
 enum ContinuationCommit {
     Committed(String),
+    CommittedWhitespace(String),
     AmbiguousReplay,
     Empty,
 }
@@ -219,8 +220,12 @@ impl OutputRecovery {
         fragment: &str,
         acknowledged: bool,
     ) -> ContinuationCommit {
-        if fragment.trim().is_empty() {
+        if fragment.is_empty() {
             return ContinuationCommit::Empty;
+        }
+        if fragment.trim().is_empty() {
+            self.visible_prefix.push_str(fragment);
+            return ContinuationCommit::CommittedWhitespace(fragment.to_string());
         }
 
         if acknowledged {
@@ -244,6 +249,8 @@ impl OutputRecovery {
             }
             return if visible_delta.is_empty() {
                 ContinuationCommit::Empty
+            } else if visible_delta.trim().is_empty() {
+                ContinuationCommit::CommittedWhitespace(visible_delta)
             } else {
                 ContinuationCommit::Committed(visible_delta)
             };
@@ -268,6 +275,8 @@ impl OutputRecovery {
         visible_delta.push_str(&append_with_overlap(&mut self.visible_prefix, fragment));
         if visible_delta.is_empty() {
             ContinuationCommit::Empty
+        } else if visible_delta.trim().is_empty() {
+            ContinuationCommit::CommittedWhitespace(visible_delta)
         } else {
             ContinuationCommit::Committed(visible_delta)
         }
@@ -343,19 +352,25 @@ impl OutputRecovery {
 
             self.active = true;
             self.consecutive_no_progress_resumable_terminals = 0;
-            let visible_delta = match self
-                .commit_continuation_fragment(content, continuation_acknowledged)
-            {
-                ContinuationCommit::Committed(delta) => delta,
-                ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => String::new(),
-            };
-            if !visible_delta.is_empty() {
+            let (visible_delta, semantic_progress) =
+                match self.commit_continuation_fragment(content, continuation_acknowledged) {
+                    ContinuationCommit::Committed(delta) => (delta, true),
+                    ContinuationCommit::CommittedWhitespace(delta) => (delta, false),
+                    ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
+                        (String::new(), false)
+                    }
+                };
+            if semantic_progress {
                 self.consecutive_no_progress_output_limits = 0;
             } else {
+                let stalled_before_visible_separator = !visible_delta.is_empty()
+                    && self.consecutive_no_progress_output_limits
+                        >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD;
                 self.consecutive_no_progress_output_limits =
                     self.consecutive_no_progress_output_limits.saturating_add(1);
-                if self.consecutive_no_progress_output_limits
-                    >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
+                if (visible_delta.is_empty() || stalled_before_visible_separator)
+                    && self.consecutive_no_progress_output_limits
+                        >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
                 {
                     return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
                 }
@@ -400,20 +415,26 @@ impl OutputRecovery {
                 };
             }
             self.consecutive_no_progress_output_limits = 0;
-            let visible_delta = match self
-                .commit_continuation_fragment(content, continuation_acknowledged)
-            {
-                ContinuationCommit::Committed(delta) => delta,
-                ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => String::new(),
-            };
-            if !visible_delta.is_empty() || provider_state_progress {
+            let (visible_delta, semantic_progress) =
+                match self.commit_continuation_fragment(content, continuation_acknowledged) {
+                    ContinuationCommit::Committed(delta) => (delta, true),
+                    ContinuationCommit::CommittedWhitespace(delta) => (delta, false),
+                    ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
+                        (String::new(), false)
+                    }
+                };
+            if semantic_progress || provider_state_progress {
                 self.consecutive_no_progress_resumable_terminals = 0;
             } else {
+                let stalled_before_visible_separator = !visible_delta.is_empty()
+                    && self.consecutive_no_progress_resumable_terminals
+                        >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD;
                 self.consecutive_no_progress_resumable_terminals = self
                     .consecutive_no_progress_resumable_terminals
                     .saturating_add(1);
-                if self.consecutive_no_progress_resumable_terminals
-                    >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
+                if (visible_delta.is_empty() || stalled_before_visible_separator)
+                    && self.consecutive_no_progress_resumable_terminals
+                        >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
                 {
                     return OutputRecoveryDecision::Reject(
                         OutputRecoveryFailure::ProtocolIncomplete,
@@ -429,7 +450,8 @@ impl OutputRecovery {
         if has_tool_calls {
             let visible_delta = if self.active {
                 match self.commit_continuation_fragment(content, continuation_acknowledged) {
-                    ContinuationCommit::Committed(delta) => delta,
+                    ContinuationCommit::Committed(delta)
+                    | ContinuationCommit::CommittedWhitespace(delta) => delta,
                     ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
                         String::new()
                     }
@@ -447,7 +469,8 @@ impl OutputRecovery {
             let visible_delta = match self
                 .commit_continuation_fragment(content, continuation_acknowledged)
             {
-                ContinuationCommit::Committed(delta) => delta,
+                ContinuationCommit::Committed(delta)
+                | ContinuationCommit::CommittedWhitespace(delta) => delta,
                 ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
                     self.active = true;
                     self.consecutive_no_progress_output_limits =
@@ -717,6 +740,51 @@ mod tests {
                 content: "开始你好世界继续前进完成".to_string(),
                 visible_delta: "完成".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn overlap_normalization_preserves_whitespace_only_suffixes() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "foo ", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                visible_delta: " ".to_string(),
+            }
+        );
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), "bar", false),
+            OutputRecoveryDecision::Final {
+                content: "foo bar".to_string(),
+                visible_delta: "bar".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn whitespace_fragments_are_visible_but_do_not_hide_a_stalled_recovery() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        for _ in 0..CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD {
+            assert_eq!(
+                recovery.observe(Some(&FinishReason::Length), "\n", false),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::OutputLimit,
+                    visible_delta: "\n".to_string(),
+                }
+            );
+        }
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "\n", false),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit)
         );
     }
 
