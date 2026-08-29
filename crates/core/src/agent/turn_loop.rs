@@ -1571,7 +1571,8 @@ impl AgentExecutor {
                     cause,
                     visible_delta,
                 } => {
-                    let had_visible_content = !visible_delta.is_empty();
+                    let committed_visible_delta = !visible_delta.is_empty();
+                    let had_visible_content = output_recovery.has_visible_content();
                     if buffer_answer_projection {
                         commit_buffered_answer_projection(
                             &tx,
@@ -1584,7 +1585,7 @@ impl AgentExecutor {
                         &mut persisted_trace_items,
                         &iteration_thinking,
                     );
-                    if had_visible_content || cause == OutputRecoveryCause::ProviderPause {
+                    if committed_visible_delta || cause == OutputRecoveryCause::ProviderPause {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
                         messages.push(capture_recovery_assistant_message(
@@ -1657,7 +1658,7 @@ impl AgentExecutor {
                         })
                         .await;
                     if let Some(message) = prompt_ir::controller_state_message(
-                        cause.controller_prompt(had_visible_content),
+                        output_recovery.controller_prompt(cause, had_visible_content),
                     ) {
                         messages.push(message);
                     }

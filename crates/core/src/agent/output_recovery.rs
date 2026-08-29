@@ -13,6 +13,8 @@ use crate::llm::FinishReason;
 /// liveness streak; they are not counted against an arbitrary turn-wide cap.
 const CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD: u8 = 3;
 
+const CONTINUATION_ACK_PREFIX: &str = "<nexa-continuation-ack:";
+
 /// Return the byte length of the longest suffix of `existing` that is also a
 /// prefix of `fragment`. Scanning only the relevant tail keeps the work linear
 /// in the provider fragment instead of the full accumulated answer.
@@ -70,14 +72,29 @@ fn append_with_overlap(existing: &mut String, fragment: &str) -> String {
     novel.to_string()
 }
 
-/// Append only answer text that has not already been returned during this
-/// recovery episode. The containment check catches repeated and alternating
-/// provider fragments; suffix/prefix overlap removes normal boundary replay.
-fn append_novel_continuation(existing: &mut String, fragment: &str) -> String {
-    if fragment.trim().is_empty() || (!existing.is_empty() && existing.contains(fragment)) {
-        return String::new();
-    }
-    append_with_overlap(existing, fragment)
+fn strip_expected_continuation_ack<'a>(
+    content: &'a str,
+    expected_ack: Option<&str>,
+) -> (&'a str, bool) {
+    let Some(expected_ack) = expected_ack else {
+        return (content, false);
+    };
+    let candidate = content.trim_start();
+    let Some(rest) = candidate.strip_prefix(expected_ack) else {
+        return (content, false);
+    };
+    let rest = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))
+        .unwrap_or(rest);
+    (rest, true)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ContinuationCommit {
+    Committed(String),
+    AmbiguousReplay,
+    Empty,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +171,9 @@ pub(super) enum OutputRecoveryDecision {
 pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
+    pending_ambiguous_fragment: Option<String>,
+    expected_continuation_ack: Option<String>,
+    next_continuation_ack: u32,
     empty_terminal_retried: bool,
     consecutive_no_progress_output_limits: u8,
     consecutive_no_progress_resumable_terminals: u8,
@@ -163,6 +183,78 @@ pub(super) struct OutputRecovery {
 impl OutputRecovery {
     pub(super) fn reserves_answer_channel(&self) -> bool {
         self.active
+    }
+
+    pub(super) fn has_visible_content(&self) -> bool {
+        !self.visible_prefix.trim().is_empty()
+    }
+
+    /// Arm a request-specific acknowledgement for the next continuation.
+    ///
+    /// Stateless completion APIs do not expose an output cursor, so an exact
+    /// repeated fragment is ambiguous: it may be a replay or legitimate new
+    /// text. The acknowledgement gives cooperative providers an explicit
+    /// exactly-once signal without making text occurrence itself authoritative.
+    pub(super) fn controller_prompt(
+        &mut self,
+        cause: OutputRecoveryCause,
+        had_visible_content: bool,
+    ) -> String {
+        self.next_continuation_ack = self.next_continuation_ack.saturating_add(1);
+        let acknowledgement = format!("{CONTINUATION_ACK_PREFIX}{}>", self.next_continuation_ack);
+        self.expected_continuation_ack = Some(acknowledgement.clone());
+        format!(
+            "{} Begin the next answer-channel response with the exact control marker `{acknowledgement}` on its own line, then emit only the new continuation. Nexa removes the marker before display. The marker is required to confirm an intentional continuation whose text repeats an earlier fragment.",
+            cause.controller_prompt(had_visible_content),
+        )
+    }
+
+    fn commit_continuation_fragment(
+        &mut self,
+        fragment: &str,
+        acknowledged: bool,
+    ) -> ContinuationCommit {
+        if fragment.trim().is_empty() {
+            return ContinuationCommit::Empty;
+        }
+
+        if acknowledged {
+            // An acknowledged fragment is a fresh response to the current
+            // continuation cursor. If it confirms a previously ambiguous
+            // duplicate, commit that logical fragment once rather than both
+            // the proposal and its confirmation.
+            if self.pending_ambiguous_fragment.as_deref() == Some(fragment) {
+                self.pending_ambiguous_fragment = None;
+                self.visible_prefix.push_str(fragment);
+                return ContinuationCommit::Committed(fragment.to_string());
+            }
+            self.pending_ambiguous_fragment = None;
+            self.visible_prefix.push_str(fragment);
+            return ContinuationCommit::Committed(fragment.to_string());
+        }
+
+        let overlap = longest_suffix_prefix_overlap(&self.visible_prefix, fragment);
+        let occurs_in_committed_answer =
+            !self.visible_prefix.is_empty() && self.visible_prefix.contains(fragment);
+        if overlap == fragment.len() || occurs_in_committed_answer {
+            // Occurrence is not proof of replay. Hold one logical fragment
+            // until either a fresh acknowledgement confirms it or later novel
+            // text demonstrates that the provider moved past it.
+            self.pending_ambiguous_fragment = Some(fragment.to_string());
+            return ContinuationCommit::AmbiguousReplay;
+        }
+
+        let mut visible_delta = String::new();
+        if let Some(pending) = self.pending_ambiguous_fragment.take() {
+            self.visible_prefix.push_str(&pending);
+            visible_delta.push_str(&pending);
+        }
+        visible_delta.push_str(&append_with_overlap(&mut self.visible_prefix, fragment));
+        if visible_delta.is_empty() {
+            ContinuationCommit::Empty
+        } else {
+            ContinuationCommit::Committed(visible_delta)
+        }
     }
 
     #[cfg(test)]
@@ -182,6 +274,9 @@ impl OutputRecovery {
         has_tool_calls: bool,
         provider_state_fingerprint: Option<&str>,
     ) -> OutputRecoveryDecision {
+        let expected_ack = self.expected_continuation_ack.take();
+        let (content, continuation_acknowledged) =
+            strip_expected_continuation_ack(content, expected_ack.as_deref());
         if matches!(finish_reason, Some(FinishReason::ContentFilter)) {
             return OutputRecoveryDecision::Reject(OutputRecoveryFailure::ContentFiltered);
         }
@@ -225,10 +320,11 @@ impl OutputRecovery {
 
             self.active = true;
             self.consecutive_no_progress_resumable_terminals = 0;
-            let visible_delta = if has_visible_content {
-                append_novel_continuation(&mut self.visible_prefix, content)
-            } else {
-                String::new()
+            let visible_delta = match self
+                .commit_continuation_fragment(content, continuation_acknowledged)
+            {
+                ContinuationCommit::Committed(delta) => delta,
+                ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => String::new(),
             };
             if !visible_delta.is_empty() {
                 self.consecutive_no_progress_output_limits = 0;
@@ -277,10 +373,11 @@ impl OutputRecovery {
                 });
             }
             self.consecutive_no_progress_output_limits = 0;
-            let visible_delta = if has_visible_content {
-                append_novel_continuation(&mut self.visible_prefix, content)
-            } else {
-                String::new()
+            let visible_delta = match self
+                .commit_continuation_fragment(content, continuation_acknowledged)
+            {
+                ContinuationCommit::Committed(delta) => delta,
+                ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => String::new(),
             };
             if !visible_delta.is_empty() || provider_state_progress {
                 self.consecutive_no_progress_resumable_terminals = 0;
@@ -303,6 +400,7 @@ impl OutputRecovery {
         }
 
         if has_tool_calls {
+            self.pending_ambiguous_fragment = None;
             self.consecutive_no_progress_output_limits = 0;
             self.consecutive_no_progress_resumable_terminals = 0;
             self.last_provider_pause_state = None;
@@ -310,9 +408,29 @@ impl OutputRecovery {
         }
 
         if has_visible_content {
-            let mut final_content = std::mem::take(&mut self.visible_prefix);
-            let visible_delta = append_with_overlap(&mut final_content, content);
+            let visible_delta = match self
+                .commit_continuation_fragment(content, continuation_acknowledged)
+            {
+                ContinuationCommit::Committed(delta) => delta,
+                ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
+                    self.active = true;
+                    self.consecutive_no_progress_output_limits =
+                        self.consecutive_no_progress_output_limits.saturating_add(1);
+                    if self.consecutive_no_progress_output_limits
+                        >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
+                    {
+                        return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
+                    }
+                    return OutputRecoveryDecision::Continue {
+                        cause: OutputRecoveryCause::OutputLimit,
+                        visible_delta: String::new(),
+                    };
+                }
+            };
+            let final_content = std::mem::take(&mut self.visible_prefix);
             self.active = false;
+            self.pending_ambiguous_fragment = None;
+            self.expected_continuation_ack = None;
             self.empty_terminal_retried = false;
             self.consecutive_no_progress_output_limits = 0;
             self.consecutive_no_progress_resumable_terminals = 0;
@@ -428,6 +546,64 @@ mod tests {
             OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit)
         );
         assert_eq!(recovery.visible_prefix, "same fragment");
+    }
+
+    #[test]
+    fn repeated_continuation_is_committed_when_later_text_disambiguates_it() {
+        let mut recovery = OutputRecovery::default();
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                visible_delta: "foo".to_string(),
+            }
+        );
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                visible_delta: String::new(),
+            }
+        );
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), "bar", false),
+            OutputRecoveryDecision::Final {
+                content: "foofoobar".to_string(),
+                visible_delta: "foobar".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn fresh_continuation_ack_preserves_intentional_exact_repetition() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        let prompt = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+        let acknowledgement = recovery
+            .expected_continuation_ack
+            .clone()
+            .expect("controller prompt must arm an acknowledgement");
+        assert!(prompt.contains(&acknowledgement));
+
+        assert_eq!(
+            recovery.observe(
+                Some(&FinishReason::Length),
+                &format!("{acknowledgement}\nfoo"),
+                false,
+            ),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                visible_delta: "foo".to_string(),
+            }
+        );
+        assert_eq!(recovery.visible_prefix, "foofoo");
     }
 
     #[test]

@@ -2383,6 +2383,10 @@ struct RepeatedLengthFragmentProvider {
     stream_calls: Arc<AtomicUsize>,
 }
 
+struct AcknowledgedRepeatedLengthProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
 struct ContextLimitTerminalProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_compacted_retry: Arc<Mutex<bool>>,
@@ -2676,6 +2680,69 @@ impl LlmProvider for RepeatedLengthFragmentProvider {
                 delta: "same fragment".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AcknowledgedRepeatedLengthProvider {
+    fn name(&self) -> &str {
+        "acknowledged-repeated-length-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let (delta, finish_reason) = if call_no == 0 {
+            ("foo".to_string(), FinishReason::Length)
+        } else {
+            let acknowledgement = request
+                .messages
+                .iter()
+                .rev()
+                .find_map(|message| {
+                    let content = message.text_content();
+                    let start = content.find("<nexa-continuation-ack:")?;
+                    let marker = &content[start..];
+                    let end = marker.find('>')?;
+                    Some(marker[..=end].to_string())
+                })
+                .expect("continuation request must carry a fresh acknowledgement");
+            let fragment = if call_no == 1 { "foo" } else { "bar" };
+            (
+                format!("{acknowledgement}\n{fragment}"),
+                if call_no == 1 {
+                    FinishReason::Length
+                } else {
+                    FinishReason::Stop
+                },
+            )
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta,
+                tool_call_delta: None,
+                finish_reason: Some(finish_reason),
                 usage: None,
                 thinking_delta: None,
             },
@@ -6988,6 +7055,50 @@ async fn stalled_recovery_does_not_project_repeated_provider_fragments() {
         }
     }
     assert_eq!(streamed, "same fragment");
+}
+
+#[tokio::test]
+async fn acknowledged_repeated_continuations_are_preserved_without_control_markers() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(AcknowledgedRepeatedLengthProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "preserve intentionally repeated continuation chunks".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a fresh continuation acknowledgement must preserve repeated text");
+
+    assert_eq!(final_message.text_content(), "foofoobar");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            assert!(!delta.contains("nexa-continuation-ack"));
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, "foofoobar");
 }
 
 #[tokio::test]
