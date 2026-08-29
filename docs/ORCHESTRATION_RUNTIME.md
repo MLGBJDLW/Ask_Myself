@@ -182,7 +182,9 @@ loop. The runtime keeps these authorities independent:
 - context rollover compacts or moves committed history and never spends a tool
   round;
 - the optional legacy `maxIterations` setting is interpreted only as the number
-  of complete, validated client-tool batches that enter dispatch;
+  of complete, validated tool batches that enter execution, including
+  controller-owned direct dispatch, retrieval prefetch, and reconnaissance as
+  well as model-directed client tools;
 - cumulative token, cost, wall-time, and cancellation policy bound the whole
   run independently.
 
@@ -194,6 +196,12 @@ sample sequence and do not consume the user-facing tool budget. Repeated
 protocol faults are controlled by the existing consecutive no-progress guard:
 committed answer or tool progress resets it, so there is no turn-wide hidden
 `MAX_OUTPUT_LIMIT_CONTINUATIONS` counter.
+
+The same budget owner is created before any controller shortcut. A zero value
+therefore blocks direct tool dispatch, knowledge prefetch, Nexus/Ultra
+reconnaissance, and model tool calls. Each controller-owned prefetch or
+reconnaissance wave consumes one logical round before the answer-only synthesis
+sample begins; no pre-loop path receives separate hidden tool authority.
 
 Saved tool-round authority is preserved across Balanced, Deep, Code Ultra,
 Research Ultra, Nexus, and durable-goal execution. Named quality profiles may

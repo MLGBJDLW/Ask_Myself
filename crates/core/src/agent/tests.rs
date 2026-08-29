@@ -2015,6 +2015,11 @@ struct RecordingTool {
 
 struct NamedMockTool(&'static str);
 
+struct CountingNamedMockTool {
+    name: &'static str,
+    executions: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -2114,6 +2119,44 @@ impl Tool for NamedMockTool {
         } = context;
         Ok(ToolResult {
             call_id: call_id.to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for CountingNamedMockTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Counting named mock tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": { "type": "array" },
+                "batch_goal": { "type": "string" },
+                "parallel_group": { "type": "string" },
+                "max_parallel": { "type": "integer" }
+            },
+            "required": ["tasks"],
+            "additionalProperties": true
+        })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
             content: "ok".to_string(),
             is_error: false,
             artifacts: None,
@@ -3324,6 +3367,127 @@ async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
     ] {
         assert!(requests[0].iter().any(|offered| offered == name));
     }
+}
+
+#[tokio::test]
+async fn nexus_answer_only_budget_blocks_controller_reconnaissance() {
+    let reconnaissance_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "spawn_subagent_batch",
+        executions: Arc::clone(&reconnaissance_executions),
+    }));
+    registry.register(Box::new(NamedMockTool("spawn_subagent")));
+    registry.register(Box::new(NamedMockTool("judge_subagent_results")));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("gpt-5.6".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            orchestration_profile: OrchestrationProfile::ResearchUltra,
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(256);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Investigate and verify a complex cross-module Rust refactor, run cargo tests, and use independent agents."
+                    .to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("answer-only Nexus turn");
+
+    assert_eq!(
+        reconnaissance_executions.load(Ordering::SeqCst),
+        0,
+        "zero verified tool rounds must block controller-owned reconnaissance"
+    );
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(captured_tools[0].is_empty());
+}
+
+#[tokio::test]
+async fn nexus_reconnaissance_consumes_the_finite_tool_round() {
+    let reconnaissance_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "spawn_subagent_batch",
+        executions: Arc::clone(&reconnaissance_executions),
+    }));
+    registry.register(Box::new(NamedMockTool("spawn_subagent")));
+    registry.register(Box::new(NamedMockTool("judge_subagent_results")));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("gpt-5.6".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            orchestration_profile: OrchestrationProfile::ResearchUltra,
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(256);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Investigate and verify a complex cross-module Rust refactor, run cargo tests, and use independent agents."
+                    .to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("bounded Nexus turn");
+
+    let mut controller_codes = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::ControllerStatus { code, .. } = event {
+            controller_codes.push(code);
+        }
+    }
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(
+        reconnaissance_executions.load(Ordering::SeqCst),
+        1,
+        "the automatic reconnaissance batch must consume the sole tool round; controller_codes={controller_codes:?}, captured_tools={captured_tools:?}"
+    );
+    assert_eq!(captured_tools.len(), 1);
+    assert!(
+        captured_tools[0].is_empty(),
+        "the reserved synthesis sample must suppress tools after reconnaissance uses the budget"
+    );
 }
 
 #[tokio::test]

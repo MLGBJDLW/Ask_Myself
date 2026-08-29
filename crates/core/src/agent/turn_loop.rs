@@ -663,9 +663,14 @@ impl AgentExecutor {
             sorted.sort();
             Some(sorted.join(","))
         };
+        // Tool-round authority must exist before every controller shortcut,
+        // prefetch, reconnaissance wave, or model-directed dispatch. Keeping
+        // one owner prevents pre-loop tool paths from bypassing answer-only or
+        // finite budgets.
+        let mut turn_budget = TurnBudget::new(self.config.max_iterations);
 
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
-        if !self.config.execution_mode.is_plan() {
+        if !self.config.execution_mode.is_plan() && turn_budget.can_dispatch_tool_round() {
             turn_state.transition_to(TurnPhase::DirectDispatch);
             if let Some(msg) = self
                 .try_direct_dispatch(
@@ -759,23 +764,35 @@ impl AgentExecutor {
         // Eagerly execute search_knowledge_base so the LLM already has evidence
         // in context instead of depending on it to call the tool itself.
         turn_state.transition_to(TurnPhase::PreSearch);
-        let prefetch_observed = self
-            .prefetch_knowledge_results(
-                route_plan.kind,
-                user_query_text,
-                db,
-                &source_scope,
-                &tx,
-                conversation_id,
-                turn_id,
-                model,
-                &mut sort_order,
-                &mut persisted_replayable_system_contents,
-                &mut messages,
-                &mut persisted_trace_items,
-                &mut task_plan,
-            )
-            .await;
+        let prefetch_enters_dispatch = route_plan.kind == AgentRouteKind::KnowledgeRetrieval
+            && !user_query_text.is_empty()
+            && turn_budget.can_dispatch_tool_round();
+        let prefetch_observed = if prefetch_enters_dispatch {
+            let observed = self
+                .prefetch_knowledge_results(
+                    route_plan.kind,
+                    user_query_text,
+                    db,
+                    &source_scope,
+                    &tx,
+                    conversation_id,
+                    turn_id,
+                    model,
+                    &mut sort_order,
+                    &mut persisted_replayable_system_contents,
+                    &mut messages,
+                    &mut persisted_trace_items,
+                    &mut task_plan,
+                )
+                .await;
+            // Graph-guided retrieval is one controller-owned logical batch.
+            // Count the dispatch even if the provider returns no evidence or
+            // the local search tool reports an error.
+            turn_budget.record_verified_tool_round();
+            observed
+        } else {
+            false
+        };
 
         // --- 4. ReAct loop ----------------------------------------------------
         let mut last_tool_calls: Option<Vec<ToolCallRequest>> = None;
@@ -810,9 +827,12 @@ impl AgentExecutor {
             )
             && self.tools.contains("spawn_subagent_batch");
         if automatic_reconnaissance {
-            while let Some(arguments) =
-                workflow_ir.reconnaissance_batch_arguments(&task_plan.objective)
-            {
+            while turn_budget.can_dispatch_tool_round() {
+                let Some(arguments) =
+                    workflow_ir.reconnaissance_batch_arguments(&task_plan.objective)
+                else {
+                    break;
+                };
                 let node_ids = workflow_ir
                     .ready_node_ids()
                     .into_iter()
@@ -915,7 +935,7 @@ impl AgentExecutor {
                             model,
                             privacy_cfg: &privacy_cfg,
                             route_kind: route_plan.kind,
-                            tool_round_index: 0,
+                            tool_round_index: turn_budget.tool_rounds_used(),
                             tool_defs: &mut tool_defs,
                             messages: &mut messages,
                             persisted_trace_items: &mut persisted_trace_items,
@@ -949,6 +969,10 @@ impl AgentExecutor {
                         return Err(error);
                     }
                 };
+                // Controller-owned reconnaissance is a real dispatched tool
+                // batch and consumes the same semantic round authority as a
+                // model-directed batch.
+                turn_budget.record_verified_tool_round();
                 if let Some(reason) = dispatch_outcome.terminal_loop_guard_reason {
                     let trace_message =
                         format!("agent_loop_stopped_during_reconnaissance: {reason}");
@@ -1035,11 +1059,28 @@ impl AgentExecutor {
                     })
                     .await;
             }
+            if !turn_budget.can_dispatch_tool_round()
+                && workflow_ir
+                    .reconnaissance_batch_arguments(&task_plan.objective)
+                    .is_some()
+            {
+                let status = format!(
+                    "Automatic reconnaissance stopped after {} verified tool round(s) because the configured tool-round budget is complete.",
+                    turn_budget.tool_rounds_used()
+                );
+                append_internal_persisted_trace_status(&mut persisted_trace_items, &status, "info");
+                let _ = tx
+                    .send(AgentEvent::ControllerStatus {
+                        code: "workflow_reconnaissance_budget_complete".to_string(),
+                        content: status,
+                        tone: Some("muted".to_string()),
+                    })
+                    .await;
+            }
         }
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
-        let mut turn_budget = TurnBudget::new(self.config.max_iterations);
         let mut next_step_purpose = TurnStepPurpose::Normal;
         'react_loop: loop {
             let Some(step_permit) = turn_budget.permit(next_step_purpose) else {

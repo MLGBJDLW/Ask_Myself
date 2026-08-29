@@ -29,7 +29,7 @@ One provider sample together with its transport-recovery budget, immutable accep
 _Avoid_: sampling retry loop, stream recovery decision plumbing, current provider route
 
 **Turn budget**:
-The per-user-turn authority that counts only complete validated client-tool batches entering dispatch, while assigning independent sequence numbers to physical provider samples and reserving one answer-only sample after a finite tool-round limit. Transport retry, output continuation, context rollover, steering restart, and rejected drafts never spend this budget.
+The per-user-turn authority that counts complete validated tool batches entering execution, whether controller-directed prefetch/reconnaissance or model-directed client tools, while assigning independent sequence numbers to physical provider samples and reserving one answer-only sample after a finite tool-round limit. Zero blocks every tool-dispatch path. Transport retry, output continuation, context rollover, steering restart, and rejected drafts never spend this budget.
 _Avoid_: max model iterations, shared retry counter, final iteration
 
 **Provider terminal**:

@@ -83,7 +83,19 @@ impl TurnBudget {
     }
 
     pub(super) fn record_verified_tool_round(&mut self) {
+        debug_assert!(
+            self.can_dispatch_tool_round(),
+            "a verified tool round must acquire budget authority before dispatch"
+        );
         self.tool_rounds_used = self.tool_rounds_used.saturating_add(1);
+    }
+
+    /// Whether a controller- or model-owned tool batch may enter dispatch.
+    /// Unlike [`Self::can_start_normal_step`], this never treats the reserved
+    /// answer-only sample as tool authority.
+    pub(super) fn can_dispatch_tool_round(&self) -> bool {
+        self.tool_round_limit
+            .is_none_or(|limit| self.tool_rounds_used < limit)
     }
 
     pub(super) fn can_start_normal_step(&self) -> bool {
@@ -144,6 +156,7 @@ mod tests {
     #[test]
     fn final_answer_output_recovery_remains_permitted_without_tools() {
         let mut budget = TurnBudget::new(0);
+        assert!(!budget.can_dispatch_tool_round());
         let final_answer = budget.permit(TurnStepPurpose::Normal).unwrap();
         let continuation = budget.permit(TurnStepPurpose::Recovery).unwrap();
 
@@ -163,5 +176,17 @@ mod tests {
             budget.record_verified_tool_round();
         }
         assert_eq!(budget.configured_tool_round_limit(), None);
+    }
+
+    #[test]
+    fn controller_tool_batches_share_the_verified_round_budget() {
+        let mut budget = TurnBudget::new(1);
+        assert!(budget.can_dispatch_tool_round());
+        budget.record_verified_tool_round();
+        assert!(!budget.can_dispatch_tool_round());
+        assert_eq!(
+            budget.permit(TurnStepPurpose::Normal).unwrap().mode,
+            TurnStepMode::FinalAnswerOnly
+        );
     }
 }
