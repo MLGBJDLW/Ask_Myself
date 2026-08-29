@@ -85,6 +85,8 @@ test('full CI is front-loaded onto pull requests instead of repeated after merge
 
 test('only the trusted release metadata classifier can select lightweight CI', () => {
   assert.match(ciWorkflow, /name: Classify CI Scope/);
+  assert.match(ciWorkflow, /NEXA_CI_BASE_REF: origin\/master/);
+  assert.match(ciWorkflow, /NEXA_CI_HEAD_REF: HEAD/);
   assert.match(ciWorkflow, /node scripts\/ci-scope\.mjs/);
   assert.match(ciWorkflow, /name: Release Metadata Contracts/);
   assert.match(

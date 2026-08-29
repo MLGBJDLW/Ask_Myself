@@ -29,7 +29,9 @@ jobs:
       - name: Classify trusted release metadata updates
         id: scope
         env:
+          NEXA_CI_BASE_REF: origin/master
           NEXA_CI_BRANCH: ${{ github.head_ref || github.ref_name }}
+          NEXA_CI_HEAD_REF: HEAD
           NEXA_CI_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
         shell: bash
         run: |
