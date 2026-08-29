@@ -180,6 +180,20 @@ async fn commit_buffered_answer_projection(
         .await;
 }
 
+fn rollback_rejected_sample_projection(
+    accumulated_content: &mut String,
+    sample_content: &str,
+    sample_was_projected: bool,
+) {
+    if sample_was_projected && accumulated_content.ends_with(sample_content) {
+        accumulated_content.truncate(
+            accumulated_content
+                .len()
+                .saturating_sub(sample_content.len()),
+        );
+    }
+}
+
 async fn emit_tool_dispatch_failure(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -1813,10 +1827,11 @@ impl AgentExecutor {
                     // protocol envelope. Re-plan from a plain controller message so
                     // the next request is valid even when the partial assistant also
                     // contained visible text.
-                    if accumulated_content.ends_with(&full_content) {
-                        accumulated_content
-                            .truncate(accumulated_content.len().saturating_sub(full_content.len()));
-                    }
+                    rollback_rejected_sample_projection(
+                        &mut accumulated_content,
+                        &full_content,
+                        !buffer_answer_projection,
+                    );
                     let rejection_reason = match tool_round_rejection_cause {
                         Some(ToolRoundRejectionCause::OutputLimit) => "The provider reached its output limit while assembling a tool call. Nexa discarded the truncated parameters before re-planning.",
                         Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before the client tool envelope committed. Nexa discarded the draft call before resuming provider state.",
@@ -2754,6 +2769,22 @@ mod awaiting_user_input_tests {
             cumulative_run_step_output_budget(8_192, None, 999_999, 999_999),
             Some(8_192)
         );
+    }
+}
+
+#[cfg(test)]
+mod rejected_sample_projection_tests {
+    use super::*;
+
+    #[test]
+    fn buffered_sample_cannot_truncate_an_accepted_equal_suffix() {
+        let mut accepted_recovery_text = "abc".to_string();
+        rollback_rejected_sample_projection(&mut accepted_recovery_text, "abc", false);
+        assert_eq!(accepted_recovery_text, "abc");
+
+        let mut projected_draft = "accepted draft".to_string();
+        rollback_rejected_sample_projection(&mut projected_draft, " draft", true);
+        assert_eq!(projected_draft, "accepted");
     }
 }
 

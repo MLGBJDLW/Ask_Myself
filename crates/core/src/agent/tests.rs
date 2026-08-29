@@ -3119,7 +3119,10 @@ impl LlmProvider for AnswerOnlyToolViolationProvider {
                 thinking_delta: None,
             },
             1 => StreamChunk {
-                delta: " discarded draft".to_string(),
+                // The rejected recovery sample deliberately repeats the
+                // accepted suffix. Its raw text was buffered, so rejection
+                // must not truncate the already projected prefix.
+                delta: "committed prefix".to_string(),
                 tool_call_delta: Some(ToolCallDelta {
                     id: "forbidden-call".to_string(),
                     name: Some("recording_tool".to_string()),
@@ -7585,7 +7588,7 @@ async fn answer_only_budget_rejects_provider_tool_calls_at_the_dispatch_boundary
         }
     }
     assert_eq!(streamed, final_msg.text_content());
-    assert!(!streamed.contains("discarded draft"));
+    assert_eq!(streamed.matches("committed prefix").count(), 1);
 }
 
 #[tokio::test]
