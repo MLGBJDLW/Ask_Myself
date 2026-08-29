@@ -275,6 +275,11 @@ pub struct AgentConfig {
     /// resembles a known provider model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_resolution: Option<crate::conversation::memory::ResolvedContextWindow>,
+    /// Endpoint/model provenance for catalog output limits. This remains true
+    /// when a user overrides only the context capacity. `None` preserves the
+    /// legacy inference path for non-hosted callers and serialized configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_limits_authoritative: Option<bool>,
     /// Whether to enable reasoning/thinking for models that support it.
     pub reasoning_enabled: Option<bool>,
     /// Thinking budget in tokens (Anthropic, Gemini).
@@ -450,6 +455,7 @@ impl Default for AgentConfig {
             max_actual_tokens_per_run: None,
             context_window: None,
             context_window_resolution: None,
+            catalog_limits_authoritative: None,
             reasoning_enabled: None,
             thinking_budget: None,
             reasoning_effort: None,

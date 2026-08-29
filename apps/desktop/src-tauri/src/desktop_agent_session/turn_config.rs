@@ -239,6 +239,12 @@ pub fn build_desktop_agent_turn_config(
     };
     let provider_type = provider_type_for_config(db_config);
     let context_window_resolution = resolve_desktop_context_window(db_config);
+    let catalog_limits_authoritative =
+        nexa_core::provider_catalog::endpoint_model_catalog_limits_are_authoritative(
+            &db_config.provider,
+            db_config.base_url.as_deref(),
+            &db_config.model,
+        );
     let configured_reasoning_effort =
         db_config
             .reasoning_effort
@@ -530,6 +536,7 @@ pub fn build_desktop_agent_turn_config(
             .context_window
             .and_then(|value| u32::try_from(value).ok()),
         context_window_resolution: Some(context_window_resolution),
+        catalog_limits_authoritative: Some(catalog_limits_authoritative),
         reasoning_enabled: power_policy.reasoning_enabled,
         thinking_budget: power_policy.thinking_budget,
         reasoning_effort: power_policy.reasoning_effort,

@@ -510,6 +510,7 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
 
     let private_openai_compatible = AgentConfig {
         provider_type: Some(ProviderType::OpenAi),
+        catalog_limits_authoritative: Some(false),
         context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
             capacity_tokens: None,
             authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
@@ -527,6 +528,50 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     assert_eq!(
         private_plan.effective_tokens,
         FALLBACK_AGENT_RESPONSE_TOKENS
+    );
+
+    let official_context_override = crate::provider_catalog::resolve_endpoint_model_context_window(
+        "open_ai",
+        None,
+        "gpt-5.6",
+        Some(750_000),
+    );
+    let official_catalog_authority =
+        crate::provider_catalog::endpoint_model_catalog_limits_are_authoritative(
+            "open_ai", None, "gpt-5.6",
+        );
+    assert!(official_catalog_authority);
+    let official_automatic = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        context_window_resolution: Some(official_context_override),
+        catalog_limits_authoritative: Some(official_catalog_authority),
+        ..AgentConfig::default()
+    }
+    .resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        official_automatic.authority,
+        OutputBudgetAuthority::VerifiedCatalogCapability
+    );
+    assert_eq!(
+        official_automatic.effective_tokens,
+        official_automatic.catalog_cap.unwrap()
+    );
+
+    let official_explicit = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        max_tokens: Some(500_000),
+        context_window_resolution: Some(official_context_override),
+        catalog_limits_authoritative: Some(official_catalog_authority),
+        ..AgentConfig::default()
+    }
+    .resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        official_explicit.authority,
+        OutputBudgetAuthority::SavedExplicitOverride
+    );
+    assert_eq!(
+        official_explicit.effective_tokens,
+        official_explicit.catalog_cap.unwrap()
     );
 
     let explicit = AgentConfig {

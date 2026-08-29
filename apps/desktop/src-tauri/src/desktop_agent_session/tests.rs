@@ -952,6 +952,7 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     assert_eq!(executor.temperature, Some(0.2));
     assert_eq!(executor.max_tokens, Some(1024));
     assert_eq!(executor.context_window, Some(128_000));
+    assert_eq!(executor.catalog_limits_authoritative, Some(false));
     assert_eq!(executor.reasoning_enabled, Some(true));
     assert_eq!(executor.thinking_budget, Some(4096));
     assert_eq!(executor.provider_type, Some(ProviderType::OpenAi));

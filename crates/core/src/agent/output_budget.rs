@@ -82,8 +82,11 @@ impl AgentConfig {
         // resolution was supplied, while a resolved route must be catalog
         // authoritative before global catalog limits participate.
         let catalog_is_route_authoritative =
-            self.context_window_resolution.is_none_or(|resolution| {
-                resolution.authority == crate::conversation::memory::ContextWindowAuthority::Catalog
+            self.catalog_limits_authoritative.unwrap_or_else(|| {
+                self.context_window_resolution.is_none_or(|resolution| {
+                    resolution.authority
+                        == crate::conversation::memory::ContextWindowAuthority::Catalog
+                })
             });
         let catalog_limits = catalog_is_route_authoritative
             .then(|| {
