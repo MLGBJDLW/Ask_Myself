@@ -361,6 +361,18 @@ fn normalized_finish_reason(stop_reason: Option<&str>, has_tool_calls: bool) -> 
     })
 }
 
+fn classify_non_streaming_search_terminal(
+    stop_reason: Option<&str>,
+    has_tool_calls: bool,
+    has_pending_server_searches: bool,
+) -> (FinishReason, bool) {
+    let finish_reason = normalized_finish_reason(stop_reason, has_tool_calls);
+    let should_drain_fallbacks = stop_reason.is_some()
+        && has_pending_server_searches
+        && finish_reason.allows_completed_client_tools();
+    (finish_reason, should_drain_fallbacks)
+}
+
 fn replayable_anthropic_thinking_blocks(
     message: &Message,
 ) -> Vec<super::provider_turn::AnthropicThinkingBlock> {
@@ -1998,6 +2010,24 @@ mod tests {
             FinishReason::Unknown("future_reason".to_string())
         );
     }
+
+    #[test]
+    fn non_streaming_search_fallback_respects_terminal_reason() {
+        let (pause, should_drain) =
+            classify_non_streaming_search_terminal(Some("pause_turn"), false, true);
+        assert_eq!(pause, FinishReason::ProviderPause);
+        assert!(!should_drain);
+
+        let (stop, should_drain) =
+            classify_non_streaming_search_terminal(Some("end_turn"), false, true);
+        assert_eq!(stop, FinishReason::Stop);
+        assert!(should_drain);
+
+        let (length, should_drain) =
+            classify_non_streaming_search_terminal(Some("max_tokens"), false, true);
+        assert_eq!(length, FinishReason::Length);
+        assert!(!should_drain);
+    }
 }
 
 #[async_trait]
@@ -2180,7 +2210,13 @@ impl LlmProvider for AnthropicProvider {
         for completed in completed_server_searches {
             pending_server_searches.remove(&completed);
         }
-        if resp.stop_reason.is_some() {
+        let (mut finish_reason, should_drain_search_fallbacks) =
+            classify_non_streaming_search_terminal(
+                resp.stop_reason.as_deref(),
+                !tool_calls.is_empty(),
+                !pending_server_searches.is_empty(),
+            );
+        if should_drain_search_fallbacks {
             tool_calls.extend(
                 drain_server_search_fallbacks(&mut pending_server_searches, search_mode)?
                     .into_iter()
@@ -2192,6 +2228,7 @@ impl LlmProvider for AnthropicProvider {
                         thought_signature: None,
                     }),
             );
+            finish_reason = FinishReason::ToolCalls;
         }
         if let Some(first_tool_call) = tool_calls.first_mut() {
             first_tool_call.thought_signature =
@@ -2218,8 +2255,6 @@ impl LlmProvider for AnthropicProvider {
         };
         let citation_appendix = super::native_search::render_citation_appendix(&evidence);
 
-        let finish_reason =
-            normalized_finish_reason(resp.stop_reason.as_deref(), !tool_calls.is_empty());
         let provider_replay =
             anthropic_pause_replay_payload(Some(&finish_reason), raw_content_blocks);
 
