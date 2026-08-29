@@ -508,6 +508,27 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
         assert_eq!(plan.effective_tokens, plan.catalog_cap.unwrap());
     }
 
+    let private_openai_compatible = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+            capacity_tokens: None,
+            authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+        }),
+        ..AgentConfig::default()
+    };
+    let private_plan = private_openai_compatible.resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        private_plan.authority,
+        OutputBudgetAuthority::AutomaticFallbackReserve,
+        "a private endpoint must not inherit output authority from a public model alias"
+    );
+    assert_eq!(private_plan.catalog_cap, None);
+    assert_eq!(private_plan.context_cap, None);
+    assert_eq!(
+        private_plan.effective_tokens,
+        FALLBACK_AGENT_RESPONSE_TOKENS
+    );
+
     let explicit = AgentConfig {
         max_tokens: Some(12_000),
         context_window: Some(16_000),
@@ -2240,6 +2261,12 @@ struct MultiLengthContinuationProvider {
     stream_calls: Arc<AtomicUsize>,
 }
 
+struct ContextLimitTerminalProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_compacted_retry: Arc<Mutex<bool>>,
+    draft_tool_on_first_sample: bool,
+}
+
 struct TruncatedToolCallProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_safe_replan_context: Arc<Mutex<bool>>,
@@ -2309,6 +2336,23 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
     async fn health_check(&self) -> Result<(), CoreError> {
         Ok(())
     }
+}
+
+fn provider_context_limit_history() -> Vec<Message> {
+    (0..8)
+        .flat_map(|turn| {
+            [
+                Message::text(
+                    Role::User,
+                    format!("older user turn {turn} with context to preserve"),
+                ),
+                Message::text(
+                    Role::Assistant,
+                    format!("older assistant turn {turn} with verified facts"),
+                ),
+            ]
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -2473,6 +2517,72 @@ impl LlmProvider for MultiLengthContinuationProvider {
                 thinking_delta: None,
             },
         )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ContextLimitTerminalProvider {
+    fn name(&self) -> &str {
+        "context-limit-terminal-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["private-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Ok(CompletionResponse {
+            content: "Compacted facts from older turns.".to_string(),
+            tool_calls: None,
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            thinking: None,
+            provider_replay: None,
+        })
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: self.draft_tool_on_first_sample.then(|| ToolCallDelta {
+                    id: "context-limited-draft".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ContextLimit),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            *self.saw_compacted_retry.lock().unwrap() = request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message
+                        .text_content()
+                        .starts_with("## Earlier conversation context (compacted)")
+            });
+            StreamChunk {
+                delta: "final answer after context rollover".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -5888,6 +5998,122 @@ async fn visible_progress_can_continue_past_the_former_global_two_sample_cap() {
 }
 
 #[tokio::test]
+async fn context_limit_terminal_compacts_unknown_provider_history_before_retry() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_compacted_retry = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ContextLimitTerminalProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_compacted_retry: Arc::clone(&saw_compacted_retry),
+            draft_tool_on_first_sample: false,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("private-model".to_string()),
+            context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+            }),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+    let final_msg = executor
+        .run(
+            provider_context_limit_history(),
+            vec![ContentPart::Text {
+                text: "continue from the full history".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a typed context terminal should compact before retrying");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after context rollover"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_compacted_retry.lock().unwrap(),
+        "the retry must contain a committed compaction checkpoint even when capacity is provider-managed"
+    );
+    let mut saw_auto_compaction = false;
+    while let Ok(event) = rx.try_recv() {
+        saw_auto_compaction |= matches!(event, AgentEvent::AutoCompacted { .. });
+    }
+    assert!(
+        saw_auto_compaction,
+        "the context-limit recovery should expose the actual compaction event"
+    );
+}
+
+#[tokio::test]
+async fn context_limited_tool_draft_is_rejected_then_compacted_before_replan() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_compacted_retry = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ContextLimitTerminalProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_compacted_retry: Arc::clone(&saw_compacted_retry),
+            draft_tool_on_first_sample: true,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("private-model".to_string()),
+            max_iterations: 1,
+            context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+            }),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            provider_context_limit_history(),
+            vec![ContentPart::Text {
+                text: "use tools only after a safe context rollover".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the discarded draft should replan from compacted committed history");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after context rollover"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "a context-limited tool draft must never execute"
+    );
+    assert!(
+        *saw_compacted_retry.lock().unwrap(),
+        "the safe replan must follow a real context compaction"
+    );
+}
+
+#[tokio::test]
 async fn test_length_truncated_tool_call_replans_without_spending_tool_iteration() {
     let executions = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
@@ -5986,6 +6212,24 @@ async fn truncated_draft_then_one_committed_tool_round_still_gets_final_answer()
         executions.load(Ordering::SeqCst),
         1,
         "only the committed call may execute"
+    );
+    let trace = db
+        .get_agent_traces("")
+        .expect("trace query")
+        .pop()
+        .expect("completed agent trace");
+    assert_eq!(
+        trace.total_iterations, 2,
+        "a rejected provider sample must not inflate semantic agent iterations"
+    );
+    let tool_step = trace
+        .steps
+        .iter()
+        .find(|step| step.tool_name.as_deref() == Some("recording_tool"))
+        .expect("tool trace step");
+    assert_eq!(
+        tool_step.iteration, 0,
+        "the first verified tool round remains logical round zero after recovery samples"
     );
 }
 

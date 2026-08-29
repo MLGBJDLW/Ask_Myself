@@ -25,6 +25,20 @@ struct ReplayableSystemPersistenceContext<'a> {
     persisted_contents: &'a mut Vec<String>,
 }
 
+struct ProviderContextLimitRecoveryContext<'a> {
+    db: &'a Database,
+    tx: &'a mpsc::Sender<AgentEvent>,
+    conversation_id: Option<&'a str>,
+    turn_id: Option<&'a str>,
+    route_kind: AgentRouteKind,
+    model: &'a str,
+    messages: &'a mut Vec<Message>,
+    total_usage: &'a mut Usage,
+    completed_attempts: &'a mut u32,
+    trace: &'a mut Option<AgentTrace>,
+    persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
+}
+
 fn awaiting_user_input_interaction_id(
     summaries: &[tool_dispatch::ToolDispatchSummary],
 ) -> Option<String> {
@@ -123,6 +137,95 @@ async fn emit_tool_dispatch_failure(
 }
 
 impl AgentExecutor {
+    async fn recover_provider_context_limit(
+        &self,
+        ctx: ProviderContextLimitRecoveryContext<'_>,
+    ) -> Result<(), CoreError> {
+        let ProviderContextLimitRecoveryContext {
+            db,
+            tx,
+            conversation_id,
+            turn_id,
+            route_kind,
+            model,
+            messages,
+            total_usage,
+            completed_attempts,
+            trace,
+            persisted_trace_items,
+        } = ctx;
+        let terminal_error =
+            CoreError::Llm("provider completed the sample at its context limit".to_string());
+        let (attempt, status_message) = match StreamRecoveryPolicy::default()
+            .decide_after_context_overflow(*completed_attempts, &terminal_error)
+        {
+            ContextOverflowRecoveryDecision::Compact {
+                attempt,
+                status_message,
+            } => (attempt, status_message),
+            ContextOverflowRecoveryDecision::GiveUp { user_message } => {
+                let trace_message =
+                    format!("provider_context_limit_recovery_exhausted: {terminal_error}");
+                append_persisted_trace_status(persisted_trace_items, &user_message, "error");
+                emit_error_and_finalize_turn(
+                    tx,
+                    db,
+                    trace,
+                    turn_id,
+                    route_kind,
+                    persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: user_message,
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                return Err(CoreError::Agent(trace_message));
+            }
+        };
+        *completed_attempts = attempt;
+        let _ = tx
+            .send(AgentEvent::Status {
+                content: status_message,
+                tone: Some("muted".to_string()),
+            })
+            .await;
+        let recovered = self
+            .recover_context_overflow(
+                messages,
+                model,
+                tx,
+                context_compaction::CompactionRunContext {
+                    db,
+                    conversation_id,
+                    turn_id,
+                },
+                total_usage,
+            )
+            .await?;
+        if recovered {
+            return Ok(());
+        }
+
+        let trace_message = "provider_context_limit_compaction_made_no_progress";
+        let frontend_message = "The provider reached its context limit, but committed history could not be compacted any further. No draft tool call was executed.";
+        append_persisted_trace_status(persisted_trace_items, frontend_message, "error");
+        emit_error_and_finalize_turn(
+            tx,
+            db,
+            trace,
+            turn_id,
+            route_kind,
+            persisted_trace_items,
+            TurnErrorMessages {
+                frontend_message: frontend_message.to_string(),
+                trace_message: trace_message.to_string(),
+            },
+        )
+        .await;
+        Err(CoreError::Agent(trace_message.to_string()))
+    }
+
     /// Run the agent loop for a single user turn.
     ///
     /// * `history` — prior conversation messages (already stored in DB).
@@ -812,7 +915,7 @@ impl AgentExecutor {
                             model,
                             privacy_cfg: &privacy_cfg,
                             route_kind: route_plan.kind,
-                            iteration: 0,
+                            tool_round_index: 0,
                             tool_defs: &mut tool_defs,
                             messages: &mut messages,
                             persisted_trace_items: &mut persisted_trace_items,
@@ -1219,7 +1322,8 @@ impl AgentExecutor {
                         last_context_breakdown: &mut last_context_breakdown,
                     },
                     usage_accounting::ModelStepUsageObservation {
-                        iteration,
+                        sample_index: iteration,
+                        trace_iteration: step_permit.tool_rounds_used,
                         tool_call_count: tool_calls.len(),
                         finish_reason: last_finish_reason.clone(),
                         chunk_usage,
@@ -1330,6 +1434,29 @@ impl AgentExecutor {
                         messages.push(recovery_message);
                     }
 
+                    if cause == OutputRecoveryCause::ContextLimit {
+                        if let Err(error) = self
+                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                                db,
+                                tx: &tx,
+                                conversation_id,
+                                turn_id,
+                                route_kind: route_plan.kind,
+                                model,
+                                messages: &mut messages,
+                                total_usage: &mut total_usage,
+                                completed_attempts: &mut context_recovery_attempts,
+                                trace: &mut trace,
+                                persisted_trace_items: &mut persisted_trace_items,
+                            })
+                            .await
+                        {
+                            turn_state.finish(TurnOutcome::Failed);
+                            return Err(error);
+                        }
+                        prompt_was_compacted = true;
+                    }
+
                     let (code, status) = match cause {
                         OutputRecoveryCause::OutputLimit => (
                             "output_limit_continuation",
@@ -1378,6 +1505,28 @@ impl AgentExecutor {
                         "The provider terminal state did not commit a safe tool-call response. The draft calls will be rejected and re-planned without execution.",
                         "warning",
                     );
+                    if cause == ToolRoundRejectionCause::ContextLimit {
+                        if let Err(error) = self
+                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                                db,
+                                tx: &tx,
+                                conversation_id,
+                                turn_id,
+                                route_kind: route_plan.kind,
+                                model,
+                                messages: &mut messages,
+                                total_usage: &mut total_usage,
+                                completed_attempts: &mut context_recovery_attempts,
+                                trace: &mut trace,
+                                persisted_trace_items: &mut persisted_trace_items,
+                            })
+                            .await
+                        {
+                            turn_state.finish(TurnOutcome::Failed);
+                            return Err(error);
+                        }
+                        prompt_was_compacted = true;
+                    }
                     None
                 }
                 OutputRecoveryDecision::ToolRound => None,
@@ -2047,7 +2196,7 @@ impl AgentExecutor {
                         model,
                         privacy_cfg: &privacy_cfg,
                         route_kind: route_plan.kind,
-                        iteration,
+                        tool_round_index: turn_budget.tool_rounds_used(),
                         tool_defs: &mut tool_defs,
                         messages: &mut messages,
                         persisted_trace_items: &mut persisted_trace_items,
@@ -2218,7 +2367,7 @@ impl AgentExecutor {
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
                     Some(&workflow_ir),
-                    completed_tool_round_index,
+                    turn_budget.tool_rounds_used(),
                     self.config.max_iterations,
                     &loop_recorder,
                 );
@@ -2262,11 +2411,10 @@ impl AgentExecutor {
             turn_budget.tool_rounds_used(),
         );
         turn_state.transition_to(TurnPhase::Finalizing);
-        let final_iteration = turn_budget.tool_rounds_used().saturating_sub(1);
         let live_state = long_task_state.checkpoint_live_state(
             &task_plan,
             Some(&workflow_ir),
-            final_iteration,
+            turn_budget.tool_rounds_used(),
             self.config.max_iterations,
             &loop_recorder,
         );

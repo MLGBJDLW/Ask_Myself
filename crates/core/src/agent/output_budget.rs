@@ -74,9 +74,24 @@ impl AgentConfig {
         } else {
             FALLBACK_AGENT_RESPONSE_TOKENS
         };
-        let catalog_limits = self.provider_type.and_then(|provider| {
-            crate::provider_catalog::model_limits_from_catalog(provider, model)
-        });
+        // A familiar model alias is not sufficient authority on an edited or
+        // private endpoint. The host deliberately marks those routes as
+        // provider-managed; borrowing the public catalog's output/context
+        // limits could make the custom server reject the request outright.
+        // `None` retains the legacy in-process/test path where no endpoint
+        // resolution was supplied, while a resolved route must be catalog
+        // authoritative before global catalog limits participate.
+        let catalog_is_route_authoritative =
+            self.context_window_resolution.is_none_or(|resolution| {
+                resolution.authority == crate::conversation::memory::ContextWindowAuthority::Catalog
+            });
+        let catalog_limits = catalog_is_route_authoritative
+            .then(|| {
+                self.provider_type.and_then(|provider| {
+                    crate::provider_catalog::model_limits_from_catalog(provider, model)
+                })
+            })
+            .flatten();
         let catalog_cap = catalog_limits
             .as_ref()
             .and_then(|limits| limits.max_output_tokens)

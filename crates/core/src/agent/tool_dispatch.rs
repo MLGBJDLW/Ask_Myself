@@ -130,7 +130,7 @@ pub(super) struct ToolDispatchContext<'a> {
     pub(super) model: &'a str,
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) route_kind: AgentRouteKind,
-    pub(super) iteration: u32,
+    pub(super) tool_round_index: u32,
     pub(super) tool_defs: &'a mut Vec<ToolDefinition>,
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
@@ -234,7 +234,7 @@ impl AgentExecutor {
             model,
             privacy_cfg,
             route_kind,
-            iteration,
+            tool_round_index,
             tool_defs,
             messages,
             persisted_trace_items,
@@ -325,7 +325,7 @@ impl AgentExecutor {
                 .map(ToolDispatchBlock::policy_label)
                 .unwrap_or(decision.policy_label);
             loop_recorder.tool_scheduled(
-                iteration,
+                tool_round_index,
                 &tc.id,
                 &tc.name,
                 decision.timeout.map(|timeout| timeout.as_secs()),
@@ -334,7 +334,7 @@ impl AgentExecutor {
             append_persisted_trace_loop_event(
                 persisted_trace_items,
                 TurnLoopEvent::ToolScheduled {
-                    iteration,
+                    iteration: tool_round_index,
                     call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
                     timeout_secs: decision.timeout.map(|timeout| timeout.as_secs()),
@@ -1119,7 +1119,7 @@ impl AgentExecutor {
                     tool_artifacts.clone(),
                 );
                 let finished = TurnLoopEvent::ToolFinished {
-                    iteration,
+                    iteration: tool_round_index,
                     call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
                     duration_ms: tool_elapsed.as_millis() as u64,
@@ -1255,7 +1255,7 @@ impl AgentExecutor {
                     artifacts.clone(),
                 );
                 let finished = TurnLoopEvent::ToolFinished {
-                    iteration,
+                    iteration: tool_round_index,
                     call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
                     duration_ms: 0,
@@ -1329,7 +1329,7 @@ impl AgentExecutor {
             // Trace: record tool execution step
             if let Some(ref mut t) = trace {
                 t.add_step(TraceStep {
-                    iteration,
+                    iteration: tool_round_index,
                     request_kind: self.config.request_kind.as_str().to_string(),
                     tool_name: Some(tc.name.clone()),
                     tool_duration_ms: Some(duration_ms),

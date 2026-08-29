@@ -75,7 +75,7 @@ impl LongTaskState {
         &self,
         plan: &AgentTaskPlan,
         workflow_ir: Option<&WorkflowIr>,
-        iteration: u32,
+        completed_tool_rounds: u32,
         max_iterations: u32,
         loop_recorder: &TurnLoopRecorder,
     ) -> serde_json::Value {
@@ -94,10 +94,14 @@ impl LongTaskState {
 
         serde_json::json!({
             "kind": "longTaskLiveState",
-            "iteration": iteration,
-            "completedToolRounds": iteration.saturating_add(1),
+            // Retain the legacy zero-based projection while making the
+            // authoritative completed-round count explicit. Callers operate
+            // on counts, so a pause before the first tool round cannot
+            // manufacture a completed iteration.
+            "iteration": completed_tool_rounds.saturating_sub(1),
+            "completedToolRounds": completed_tool_rounds,
             "maxIterations": max_iterations,
-            "remainingIterations": max_iterations.saturating_sub(iteration.saturating_add(1)),
+            "remainingIterations": max_iterations.saturating_sub(completed_tool_rounds),
             "lastCheckpointIteration": self.last_checkpoint_iteration,
             "taskPlan": plan,
             "workflowIr": workflow_ir,
@@ -372,7 +376,8 @@ mod tests {
         let live_state = state.checkpoint_live_state(&plan, None, 1, 8, &recorder);
 
         assert_eq!(live_state["kind"].as_str(), Some("longTaskLiveState"));
-        assert_eq!(live_state["remainingIterations"].as_u64(), Some(6));
+        assert_eq!(live_state["completedToolRounds"].as_u64(), Some(1));
+        assert_eq!(live_state["remainingIterations"].as_u64(), Some(7));
         assert_eq!(
             live_state["taskPlan"]["objective"].as_str(),
             Some(plan.objective.as_str())
@@ -380,5 +385,9 @@ mod tests {
         assert!(live_state["loopEventsTail"]
             .as_array()
             .is_some_and(|items| items.len() == 2));
+
+        let before_first_round = state.checkpoint_live_state(&plan, None, 0, 8, &recorder);
+        assert_eq!(before_first_round["completedToolRounds"].as_u64(), Some(0));
+        assert_eq!(before_first_round["remainingIterations"].as_u64(), Some(8));
     }
 }
