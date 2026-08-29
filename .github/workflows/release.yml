@@ -97,21 +97,70 @@ jobs:
             echo "target_sha=$target_sha"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Trigger checks for release PR updates made by GITHUB_TOKEN
+      - name: Resolve the open release PR
+        id: release_pr
         if: (github.event_name != 'workflow_dispatch' || inputs.release_tag == '') && steps.release.outputs.release_created != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          HAS_RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
           RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
         run: |
           set -euo pipefail
-          if [ "$HAS_RELEASE_PLEASE_TOKEN" = "true" ]; then
+          pr_count=$(gh pr list --state open --head "$RELEASE_PR_BRANCH" --json number --jq 'length')
+          if [ "$pr_count" = "0" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$pr_count" != "1" ]; then
+            echo "::error::Expected one open release PR on $RELEASE_PR_BRANCH; found $pr_count"
+            exit 1
+          fi
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release PR metadata
+        if: steps.release_pr.outputs.exists == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: release-please--branches--master--components--nexa-monorepo
+          fetch-depth: 0
+
+      - name: Setup release metadata runtime
+        if: steps.release_pr.outputs.exists == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Synchronize generated Rust lock metadata
+        id: sync_lock
+        if: steps.release_pr.outputs.exists == 'true'
+        env:
+          RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/sync-workspace-lock-versions.mjs --write
+          if git diff --quiet -- Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          PR_COUNT=$(gh pr list --state open --head "$RELEASE_PR_BRANCH" --json number --jq 'length')
-          if [ "$PR_COUNT" = "0" ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Cargo.lock
+          git commit -m "chore(release): synchronize workspace lock versions"
+          git push origin "HEAD:$RELEASE_PR_BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger checks for release PR updates made by GITHUB_TOKEN
+        if: steps.release_pr.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAS_RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+          LOCK_CHANGED: ${{ steps.sync_lock.outputs.changed }}
+          RELEASE_PR_BRANCH: release-please--branches--master--components--nexa-monorepo
+        run: |
+          set -euo pipefail
+          if [ "$HAS_RELEASE_PLEASE_TOKEN" = "true" ] && [ "$LOCK_CHANGED" != "true" ]; then
             exit 0
           fi
           gh api --method POST \
