@@ -1570,6 +1570,7 @@ impl AgentExecutor {
             }
             let mut tool_round_rejection_cause = None;
             let mut tool_round_rejection_committed_progress = false;
+            let mut staged_tool_round_visible_delta = None;
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
@@ -1725,13 +1726,7 @@ impl AgentExecutor {
                 }
                 OutputRecoveryDecision::ToolRound { visible_delta } => {
                     if buffer_answer_projection {
-                        commit_buffered_answer_projection(
-                            &tx,
-                            &mut accumulated_content,
-                            &visible_delta,
-                        )
-                        .await;
-                        full_content = visible_delta;
+                        staged_tool_round_visible_delta = Some(visible_delta);
                     }
                     None
                 }
@@ -1811,6 +1806,7 @@ impl AgentExecutor {
             ) {
                 Ok(verified) => verified,
                 Err(rejected) => {
+                    output_recovery.rollback_staged_tool_round();
                     // Provider streams may terminate after emitting only part of a
                     // function call. Never persist, replay, or execute that partial
                     // protocol envelope. Re-plan from a plain controller message so
@@ -1976,6 +1972,12 @@ impl AgentExecutor {
                     }
                 }
             };
+            output_recovery.commit_staged_tool_round();
+            if let Some(visible_delta) = staged_tool_round_visible_delta.take() {
+                commit_buffered_answer_projection(&tx, &mut accumulated_content, &visible_delta)
+                    .await;
+                full_content = visible_delta;
+            }
             let tool_calls = verified_tool_calls.as_slice().to_vec();
 
             last_iteration_content = full_content.clone();

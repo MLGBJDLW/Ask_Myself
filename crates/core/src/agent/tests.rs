@@ -2981,9 +2981,16 @@ impl LlmProvider for AnswerOnlyToolViolationProvider {
             .unwrap()
             .push(request.tools.as_ref().is_none_or(Vec::is_empty));
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        let chunk = if call_no == 0 {
-            StreamChunk {
-                delta: String::new(),
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: "committed prefix".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+            1 => StreamChunk {
+                delta: " discarded draft".to_string(),
                 tool_call_delta: Some(ToolCallDelta {
                     id: "forbidden-call".to_string(),
                     name: Some("recording_tool".to_string()),
@@ -2994,15 +3001,14 @@ impl LlmProvider for AnswerOnlyToolViolationProvider {
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
                 thinking_delta: None,
-            }
-        } else {
-            StreamChunk {
-                delta: "answer after respecting the synthesis boundary".to_string(),
+            },
+            _ => StreamChunk {
+                delta: " final answer after respecting the synthesis boundary".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
                 thinking_delta: None,
-            }
+            },
         };
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
@@ -7416,7 +7422,7 @@ async fn answer_only_budget_rejects_provider_tool_calls_at_the_dispatch_boundary
         },
     );
     let db = Database::open_memory().expect("in-memory db");
-    let (tx, _rx) = mpsc::channel(128);
+    let (tx, mut rx) = mpsc::channel(128);
 
     let final_msg = executor
         .run(
@@ -7435,11 +7441,22 @@ async fn answer_only_budget_rejects_provider_tool_calls_at_the_dispatch_boundary
 
     assert_eq!(
         final_msg.text_content(),
-        "answer after respecting the synthesis boundary"
+        "committed prefix final answer after respecting the synthesis boundary"
     );
-    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(*saw_tools_suppressed.lock().unwrap(), vec![true, true]);
+    assert_eq!(
+        *saw_tools_suppressed.lock().unwrap(),
+        vec![true, true, true]
+    );
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, final_msg.text_content());
+    assert!(!streamed.contains("discarded draft"));
 }
 
 #[tokio::test]

@@ -184,6 +184,20 @@ pub(super) struct OutputRecovery {
     consecutive_no_progress_output_limits: u8,
     consecutive_no_progress_resumable_terminals: u8,
     last_provider_pause_state: Option<String>,
+    staged_tool_round_checkpoint: Option<OutputRecoveryCheckpoint>,
+}
+
+#[derive(Debug, Clone)]
+struct OutputRecoveryCheckpoint {
+    active: bool,
+    visible_prefix: String,
+    pending_ambiguous_fragments: Vec<String>,
+    expected_continuation_ack: Option<String>,
+    next_continuation_ack: u32,
+    empty_terminal_retried: bool,
+    consecutive_no_progress_output_limits: u8,
+    consecutive_no_progress_resumable_terminals: u8,
+    last_provider_pause_state: Option<String>,
 }
 
 impl OutputRecovery {
@@ -193,6 +207,42 @@ impl OutputRecovery {
 
     pub(super) fn has_visible_content(&self) -> bool {
         !self.visible_prefix.trim().is_empty()
+    }
+
+    fn checkpoint(&self) -> OutputRecoveryCheckpoint {
+        OutputRecoveryCheckpoint {
+            active: self.active,
+            visible_prefix: self.visible_prefix.clone(),
+            pending_ambiguous_fragments: self.pending_ambiguous_fragments.clone(),
+            expected_continuation_ack: self.expected_continuation_ack.clone(),
+            next_continuation_ack: self.next_continuation_ack,
+            empty_terminal_retried: self.empty_terminal_retried,
+            consecutive_no_progress_output_limits: self.consecutive_no_progress_output_limits,
+            consecutive_no_progress_resumable_terminals: self
+                .consecutive_no_progress_resumable_terminals,
+            last_provider_pause_state: self.last_provider_pause_state.clone(),
+        }
+    }
+
+    pub(super) fn commit_staged_tool_round(&mut self) {
+        self.staged_tool_round_checkpoint = None;
+    }
+
+    pub(super) fn rollback_staged_tool_round(&mut self) {
+        let Some(checkpoint) = self.staged_tool_round_checkpoint.take() else {
+            return;
+        };
+        self.active = checkpoint.active;
+        self.visible_prefix = checkpoint.visible_prefix;
+        self.pending_ambiguous_fragments = checkpoint.pending_ambiguous_fragments;
+        self.expected_continuation_ack = checkpoint.expected_continuation_ack;
+        self.next_continuation_ack = checkpoint.next_continuation_ack;
+        self.empty_terminal_retried = checkpoint.empty_terminal_retried;
+        self.consecutive_no_progress_output_limits =
+            checkpoint.consecutive_no_progress_output_limits;
+        self.consecutive_no_progress_resumable_terminals =
+            checkpoint.consecutive_no_progress_resumable_terminals;
+        self.last_provider_pause_state = checkpoint.last_provider_pause_state;
     }
 
     /// Arm a request-specific acknowledgement for the next continuation.
@@ -467,6 +517,11 @@ impl OutputRecovery {
         }
 
         if has_tool_calls {
+            debug_assert!(
+                self.staged_tool_round_checkpoint.is_none(),
+                "a staged recovery tool round must be committed or rolled back before another sample"
+            );
+            self.staged_tool_round_checkpoint = Some(self.checkpoint());
             let visible_delta = if self.active {
                 match self.commit_continuation_fragment(content, continuation_acknowledged) {
                     ContinuationCommit::Committed(delta)
@@ -558,6 +613,7 @@ mod tests {
                 visible_delta: String::new(),
             }
         );
+        recovery.commit_staged_tool_round();
         assert!(recovery.reserves_answer_channel());
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "done", false),
@@ -715,6 +771,7 @@ mod tests {
                 visible_delta: "de".to_string(),
             }
         );
+        recovery.commit_staged_tool_round();
         assert_eq!(recovery.visible_prefix, "abcde");
     }
 
@@ -739,7 +796,33 @@ mod tests {
                 visible_delta: "foo".to_string(),
             }
         );
+        recovery.commit_staged_tool_round();
         assert_eq!(recovery.visible_prefix, "foofoo");
+    }
+
+    #[test]
+    fn rejected_tool_round_rolls_back_staged_recovery_text() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "abc", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::ToolCalls), "cde", true),
+            OutputRecoveryDecision::ToolRound {
+                visible_delta: "de".to_string(),
+            }
+        );
+        assert_eq!(recovery.visible_prefix, "abcde");
+        recovery.rollback_staged_tool_round();
+        assert_eq!(recovery.visible_prefix, "abc");
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), " final", false),
+            OutputRecoveryDecision::Final {
+                content: "abc final".to_string(),
+                visible_delta: " final".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -883,6 +966,7 @@ mod tests {
                     visible_delta: String::new(),
                 }
             );
+            recovery.commit_staged_tool_round();
         }
     }
 
