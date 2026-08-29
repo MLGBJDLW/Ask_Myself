@@ -1567,6 +1567,11 @@ struct CancelledStreamProvider {
     visible_output: bool,
 }
 
+struct LengthThenCancelledProvider {
+    stream_calls: Arc<AtomicUsize>,
+    disconnect_after_hosted_tool: bool,
+}
+
 #[derive(Clone, Copy)]
 enum PendingCancellationPoint {
     StreamOpen,
@@ -1875,6 +1880,85 @@ impl LlmProvider for CancelledStreamProvider {
             message: "cancelled by user".to_string(),
         });
         Ok(Box::pin(stream::iter(events)))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LengthThenCancelledProvider {
+    fn name(&self) -> &str {
+        "length-then-cancelled-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "cancelled recovery must not enter completion fallback".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no == 0 {
+            return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
+                Ok(StreamChunk {
+                    delta: "abc".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Length),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            ])));
+        }
+
+        let answer = ProviderStreamEvent::Chunk {
+            chunk: Box::new(StreamChunk {
+                delta: "cdef".to_string(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            }),
+        };
+        if self.disconnect_after_hosted_tool {
+            return Ok(Box::pin(stream::iter(vec![
+                answer,
+                ProviderStreamEvent::HostedTool {
+                    tool: Box::new(crate::llm::ProviderHostedToolEvent {
+                        call_id: "hosted-recovery-action".to_string(),
+                        tool_name: "web_search".to_string(),
+                        kind: crate::llm::ProviderHostedToolKind::WebSearch,
+                        provider_id: "length-then-cancelled-mock".to_string(),
+                        status: ProviderHostedToolStatus::Running,
+                        arguments: None,
+                        content: None,
+                        artifacts: None,
+                    }),
+                },
+                ProviderStreamEvent::RecoverableError {
+                    message: "connection lost after hosted recovery action".to_string(),
+                },
+            ])));
+        }
+
+        Ok(Box::pin(stream::iter(vec![
+            answer,
+            ProviderStreamEvent::Cancelled {
+                message: "cancelled during output recovery".to_string(),
+            },
+        ])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -8833,6 +8917,106 @@ async fn visible_cancelled_stream_persists_accepted_interrupted_draft_once() {
     );
     assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
     assert_eq!(db.count_provider_turns().expect("provider turns"), 1);
+}
+
+async fn assert_interrupted_output_recovery_persists_canonical_partial_answer(
+    disconnect_after_hosted_tool: bool,
+) {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(LengthThenCancelledProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            disconnect_after_hosted_tool,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "length-then-cancelled-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "continue across the provider output boundary".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 6,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("the provider cancellation must terminate recovery");
+
+    if disconnect_after_hosted_tool {
+        assert!(matches!(
+            error,
+            CoreError::StreamIncomplete(ref message)
+                if message.contains("hosted action") && message.contains("retry suppressed")
+        ));
+    } else {
+        assert!(matches!(
+            error,
+            CoreError::Cancelled(ref message) if message == "cancelled during output recovery"
+        ));
+    }
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    let drafts = persisted
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(drafts.len(), 1, "the canonical draft must persist once");
+    assert_eq!(drafts[0].content, "abcdef");
+    let envelope = crate::conversation::conversation_message_provider_turn(drafts[0])
+        .expect("interrupted recovery draft provenance");
+    assert_eq!(envelope.visible_content, "abcdef");
+    assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
+}
+
+#[tokio::test]
+async fn cancelled_output_recovery_persists_the_canonical_partial_answer() {
+    assert_interrupted_output_recovery_persists_canonical_partial_answer(false).await;
+}
+
+#[tokio::test]
+async fn disconnected_output_recovery_persists_the_canonical_partial_answer() {
+    assert_interrupted_output_recovery_persists_canonical_partial_answer(true).await;
 }
 
 #[tokio::test]

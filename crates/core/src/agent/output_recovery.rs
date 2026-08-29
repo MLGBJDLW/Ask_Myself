@@ -173,7 +173,7 @@ pub(super) enum OutputRecoveryDecision {
 /// Output-limit continuations are progress-based and independent from the
 /// surrounding tool-round budget. Empty successful terminals get one
 /// corrective continuation before the anomaly is surfaced.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
@@ -207,6 +207,31 @@ impl OutputRecovery {
 
     pub(super) fn has_visible_content(&self) -> bool {
         !self.visible_prefix.trim().is_empty()
+    }
+
+    /// Project an interrupted recovery sample onto the last accepted answer.
+    ///
+    /// Recovery samples are intentionally withheld from the live/persisted
+    /// answer until their terminal state is known. If the stream is cancelled
+    /// or disconnects after producing partial text, preserve the same
+    /// acknowledgement stripping, ambiguity handling, and overlap removal
+    /// that a completed recovery sample would use rather than persisting the
+    /// raw provider fragment by itself.
+    pub(super) fn canonical_interrupted_content(&self, content: &str) -> String {
+        let mut preview = self.clone();
+        preview.staged_tool_round_checkpoint = None;
+        let expected_ack = preview.expected_continuation_ack.take();
+        let (content, acknowledged) =
+            strip_expected_continuation_ack(content, expected_ack.as_deref());
+        let partial_control_marker = !acknowledged
+            && expected_ack.as_deref().is_some_and(|acknowledgement| {
+                let candidate = content.trim_start();
+                !candidate.is_empty() && acknowledgement.starts_with(candidate)
+            });
+        if !partial_control_marker {
+            let _ = preview.commit_continuation_fragment(content, acknowledged);
+        }
+        preview.visible_prefix
     }
 
     fn checkpoint(&self) -> OutputRecoveryCheckpoint {
@@ -663,6 +688,33 @@ mod tests {
                 content: "one two three four".to_string(),
                 visible_delta: "four".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn interrupted_recovery_projects_the_canonical_partial_answer() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "abc", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+
+        assert_eq!(recovery.canonical_interrupted_content("cdef"), "abcdef");
+        assert_eq!(recovery.canonical_interrupted_content("abc"), "abc");
+
+        let acknowledgement = recovery
+            .expected_continuation_ack
+            .as_deref()
+            .expect("recovery request acknowledgement");
+        assert_eq!(
+            recovery.canonical_interrupted_content(&format!("{acknowledgement}\ndef")),
+            "abcdef"
+        );
+        assert_eq!(
+            recovery.canonical_interrupted_content(&acknowledgement[..10]),
+            "abc",
+            "an interrupted control marker must never leak into the draft"
         );
     }
 

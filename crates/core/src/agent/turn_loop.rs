@@ -1365,6 +1365,7 @@ impl AgentExecutor {
                     force_answer_only,
                     suppress_tools: suppress_tools_for_step,
                     buffer_answer_projection,
+                    output_recovery: &output_recovery,
                     requires_first_action: !model_action_observed,
                     total_usage: &mut total_usage,
                 })
