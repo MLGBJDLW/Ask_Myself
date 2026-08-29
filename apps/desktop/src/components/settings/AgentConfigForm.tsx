@@ -1323,7 +1323,7 @@ export function AgentConfigForm({
         )}
       </div>
 
-      {/* Max Tool Iterations */}
+      {/* Optional verified tool-round budget */}
       {showAdvanced && (
         <div className="space-y-2">
           <label className="text-sm font-medium text-text-primary">
@@ -1333,12 +1333,12 @@ export function AgentConfigForm({
             type="number"
             value={maxIterations ?? ""}
             onChange={(e) => {
-              const val = e.target.value.trim();
-              setMaxIterations(val ? parseInt(val) || null : null);
+              const value = e.target.value.trim();
+              const parsed = Number.parseInt(value, 10);
+              setMaxIterations(value === "" || Number.isNaN(parsed) ? null : parsed);
             }}
-            placeholder="6"
-            min={1}
-            max={50}
+            min={0}
+            max={4294967295}
             step={1}
           />
           <p className="text-xs text-text-tertiary">

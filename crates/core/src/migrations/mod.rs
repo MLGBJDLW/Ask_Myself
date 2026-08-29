@@ -4852,4 +4852,25 @@ mod tests {
             .unwrap();
         assert_eq!(terminal_progress, 0);
     }
+
+    #[test]
+    fn fresh_agent_configs_do_not_inherit_a_hidden_output_cap() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).expect("migrations should succeed");
+        conn.execute(
+            "INSERT INTO agent_configs (id, name, provider, model)
+             VALUES ('auto-output', 'Auto output', 'deep_seek', 'deepseek-v4-pro')",
+            [],
+        )
+        .unwrap();
+
+        let max_tokens: Option<i64> = conn
+            .query_row(
+                "SELECT max_tokens FROM agent_configs WHERE id = 'auto-output'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(max_tokens, None);
+    }
 }

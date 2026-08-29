@@ -1011,7 +1011,7 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
         custom_orchestration: None,
     })
     .executor_config;
-    assert_eq!(nexus.max_iterations, 48);
+    assert_eq!(nexus.max_iterations, 7);
     assert_eq!(nexus.reasoning_effort, Some(ReasoningEffort::Max));
     assert_eq!(nexus.subagent_max_parallel, Some(6));
     assert_eq!(nexus.subagent_max_calls_per_turn, Some(12));

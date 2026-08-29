@@ -1513,7 +1513,7 @@ export function ChatInput({
       {orchestrationProfile === "custom" && (
         <div className="mt-2 grid grid-cols-2 gap-2 border-t border-amber-400/15 pt-2 sm:grid-cols-4">
           {([
-            ["maxIterations", "chat.qualityCustomIterations", 4, 96, 1],
+            ["maxIterations", "chat.qualityCustomIterations", 0, 4294967295, 1],
             ["maxParallel", "chat.qualityCustomParallel", 1, 8, 1],
             ["maxCallsPerTurn", "chat.qualityCustomCalls", 1, 24, 1],
             ["delegatedTokenBudget", "chat.qualityCustomTokenBudget", 4096, 192000, 1024],

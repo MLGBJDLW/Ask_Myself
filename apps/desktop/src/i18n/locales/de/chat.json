@@ -524,7 +524,7 @@
   "qualityProfile.custom": "Custom",
   "qualityProfileSummary": "Client-side workflow, retry, and verification policy; provider reasoning stays separate.",
   "qualityProfileReset": "Reset to Balanced",
-  "qualityCustomIterations": "Iterations",
+  "qualityCustomIterations": "Verifizierte Tool-Runden",
   "qualityCustomParallel": "Parallel",
   "qualityCustomCalls": "Calls / turn",
   "qualityCustomTokenBudget": "Token budget",

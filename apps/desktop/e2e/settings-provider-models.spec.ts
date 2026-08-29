@@ -876,21 +876,43 @@ test("provider output limit is automatic when the explicit cap is cleared", asyn
 
   const maxTokensField = page
     .locator("label")
-    .filter({ hasText: "Max Tokens" })
+    .filter({ hasText: "Per-request output limit" })
     .locator("xpath=..");
   const input = maxTokensField.getByRole("spinbutton");
   await expect(input).toHaveValue("4096");
   await input.fill("");
-  await expect(input).toHaveAttribute("placeholder", "Auto (agent-safe reserve)");
-  await expect(maxTokensField).toContainText("16K generally; 32K for DeepSeek");
+  await expect(input).toHaveAttribute("placeholder", "Auto (verified model capability)");
+  await expect(maxTokensField).toContainText("verified model-catalog output capability");
+  const toolRoundsInput = page
+    .locator("label")
+    .filter({ hasText: "Max Verified Tool Rounds" })
+    .locator("xpath=..")
+    .getByRole("spinbutton");
+  await toolRoundsInput.fill("0");
 
-  await maxTokensField
-    .locator("xpath=ancestor::form")
-    .getByRole("button", { name: "Save", exact: true })
-    .click();
+  const form = maxTokensField.locator("xpath=ancestor::form");
+  const invalidInputs = await form.locator("input:invalid").evaluateAll((inputs) =>
+    inputs.map((input) => {
+      const element = input as HTMLInputElement;
+      return {
+        name: element.getAttribute("name"),
+        value: element.value,
+        min: element.min,
+        max: element.max,
+        validationMessage: element.validationMessage,
+      };
+    }),
+  );
+  expect(invalidInputs).toEqual([]);
+  await form.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (
-    window as unknown as { __savedAgentConfig?: { maxTokens?: number | null } }
-  ).__savedAgentConfig?.maxTokens)).toBeNull();
+    window as unknown as {
+      __savedAgentConfig?: { maxTokens?: number | null; maxIterations?: number | null };
+    }
+  ).__savedAgentConfig)).toEqual(expect.objectContaining({
+    maxTokens: null,
+    maxIterations: 0,
+  }));
 });
 
 test("catalog model picker stays compact and searchable in a narrow settings column", async ({ page }) => {

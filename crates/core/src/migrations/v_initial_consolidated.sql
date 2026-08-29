@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS agent_configs (
     base_url    TEXT,
     model       TEXT NOT NULL,
     temperature REAL DEFAULT 0.3,
-    max_tokens  INTEGER DEFAULT 4096,
+    max_tokens  INTEGER DEFAULT NULL,
     is_default  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),

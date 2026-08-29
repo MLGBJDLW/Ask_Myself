@@ -253,24 +253,17 @@ pub fn build_desktop_agent_turn_config(
                 "xhigh" => Some(ReasoningEffort::XHigh),
                 _ => None,
             });
-    let active_goal = db
-        .get_conversation_goal(&conversation.id)
-        .ok()
-        .flatten()
-        .filter(|goal| goal.status == nexa_core::conversation::ConversationGoalStatus::Active);
     let goal_section = nexa_core::conversation::goal::build_conversation_goal_prompt_section(
         db,
         &conversation.id,
         !execution_mode.is_plan(),
     );
-    let configured_max_iterations = if active_goal.is_some() && !execution_mode.is_plan() {
-        u32::MAX
-    } else {
-        db_config
-            .max_iterations
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(u32::MAX)
-    };
+    // A durable goal can span turns, but it cannot silently erase a tool-round
+    // cap the user explicitly saved for each turn.
+    let configured_max_iterations = db_config
+        .max_iterations
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(u32::MAX);
     let power_policy = resolve_agent_power_policy(AgentPowerPolicyInput {
         mode: power_mode,
         provider_type,
