@@ -9,9 +9,76 @@
 use crate::llm::FinishReason;
 
 /// Output recovery stops only after repeated samples make no answer or tool
-/// progress. Visible continuation text and verified tool rounds reset this
+/// progress. Novel continuation text and verified tool rounds reset this
 /// liveness streak; they are not counted against an arbitrary turn-wide cap.
-const CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD: u8 = 3;
+const CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD: u8 = 3;
+
+/// Return the byte length of the longest suffix of `existing` that is also a
+/// prefix of `fragment`. Scanning only the relevant tail keeps the work linear
+/// in the provider fragment instead of the full accumulated answer.
+fn longest_suffix_prefix_overlap(existing: &str, fragment: &str) -> usize {
+    let pattern = fragment.as_bytes();
+    if pattern.is_empty() || existing.is_empty() {
+        return 0;
+    }
+
+    let mut prefix_lengths = vec![0; pattern.len()];
+    let mut matched = 0;
+    for index in 1..pattern.len() {
+        while matched > 0 && pattern[index] != pattern[matched] {
+            matched = prefix_lengths[matched - 1];
+        }
+        if pattern[index] == pattern[matched] {
+            matched += 1;
+            prefix_lengths[index] = matched;
+        }
+    }
+
+    matched = 0;
+    let tail_start = existing.len().saturating_sub(pattern.len());
+    let tail = &existing.as_bytes()[tail_start..];
+    for (index, byte) in tail.iter().copied().enumerate() {
+        while matched > 0 && byte != pattern[matched] {
+            matched = prefix_lengths[matched - 1];
+        }
+        if byte == pattern[matched] {
+            matched += 1;
+            if matched == pattern.len() {
+                if index + 1 == tail.len() {
+                    return matched;
+                }
+                matched = prefix_lengths[matched - 1];
+            }
+        }
+    }
+    debug_assert!(fragment.is_char_boundary(matched));
+    matched
+}
+
+fn append_with_overlap(existing: &mut String, fragment: &str) -> bool {
+    let overlap = longest_suffix_prefix_overlap(existing, fragment);
+    let overlap = if fragment.is_char_boundary(overlap) {
+        overlap
+    } else {
+        0
+    };
+    let novel = &fragment[overlap..];
+    if novel.trim().is_empty() {
+        return false;
+    }
+    existing.push_str(novel);
+    true
+}
+
+/// Append only answer text that has not already been returned during this
+/// recovery episode. The containment check catches repeated and alternating
+/// provider fragments; suffix/prefix overlap removes normal boundary replay.
+fn append_novel_continuation(existing: &mut String, fragment: &str) -> bool {
+    if fragment.trim().is_empty() || (!existing.is_empty() && existing.contains(fragment)) {
+        return false;
+    }
+    append_with_overlap(existing, fragment)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OutputRecoveryCause {
@@ -85,7 +152,8 @@ pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
     empty_terminal_retried: bool,
-    consecutive_empty_output_limits: u8,
+    consecutive_no_progress_output_limits: u8,
+    consecutive_empty_resumable_terminals: u8,
 }
 
 impl OutputRecovery {
@@ -140,20 +208,23 @@ impl OutputRecovery {
             }
 
             self.active = true;
-            if has_visible_content {
-                self.consecutive_empty_output_limits = 0;
-                self.visible_prefix.push_str(content);
+            self.consecutive_empty_resumable_terminals = 0;
+            let made_visible_progress =
+                has_visible_content && append_novel_continuation(&mut self.visible_prefix, content);
+            if made_visible_progress {
+                self.consecutive_no_progress_output_limits = 0;
             } else {
-                self.consecutive_empty_output_limits =
-                    self.consecutive_empty_output_limits.saturating_add(1);
-                if self.consecutive_empty_output_limits >= CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD
+                self.consecutive_no_progress_output_limits =
+                    self.consecutive_no_progress_output_limits.saturating_add(1);
+                if self.consecutive_no_progress_output_limits
+                    >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
                 {
                     return OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit);
                 }
             }
             return OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::OutputLimit,
-                had_visible_content: has_visible_content,
+                had_visible_content: made_visible_progress,
             };
         }
 
@@ -173,13 +244,15 @@ impl OutputRecovery {
                 });
             }
             self.active = true;
+            self.consecutive_no_progress_output_limits = 0;
             if has_visible_content {
-                self.consecutive_empty_output_limits = 0;
+                self.consecutive_empty_resumable_terminals = 0;
                 self.visible_prefix.push_str(content);
             } else {
-                self.consecutive_empty_output_limits =
-                    self.consecutive_empty_output_limits.saturating_add(1);
-                if self.consecutive_empty_output_limits >= CONSECUTIVE_EMPTY_OUTPUT_STALL_THRESHOLD
+                self.consecutive_empty_resumable_terminals =
+                    self.consecutive_empty_resumable_terminals.saturating_add(1);
+                if self.consecutive_empty_resumable_terminals
+                    >= CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD
                 {
                     return OutputRecoveryDecision::Reject(
                         OutputRecoveryFailure::ProtocolIncomplete,
@@ -193,16 +266,18 @@ impl OutputRecovery {
         }
 
         if has_tool_calls {
-            self.consecutive_empty_output_limits = 0;
+            self.consecutive_no_progress_output_limits = 0;
+            self.consecutive_empty_resumable_terminals = 0;
             return OutputRecoveryDecision::ToolRound;
         }
 
         if has_visible_content {
             let mut final_content = std::mem::take(&mut self.visible_prefix);
-            final_content.push_str(content);
+            append_with_overlap(&mut final_content, content);
             self.active = false;
             self.empty_terminal_retried = false;
-            self.consecutive_empty_output_limits = 0;
+            self.consecutive_no_progress_output_limits = 0;
+            self.consecutive_empty_resumable_terminals = 0;
             return OutputRecoveryDecision::Final(final_content);
         }
 
@@ -275,6 +350,50 @@ mod tests {
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "four", false),
             OutputRecoveryDecision::Final("one two three four".to_string())
+        );
+    }
+
+    #[test]
+    fn repeated_non_empty_output_limit_fragments_stall_without_growing_the_answer() {
+        let mut recovery = OutputRecovery::default();
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "same fragment", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                had_visible_content: true,
+            }
+        );
+        for _ in 0..CONSECUTIVE_NO_PROGRESS_STALL_THRESHOLD - 1 {
+            assert_eq!(
+                recovery.observe(Some(&FinishReason::Length), "same fragment", false),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::OutputLimit,
+                    had_visible_content: false,
+                }
+            );
+        }
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Length), "same fragment", false),
+            OutputRecoveryDecision::Reject(OutputRecoveryFailure::OutputLimit)
+        );
+        assert_eq!(recovery.visible_prefix, "same fragment");
+    }
+
+    #[test]
+    fn overlapping_utf8_continuations_append_only_novel_suffixes() {
+        let mut recovery = OutputRecovery::default();
+        for fragment in ["开始你好世界", "世界继续前进"] {
+            assert!(matches!(
+                recovery.observe(Some(&FinishReason::Length), fragment, false),
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::OutputLimit,
+                    had_visible_content: true,
+                }
+            ));
+        }
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), "继续前进完成", false),
+            OutputRecoveryDecision::Final("开始你好世界继续前进完成".to_string())
         );
     }
 
