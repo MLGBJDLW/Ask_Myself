@@ -77,7 +77,6 @@ jobs:
   release_metadata:
     name: Release Metadata Contracts
     needs: classify
-    if: needs.classify.outputs.release_metadata_only == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -422,6 +421,7 @@ jobs:
           else
             results=(
               "Repository Policy:$REPOSITORY_POLICY_RESULT"
+              "Release Metadata Contracts:$RELEASE_METADATA_RESULT"
               "Rust Core:$RUST_CORE_RESULT"
               "Office Artifact Smoke:$OFFICE_SMOKE_RESULT"
               "Frontend Contracts & Build:$FRONTEND_RESULT"

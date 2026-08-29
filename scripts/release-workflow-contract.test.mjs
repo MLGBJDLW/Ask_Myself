@@ -84,11 +84,19 @@ test('full CI is front-loaded onto pull requests instead of repeated after merge
 });
 
 test('only the trusted release metadata classifier can select lightweight CI', () => {
+  const releaseMetadataAt = ciWorkflow.indexOf('  release_metadata:');
+  const rustCoreAt = ciWorkflow.indexOf('  rust_core:');
+  const releaseMetadataJob = ciWorkflow.slice(releaseMetadataAt, rustCoreAt);
   assert.match(ciWorkflow, /name: Classify CI Scope/);
   assert.match(ciWorkflow, /NEXA_CI_BASE_REF: origin\/master/);
   assert.match(ciWorkflow, /NEXA_CI_HEAD_REF: HEAD/);
   assert.match(ciWorkflow, /node scripts\/ci-scope\.mjs/);
   assert.match(ciWorkflow, /name: Release Metadata Contracts/);
+  assert.doesNotMatch(
+    releaseMetadataJob,
+    /if: needs\.classify\.outputs\.release_metadata_only == 'true'/,
+  );
+  assert.match(ciWorkflow, /"Release Metadata Contracts:\$RELEASE_METADATA_RESULT"/);
   assert.match(
     ciWorkflow,
     /if: needs\.classify\.outputs\.release_metadata_only != 'true'/,
