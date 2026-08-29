@@ -19,7 +19,32 @@ dependencies = [
 `;
   const updated = synchronizePackageVersion(source, 'nexa-core', '0.2.0');
   assert.match(updated, /name = "nexa-core"\nversion = "0\.2\.0"/u);
+  assert.match(updated, /version = "0\.2\.0"\ndependencies = \[/u);
   assert.match(updated, /name = "dependency"\nversion = "9\.8\.7"/u);
+});
+
+test('updates adjacent workspace packages without consuming block separators', () => {
+  const source = `[[package]]
+name = "nexa-core"
+version = "0.1.0"
+
+[[package]]
+name = "nexa-desktop"
+version = "0.1.0"
+`;
+  const coreUpdated = synchronizePackageVersion(source, 'nexa-core', '0.2.0');
+  const bothUpdated = synchronizePackageVersion(coreUpdated, 'nexa-desktop', '0.2.0');
+  assert.equal(
+    bothUpdated,
+    `[[package]]
+name = "nexa-core"
+version = "0.2.0"
+
+[[package]]
+name = "nexa-desktop"
+version = "0.2.0"
+`,
+  );
 });
 
 test('fails closed when a requested package is absent', () => {

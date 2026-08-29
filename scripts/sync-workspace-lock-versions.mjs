@@ -31,11 +31,11 @@ export function synchronizePackageVersion(lockContents, packageName, version) {
         return packageBlock;
       }
       matches += 1;
-      if (!/^version\s*=\s*"[^"]+"\s*$/mu.test(packageBlock)) {
+      if (!/^version[ \t]*=[ \t]*"[^"]+"[ \t]*$/mu.test(packageBlock)) {
         throw new Error(`Cargo.lock package ${packageName} has no version field`);
       }
       return packageBlock.replace(
-        /^version\s*=\s*"[^"]+"\s*$/mu,
+        /^version[ \t]*=[ \t]*"[^"]+"[ \t]*$/mu,
         `version = "${version}"`,
       );
     },
