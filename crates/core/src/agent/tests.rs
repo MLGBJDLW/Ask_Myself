@@ -2027,6 +2027,7 @@ struct ErrorNamedMockTool {
 
 struct DefinitionCountingTool {
     definition_calls: Arc<AtomicUsize>,
+    schema_repetitions: usize,
 }
 
 #[async_trait]
@@ -2218,7 +2219,8 @@ impl Tool for DefinitionCountingTool {
             "properties": {
                 "payload": {
                     "type": "string",
-                    "description": "schema content that answer-only mode must never account ".repeat(300)
+                    "description": "schema content that answer-only mode must never account "
+                        .repeat(self.schema_repetitions)
                 }
             }
         })
@@ -3436,6 +3438,7 @@ async fn answer_only_prompt_never_constructs_or_accounts_tool_schemas() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(DefinitionCountingTool {
         definition_calls: Arc::clone(&definition_calls),
+        schema_repetitions: 300,
     }));
     let calls_after_registration = definition_calls.load(Ordering::SeqCst);
     let captured_tools = Arc::new(Mutex::new(Vec::new()));
@@ -3481,6 +3484,83 @@ async fn answer_only_prompt_never_constructs_or_accounts_tool_schemas() {
     let captured_tools = captured_tools.lock().unwrap();
     assert_eq!(captured_tools.len(), 1);
     assert!(captured_tools[0].is_empty());
+}
+
+#[tokio::test]
+async fn reserved_final_sample_excludes_suppressed_schemas_from_cumulative_accounting() {
+    let definition_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(DefinitionCountingTool {
+        definition_calls: Arc::clone(&definition_calls),
+        schema_repetitions: 4_000,
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            first_chunks: vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "large-schema-call".to_string(),
+                    name: Some("definition_counting_tool".to_string()),
+                    arguments_delta: r#"{"payload":"evidence"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: Some(Usage {
+                    prompt_tokens: 109_000,
+                    completion_tokens: 1_000,
+                    total_tokens: 110_000,
+                    thinking_tokens: None,
+                    tool_prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_miss_tokens: None,
+                    cache_creation_tokens: None,
+                    provider_raw: None,
+                }),
+                thinking_delta: None,
+            }],
+            final_answer: "final answer from the committed tool result",
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            max_tokens: Some(2_048),
+            context_window: Some(400_000),
+            max_actual_tokens_per_run: Some(150_000),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Use the tool once, then synthesize the answer.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the tool-free final sample should fit its remaining cumulative budget");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer from the committed tool result"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        definition_calls.load(Ordering::SeqCst) > 0,
+        "the first tool-enabled sample must still build the large schema"
+    );
 }
 
 #[tokio::test]

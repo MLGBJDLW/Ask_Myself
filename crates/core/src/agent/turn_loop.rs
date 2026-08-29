@@ -109,6 +109,14 @@ fn cumulative_run_step_output_budget(
         .then(|| configured_step_max.min(remaining.saturating_sub(estimated_prompt).max(256)))
 }
 
+fn effective_tool_surface(tool_defs: &[ToolDefinition], suppress_tools: bool) -> &[ToolDefinition] {
+    if suppress_tools {
+        &[]
+    } else {
+        tool_defs
+    }
+}
+
 async fn emit_tool_dispatch_failure(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -1185,6 +1193,17 @@ impl AgentExecutor {
                 self.config.max_iterations,
                 layout.append_volatile_system_prompt_to_tail,
             );
+
+            // Tool discovery and steering can expand the surface between model
+            // steps. Re-apply the isolation boundary before any request
+            // accounting so the estimated and transmitted surfaces stay
+            // identical.
+            if workspace_isolation.is_some() {
+                WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
+            }
+            let suppress_tools_for_step = !step_permit.allows_tools();
+            let effective_tool_defs =
+                effective_tool_surface(tool_defs.as_slice(), suppress_tools_for_step);
             prompt_was_compacted |= self
                 .compact_before_model_step_if_needed(LongTaskCompactionContext {
                     db,
@@ -1194,7 +1213,7 @@ impl AgentExecutor {
                     model,
                     messages: &mut messages,
                     context_pipeline,
-                    tool_defs: &tool_defs,
+                    tool_defs: effective_tool_defs,
                     turn_state: &mut turn_state,
                     loop_recorder: &mut loop_recorder,
                     persisted_trace_items: &mut persisted_trace_items,
@@ -1213,18 +1232,14 @@ impl AgentExecutor {
                 },
             );
 
-            // Tool discovery and steering can expand the surface between model
-            // steps. Re-apply the isolation boundary so neither project
-            // manifests nor external MCP processes can bypass the worktree.
-            if workspace_isolation.is_some() {
-                WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
-            }
-
             let force_answer_only = output_recovery.reserves_answer_channel()
                 || step_permit.mode == TurnStepMode::FinalAnswerOnly;
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
-                    model, &messages, &tool_defs, None,
+                    model,
+                    &messages,
+                    effective_tool_defs,
+                    None,
                 )
                 .total_tokens
             } else {
@@ -1284,7 +1299,7 @@ impl AgentExecutor {
                     force_non_streaming_llm: &mut force_non_streaming_llm,
                     reasoning_disabled_for_tool_loop: &mut reasoning_disabled_for_tool_loop,
                     force_answer_only,
-                    suppress_tools: !step_permit.allows_tools(),
+                    suppress_tools: suppress_tools_for_step,
                     requires_first_action: !model_action_observed,
                     total_usage: &mut total_usage,
                 })
@@ -1368,7 +1383,10 @@ impl AgentExecutor {
                         model,
                         messages: &mut messages,
                         context_pipeline,
-                        tool_defs: &tool_defs,
+                        tool_defs: effective_tool_surface(
+                            tool_defs.as_slice(),
+                            suppress_tools_for_step,
+                        ),
                         turn_state: &mut turn_state,
                         loop_recorder: &mut loop_recorder,
                         persisted_trace_items: &mut persisted_trace_items,
