@@ -2020,6 +2020,11 @@ struct CountingNamedMockTool {
     executions: Arc<AtomicUsize>,
 }
 
+struct ErrorNamedMockTool {
+    name: &'static str,
+    executions: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -2159,6 +2164,34 @@ impl Tool for CountingNamedMockTool {
             call_id: context.call_id.to_string(),
             content: "ok".to_string(),
             is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for ErrorNamedMockTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Failing named mock tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "direct-dispatch-error".to_string(),
+            is_error: true,
             artifacts: None,
         })
     }
@@ -3304,6 +3337,57 @@ async fn explicit_nexus_keeps_task_plan_tool_visible() {
     assert!(captured.lock().unwrap()[0]
         .iter()
         .any(|name| name == "update_plan"));
+}
+
+#[tokio::test]
+async fn failed_direct_dispatch_consumes_the_finite_tool_round() {
+    let direct_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ErrorNamedMockTool {
+        name: "list_sources",
+        executions: Arc::clone(&direct_executions),
+    }));
+    registry.register(Box::new(MockTool));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "list sources".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the failed direct dispatch should fall back to synthesis");
+
+    assert_eq!(final_message.text_content(), "done");
+    assert_eq!(direct_executions.load(Ordering::SeqCst), 1);
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(
+        captured_tools[0].is_empty(),
+        "the failed direct execution must consume the sole tool round before model fallback"
+    );
 }
 
 #[tokio::test]

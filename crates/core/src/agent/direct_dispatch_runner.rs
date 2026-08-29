@@ -2,14 +2,22 @@
 
 use super::*;
 
+pub(super) enum DirectDispatchOutcome {
+    NotMatched,
+    ExecutedButFailed,
+    Completed(Message),
+}
+
 impl AgentExecutor {
     // -----------------------------------------------------------------------
     // Direct dispatch — skip LLM for simple commands
     // -----------------------------------------------------------------------
 
     /// Attempt to handle the query without an LLM call by detecting simple,
-    /// unambiguous command patterns. Returns `Some(Message)` if handled
-    /// directly, `None` to fall through to the normal ReAct loop.
+    /// unambiguous command patterns. The result distinguishes a query that did
+    /// not match from a tool batch that entered execution and failed, because
+    /// only the latter consumes verified tool-round authority before falling
+    /// through to the normal ReAct loop.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn try_direct_dispatch(
         &self,
@@ -20,13 +28,15 @@ impl AgentExecutor {
         conversation_id: Option<&str>,
         turn_id: Option<&str>,
         sort_order: i64,
-    ) -> Option<Message> {
+    ) -> DirectDispatchOutcome {
         if user_text.is_empty() {
-            return None;
+            return DirectDispatchOutcome::NotMatched;
         }
         let model = self.config.model.as_deref().unwrap_or(DEFAULT_MODEL);
 
-        let dispatch = direct_dispatch::match_direct_pattern(user_text, db)?;
+        let Some(dispatch) = direct_dispatch::match_direct_pattern(user_text, db) else {
+            return DirectDispatchOutcome::NotMatched;
+        };
 
         debug!(
             "Direct dispatch: tool={}, args={}",
@@ -109,7 +119,7 @@ impl AgentExecutor {
                 if tool_result.is_error {
                     // Tool returned an error — fall through to LLM for
                     // a better user-facing response.
-                    return None;
+                    return DirectDispatchOutcome::ExecutedButFailed;
                 }
 
                 // Emit the content as text so streaming listeners see it.
@@ -177,7 +187,7 @@ impl AgentExecutor {
                     })
                     .await;
 
-                Some(msg)
+                DirectDispatchOutcome::Completed(msg)
             }
             Err(e) => {
                 warn!("Direct dispatch failed ({}): {}", dispatch.tool_name, e);
@@ -207,7 +217,7 @@ impl AgentExecutor {
                         ),
                     })
                     .await;
-                None // Fall through to LLM
+                DirectDispatchOutcome::ExecutedButFailed
             }
         }
     }

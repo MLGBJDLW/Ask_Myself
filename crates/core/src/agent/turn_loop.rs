@@ -672,7 +672,7 @@ impl AgentExecutor {
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
         if !self.config.execution_mode.is_plan() && turn_budget.can_dispatch_tool_round() {
             turn_state.transition_to(TurnPhase::DirectDispatch);
-            if let Some(msg) = self
+            match self
                 .try_direct_dispatch(
                     user_query_text,
                     db,
@@ -684,8 +684,14 @@ impl AgentExecutor {
                 )
                 .await
             {
-                turn_state.finish(TurnOutcome::DirectDispatch);
-                return Ok(msg);
+                direct_dispatch_runner::DirectDispatchOutcome::Completed(message) => {
+                    turn_state.finish(TurnOutcome::DirectDispatch);
+                    return Ok(message);
+                }
+                direct_dispatch_runner::DirectDispatchOutcome::ExecutedButFailed => {
+                    turn_budget.record_verified_tool_round();
+                }
+                direct_dispatch_runner::DirectDispatchOutcome::NotMatched => {}
             }
         }
 
