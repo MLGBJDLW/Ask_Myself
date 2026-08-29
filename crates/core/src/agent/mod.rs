@@ -69,6 +69,7 @@ pub mod loop_guard;
 mod model_attempt;
 mod model_progress_watchdog;
 mod model_step;
+mod output_budget;
 mod output_recovery;
 pub mod power_mode;
 mod pre_search;
@@ -87,6 +88,7 @@ mod tool_protocol;
 mod tool_runtime;
 pub mod tool_scheduler;
 mod trace_builder;
+mod turn_budget;
 pub mod turn_events;
 mod turn_loop;
 mod turn_state;
@@ -247,7 +249,9 @@ async fn emit_task_plan_update(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
-    /// Maximum number of LLM round-trips (prevents runaway tool loops).
+    /// Legacy wire name for the optional verified semantic tool-round limit.
+    /// Physical provider samples, retries, output continuations, compaction,
+    /// and rejected drafts do not consume this budget. `u32::MAX` is unlimited.
     pub max_iterations: u32,
     /// System prompt prepended to every request.
     pub system_prompt: String,
@@ -258,7 +262,8 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// Sampling temperature.
     pub temperature: Option<f32>,
-    /// Maximum tokens for the LLM response.
+    /// Optional per-physical-request output cap, distinct from cumulative run,
+    /// context, tool-round, and continuation budgets.
     pub max_tokens: Option<u32>,
     /// Optional cumulative prompt+completion ceiling for one executor run.
     /// Delegated workers use this independently from per-step `max_tokens`.
@@ -270,6 +275,11 @@ pub struct AgentConfig {
     /// resembles a known provider model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_resolution: Option<crate::conversation::memory::ResolvedContextWindow>,
+    /// Endpoint/model provenance for catalog output limits. This remains true
+    /// when a user overrides only the context capacity. `None` preserves the
+    /// legacy inference path for non-hosted callers and serialized configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_limits_authoritative: Option<bool>,
     /// Whether to enable reasoning/thinking for models that support it.
     pub reasoning_enabled: Option<bool>,
     /// Thinking budget in tokens (Anthropic, Gemini).
@@ -416,58 +426,10 @@ fn default_dynamic_tool_visibility() -> bool {
     false
 }
 
-const DEFAULT_AGENT_RESPONSE_TOKENS: u32 = 16_384;
-const DEFAULT_DEEPSEEK_RESPONSE_TOKENS: u32 = 32_768;
-
-fn is_deepseek_model_family(model: &str) -> bool {
-    model.trim().to_ascii_lowercase().split('/').any(|segment| {
-        segment == "deepseek"
-            || segment.starts_with("deepseek-")
-            || segment.starts_with("deepseek_")
-            || segment.starts_with("deepseek.")
-    })
-}
-
-impl AgentConfig {
-    /// Resolve one model-step output envelope. Explicit user configuration wins;
-    /// otherwise reasoning-heavy DeepSeek routes get enough room to reach a
-    /// tool call and other main-agent routes use a conservative 16K reserve.
-    /// Known catalog limits remain the hard upper bound.
-    fn resolved_max_response_tokens(&self, model: &str) -> u32 {
-        let automatic = self.max_tokens.is_none();
-        let default = if self.provider_type == Some(ProviderType::DeepSeek)
-            || is_deepseek_model_family(model)
-        {
-            DEFAULT_DEEPSEEK_RESPONSE_TOKENS
-        } else {
-            DEFAULT_AGENT_RESPONSE_TOKENS
-        };
-        let requested = self.max_tokens.unwrap_or(default);
-        let catalog_limit = self
-            .provider_type
-            .and_then(|provider| {
-                crate::provider_catalog::model_limits_from_catalog(provider, model)
-            })
-            .and_then(|limits| limits.max_output_tokens)
-            .and_then(|tokens| u32::try_from(tokens).ok());
-        let context_limit = self
-            .context_window_resolution
-            .and_then(|resolution| resolution.capacity_tokens)
-            .or(self.context_window)
-            .map(|capacity| {
-                if automatic {
-                    capacity.saturating_div(2).max(1)
-                } else {
-                    capacity.max(1)
-                }
-            });
-
-        catalog_limit
-            .into_iter()
-            .chain(context_limit)
-            .fold(requested, u32::min)
-    }
-}
+#[cfg(test)]
+use self::output_budget::{
+    OutputBudgetAuthority, FALLBACK_AGENT_RESPONSE_TOKENS, FALLBACK_DEEPSEEK_RESPONSE_TOKENS,
+};
 
 #[cfg(test)]
 fn tool_timeout_for_call(
@@ -493,6 +455,7 @@ impl Default for AgentConfig {
             max_actual_tokens_per_run: None,
             context_window: None,
             context_window_resolution: None,
+            catalog_limits_authoritative: None,
             reasoning_enabled: None,
             thinking_budget: None,
             reasoning_effort: None,
@@ -689,9 +652,9 @@ fn merge_tool_definitions(
 
 /// The main agent executor implementing a ReAct-style loop.
 ///
-/// Each call to [`run`](AgentExecutor::run) performs up to `max_iterations`
-/// LLM round-trips, dispatching tool calls between each round until the model
-/// produces a final text answer (or the iteration cap is hit).
+/// Each call to [`run`](AgentExecutor::run) follows provider samples until the
+/// model produces a final text answer. A finite legacy `max_iterations` value
+/// limits only verified tool rounds and reserves a final answer-only sample.
 /// Async callback invoked when a destructive tool needs user confirmation.
 /// Receives a human-readable message describing the action and returns
 /// `true` to proceed or `false` to cancel.

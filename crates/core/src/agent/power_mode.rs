@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::llm::{ProviderType, ReasoningEffort};
 use crate::provider_catalog::model_capabilities_from_catalog;
 
-pub const NEXUS_MAX_ITERATIONS_FLOOR: u32 = 48;
 pub const NEXUS_MAX_PARALLEL: u32 = 6;
 pub const NEXUS_MAX_CALLS_PER_TURN: u32 = 12;
 pub const NEXUS_TOKEN_BUDGET: u32 = 96_000;
@@ -141,7 +140,9 @@ pub fn resolve_agent_power_policy(input: AgentPowerPolicyInput<'_>) -> ResolvedA
 
     ResolvedAgentPowerPolicy {
         mode: input.mode,
-        max_iterations: input.max_iterations.max(NEXUS_MAX_ITERATIONS_FLOOR),
+        // Nexus may deepen orchestration, but it never changes the user's
+        // explicit verified tool-round budget (including an unlimited value).
+        max_iterations: input.max_iterations,
         reasoning_enabled,
         thinking_budget,
         reasoning_effort,
@@ -202,6 +203,7 @@ mod tests {
         ));
 
         assert_eq!(policy.reasoning_effort, Some(ReasoningEffort::Max));
+        assert_eq!(policy.max_iterations, 20);
         assert_eq!(policy.subagent_max_parallel, Some(NEXUS_MAX_PARALLEL));
         assert_eq!(
             policy.subagent_max_calls_per_turn,

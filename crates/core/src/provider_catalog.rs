@@ -288,9 +288,18 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
         .into_iter()
         .filter(|preset| preset.provider == lookup_provider)
         .collect::<Vec<_>>();
-    if let Some(default_index) = provider_matches.iter().position(|preset| {
-        preset.id == lookup_provider || preset.id.replace('-', "_") == lookup_provider
-    }) {
+    let compact_provider_key = |value: &str| {
+        value
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let compact_lookup_provider = compact_provider_key(lookup_provider);
+    if let Some(default_index) = provider_matches
+        .iter()
+        .position(|preset| compact_provider_key(&preset.id) == compact_lookup_provider)
+    {
         return Some(provider_matches.swap_remove(default_index));
     }
     if provider_matches.len() == 1 {
@@ -298,6 +307,31 @@ pub fn find_provider_preset(provider: &str, base_url: Option<&str>) -> Option<Pr
     } else {
         None
     }
+}
+
+/// Find catalog metadata for one exact configured provider route.
+fn find_endpoint_model_preset(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> Option<ProviderModelPreset> {
+    let normalized_model = normalize_endpoint_model_id(model);
+    find_provider_preset(provider, base_url).and_then(|preset| {
+        preset
+            .models
+            .into_iter()
+            .find(|candidate| normalize_endpoint_model_id(&candidate.id) == normalized_model)
+    })
+}
+
+/// Whether this exact endpoint/model identity may consume global catalog
+/// limits. Context-capacity overrides do not change endpoint provenance.
+pub fn endpoint_model_catalog_limits_are_authoritative(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> bool {
+    find_endpoint_model_preset(provider, base_url, model).is_some()
 }
 
 /// Resolve the context capacity owned by one configured provider route.
@@ -312,6 +346,7 @@ pub fn resolve_endpoint_model_context_window(
     model: &str,
     context_window_override: Option<u32>,
 ) -> ResolvedContextWindow {
+    let catalog_model = find_endpoint_model_preset(provider, base_url, model);
     if let Some(capacity_tokens) = context_window_override {
         return ResolvedContextWindow {
             capacity_tokens: Some(capacity_tokens),
@@ -319,14 +354,7 @@ pub fn resolve_endpoint_model_context_window(
         };
     }
 
-    let normalized_model = normalize_endpoint_model_id(model);
-    let capacity_tokens = find_provider_preset(provider, base_url)
-        .and_then(|preset| {
-            preset
-                .models
-                .into_iter()
-                .find(|candidate| normalize_endpoint_model_id(&candidate.id) == normalized_model)
-        })
+    let capacity_tokens = catalog_model
         .and_then(|model| model.context_tokens)
         .and_then(|tokens| u32::try_from(tokens).ok());
 
@@ -804,6 +832,11 @@ mod tests {
 
     #[test]
     fn endpoint_context_resolution_preserves_route_and_user_authority() {
+        assert!(endpoint_model_catalog_limits_are_authoritative(
+            "openrouter",
+            Some("https://openrouter.ai/api/v1"),
+            "z-ai/glm-5.3:free",
+        ));
         assert_eq!(
             resolve_endpoint_model_context_window(
                 "openrouter",
@@ -820,6 +853,11 @@ mod tests {
             ("open_ai", "https://private.example/v1"),
             ("custom", "https://private.example/v1"),
         ] {
+            assert!(!endpoint_model_catalog_limits_are_authoritative(
+                provider,
+                Some(endpoint),
+                "gpt-5.6",
+            ));
             assert_eq!(
                 resolve_endpoint_model_context_window(provider, Some(endpoint), "gpt-5.6", None),
                 ResolvedContextWindow {
@@ -835,6 +873,16 @@ mod tests {
                 "gpt-5.6",
                 Some(750_000),
             ),
+            ResolvedContextWindow {
+                capacity_tokens: Some(750_000),
+                authority: ContextWindowAuthority::UserOverride,
+            }
+        );
+        assert!(endpoint_model_catalog_limits_are_authoritative(
+            "open_ai", None, "gpt-5.6",
+        ));
+        assert_eq!(
+            resolve_endpoint_model_context_window("open_ai", None, "gpt-5.6", Some(750_000),),
             ResolvedContextWindow {
                 capacity_tokens: Some(750_000),
                 authority: ContextWindowAuthority::UserOverride,

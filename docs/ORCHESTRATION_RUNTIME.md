@@ -171,6 +171,58 @@ classification is independent of the replay barrier: rate limits retain their
 retry delay/category, context overflow requests compaction, permanent provider
 errors fail, and only typed transient/transport failures use reconnect.
 
+## Turn budgets and provider terminals
+
+One user turn is an open semantic loop, not a `for sample in 0..max_iterations`
+loop. The runtime keeps these authorities independent:
+
+- a transport retry budget replays one frozen physical request;
+- output continuation completes an output-limited response and never spends a
+  tool round;
+- context rollover compacts or moves committed history and never spends a tool
+  round;
+- the optional legacy `maxIterations` setting is interpreted only as the number
+  of complete, validated tool batches that enter execution, including
+  controller-owned direct dispatch, retrieval prefetch, and reconnaissance as
+  well as model-directed client tools;
+- cumulative token, cost, wall-time, and cancellation policy bound the whole
+  run independently.
+
+A finite tool-round budget reserves one final answer-only provider sample after
+the last dispatched batch. Output continuation remains available for that
+sample, but its request carries no client tools. Provider samples, rejected
+draft calls, loop-guard-blocked synthetic batches, steering restarts, compaction,
+and transport retries have their own sample sequence and do not consume the
+user-facing tool budget. Repeated
+protocol faults are controlled by the existing consecutive no-progress guard:
+committed answer or tool progress resets it, so there is no turn-wide hidden
+`MAX_OUTPUT_LIMIT_CONTINUATIONS` counter.
+
+The same budget owner is created before any controller shortcut. A zero value
+therefore blocks direct tool dispatch, knowledge prefetch, Nexus/Ultra
+reconnaissance, and model tool calls. Each controller-owned prefetch or
+reconnaissance wave consumes one logical round before the answer-only synthesis
+sample begins; no pre-loop path receives separate hidden tool authority.
+
+Saved tool-round authority is preserved across Balanced, Deep, Code Ultra,
+Research Ultra, Nexus, and durable-goal execution. Named quality profiles may
+change concurrency, evidence, and verification policy, but only an explicit
+Custom value may replace the saved tool-round setting; leaving it blank remains
+unlimited.
+
+Provider terminal normalization is conservative. OpenAI Chat `length`,
+Responses `incomplete.max_output_tokens`, Anthropic `max_tokens`, and Gemini
+`MAX_TOKENS` all become output limits. Anthropic `pause_turn` and
+`model_context_window_exceeded`, Gemini malformed-tool terminals, protocol
+incompleteness, and unknown raw reasons remain distinct. Unknown terminals never
+become a natural stop. A client tool batch may cross the dispatch seam only when
+both its provider terminal and every assembled call are complete; a global
+output/context limit or malformed terminal vetoes apparently valid JSON.
+Anthropic `pause_turn` is resumable only when the adapter captured the exact
+ordered provider-native assistant blocks, including server-tool use and result
+blocks. Those blocks replay verbatim on the same route; missing or structurally
+invalid pause state fails closed instead of restarting a hosted tool.
+
 The design follows the event boundaries in
 [earendil-works/pi's agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts),
 which advances from actual `toolCall` content and exposes explicit steering,
@@ -208,11 +260,13 @@ ranked and capped at 12 unless the user explicitly pins or invokes a skill.
 Prompt IR roles are compiled at the provider boundary. For OpenAI-compatible
 Chat Completions routes, every system-plane block is moved into the leading
 control prefix while transcript roles retain their order; controller/runtime
-tails must never be relabelled as a newer `user` request. A missing per-step
-output limit resolves to 16K generally and 32K for the DeepSeek model family,
-including OpenRouter and custom compatible routes. Automatic defaults are
-bounded by both the catalog output capability and half of an explicitly smaller
-context window. An explicit user cap remains authoritative up to the real
+tails must never be relabelled as a newer `user` request. Per-request output
+budget planning records requested/effective tokens, saved-explicit, verified
+catalog, or unknown-model fallback authority, catalog cap, and context cap. A
+missing per-step output limit uses the verified model-catalog output capability;
+only an unknown model falls back to 16K generally or 32K for the DeepSeek model
+family, including compatible routes. Automatic values are bounded by half of an
+explicitly smaller context window. An explicit user cap remains authoritative up to the real
 catalog output limit and total context capacity; the automatic half-window
 heuristic must not silently reduce it.
 

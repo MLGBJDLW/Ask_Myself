@@ -31,7 +31,13 @@ pub(super) struct ModelStepUsageReport {
 }
 
 pub(super) struct ModelStepUsageObservation<'a> {
-    pub(super) iteration: u32,
+    /// Physical provider sample index, used for canonical per-request usage
+    /// identity and low-level loop events.
+    pub(super) sample_index: u32,
+    /// Semantic agent iteration derived from completed verified tool rounds.
+    /// Recovery samples share the same value and therefore cannot inflate
+    /// long-task/evolution telemetry.
+    pub(super) trace_iteration: u32,
     pub(super) tool_call_count: usize,
     pub(super) finish_reason: Option<String>,
     pub(super) chunk_usage: Option<Usage>,
@@ -160,7 +166,8 @@ impl AgentExecutor {
             last_context_breakdown,
         } = ctx;
         let ModelStepUsageObservation {
-            iteration,
+            sample_index,
+            trace_iteration,
             tool_call_count,
             finish_reason,
             chunk_usage,
@@ -193,7 +200,7 @@ impl AgentExecutor {
             Some(&self.usage_scope_id),
             self.usage_run_id.as_deref(),
             self.usage_subtask_run_id.as_deref(),
-            iteration,
+            sample_index,
             self.config.provider_type,
             model,
             operation_kind,
@@ -307,7 +314,7 @@ impl AgentExecutor {
         }
 
         let completed = TurnLoopEvent::ModelStepCompleted {
-            iteration,
+            iteration: sample_index,
             tool_call_count,
             finish_reason,
             prompt_tokens,
@@ -319,7 +326,7 @@ impl AgentExecutor {
 
         if let Some(ref mut t) = trace {
             t.add_step(TraceStep {
-                iteration,
+                iteration: trace_iteration,
                 request_kind: self.config.request_kind.as_str().to_string(),
                 tool_name: None,
                 tool_duration_ms: None,

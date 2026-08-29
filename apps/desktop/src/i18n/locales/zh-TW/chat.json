@@ -524,7 +524,7 @@
   "qualityProfile.custom": "自訂",
   "qualityProfileSummary": "客戶端工作流、重試與驗證策略；與供應商推理強度保持分離。",
   "qualityProfileReset": "恢復均衡",
-  "qualityCustomIterations": "迭代上限",
+  "qualityCustomIterations": "已驗證工具輪次",
   "qualityCustomParallel": "並行數",
   "qualityCustomCalls": "每輪呼叫",
   "qualityCustomTokenBudget": "委派 Token",

@@ -6,6 +6,7 @@
     "catalog:audit": "node scripts/model-catalog-audit.mjs",
     "catalog:audit:test": "node scripts/model-catalog-audit.test.mjs",
     "release:workflow:test": "node --test scripts/release-workflow-contract.test.mjs",
+    "release:metadata:test": "node --test scripts/ci-scope.test.mjs scripts/release-metadata-contract.test.mjs scripts/sync-workspace-lock-versions.test.mjs && node scripts/sync-workspace-lock-versions.mjs",
     "office:addin:test": "node --test integrations/office-addin/office-addin-contract.test.mjs",
     "office:supply-chain:test": "node --test vendor/image-size-safe/image-size-safe.test.mjs",
     "office:pptxgenjs:bundle": "node scripts/bundle-pptxgenjs-runtime.mjs --output apps/desktop/src-tauri/resources/pptxgenjs-runtime",

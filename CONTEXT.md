@@ -28,6 +28,18 @@ _Avoid_: session registration flag, launch sleep, best-effort pause race
 One provider sample together with its transport-recovery budget, immutable accepted route, and replay projection. It starts from unprojected history and owns every physical retry until it either accepts output or returns a typed failure to the turn loop.
 _Avoid_: sampling retry loop, stream recovery decision plumbing, current provider route
 
+**Turn budget**:
+The per-user-turn authority that counts complete validated tool batches entering execution, whether controller-directed prefetch/reconnaissance or model-directed client tools, while assigning independent sequence numbers to physical provider samples and reserving one answer-only sample after a finite tool-round limit. Zero blocks every tool-dispatch path. Transport retry, output continuation, context rollover, steering restart, rejected drafts, and loop-guard-blocked synthetic results never spend this budget.
+_Avoid_: max model iterations, shared retry counter, final iteration
+
+**Provider terminal**:
+The provider-adapter fact describing why one physical sample ended, including output limit, context limit, provider pause, client-tool boundary, safety refusal, malformed/protocol-incomplete output, and retained unknown raw reasons. It authorizes no recovery or side effect by itself.
+_Avoid_: generic finish reason, successful EOF, provider error string
+
+**Provider pause replay state**:
+The exact ordered provider-native assistant blocks required to resume a provider-owned hosted-tool turn, such as Anthropic `pause_turn`. It is captured as a typed replay sidecar, replayed verbatim only on the compatible route, and must be present and structurally valid before a pause can continue.
+_Avoid_: visible pause text, reconstructed server tool call, blind retry
+
 **Accepted route**:
 The immutable provider route bound to a model attempt only after that route produces the first accepted stream event, or after a non-streaming completion succeeds. It is the provenance used for replay validation and the durable provider-turn envelope.
 _Avoid_: active route snapshot, latest provider, pre-stream route

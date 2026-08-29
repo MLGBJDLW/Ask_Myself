@@ -320,7 +320,7 @@ export function formatTurnStatus(status: string): string {
     case 'cancelled':
       return 'Cancelled';
     case 'max_iterations':
-      return 'Max iterations';
+      return 'Verified tool-round budget reached';
     case 'error':
       return 'Error';
     case 'running':

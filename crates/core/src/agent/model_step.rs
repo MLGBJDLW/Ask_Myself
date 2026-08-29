@@ -101,6 +101,11 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) force_non_streaming_llm: &'a mut bool,
     pub(super) reasoning_disabled_for_tool_loop: &'a mut bool,
     pub(super) force_answer_only: bool,
+    pub(super) suppress_tools: bool,
+    /// Recovery samples buffer answer text until the terminal policy accepts
+    /// and de-duplicates it. Thinking and tool protocol events remain live.
+    pub(super) buffer_answer_projection: bool,
+    pub(super) output_recovery: &'a super::output_recovery::OutputRecovery,
     pub(super) requires_first_action: bool,
     pub(super) total_usage: &'a mut Usage,
 }
@@ -129,6 +134,14 @@ pub(super) struct ModelStepOutput {
     pub(super) route_snapshot: crate::llm::provider_turn::RouteSnapshot,
     pub(super) reasoning_was_requested: bool,
     pub(super) discarded_sample_tokens: u32,
+}
+
+struct InterruptedProviderDraftCapture<'a> {
+    accepted: &'a model_attempt::AcceptedModelAttempt,
+    sample_content: &'a str,
+    iteration_thinking: &'a str,
+    reasoning_was_requested: bool,
+    output_recovery: Option<&'a super::output_recovery::OutputRecovery>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,21 +184,21 @@ impl AgentExecutor {
     fn persist_interrupted_provider_draft(
         &self,
         ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
-        accepted: &model_attempt::AcceptedModelAttempt,
-        full_content: &str,
-        iteration_thinking: &str,
-        reasoning_was_requested: bool,
+        capture: InterruptedProviderDraftCapture<'_>,
     ) {
-        if full_content.trim().is_empty() && iteration_thinking.trim().is_empty() {
+        let full_content = match capture.output_recovery {
+            Some(recovery) => recovery.canonical_interrupted_content(capture.sample_content),
+            None => capture.sample_content.to_string(),
+        };
+        if full_content.trim().is_empty() && capture.iteration_thinking.trim().is_empty() {
             return;
         }
 
-        let draft_reasoning = self.reasoning_content_for_iteration(iteration_thinking, false);
+        let draft_reasoning =
+            self.reasoning_content_for_iteration(capture.iteration_thinking, false);
         let mut draft_message = Message {
             role: Role::Assistant,
-            parts: vec![ContentPart::Text {
-                text: full_content.to_string(),
-            }],
+            parts: vec![ContentPart::Text { text: full_content }],
             name: None,
             tool_calls: None,
             reasoning_content: draft_reasoning.clone(),
@@ -193,14 +206,14 @@ impl AgentExecutor {
         };
         let mut draft_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
             Uuid::new_v4().to_string(),
-            accepted.sample_id.clone(),
-            accepted.route_snapshot.clone(),
+            capture.accepted.sample_id.clone(),
+            capture.accepted.route_snapshot.clone(),
             draft_message.text_content(),
-            crate::llm::reasoning_replay::sanitize_reasoning_text(Some(iteration_thinking))
+            crate::llm::reasoning_replay::sanitize_reasoning_text(Some(capture.iteration_thinking))
                 .as_deref(),
             draft_reasoning.as_deref(),
             Vec::new(),
-            reasoning_was_requested,
+            capture.reasoning_was_requested,
         );
         draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
         draft_message.set_provider_turn(draft_envelope);
@@ -208,7 +221,7 @@ impl AgentExecutor {
             ctx,
             &draft_message,
             draft_reasoning,
-            iteration_thinking,
+            capture.iteration_thinking,
         );
     }
 
@@ -236,14 +249,20 @@ impl AgentExecutor {
             force_non_streaming_llm,
             reasoning_disabled_for_tool_loop,
             force_answer_only,
+            suppress_tools,
+            buffer_answer_projection,
+            output_recovery,
             requires_first_action,
             total_usage,
         } = ctx;
 
         // -- 4a. Project one model attempt -----------------------------------
         let context_recovery_policy = StreamRecoveryPolicy::default();
-        let request_tools =
-            request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?;
+        let request_tools = if suppress_tools {
+            Vec::new()
+        } else {
+            request_tools_with_native_search_plan(tool_defs, self.config.native_search_plan)?
+        };
         let has_executable_tools = !request_tools.is_empty();
         let cumulative_budget_requires_low_reasoning =
             self.config.max_actual_tokens_per_run.is_some() && max_response_tokens <= 4_096;
@@ -543,10 +562,14 @@ impl AgentExecutor {
                                     persisted_trace_items: &mut *persisted_trace_items,
                                     sort_order: &mut *sort_order,
                                 },
-                                accepted,
-                                &full_content,
-                                &iteration_thinking,
-                                reasoning_was_requested,
+                                InterruptedProviderDraftCapture {
+                                    accepted,
+                                    sample_content: &full_content,
+                                    iteration_thinking: &iteration_thinking,
+                                    reasoning_was_requested,
+                                    output_recovery: buffer_answer_projection
+                                        .then_some(output_recovery),
+                                },
                             );
                         }
                         append_developer_persisted_trace_status(
@@ -618,8 +641,10 @@ impl AgentExecutor {
                         progress_watchdog.observe_answer_progress();
                         answer_delta_seen = true;
                         full_content.push_str(&chunk.delta);
-                        accumulated_content.push_str(&chunk.delta);
-                        let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
+                        if !buffer_answer_projection {
+                            accumulated_content.push_str(&chunk.delta);
+                            let _ = tx.send(AgentEvent::TextDelta { delta: chunk.delta }).await;
+                        }
                     }
                     // Accumulate tool-call deltas.
                     if let Some(ref tc_delta) = chunk.tool_call_delta {
@@ -787,7 +812,9 @@ impl AgentExecutor {
                     provider_replay = response.provider_replay;
                     full_content = response.content;
                     answer_delta_seen = !full_content.is_empty();
-                    accumulated_content.push_str(&full_content);
+                    if !buffer_answer_projection {
+                        accumulated_content.push_str(&full_content);
+                    }
                     iteration_thinking = response.thinking.unwrap_or_default();
                     thinking_delta_seen = !iteration_thinking.is_empty();
                     tool_calls = response.tool_calls.unwrap_or_default();
@@ -804,7 +831,7 @@ impl AgentExecutor {
                             })
                             .await;
                     }
-                    if !full_content.is_empty() {
+                    if !buffer_answer_projection && !full_content.is_empty() {
                         let _ = tx
                             .send(AgentEvent::TextDelta {
                                 delta: full_content.clone(),
@@ -888,10 +915,13 @@ impl AgentExecutor {
                             persisted_trace_items: &mut *persisted_trace_items,
                             sort_order: &mut *sort_order,
                         },
-                        accepted,
-                        &full_content,
-                        &iteration_thinking,
-                        reasoning_was_requested,
+                        InterruptedProviderDraftCapture {
+                            accepted,
+                            sample_content: &full_content,
+                            iteration_thinking: &iteration_thinking,
+                            reasoning_was_requested,
+                            output_recovery: buffer_answer_projection.then_some(output_recovery),
+                        },
                     );
                     emit_error_and_finalize_turn(
                         tx,
@@ -1057,10 +1087,14 @@ impl AgentExecutor {
                                 persisted_trace_items: &mut *persisted_trace_items,
                                 sort_order: &mut *sort_order,
                             },
-                            accepted,
-                            &full_content,
-                            &iteration_thinking,
-                            reasoning_was_requested,
+                            InterruptedProviderDraftCapture {
+                                accepted,
+                                sample_content: &full_content,
+                                iteration_thinking: &iteration_thinking,
+                                reasoning_was_requested,
+                                output_recovery: buffer_answer_projection
+                                    .then_some(output_recovery),
+                            },
                         );
                     }
                     warn!("LLM model attempt cancelled: {message}");
@@ -1657,7 +1691,9 @@ impl AgentExecutor {
             accumulated_content.truncate(accumulated_len_before_iteration);
             full_content = response.content;
             answer_delta_seen = !full_content.is_empty();
-            accumulated_content.push_str(&full_content);
+            if !buffer_answer_projection {
+                accumulated_content.push_str(&full_content);
+            }
             iteration_thinking = recovered_thinking.unwrap_or_default();
             thinking_delta_seen = !iteration_thinking.is_empty();
             tool_calls = recovered_tool_calls;
@@ -1673,7 +1709,7 @@ impl AgentExecutor {
                     })
                     .await;
             }
-            if !full_content.is_empty() {
+            if !buffer_answer_projection && !full_content.is_empty() {
                 let _ = tx
                     .send(AgentEvent::TextDelta {
                         delta: full_content.clone(),

@@ -455,18 +455,123 @@ fn test_default_config() {
 #[test]
 fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     let standard = AgentConfig::default();
+    let standard_plan = standard.resolved_output_budget("unknown-model");
     assert_eq!(
-        standard.resolved_max_response_tokens("unknown-model"),
-        DEFAULT_AGENT_RESPONSE_TOKENS
+        standard_plan.effective_tokens,
+        FALLBACK_AGENT_RESPONSE_TOKENS
+    );
+    assert_eq!(
+        standard_plan.authority,
+        OutputBudgetAuthority::AutomaticFallbackReserve
+    );
+
+    let unknown_deepseek = AgentConfig {
+        provider_type: Some(ProviderType::DeepSeek),
+        ..AgentConfig::default()
+    };
+    assert_eq!(
+        unknown_deepseek.resolved_max_response_tokens("deepseek-unknown"),
+        FALLBACK_DEEPSEEK_RESPONSE_TOKENS
     );
 
     let deepseek = AgentConfig {
         provider_type: Some(ProviderType::DeepSeek),
         ..AgentConfig::default()
     };
+    let catalog_driven = deepseek.resolved_output_budget("deepseek-v4-pro");
     assert_eq!(
-        deepseek.resolved_max_response_tokens("deepseek-v4-pro"),
-        DEFAULT_DEEPSEEK_RESPONSE_TOKENS
+        catalog_driven.authority,
+        OutputBudgetAuthority::VerifiedCatalogCapability
+    );
+    assert_eq!(
+        catalog_driven.effective_tokens,
+        catalog_driven.catalog_cap.unwrap()
+    );
+    assert!(catalog_driven.effective_tokens > FALLBACK_DEEPSEEK_RESPONSE_TOKENS);
+
+    for (provider_type, model) in [
+        (ProviderType::OpenAi, "gpt-5.6"),
+        (ProviderType::Anthropic, "claude-fable-5"),
+        (ProviderType::Google, "gemini-3.7-flash"),
+        (ProviderType::DeepSeek, "deepseek-v4-pro"),
+    ] {
+        let plan = AgentConfig {
+            provider_type: Some(provider_type),
+            ..AgentConfig::default()
+        }
+        .resolved_output_budget(model);
+        assert_eq!(
+            plan.authority,
+            OutputBudgetAuthority::VerifiedCatalogCapability,
+            "{provider_type:?}/{model} should use catalog output authority"
+        );
+        assert_eq!(plan.effective_tokens, plan.catalog_cap.unwrap());
+    }
+
+    let private_openai_compatible = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        catalog_limits_authoritative: Some(false),
+        context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+            capacity_tokens: None,
+            authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+        }),
+        ..AgentConfig::default()
+    };
+    let private_plan = private_openai_compatible.resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        private_plan.authority,
+        OutputBudgetAuthority::AutomaticFallbackReserve,
+        "a private endpoint must not inherit output authority from a public model alias"
+    );
+    assert_eq!(private_plan.catalog_cap, None);
+    assert_eq!(private_plan.context_cap, None);
+    assert_eq!(
+        private_plan.effective_tokens,
+        FALLBACK_AGENT_RESPONSE_TOKENS
+    );
+
+    let official_context_override = crate::provider_catalog::resolve_endpoint_model_context_window(
+        "open_ai",
+        None,
+        "gpt-5.6",
+        Some(750_000),
+    );
+    let official_catalog_authority =
+        crate::provider_catalog::endpoint_model_catalog_limits_are_authoritative(
+            "open_ai", None, "gpt-5.6",
+        );
+    assert!(official_catalog_authority);
+    let official_automatic = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        context_window_resolution: Some(official_context_override),
+        catalog_limits_authoritative: Some(official_catalog_authority),
+        ..AgentConfig::default()
+    }
+    .resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        official_automatic.authority,
+        OutputBudgetAuthority::VerifiedCatalogCapability
+    );
+    assert_eq!(
+        official_automatic.effective_tokens,
+        official_automatic.catalog_cap.unwrap()
+    );
+
+    let official_explicit = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        max_tokens: Some(500_000),
+        context_window_resolution: Some(official_context_override),
+        catalog_limits_authoritative: Some(official_catalog_authority),
+        ..AgentConfig::default()
+    }
+    .resolved_output_budget("gpt-5.6");
+    assert_eq!(
+        official_explicit.authority,
+        OutputBudgetAuthority::SavedExplicitOverride
+    );
+    assert_eq!(
+        official_explicit.effective_tokens,
+        official_explicit.catalog_cap.unwrap()
     );
 
     let explicit = AgentConfig {
@@ -474,10 +579,15 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
         context_window: Some(16_000),
         ..deepseek.clone()
     };
+    let explicit_plan = explicit.resolved_output_budget("deepseek-v4-pro");
     assert_eq!(
-        explicit.resolved_max_response_tokens("deepseek-v4-pro"),
-        12_000,
+        explicit_plan.effective_tokens, 12_000,
         "explicit output caps are not reduced to half the context window"
+    );
+    assert_eq!(explicit_plan.requested_tokens, 12_000);
+    assert_eq!(
+        explicit_plan.authority,
+        OutputBudgetAuthority::SavedExplicitOverride
     );
 
     for (provider_type, model) in [
@@ -491,11 +601,13 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
             provider_type,
             ..AgentConfig::default()
         };
-        assert_eq!(
-            routed.resolved_max_response_tokens(model),
-            DEFAULT_DEEPSEEK_RESPONSE_TOKENS,
-            "routed DeepSeek models retain the reasoning-heavy automatic reserve"
-        );
+        let plan = routed.resolved_output_budget(model);
+        assert!(plan.effective_tokens >= FALLBACK_DEEPSEEK_RESPONSE_TOKENS);
+        assert!(matches!(
+            plan.authority,
+            OutputBudgetAuthority::VerifiedCatalogCapability
+                | OutputBudgetAuthority::AutomaticFallbackReserve
+        ));
     }
 
     let constrained = AgentConfig {
@@ -505,6 +617,16 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     assert_eq!(
         constrained.resolved_max_response_tokens("deepseek-chat"),
         4_096
+    );
+    assert_eq!(
+        constrained
+            .resolved_output_budget("deepseek-chat")
+            .context_cap,
+        Some(4_096)
+    );
+    assert_eq!(
+        explicit_plan.recommended_text_tool_chunk_chars(4_097),
+        8_194
     );
 }
 
@@ -1445,6 +1567,11 @@ struct CancelledStreamProvider {
     visible_output: bool,
 }
 
+struct LengthThenCancelledProvider {
+    stream_calls: Arc<AtomicUsize>,
+    disconnect_after_hosted_tool: bool,
+}
+
 #[derive(Clone, Copy)]
 enum PendingCancellationPoint {
     StreamOpen,
@@ -1761,6 +1888,85 @@ impl LlmProvider for CancelledStreamProvider {
 }
 
 #[async_trait]
+impl LlmProvider for LengthThenCancelledProvider {
+    fn name(&self) -> &str {
+        "length-then-cancelled-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm(
+            "cancelled recovery must not enter completion fallback".to_string(),
+        ))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no == 0 {
+            return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![
+                Ok(StreamChunk {
+                    delta: "abc".to_string(),
+                    tool_call_delta: None,
+                    finish_reason: Some(FinishReason::Length),
+                    usage: Some(Usage::default()),
+                    thinking_delta: None,
+                }),
+            ])));
+        }
+
+        let answer = ProviderStreamEvent::Chunk {
+            chunk: Box::new(StreamChunk {
+                delta: "cdef".to_string(),
+                tool_call_delta: None,
+                finish_reason: None,
+                usage: None,
+                thinking_delta: None,
+            }),
+        };
+        if self.disconnect_after_hosted_tool {
+            return Ok(Box::pin(stream::iter(vec![
+                answer,
+                ProviderStreamEvent::HostedTool {
+                    tool: Box::new(crate::llm::ProviderHostedToolEvent {
+                        call_id: "hosted-recovery-action".to_string(),
+                        tool_name: "web_search".to_string(),
+                        kind: crate::llm::ProviderHostedToolKind::WebSearch,
+                        provider_id: "length-then-cancelled-mock".to_string(),
+                        status: ProviderHostedToolStatus::Running,
+                        arguments: None,
+                        content: None,
+                        artifacts: None,
+                    }),
+                },
+                ProviderStreamEvent::RecoverableError {
+                    message: "connection lost after hosted recovery action".to_string(),
+                },
+            ])));
+        }
+
+        Ok(Box::pin(stream::iter(vec![
+            answer,
+            ProviderStreamEvent::Cancelled {
+                message: "cancelled during output recovery".to_string(),
+            },
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl LlmProvider for PendingCancellationProvider {
     fn name(&self) -> &str {
         "pending-cancellation-mock"
@@ -1938,6 +2144,21 @@ struct RecordingTool {
 
 struct NamedMockTool(&'static str);
 
+struct CountingNamedMockTool {
+    name: &'static str,
+    executions: Arc<AtomicUsize>,
+}
+
+struct ErrorNamedMockTool {
+    name: &'static str,
+    executions: Arc<AtomicUsize>,
+}
+
+struct DefinitionCountingTool {
+    definition_calls: Arc<AtomicUsize>,
+    schema_repetitions: usize,
+}
+
 #[async_trait]
 impl Tool for MockTool {
     fn name(&self) -> &str {
@@ -2038,6 +2259,109 @@ impl Tool for NamedMockTool {
         Ok(ToolResult {
             call_id: call_id.to_string(),
             content: "ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for CountingNamedMockTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Counting named mock tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": { "type": "array" },
+                "batch_goal": { "type": "string" },
+                "parallel_group": { "type": "string" },
+                "max_parallel": { "type": "integer" }
+            },
+            "required": ["tasks"],
+            "additionalProperties": true
+        })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "ok".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for ErrorNamedMockTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &str {
+        "Failing named mock tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "direct-dispatch-error".to_string(),
+            is_error: true,
+            artifacts: None,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for DefinitionCountingTool {
+    fn name(&self) -> &str {
+        "definition_counting_tool"
+    }
+
+    fn description(&self) -> &str {
+        "Tracks whether an answer-only turn constructs its schema"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.definition_calls.fetch_add(1, Ordering::SeqCst);
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "string",
+                    "description": "schema content that answer-only mode must never account "
+                        .repeat(self.schema_repetitions)
+                }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        context: crate::tools::ToolExecutionContext<'_>,
+    ) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "unexpected".to_string(),
             is_error: false,
             artifacts: None,
         })
@@ -2180,9 +2504,36 @@ struct LengthContinuationProvider {
     request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
 }
 
+struct MultiLengthContinuationProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct RepeatedLengthFragmentProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct AcknowledgedRepeatedLengthProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct ContextLimitTerminalProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_compacted_retry: Arc<Mutex<bool>>,
+    draft_tool_on_first_sample: bool,
+}
+
 struct TruncatedToolCallProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_safe_replan_context: Arc<Mutex<bool>>,
+}
+
+struct TruncatedThenCommittedToolProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
+struct AnswerOnlyToolViolationProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_tools_suppressed: Arc<Mutex<Vec<bool>>>,
 }
 
 struct MalformedToolCallProvider {
@@ -2242,6 +2593,23 @@ impl LlmProvider for AnswerOnlyRecoveryProvider {
     }
 }
 
+fn provider_context_limit_history() -> Vec<Message> {
+    (0..8)
+        .flat_map(|turn| {
+            [
+                Message::text(
+                    Role::User,
+                    format!("older user turn {turn} with context to preserve"),
+                ),
+                Message::text(
+                    Role::Assistant,
+                    format!("older assistant turn {turn} with verified facts"),
+                ),
+            ]
+        })
+        .collect()
+}
+
 #[async_trait]
 impl LlmProvider for ToolingAnswerRecoveryProvider {
     fn name(&self) -> &str {
@@ -2274,14 +2642,16 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunk = match call_no {
             0 => StreamChunk {
-                delta: String::new(),
+                delta: "abc".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Length),
                 usage: None,
                 thinking_delta: Some("initial reasoning filled the response budget".to_string()),
             },
             1 => StreamChunk {
-                delta: String::new(),
+                // The recovery projection must remove the replayed boundary
+                // before this text is paired with the committed tool call.
+                delta: "cde".to_string(),
                 tool_call_delta: Some(ToolCallDelta {
                     id: "recovery-tool-call".to_string(),
                     name: Some("mock_tool".to_string()),
@@ -2294,7 +2664,7 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
                 thinking_delta: None,
             },
             _ if request.reasoning_enabled == Some(false) => StreamChunk {
-                delta: "recovered final answer after tool use".to_string(),
+                delta: " final answer after tool use".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2352,7 +2722,221 @@ impl LlmProvider for LengthContinuationProvider {
             }
         } else {
             StreamChunk {
-                delta: "second half".to_string(),
+                // Some providers replay a short boundary even when asked to
+                // continue. The recovery projection must expose only the
+                // novel suffix rather than briefly duplicating it.
+                delta: "half, second half".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for MultiLengthContinuationProvider {
+    fn name(&self) -> &str {
+        "multi-length-continuation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let (delta, finish_reason) = match call_no {
+            0 => ("one ", FinishReason::Length),
+            1 => ("two ", FinishReason::Length),
+            2 => ("three ", FinishReason::Length),
+            _ => ("four", FinishReason::Stop),
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: delta.to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(finish_reason),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RepeatedLengthFragmentProvider {
+    fn name(&self) -> &str {
+        "repeated-length-fragment-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: "same fragment".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AcknowledgedRepeatedLengthProvider {
+    fn name(&self) -> &str {
+        "acknowledged-repeated-length-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let (delta, finish_reason) = if call_no == 0 {
+            ("foo".to_string(), FinishReason::Length)
+        } else {
+            let acknowledgement = request
+                .messages
+                .iter()
+                .rev()
+                .find_map(|message| {
+                    let content = message.text_content();
+                    let start = content.find("<nexa-continuation-ack:")?;
+                    let marker = &content[start..];
+                    let end = marker.find('>')?;
+                    Some(marker[..=end].to_string())
+                })
+                .expect("continuation request must carry a fresh acknowledgement");
+            let fragment = if call_no == 1 { "foo" } else { "bar" };
+            (
+                format!("{acknowledgement}\n{fragment}"),
+                if call_no == 1 {
+                    FinishReason::Length
+                } else {
+                    FinishReason::Stop
+                },
+            )
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta,
+                tool_call_delta: None,
+                finish_reason: Some(finish_reason),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ContextLimitTerminalProvider {
+    fn name(&self) -> &str {
+        "context-limit-terminal-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["private-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Ok(CompletionResponse {
+            content: "Compacted facts from older turns.".to_string(),
+            tool_calls: None,
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            thinking: None,
+            provider_replay: None,
+        })
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no == 0 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: self.draft_tool_on_first_sample.then(|| ToolCallDelta {
+                    id: "context-limited-draft".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ContextLimit),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            *self.saw_compacted_retry.lock().unwrap() = request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message
+                        .text_content()
+                        .starts_with("## Earlier conversation context (compacted)")
+            });
+            StreamChunk {
+                delta: "final answer after context rollover".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2426,6 +3010,137 @@ impl LlmProvider for TruncatedToolCallProvider {
                 usage: None,
                 thinking_delta: None,
             }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for TruncatedThenCommittedToolProvider {
+    fn name(&self) -> &str {
+        "truncated-then-committed-tool-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: "discarded draft".to_string(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "draft-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"draft"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+            1 => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "committed-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"committed"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            },
+            _ => StreamChunk {
+                delta: "final after one verified tool round".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnswerOnlyToolViolationProvider {
+    fn name(&self) -> &str {
+        "answer-only-tool-violation-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        self.saw_tools_suppressed
+            .lock()
+            .unwrap()
+            .push(request.tools.as_ref().is_none_or(Vec::is_empty));
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: "committed prefix".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: None,
+            },
+            1 => StreamChunk {
+                // The rejected recovery sample deliberately repeats the
+                // accepted suffix. Its raw text was buffered, so rejection
+                // must not truncate the already projected prefix.
+                delta: "committed prefix".to_string(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "forbidden-call".to_string(),
+                    name: Some("recording_tool".to_string()),
+                    arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            },
+            _ => StreamChunk {
+                delta: " final answer after respecting the synthesis boundary".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            },
         };
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
     }
@@ -2919,6 +3634,188 @@ async fn explicit_nexus_keeps_task_plan_tool_visible() {
 }
 
 #[tokio::test]
+async fn failed_direct_dispatch_consumes_the_finite_tool_round() {
+    let direct_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ErrorNamedMockTool {
+        name: "list_sources",
+        executions: Arc::clone(&direct_executions),
+    }));
+    registry.register(Box::new(MockTool));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "list sources".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the failed direct dispatch should fall back to synthesis");
+
+    assert_eq!(final_message.text_content(), "done");
+    assert_eq!(direct_executions.load(Ordering::SeqCst), 1);
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(
+        captured_tools[0].is_empty(),
+        "the failed direct execution must consume the sole tool round before model fallback"
+    );
+}
+
+#[tokio::test]
+async fn answer_only_prompt_never_constructs_or_accounts_tool_schemas() {
+    let definition_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(DefinitionCountingTool {
+        definition_calls: Arc::clone(&definition_calls),
+        schema_repetitions: 300,
+    }));
+    let calls_after_registration = definition_calls.load(Ordering::SeqCst);
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            max_tokens: Some(256),
+            context_window: Some(8_192),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Answer from the supplied conversation without tools.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("answer-only prompt should fit without tool schema reservation");
+
+    assert_eq!(final_message.text_content(), "done");
+    assert_eq!(
+        definition_calls.load(Ordering::SeqCst),
+        calls_after_registration,
+        "answer-only prompt preparation must not even construct the unavailable schema"
+    );
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(captured_tools[0].is_empty());
+}
+
+#[tokio::test]
+async fn reserved_final_sample_excludes_suppressed_schemas_from_cumulative_accounting() {
+    let definition_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(DefinitionCountingTool {
+        definition_calls: Arc::clone(&definition_calls),
+        schema_repetitions: 4_000,
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            first_chunks: vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "large-schema-call".to_string(),
+                    name: Some("definition_counting_tool".to_string()),
+                    arguments_delta: r#"{"payload":"evidence"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: Some(Usage {
+                    prompt_tokens: 109_000,
+                    completion_tokens: 1_000,
+                    total_tokens: 110_000,
+                    thinking_tokens: None,
+                    tool_prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_miss_tokens: None,
+                    cache_creation_tokens: None,
+                    provider_raw: None,
+                }),
+                thinking_delta: None,
+            }],
+            final_answer: "final answer from the committed tool result",
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            max_tokens: Some(2_048),
+            context_window: Some(400_000),
+            max_actual_tokens_per_run: Some(150_000),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Use the tool once, then synthesize the answer.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the tool-free final sample should fit its remaining cumulative budget");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final answer from the committed tool result"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        definition_calls.load(Ordering::SeqCst) > 0,
+        "the first tool-enabled sample must still build the large schema"
+    );
+}
+
+#[tokio::test]
 async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));
@@ -2982,6 +3879,127 @@ async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
 }
 
 #[tokio::test]
+async fn nexus_answer_only_budget_blocks_controller_reconnaissance() {
+    let reconnaissance_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "spawn_subagent_batch",
+        executions: Arc::clone(&reconnaissance_executions),
+    }));
+    registry.register(Box::new(NamedMockTool("spawn_subagent")));
+    registry.register(Box::new(NamedMockTool("judge_subagent_results")));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("gpt-5.6".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            orchestration_profile: OrchestrationProfile::ResearchUltra,
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(256);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Investigate and verify a complex cross-module Rust refactor, run cargo tests, and use independent agents."
+                    .to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("answer-only Nexus turn");
+
+    assert_eq!(
+        reconnaissance_executions.load(Ordering::SeqCst),
+        0,
+        "zero verified tool rounds must block controller-owned reconnaissance"
+    );
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(captured_tools.len(), 1);
+    assert!(captured_tools[0].is_empty());
+}
+
+#[tokio::test]
+async fn nexus_reconnaissance_consumes_the_finite_tool_round() {
+    let reconnaissance_executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "spawn_subagent_batch",
+        executions: Arc::clone(&reconnaissance_executions),
+    }));
+    registry.register(Box::new(NamedMockTool("spawn_subagent")));
+    registry.register(Box::new(NamedMockTool("judge_subagent_results")));
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ToolSurfaceCapturingProvider {
+            tool_names: Arc::clone(&captured_tools),
+            latest_user_texts: Arc::new(Mutex::new(Vec::new())),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("gpt-5.6".to_string()),
+            provider_type: Some(ProviderType::OpenAi),
+            power_mode: power_mode::AgentPowerMode::Nexus,
+            orchestration_profile: OrchestrationProfile::ResearchUltra,
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(256);
+
+    executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Investigate and verify a complex cross-module Rust refactor, run cargo tests, and use independent agents."
+                    .to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("bounded Nexus turn");
+
+    let mut controller_codes = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::ControllerStatus { code, .. } = event {
+            controller_codes.push(code);
+        }
+    }
+    let captured_tools = captured_tools.lock().unwrap();
+    assert_eq!(
+        reconnaissance_executions.load(Ordering::SeqCst),
+        1,
+        "the automatic reconnaissance batch must consume the sole tool round; controller_codes={controller_codes:?}, captured_tools={captured_tools:?}"
+    );
+    assert_eq!(captured_tools.len(), 1);
+    assert!(
+        captured_tools[0].is_empty(),
+        "the reserved synthesis sample must suppress tools after reconnaissance uses the budget"
+    );
+}
+
+#[tokio::test]
 async fn prefix_cached_provider_uses_bounded_resident_surface_without_dropping_user() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));
@@ -3040,6 +4058,23 @@ struct LoopGuardSteeringProvider {
     stream_calls: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<Vec<(Role, String)>>>>,
     steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+}
+
+struct PostSynthesisSteeringProvider {
+    stream_calls: Arc<AtomicUsize>,
+    steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
+    saw_steering_on_replacement: Arc<Mutex<bool>>,
+}
+
+struct ProviderPauseReplayProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_native_pause_blocks: Arc<Mutex<bool>>,
+    pause_count: usize,
+}
+
+struct LoopGuardBudgetProvider {
+    stream_calls: Arc<AtomicUsize>,
+    tools_visible_on_strategy_change: Arc<Mutex<bool>>,
 }
 
 const LOOP_GUARD_REPEATED_DRAFT: &str = "This repeated stale draft keeps restating the same incomplete conclusion without taking a new action or adding useful evidence.";
@@ -3104,6 +4139,280 @@ impl LlmProvider for LoopGuardSteeringProvider {
                 None
             },
         )))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for PostSynthesisSteeringProvider {
+    fn name(&self) -> &str {
+        "post-synthesis-steering-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no > 0 {
+            *self.saw_steering_on_replacement.lock().unwrap() =
+                request.messages.iter().any(|message| {
+                    message.role == Role::User
+                        && message
+                            .text_content()
+                            .contains("Replace the draft with the steered answer")
+                });
+        }
+        let delta = if call_no == 0 {
+            "obsolete synthesis draft"
+        } else {
+            "replacement answer after steering"
+        };
+        let steering =
+            (call_no == 0).then(|| "Replace the draft with the steered answer.".to_string());
+        let steering_tx = self.steering_tx.clone();
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
+            (0u8, Some(delta.to_string()), steering, steering_tx),
+            |(state, delta, steering, steering_tx)| async move {
+                if state == 0 {
+                    return Some((
+                        Ok(StreamChunk {
+                            delta: delta.expect("first stream state should carry text"),
+                            tool_call_delta: None,
+                            finish_reason: Some(FinishReason::Stop),
+                            usage: None,
+                            thinking_delta: None,
+                        }),
+                        (1, None, steering, steering_tx),
+                    ));
+                }
+                if let Some(steering) = steering {
+                    let _ = steering_tx.send(AgentSteeringMessage::text(steering));
+                }
+                None
+            },
+        )))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ProviderPauseReplayProvider {
+    fn name(&self) -> &str {
+        "anthropic-pause-replay-mock"
+    }
+
+    fn reasoning_replay_policy(
+        &self,
+        _model: &str,
+    ) -> crate::llm::reasoning_profile::ReasoningReplayPolicy {
+        crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        crate::llm::provider_turn::RouteSnapshot {
+            provider_endpoint_id: "anthropic-test".to_string(),
+            provider_family: "anthropic".to_string(),
+            api_style: crate::llm::reasoning_profile::ReasoningApiStyle::AnthropicMessages,
+            model_id: request.model.clone(),
+            reasoning_profile_id: "anthropic-pause-test".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+        }
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["claude-sonnet-5".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no > 0 {
+            let saw_native_pause_blocks = request.messages.iter().any(|message| {
+                message.provider_turn().is_some_and(|envelope| {
+                    matches!(
+                        &envelope.replay_payload,
+                        crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
+                            blocks
+                        ) if blocks.iter().any(|block| {
+                            block.get("type").and_then(serde_json::Value::as_str)
+                                == Some("server_tool_use")
+                        }) && blocks.iter().all(|block| {
+                            block.get("type").and_then(serde_json::Value::as_str)
+                                != Some("tool_use")
+                        })
+                    )
+                })
+            });
+            let mut all_replays_were_native = self.saw_native_pause_blocks.lock().unwrap();
+            *all_replays_were_native =
+                (*all_replays_were_native || call_no == 1) && saw_native_pause_blocks;
+        }
+
+        if call_no < self.pause_count {
+            let server_tool_id = format!("srvtoolu_{}", call_no + 1);
+            let blocks = vec![
+                serde_json::json!({"type":"text","text":format!("Searching {call_no}")}),
+                serde_json::json!({
+                    "type":"server_tool_use",
+                    "id":server_tool_id,
+                    "name":"web_search",
+                    "input":{"query":format!("Nexa {call_no}")}
+                }),
+                serde_json::json!({
+                    "type":"web_search_tool_result",
+                    "tool_use_id":server_tool_id,
+                    "content":[{"type":"web_search_result","url":"https://example.com"}]
+                }),
+            ];
+            return Ok(Box::pin(stream::iter(vec![
+                ProviderStreamEvent::ReplayState {
+                    replay: Box::new(
+                        crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
+                            blocks,
+                        ),
+                    ),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: Some(ToolCallDelta {
+                            id: format!("toolu_draft_{call_no}"),
+                            name: Some("write_file".to_string()),
+                            arguments_delta: r#"{"path":"draft.txt"}"#.into(),
+                            index: Some(0),
+                            thought_signature: None,
+                        }),
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: None,
+                        finish_reason: Some(FinishReason::ProviderPause),
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+            ])));
+        }
+        Ok(Box::pin(stream::iter(vec![ProviderStreamEvent::Chunk {
+            chunk: Box::new(StreamChunk {
+                delta: "completed after provider pause".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }),
+        }])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LoopGuardBudgetProvider {
+    fn name(&self) -> &str {
+        "loop-guard-budget-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no < 3 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: format!("repeat-{call_no}"),
+                    name: Some("read_evidence".to_string()),
+                    arguments_delta: r#"{"tasks":[],"scope":"same"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else if call_no == 3 {
+            *self.tools_visible_on_strategy_change.lock().unwrap() = request
+                .tools
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|tool| tool.name == "alternate_action");
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "alternate-3".to_string(),
+                    name: Some("alternate_action".to_string()),
+                    arguments_delta: r#"{"tasks":[],"scope":"different"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            StreamChunk {
+                delta: "final after alternate strategy".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        Ok(Box::pin(stream::iter(vec![ProviderStreamEvent::Chunk {
+            chunk: Box::new(chunk),
+        }])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -3555,7 +4864,7 @@ async fn test_allow_all_cannot_bypass_computer_control_approval() {
 }
 
 #[tokio::test]
-async fn test_executes_tool_even_when_finish_reason_is_stop() {
+async fn test_one_tool_round_budget_reserves_a_final_answer_sample() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool));
 
@@ -3569,6 +4878,7 @@ async fn test_executes_tool_even_when_finish_reason_is_stop() {
         registry,
         AgentConfig {
             model: Some("mock-model".to_string()),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5094,6 +6404,251 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
 }
 
 #[tokio::test]
+async fn answer_only_synthesis_steering_gets_a_replacement_sample() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_steering_on_replacement = Arc::new(Mutex::new(false));
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let executor = AgentExecutor::new(
+        Box::new(PostSynthesisSteeringProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            steering_tx,
+            saw_steering_on_replacement: Arc::clone(&saw_steering_on_replacement),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Produce one answer-only synthesis.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("post-synthesis steering should replace the obsolete draft");
+
+    assert_eq!(
+        final_message.text_content(),
+        "replacement answer after steering"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_steering_on_replacement.lock().unwrap(),
+        "the replacement sample must include the late steering message"
+    );
+}
+
+#[tokio::test]
+async fn provider_pause_recovery_replays_native_state_after_rejecting_client_draft() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_native_pause_blocks = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ProviderPauseReplayProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_native_pause_blocks: Arc::clone(&saw_native_pause_blocks),
+            pause_count: 1,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Resume the provider-hosted search safely.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("pause_turn should resume from provider-native state");
+
+    assert_eq!(
+        final_message.text_content(),
+        "completed after provider pause"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_native_pause_blocks.lock().unwrap(),
+        "the recovery request must contain the original server_tool_use block"
+    );
+}
+
+#[tokio::test]
+async fn advancing_provider_pause_state_resets_rejected_draft_stalls() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_native_pause_blocks = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ProviderPauseReplayProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_native_pause_blocks: Arc::clone(&saw_native_pause_blocks),
+            pause_count: 4,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Allow the provider-hosted search to advance across pauses.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("advancing native pause state must reset rejected-draft stalls");
+
+    assert_eq!(
+        final_message.text_content(),
+        "completed after provider pause"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 5);
+    assert!(*saw_native_pause_blocks.lock().unwrap());
+}
+
+#[tokio::test]
+async fn provider_pause_without_native_state_fails_closed() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            first_chunks: vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::ProviderPause),
+                usage: None,
+                thinking_delta: None,
+            }],
+            final_answer: "must not restart the hosted tool",
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Do not duplicate the provider-hosted search.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("missing pause replay state must stop the turn");
+
+    assert!(error.to_string().contains("missing_replay_state"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn loop_guard_blocked_batch_does_not_consume_the_remaining_tool_round() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "read_evidence",
+        executions: Arc::clone(&executions),
+    }));
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "alternate_action",
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let tools_visible_on_strategy_change = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(LoopGuardBudgetProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            tools_visible_on_strategy_change: Arc::clone(&tools_visible_on_strategy_change),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 3,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(256);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Try evidence, then change strategy when instructed.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the alternate strategy should retain the unspent tool round");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final after alternate strategy"
+    );
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        3,
+        "two repeated batches and one alternate batch should execute; the blocked third repeat must not"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 5);
+    assert!(
+        *tools_visible_on_strategy_change.lock().unwrap(),
+        "the strategy-change sample must still have tool authority"
+    );
+}
+
+#[tokio::test]
 async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
@@ -5363,32 +6918,39 @@ async fn test_persists_only_final_iteration_thinking_on_final_assistant() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(non_loop_items.len(), 5);
+    assert_eq!(non_loop_items.len(), 6);
     assert_eq!(
         non_loop_items[0].get("kind").and_then(|v| v.as_str()),
+        Some("status")
+    );
+    assert!(non_loop_items[0]["text"]
+        .as_str()
+        .is_some_and(|content| content.contains("per-request output budget")));
+    assert_eq!(
+        non_loop_items[1].get("kind").and_then(|v| v.as_str()),
         Some("toolVisibility")
     );
     assert_eq!(
-        non_loop_items[0]["decision"]["route"].as_str(),
+        non_loop_items[1]["decision"]["route"].as_str(),
         Some("DirectResponse")
     );
-    assert!(non_loop_items[0]["decision"]["log"]
+    assert!(non_loop_items[1]["decision"]["log"]
         .as_array()
         .is_some_and(|log| !log.is_empty()));
     assert_eq!(
-        non_loop_items[1].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
-    );
-    assert_eq!(
         non_loop_items[2].get("kind").and_then(|v| v.as_str()),
-        Some("tool")
+        Some("thinking")
     );
     assert_eq!(
         non_loop_items[3].get("kind").and_then(|v| v.as_str()),
-        Some("thinking")
+        Some("tool")
     );
     assert_eq!(
         non_loop_items[4].get("kind").and_then(|v| v.as_str()),
+        Some("thinking")
+    );
+    assert_eq!(
+        non_loop_items[5].get("kind").and_then(|v| v.as_str()),
         Some("status")
     );
 }
@@ -5523,7 +7085,7 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
 
     assert_eq!(
         final_msg.text_content(),
-        "recovered final answer after tool use"
+        "abcde final answer after tool use"
     );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
     assert_eq!(
@@ -5532,16 +7094,19 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
         "the recovery phase must keep reasoning disabled until a visible answer terminates it"
     );
 
+    let mut streamed = String::new();
     while let Ok(event) = rx.try_recv() {
         if let AgentEvent::TextDelta { delta } = event {
             assert_ne!(delta, "initial reasoning filled the response budget");
             assert_ne!(delta, "reasoning was incorrectly re-enabled");
+            streamed.push_str(&delta);
         }
     }
+    assert_eq!(streamed, "abcde final answer after tool use");
 }
 
 #[tokio::test]
-async fn test_length_truncated_visible_answer_continues_and_persists_as_one_reply() {
+async fn test_length_truncated_visible_answer_continues_without_spending_tool_iteration() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let request_reasoning = Arc::new(Mutex::new(Vec::new()));
@@ -5555,6 +7120,7 @@ async fn test_length_truncated_visible_answer_continues_and_persists_as_one_repl
         AgentConfig {
             model: Some("reasoning-model".to_string()),
             reasoning_enabled: Some(true),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5608,7 +7174,246 @@ async fn test_length_truncated_visible_answer_continues_and_persists_as_one_repl
 }
 
 #[tokio::test]
-async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execution() {
+async fn visible_progress_can_continue_past_the_former_global_two_sample_cap() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(MultiLengthContinuationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "produce a response spanning several provider samples".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("visible progress should not hit a hidden continuation count");
+
+    assert_eq!(final_msg.text_content(), "one two three four");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn stalled_recovery_does_not_project_repeated_provider_fragments() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(RepeatedLengthFragmentProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "stop if the provider makes no progress".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("repeated output-limit fragments must stop as no progress");
+
+    assert!(error.to_string().contains("recovery_failure=OutputLimit"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 4);
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, "same fragment");
+}
+
+#[tokio::test]
+async fn acknowledged_repeated_continuations_are_preserved_without_control_markers() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(AcknowledgedRepeatedLengthProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "preserve intentionally repeated continuation chunks".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a fresh continuation acknowledgement must preserve repeated text");
+
+    assert_eq!(final_message.text_content(), "foofoobar");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            assert!(!delta.contains("nexa-continuation-ack"));
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, "foofoobar");
+}
+
+#[tokio::test]
+async fn context_limit_terminal_compacts_unknown_provider_history_before_retry() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_compacted_retry = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ContextLimitTerminalProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_compacted_retry: Arc::clone(&saw_compacted_retry),
+            draft_tool_on_first_sample: false,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("private-model".to_string()),
+            context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+            }),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+    let final_msg = executor
+        .run(
+            provider_context_limit_history(),
+            vec![ContentPart::Text {
+                text: "continue from the full history".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("a typed context terminal should compact before retrying");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after context rollover"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_compacted_retry.lock().unwrap(),
+        "the retry must contain a committed compaction checkpoint even when capacity is provider-managed"
+    );
+    let mut saw_auto_compaction = false;
+    while let Ok(event) = rx.try_recv() {
+        saw_auto_compaction |= matches!(event, AgentEvent::AutoCompacted { .. });
+    }
+    assert!(
+        saw_auto_compaction,
+        "the context-limit recovery should expose the actual compaction event"
+    );
+}
+
+#[tokio::test]
+async fn context_limited_tool_draft_is_rejected_then_compacted_before_replan() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_compacted_retry = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ContextLimitTerminalProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_compacted_retry: Arc::clone(&saw_compacted_retry),
+            draft_tool_on_first_sample: true,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("private-model".to_string()),
+            max_iterations: 1,
+            context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+            }),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            provider_context_limit_history(),
+            vec![ContentPart::Text {
+                text: "use tools only after a safe context rollover".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the discarded draft should replan from compacted committed history");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after context rollover"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "a context-limited tool draft must never execute"
+    );
+    assert!(
+        *saw_compacted_retry.lock().unwrap(),
+        "the safe replan must follow a real context compaction"
+    );
+}
+
+#[tokio::test]
+async fn test_length_truncated_tool_call_replans_without_spending_tool_iteration() {
     let executions = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(RecordingTool {
@@ -5625,6 +7430,7 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         registry,
         AgentConfig {
             model: Some("mock-model".to_string()),
+            max_iterations: 1,
             ..AgentConfig::default()
         },
     );
@@ -5657,6 +7463,132 @@ async fn test_length_truncated_tool_call_is_rejected_and_replanned_without_execu
         *saw_safe_replan_context.lock().unwrap(),
         "the next model step must receive a safe chunked-write replan without a fabricated tool unit"
     );
+}
+
+#[tokio::test]
+async fn truncated_draft_then_one_committed_tool_round_still_gets_final_answer() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(TruncatedThenCommittedToolProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "write safely after a truncated draft".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("draft recovery, one tool round, and final synthesis should succeed");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final after one verified tool round"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        1,
+        "only the committed call may execute"
+    );
+    let trace = db
+        .get_agent_traces("")
+        .expect("trace query")
+        .pop()
+        .expect("completed agent trace");
+    assert_eq!(
+        trace.total_iterations, 2,
+        "a rejected provider sample must not inflate semantic agent iterations"
+    );
+    let tool_step = trace
+        .steps
+        .iter()
+        .find(|step| step.tool_name.as_deref() == Some("recording_tool"))
+        .expect("tool trace step");
+    assert_eq!(
+        tool_step.iteration, 0,
+        "the first verified tool round remains logical round zero after recovery samples"
+    );
+}
+
+#[tokio::test]
+async fn answer_only_budget_rejects_provider_tool_calls_at_the_dispatch_boundary() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_tools_suppressed = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(AnswerOnlyToolViolationProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_tools_suppressed: Arc::clone(&saw_tools_suppressed),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "answer without tools".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("one protocol repair should recover an answer-only sample");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "committed prefix final answer after respecting the synthesis boundary"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *saw_tools_suppressed.lock().unwrap(),
+        vec![true, true, true]
+    );
+    let mut streamed = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            streamed.push_str(&delta);
+        }
+    }
+    assert_eq!(streamed, final_msg.text_content());
+    assert_eq!(streamed.matches("committed prefix").count(), 1);
 }
 
 #[tokio::test]
@@ -6988,6 +8920,106 @@ async fn visible_cancelled_stream_persists_accepted_interrupted_draft_once() {
     );
     assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
     assert_eq!(db.count_provider_turns().expect("provider turns"), 1);
+}
+
+async fn assert_interrupted_output_recovery_persists_canonical_partial_answer(
+    disconnect_after_hosted_tool: bool,
+) {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(LengthThenCancelledProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            disconnect_after_hosted_tool,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "length-then-cancelled-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "continue across the provider output boundary".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 6,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("the provider cancellation must terminate recovery");
+
+    if disconnect_after_hosted_tool {
+        assert!(matches!(
+            error,
+            CoreError::StreamIncomplete(ref message)
+                if message.contains("hosted action") && message.contains("retry suppressed")
+        ));
+    } else {
+        assert!(matches!(
+            error,
+            CoreError::Cancelled(ref message) if message == "cancelled during output recovery"
+        ));
+    }
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    let persisted = db
+        .get_messages(&conversation.id)
+        .expect("persisted messages");
+    let drafts = persisted
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(drafts.len(), 1, "the canonical draft must persist once");
+    assert_eq!(drafts[0].content, "abcdef");
+    let envelope = crate::conversation::conversation_message_provider_turn(drafts[0])
+        .expect("interrupted recovery draft provenance");
+    assert_eq!(envelope.visible_content, "abcdef");
+    assert_eq!(envelope.capture_status, ReasoningCaptureStatus::Interrupted);
+}
+
+#[tokio::test]
+async fn cancelled_output_recovery_persists_the_canonical_partial_answer() {
+    assert_interrupted_output_recovery_persists_canonical_partial_answer(false).await;
+}
+
+#[tokio::test]
+async fn disconnected_output_recovery_persists_the_canonical_partial_answer() {
+    assert_interrupted_output_recovery_persists_canonical_partial_answer(true).await;
 }
 
 #[tokio::test]

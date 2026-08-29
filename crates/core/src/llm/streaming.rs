@@ -237,13 +237,13 @@ fn parse_finish_reason(s: &str) -> Result<FinishReason, CoreError> {
     match s {
         "stop" => Ok(FinishReason::Stop),
         "length" => Ok(FinishReason::Length),
-        "tool_calls" => Ok(FinishReason::ToolCalls),
+        "tool_calls" | "function_call" => Ok(FinishReason::ToolCalls),
         "content_filter" => Ok(FinishReason::ContentFilter),
         "insufficient_system_resource" => Err(CoreError::StreamIncomplete(
             "DeepSeek interrupted the stream because capacity was unavailable during a peak period"
                 .to_string(),
         )),
-        _ => Ok(FinishReason::Other),
+        other => Ok(FinishReason::Unknown(other.to_string())),
     }
 }
 

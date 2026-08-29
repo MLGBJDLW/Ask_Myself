@@ -629,9 +629,9 @@ fn parse_finish_reason(s: &str) -> FinishReason {
     match s {
         "stop" => FinishReason::Stop,
         "length" => FinishReason::Length,
-        "tool_calls" => FinishReason::ToolCalls,
+        "tool_calls" | "function_call" => FinishReason::ToolCalls,
         "content_filter" => FinishReason::ContentFilter,
-        _ => FinishReason::Other,
+        other => FinishReason::Unknown(other.to_string()),
     }
 }
 
@@ -1566,6 +1566,28 @@ fn parse_responses_completion(
                 }
             }
             Some("function_call") => {
+                if !response_completed {
+                    tool_calls.push(ToolCallRequest {
+                        id: item
+                            .get("call_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        name: item
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        arguments: item
+                            .get("arguments")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        thought_signature: None,
+                    });
+                    replay_sequence_valid = false;
+                    continue;
+                }
                 let call_id = item
                     .get("call_id")
                     .and_then(serde_json::Value::as_str)
@@ -1692,19 +1714,24 @@ fn parse_responses_completion(
         ));
     }
     let usage = responses_usage_from_value(value.get("usage").cloned().unwrap_or_default());
+    let incomplete_reason = value
+        .pointer("/incomplete_details/reason")
+        .and_then(serde_json::Value::as_str);
     let finish_reason = if response_completed && !tool_calls.is_empty() {
         FinishReason::ToolCalls
-    } else if response_status == "incomplete"
-        && value
-            .pointer("/incomplete_details/reason")
-            .and_then(serde_json::Value::as_str)
-            == Some("max_output_tokens")
-    {
+    } else if response_status == "incomplete" && incomplete_reason == Some("max_output_tokens") {
         FinishReason::Length
+    } else if response_status == "incomplete" && incomplete_reason == Some("content_filter") {
+        FinishReason::ContentFilter
     } else if response_completed {
         FinishReason::Stop
+    } else if response_status == "incomplete" {
+        FinishReason::Unknown(format!(
+            "response.incomplete.{}",
+            incomplete_reason.unwrap_or("missing_reason")
+        ))
     } else {
-        FinishReason::Other
+        FinishReason::Unknown(format!("response.{response_status}"))
     };
     Ok(CompletionResponse {
         content,
@@ -2042,13 +2069,16 @@ fn finalize_terminal_client_tools(
         if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call") {
             continue;
         }
+        if !response_completed {
+            // The global `response.incomplete` terminal is authoritative. Keep
+            // any streamed arguments as a draft and let the turn recovery
+            // policy reject/re-plan it as OutputLimit; retrying the same frozen
+            // request at the transport layer would deterministically truncate
+            // again and waste the independent retry budget.
+            continue;
+        }
         let call_id = required_responses_tool_field(item, "call_id", "call_id")?.to_string();
         let name = required_responses_tool_field(item, "name", "name")?.to_string();
-        if !response_completed {
-            return Err(CoreError::StreamIncomplete(format!(
-                "Responses response became incomplete before function call {call_id} completed"
-            )));
-        }
 
         let terminal_arguments = item
             .get("arguments")
@@ -3000,7 +3030,7 @@ impl LlmProvider for OpenAiProvider {
             .finish_reason
             .as_deref()
             .map(parse_finish_reason)
-            .unwrap_or(FinishReason::Other);
+            .unwrap_or(FinishReason::ProtocolIncomplete);
 
         let usage = oai
             .usage
@@ -3194,6 +3224,84 @@ mod tests {
     use super::*;
     use futures::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn chat_finish_reason_preserves_legacy_tools_and_unknown_values() {
+        assert_eq!(parse_finish_reason("length"), FinishReason::Length);
+        assert_eq!(
+            parse_finish_reason("function_call"),
+            FinishReason::ToolCalls
+        );
+        assert_eq!(
+            parse_finish_reason("future_reason"),
+            FinishReason::Unknown("future_reason".to_string())
+        );
+    }
+
+    #[test]
+    fn responses_output_limit_keeps_partial_function_as_rejected_draft() {
+        let dialect = super::super::native_search::NativeSearchDialect::OpenAiResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let completion = parse_responses_completion(
+            serde_json::json!({
+                "id": "resp-incomplete",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{
+                    "id": "fc-incomplete",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "call_id": "call-incomplete",
+                    "name": "create_file",
+                    "arguments": "{\"path\":\"demo.html\",\"content\":\"partial"
+                }]
+            }),
+            dialect,
+            capability,
+        )
+        .expect("incomplete Responses output must reach typed turn recovery");
+
+        assert_eq!(completion.finish_reason, FinishReason::Length);
+        assert_eq!(completion.tool_calls.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn responses_content_filter_incomplete_is_a_typed_safety_terminal() {
+        let dialect = super::super::native_search::NativeSearchDialect::OpenAiResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let completion = parse_responses_completion(
+            serde_json::json!({
+                "id": "resp-filtered",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": []
+            }),
+            dialect,
+            capability,
+        )
+        .expect("content filtering is a recognized Responses terminal");
+
+        assert_eq!(completion.finish_reason, FinishReason::ContentFilter);
+        assert!(completion.tool_calls.is_none());
+    }
 
     fn endpoint_config(provider_type: ProviderType, base_url: &str) -> ProviderConfig {
         ProviderConfig {

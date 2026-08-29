@@ -9,6 +9,10 @@ const releaseWorkflow = fs.readFileSync(
   path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
   'utf8',
 );
+const ciWorkflow = fs.readFileSync(
+  path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
+  'utf8',
+);
 const nativeAcceptanceWorkflowPath = path.join(
   repositoryRoot,
   '.github',
@@ -49,7 +53,7 @@ test('manual dispatch can resume an existing draft release without creating a ne
   );
 });
 
-test('release PR CI dispatch does not depend on a local git checkout', () => {
+test('release PR discovery does not depend on a local git checkout', () => {
   assert.match(releaseWorkflow, /GH_REPO: \$\{\{ github\.repository \}\}/);
   assert.match(
     releaseWorkflow,
@@ -61,4 +65,41 @@ test('release PR CI dispatch does not depend on a local git checkout', () => {
     /gh api --method POST[\s\S]*?repos\/\$GITHUB_REPOSITORY\/actions\/workflows\/ci\.yml\/dispatches[\s\S]*?-f ref="\$RELEASE_PR_BRANCH"/,
   );
   assert.doesNotMatch(releaseWorkflow, /gh workflow run ci\.yml/);
+});
+
+test('release PR maintenance synchronizes lock metadata before dispatching CI', () => {
+  const synchronizeAt = releaseWorkflow.indexOf('Synchronize generated Rust lock metadata');
+  const dispatchAt = releaseWorkflow.indexOf('Trigger checks for release PR updates');
+  assert.ok(synchronizeAt > 0);
+  assert.ok(dispatchAt > synchronizeAt);
+  assert.match(releaseWorkflow, /node scripts\/sync-workspace-lock-versions\.mjs --write/);
+  assert.match(releaseWorkflow, /git add -- Cargo\.lock/);
+  assert.match(releaseWorkflow, /steps\.sync_lock\.outputs\.changed/);
+});
+
+test('full CI is front-loaded onto pull requests instead of repeated after merge', () => {
+  assert.match(ciWorkflow, /^  pull_request:\s*$/mu);
+  assert.match(ciWorkflow, /^  workflow_dispatch:\s*$/mu);
+  assert.doesNotMatch(ciWorkflow, /^  push:\s*$/mu);
+});
+
+test('only the trusted release metadata classifier can select lightweight CI', () => {
+  const releaseMetadataAt = ciWorkflow.indexOf('  release_metadata:');
+  const rustCoreAt = ciWorkflow.indexOf('  rust_core:');
+  const releaseMetadataJob = ciWorkflow.slice(releaseMetadataAt, rustCoreAt);
+  assert.match(ciWorkflow, /name: Classify CI Scope/);
+  assert.match(ciWorkflow, /NEXA_CI_BASE_REF: origin\/master/);
+  assert.match(ciWorkflow, /NEXA_CI_HEAD_REF: HEAD/);
+  assert.match(ciWorkflow, /node scripts\/ci-scope\.mjs/);
+  assert.match(ciWorkflow, /name: Release Metadata Contracts/);
+  assert.doesNotMatch(
+    releaseMetadataJob,
+    /if: needs\.classify\.outputs\.release_metadata_only == 'true'/,
+  );
+  assert.match(ciWorkflow, /"Release Metadata Contracts:\$RELEASE_METADATA_RESULT"/);
+  assert.match(
+    ciWorkflow,
+    /if: needs\.classify\.outputs\.release_metadata_only != 'true'/,
+  );
+  assert.match(ciWorkflow, /WINDOWS_DESKTOP_RESULT/);
 });

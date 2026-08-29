@@ -403,7 +403,36 @@ pub enum FinishReason {
     Length,
     ToolCalls,
     ContentFilter,
+    /// Provider-owned server-tool turn must be resumed with provider-native
+    /// assistant state (for example Anthropic `pause_turn`).
+    ProviderPause,
+    /// The provider exhausted the full model context rather than only the
+    /// per-request output allowance.
+    ContextLimit,
+    /// The provider explicitly rejected or could not construct a tool call.
+    MalformedToolCall,
+    /// A response ended without the terminal/item lifecycle required by its
+    /// declared wire dialect.
+    ProtocolIncomplete,
+    /// A raw terminal value unknown to this adapter. It is retained for
+    /// diagnostics and must never be treated as a natural stop.
+    Unknown(String),
+    /// Legacy compatibility for persisted values that predate raw terminal
+    /// preservation. New provider adapters should use `Unknown(raw)`.
     Other,
+}
+
+impl FinishReason {
+    pub fn allows_completed_client_tools(&self) -> bool {
+        matches!(self, Self::Stop | Self::ToolCalls)
+    }
+
+    pub fn raw_reason(&self) -> Option<&str> {
+        match self {
+            Self::Unknown(reason) => Some(reason.as_str()),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

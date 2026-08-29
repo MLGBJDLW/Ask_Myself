@@ -259,7 +259,7 @@ fn parse_finish_reason(resp: &OllamaResponse) -> FinishReason {
         match reason.as_str() {
             "stop" => return FinishReason::Stop,
             "length" => return FinishReason::Length,
-            _ => {}
+            other => return FinishReason::Unknown(other.to_string()),
         }
     }
     // If there are tool calls, the stop reason is tool_calls.
@@ -271,7 +271,7 @@ fn parse_finish_reason(resp: &OllamaResponse) -> FinishReason {
     if resp.done {
         FinishReason::Stop
     } else {
-        FinishReason::Other
+        FinishReason::ProtocolIncomplete
     }
 }
 

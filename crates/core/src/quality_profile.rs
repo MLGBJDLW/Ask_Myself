@@ -116,13 +116,20 @@ pub fn resolve_orchestration_profile(
             false,
             false,
         ),
-        OrchestrationProfile::Deep => (32, 4, 8, 64_000, 30, 2, 2, true, false),
-        OrchestrationProfile::CodeUltra => (56, 6, 12, 96_000, 30, 3, 1, true, true),
-        OrchestrationProfile::ResearchUltra => (56, 6, 12, 96_000, 35, 3, 3, true, false),
+        // Named quality profiles tune orchestration depth, not the lifetime of
+        // the semantic tool loop. Only a saved tool-round limit or an explicit
+        // Custom value may bound verified tool dispatches.
+        OrchestrationProfile::Deep => (input.max_iterations, 4, 8, 64_000, 30, 2, 2, true, false),
+        OrchestrationProfile::CodeUltra => {
+            (input.max_iterations, 6, 12, 96_000, 30, 3, 1, true, true)
+        }
+        OrchestrationProfile::ResearchUltra => {
+            (input.max_iterations, 6, 12, 96_000, 35, 3, 3, true, false)
+        }
         OrchestrationProfile::Custom => {
             let custom = input.custom.as_ref().cloned().unwrap_or_default();
             (
-                custom.max_iterations.unwrap_or(24).clamp(4, 96),
+                custom.max_iterations.unwrap_or(input.max_iterations),
                 custom.max_parallel.unwrap_or(3).clamp(1, 8),
                 custom.max_calls_per_turn.unwrap_or(6).clamp(1, 24),
                 custom
@@ -174,7 +181,7 @@ mod tests {
     #[test]
     fn ultra_is_an_orchestration_policy_not_a_provider_effort() {
         let profile = resolve_orchestration_profile(input(OrchestrationProfile::CodeUltra));
-        assert_eq!(profile.max_iterations, 56);
+        assert_eq!(profile.max_iterations, 20);
         assert!(profile.require_isolated_writes);
         assert!(profile
             .prompt_section()
@@ -198,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_profiles_cap_an_unlimited_inherited_iteration_budget() {
+    fn only_custom_profile_overrides_the_inherited_tool_round_budget() {
         let custom = resolve_orchestration_profile(OrchestrationProfileInput {
             profile: OrchestrationProfile::Custom,
             custom: Some(CustomOrchestrationOptions {
@@ -210,11 +217,25 @@ mod tests {
         });
         assert_eq!(custom.max_iterations, 48);
 
+        let custom_without_override = resolve_orchestration_profile(OrchestrationProfileInput {
+            profile: OrchestrationProfile::Custom,
+            custom: Some(CustomOrchestrationOptions::default()),
+            max_iterations: 9,
+            ..input(OrchestrationProfile::Custom)
+        });
+        assert_eq!(custom_without_override.max_iterations, 9);
+
         let code_ultra = resolve_orchestration_profile(OrchestrationProfileInput {
             max_iterations: u32::MAX,
             ..input(OrchestrationProfile::CodeUltra)
         });
-        assert_eq!(code_ultra.max_iterations, 56);
+        assert_eq!(code_ultra.max_iterations, u32::MAX);
+
+        let deep = resolve_orchestration_profile(OrchestrationProfileInput {
+            max_iterations: 7,
+            ..input(OrchestrationProfile::Deep)
+        });
+        assert_eq!(deep.max_iterations, 7);
 
         let balanced = resolve_orchestration_profile(OrchestrationProfileInput {
             max_iterations: u32::MAX,

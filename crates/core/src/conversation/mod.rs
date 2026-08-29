@@ -870,13 +870,14 @@ fn validate_agent_config_numeric_overrides(input: &SaveAgentConfigInput) -> Resu
     for (field, value) in [
         ("maxTokens", input.max_tokens),
         ("contextWindow", input.context_window),
-        ("maxIterations", input.max_iterations),
         ("subagentMaxParallel", input.subagent_max_parallel),
         ("subagentMaxCallsPerTurn", input.subagent_max_calls_per_turn),
         ("subagentTokenBudget", input.subagent_token_budget),
     ] {
         validate_positive_u32_override(field, value)?;
     }
+    // Zero is a valid answer-only policy; null remains the unlimited default.
+    validate_nonnegative_u32_override("maxIterations", input.max_iterations)?;
     // Zero intentionally disables the corresponding outer timeout.
     validate_nonnegative_u32_override("toolTimeoutSecs", input.tool_timeout_secs)?;
     validate_nonnegative_u32_override("agentTimeoutSecs", input.agent_timeout_secs)?;
@@ -5337,6 +5338,7 @@ mod tests {
         ));
 
         input.context_window = Some(750_000);
+        input.max_iterations = Some(0);
         input.tool_timeout_secs = Some(0);
         input.agent_timeout_secs = Some(0);
         input.delegation_limits_v2 = Some(crate::agent::DelegationLimitsConfig {
@@ -5350,7 +5352,10 @@ mod tests {
         ));
 
         input.delegation_limits_v2 = None;
-        assert!(db.save_agent_config(&input).is_ok());
+        let saved = db
+            .save_agent_config(&input)
+            .expect("zero tool rounds is a valid answer-only policy");
+        assert_eq!(saved.max_iterations, Some(0));
 
         input.tool_timeout_secs = Some(-1);
         assert!(matches!(

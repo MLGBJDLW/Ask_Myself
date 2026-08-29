@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -17,10 +15,44 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  classify:
+    name: Classify CI Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release_metadata_only: ${{ steps.scope.outputs.release_metadata_only }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify trusted release metadata updates
+        id: scope
+        env:
+          NEXA_CI_BASE_REF: origin/master
+          NEXA_CI_BRANCH: ${{ github.head_ref || github.ref_name }}
+          NEXA_CI_HEAD_REF: HEAD
+          NEXA_CI_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          git diff --name-only "origin/master...HEAD" > /tmp/nexa-ci-changed-paths.txt
+          release_metadata_only=$(node scripts/ci-scope.mjs < /tmp/nexa-ci-changed-paths.txt)
+          echo "release_metadata_only=$release_metadata_only" >> "$GITHUB_OUTPUT"
+          {
+            echo "### CI scope"
+            echo
+            echo "Release metadata only: \`$release_metadata_only\`"
+            echo
+            sed 's/^/- `/' /tmp/nexa-ci-changed-paths.txt | sed 's/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Verification jobs are split by dependency and failure domain so a native
   # package outage cannot prevent unrelated Rust or frontend feedback.
   repository_policy:
     name: Repository Policy
+    needs: classify
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -42,8 +74,29 @@ jobs:
             exit 1
           fi
 
+  release_metadata:
+    name: Release Metadata Contracts
+    needs: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Verify release and CI workflow contracts
+        run: npm run release:workflow:test
+
+      - name: Verify synchronized release metadata
+        run: npm run release:metadata:test
+
   rust_core:
     name: Rust Core
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -101,6 +154,8 @@ jobs:
 
   office_smoke:
     name: Office Artifact Smoke
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -169,6 +224,8 @@ jobs:
 
   frontend:
     name: Frontend Contracts & Build
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -217,6 +274,8 @@ jobs:
 
   browser_regressions:
     name: Browser Regressions
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -272,6 +331,8 @@ jobs:
 
   linux_desktop:
     name: Linux Desktop Check
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -327,33 +388,48 @@ jobs:
     name: Check & Lint
     if: ${{ always() }}
     needs:
+      - classify
       - repository_policy
+      - release_metadata
       - rust_core
       - office_smoke
       - frontend
       - browser_regressions
       - linux_desktop
+      - windows-check
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require successful CI jobs
         env:
+          RELEASE_METADATA_ONLY: ${{ needs.classify.outputs.release_metadata_only }}
           REPOSITORY_POLICY_RESULT: ${{ needs.repository_policy.result }}
+          RELEASE_METADATA_RESULT: ${{ needs.release_metadata.result }}
           RUST_CORE_RESULT: ${{ needs.rust_core.result }}
           OFFICE_SMOKE_RESULT: ${{ needs.office_smoke.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           BROWSER_REGRESSIONS_RESULT: ${{ needs.browser_regressions.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux_desktop.result }}
+          WINDOWS_DESKTOP_RESULT: ${{ needs.windows-check.result }}
         shell: bash
         run: |
-          results=(
-            "Repository Policy:$REPOSITORY_POLICY_RESULT"
-            "Rust Core:$RUST_CORE_RESULT"
-            "Office Artifact Smoke:$OFFICE_SMOKE_RESULT"
-            "Frontend Contracts & Build:$FRONTEND_RESULT"
-            "Browser Regressions:$BROWSER_REGRESSIONS_RESULT"
-            "Linux Desktop Check:$LINUX_DESKTOP_RESULT"
-          )
+          if [ "$RELEASE_METADATA_ONLY" = "true" ]; then
+            results=(
+              "Repository Policy:$REPOSITORY_POLICY_RESULT"
+              "Release Metadata Contracts:$RELEASE_METADATA_RESULT"
+            )
+          else
+            results=(
+              "Repository Policy:$REPOSITORY_POLICY_RESULT"
+              "Release Metadata Contracts:$RELEASE_METADATA_RESULT"
+              "Rust Core:$RUST_CORE_RESULT"
+              "Office Artifact Smoke:$OFFICE_SMOKE_RESULT"
+              "Frontend Contracts & Build:$FRONTEND_RESULT"
+              "Browser Regressions:$BROWSER_REGRESSIONS_RESULT"
+              "Linux Desktop Check:$LINUX_DESKTOP_RESULT"
+              "Windows Desktop Check:$WINDOWS_DESKTOP_RESULT"
+            )
+          fi
 
           failed=0
           for result in "${results[@]}"; do
@@ -366,6 +442,8 @@ jobs:
 
   windows-check:
     name: Windows Desktop Check
+    needs: classify
+    if: needs.classify.outputs.release_metadata_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
