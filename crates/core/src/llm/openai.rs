@@ -1721,6 +1721,8 @@ fn parse_responses_completion(
         FinishReason::ToolCalls
     } else if response_status == "incomplete" && incomplete_reason == Some("max_output_tokens") {
         FinishReason::Length
+    } else if response_status == "incomplete" && incomplete_reason == Some("content_filter") {
+        FinishReason::ContentFilter
     } else if response_completed {
         FinishReason::Stop
     } else if response_status == "incomplete" {
@@ -3270,6 +3272,35 @@ mod tests {
 
         assert_eq!(completion.finish_reason, FinishReason::Length);
         assert_eq!(completion.tool_calls.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn responses_content_filter_incomplete_is_a_typed_safety_terminal() {
+        let dialect = super::super::native_search::NativeSearchDialect::OpenAiResponses;
+        let capability = crate::model_catalog::NativeWebSearchCapability {
+            dialect,
+            supports_domains: false,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: false,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let completion = parse_responses_completion(
+            serde_json::json!({
+                "id": "resp-filtered",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": []
+            }),
+            dialect,
+            capability,
+        )
+        .expect("content filtering is a recognized Responses terminal");
+
+        assert_eq!(completion.finish_reason, FinishReason::ContentFilter);
+        assert!(completion.tool_calls.is_none());
     }
 
     fn endpoint_config(provider_type: ProviderType, base_url: &str) -> ProviderConfig {
