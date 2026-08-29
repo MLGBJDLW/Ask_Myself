@@ -472,7 +472,12 @@ impl OutputRecovery {
                     ContinuationCommit::Committed(delta)
                     | ContinuationCommit::CommittedWhitespace(delta) => delta,
                     ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
-                        String::new()
+                        let mut delta = String::new();
+                        for pending in std::mem::take(&mut self.pending_ambiguous_fragments) {
+                            self.visible_prefix.push_str(&pending);
+                            delta.push_str(&pending);
+                        }
+                        delta
                     }
                 }
             } else {
@@ -711,6 +716,30 @@ mod tests {
             }
         );
         assert_eq!(recovery.visible_prefix, "abcde");
+    }
+
+    #[test]
+    fn verified_tool_progress_commits_earlier_ambiguous_fragments() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue {
+                visible_delta,
+                ..
+            } if visible_delta.is_empty()
+        ));
+
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::ToolCalls), "", true),
+            OutputRecoveryDecision::ToolRound {
+                visible_delta: "foo".to_string(),
+            }
+        );
+        assert_eq!(recovery.visible_prefix, "foofoo");
     }
 
     #[test]
