@@ -1467,6 +1467,33 @@ impl AgentExecutor {
                     cause,
                     had_visible_content,
                 } => {
+                    if cause == OutputRecoveryCause::ProviderPause
+                        && provider_replay
+                            .as_ref()
+                            .is_none_or(|replay| !replay.resumes_provider_pause())
+                    {
+                        let trace_message = "provider_pause_missing_replay_state: the provider paused a hosted-tool turn without replayable native assistant blocks".to_string();
+                        append_developer_persisted_trace_status(
+                            &mut persisted_trace_items,
+                            &trace_message,
+                            "error",
+                        );
+                        emit_error_and_finalize_turn(
+                            &tx,
+                            db,
+                            &mut trace,
+                            turn_id,
+                            route_plan.kind,
+                            &persisted_trace_items,
+                            TurnErrorMessages {
+                                frontend_message: "The provider paused its hosted-tool turn without enough native state to resume safely. Nexa stopped instead of restarting or duplicating the provider tool.".to_string(),
+                                trace_message: trace_message.clone(),
+                            },
+                        )
+                        .await;
+                        turn_state.finish(TurnOutcome::Failed);
+                        return Err(CoreError::Agent(trace_message));
+                    }
                     append_persisted_trace_thinking(
                         &mut persisted_trace_items,
                         &iteration_thinking,
@@ -2259,6 +2286,10 @@ impl AgentExecutor {
             }
             let tool_dispatch_block =
                 loop_guard_block_reason.map(tool_dispatch::ToolDispatchBlock::LoopGuard);
+            // A loop-guard block materializes synthetic tool results so the
+            // model can change strategy, but no call crosses into execution.
+            // Preserve the round for that alternate strategy.
+            let dispatch_consumes_tool_round = tool_dispatch_block.is_none();
 
             // -- 4e. Execute tool calls in parallel ------------------------------
             turn_state.transition_to(TurnPhase::ToolDispatch);
@@ -2308,7 +2339,9 @@ impl AgentExecutor {
                 }
             };
             let dispatch_summaries = dispatch_outcome.summaries;
-            turn_budget.record_verified_tool_round();
+            if dispatch_consumes_tool_round {
+                turn_budget.record_verified_tool_round();
+            }
             if let Some(reason) = dispatch_outcome.terminal_loop_guard_reason {
                 let trace_message = format!("agent_loop_stopped_after_tool_errors: {reason}");
                 emit_error_and_finalize_turn(

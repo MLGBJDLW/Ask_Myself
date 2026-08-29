@@ -191,8 +191,9 @@ loop. The runtime keeps these authorities independent:
 A finite tool-round budget reserves one final answer-only provider sample after
 the last dispatched batch. Output continuation remains available for that
 sample, but its request carries no client tools. Provider samples, rejected
-draft calls, steering restarts, compaction, and transport retries have their own
-sample sequence and do not consume the user-facing tool budget. Repeated
+draft calls, loop-guard-blocked synthetic batches, steering restarts, compaction,
+and transport retries have their own sample sequence and do not consume the
+user-facing tool budget. Repeated
 protocol faults are controlled by the existing consecutive no-progress guard:
 committed answer or tool progress resets it, so there is no turn-wide hidden
 `MAX_OUTPUT_LIMIT_CONTINUATIONS` counter.
@@ -217,6 +218,10 @@ incompleteness, and unknown raw reasons remain distinct. Unknown terminals never
 become a natural stop. A client tool batch may cross the dispatch seam only when
 both its provider terminal and every assembled call are complete; a global
 output/context limit or malformed terminal vetoes apparently valid JSON.
+Anthropic `pause_turn` is resumable only when the adapter captured the exact
+ordered provider-native assistant blocks, including server-tool use and result
+blocks. Those blocks replay verbatim on the same route; missing or structurally
+invalid pause state fails closed instead of restarting a hosted tool.
 
 The design follows the event boundaries in
 [earendil-works/pi's agent loop](https://github.com/earendil-works/pi/blob/main/packages/agent/src/agent-loop.ts),

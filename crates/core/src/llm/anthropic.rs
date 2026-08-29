@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -104,6 +104,7 @@ struct AnthropicMessage {
 enum AnthropicContent {
     Text(String),
     Blocks(Vec<AnthropicContentBlock>),
+    RawBlocks(Vec<serde_json::Value>),
 }
 
 #[derive(Serialize)]
@@ -380,6 +381,16 @@ fn replayable_anthropic_thinking_blocks(
         .unwrap_or_default()
 }
 
+fn replayable_anthropic_paused_turn_blocks(message: &Message) -> Option<Vec<serde_json::Value>> {
+    let envelope = message.provider_turn()?;
+    let super::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(blocks) =
+        &envelope.replay_payload
+    else {
+        return None;
+    };
+    envelope.replay_payload.is_present().then(|| blocks.clone())
+}
+
 /// Convert our unified messages to Anthropic format.
 ///
 /// - System messages are extracted and returned separately (Anthropic puts them top-level).
@@ -464,7 +475,12 @@ fn convert_messages(
                 }
             }
             Role::Assistant => {
-                if let Some(ref calls) = msg.tool_calls {
+                if let Some(blocks) = replayable_anthropic_paused_turn_blocks(msg) {
+                    out.push(AnthropicMessage {
+                        role: "assistant".to_string(),
+                        content: AnthropicContent::RawBlocks(blocks),
+                    });
+                } else if let Some(ref calls) = msg.tool_calls {
                     // Build content blocks: text (if any) + tool_use blocks.
                     let mut blocks = Vec::new();
                     blocks.extend(replayable_anthropic_thinking_blocks(msg).into_iter().map(
@@ -584,6 +600,9 @@ fn add_cache_control_to_message_content(message: &mut AnthropicMessage) {
                 }
             }
         }
+        // Paused-turn blocks are provider-owned continuation state. Rewriting
+        // them, even to add a cache hint, would invalidate verbatim replay.
+        AnthropicContent::RawBlocks(_) => {}
     }
 }
 
@@ -820,9 +839,46 @@ fn drain_server_search_fallbacks(
     Ok(pending.drain().collect())
 }
 
+enum AnthropicParsedStreamItem {
+    Chunk(Box<StreamChunk>),
+    Replay(super::provider_turn::ProviderReplayPayload),
+}
+
+fn anthropic_pause_replay_payload(
+    finish_reason: Option<&FinishReason>,
+    content_blocks: Vec<serde_json::Value>,
+) -> Option<super::provider_turn::ProviderReplayPayload> {
+    if !matches!(finish_reason, Some(FinishReason::ProviderPause)) {
+        return None;
+    }
+    let payload =
+        super::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(content_blocks);
+    payload.is_present().then_some(payload)
+}
+
+fn append_anthropic_block_string(
+    blocks: &mut BTreeMap<usize, serde_json::Value>,
+    index: usize,
+    field: &str,
+    delta: &str,
+) {
+    let Some(block) = blocks
+        .get_mut(&index)
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    let target = block
+        .entry(field.to_string())
+        .or_insert_with(|| serde_json::Value::String(String::new()));
+    if let Some(current) = target.as_str().map(str::to_owned) {
+        *target = serde_json::Value::String(format!("{current}{delta}"));
+    }
+}
+
 async fn parse_anthropic_stream(
     response: reqwest::Response,
-    tx: mpsc::Sender<Result<StreamChunk, CoreError>>,
+    tx: mpsc::Sender<Result<AnthropicParsedStreamItem, CoreError>>,
     search_mode: super::native_search::SearchExecutionMode,
     stream_idle_timeout: Duration,
 ) -> Result<(), CoreError> {
@@ -841,6 +897,8 @@ async fn parse_anthropic_stream(
     let mut current_thinking_signature = String::new();
     let mut current_block_is_thinking = false;
     let mut replay_thinking_blocks = Vec::new();
+    let mut replay_content_blocks = BTreeMap::<usize, serde_json::Value>::new();
+    let mut tool_input_deltas = HashMap::<usize, String>::new();
     let mut pending_server_searches = HashMap::<String, serde_json::Value>::new();
     let mut seen_citation_urls = HashSet::<String>::new();
 
@@ -880,10 +938,17 @@ async fn parse_anthropic_stream(
             }
 
             // Parse the JSON data based on event type.
-            let event: AnthropicStreamEvent = match serde_json::from_str(&data) {
-                Ok(ev) => ev,
+            let raw_event: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(value) => value,
                 Err(e) => {
                     // Skip unparseable events (may be unknown new event types).
+                    tracing::debug!("Anthropic SSE parse skip (event={event_type}): {e}");
+                    continue;
+                }
+            };
+            let event: AnthropicStreamEvent = match serde_json::from_value(raw_event.clone()) {
+                Ok(ev) => ev,
+                Err(e) => {
                     tracing::debug!("Anthropic SSE parse skip (event={event_type}): {e}");
                     continue;
                 }
@@ -897,7 +962,13 @@ async fn parse_anthropic_stream(
                         cache_creation_tokens = u.cache_creation_input_tokens;
                     }
                 }
-                AnthropicStreamEvent::ContentBlockStart { content_block, .. } => {
+                AnthropicStreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                } => {
+                    if let Some(block) = raw_event.get("content_block").cloned() {
+                        replay_content_blocks.insert(index, block);
+                    }
                     match content_block {
                         AnthropicStreamContentBlock::Text { .. } => {
                             current_tool_id.clear();
@@ -944,7 +1015,11 @@ async fn parse_anthropic_stream(
                                 usage: None,
                                 thinking_delta: None,
                             };
-                            if tx.send(Ok(chunk)).await.is_err() {
+                            if tx
+                                .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                                .await
+                                .is_err()
+                            {
                                 return Ok(());
                             }
                         }
@@ -977,8 +1052,14 @@ async fn parse_anthropic_stream(
                         }
                     }
                 }
-                AnthropicStreamEvent::ContentBlockDelta { delta, .. } => match delta {
+                AnthropicStreamEvent::ContentBlockDelta { index, delta } => match delta {
                     AnthropicStreamDelta::TextDelta { text } => {
+                        append_anthropic_block_string(
+                            &mut replay_content_blocks,
+                            index,
+                            "text",
+                            &text,
+                        );
                         let chunk = StreamChunk {
                             delta: text,
                             tool_call_delta: None,
@@ -986,11 +1067,21 @@ async fn parse_anthropic_stream(
                             usage: None,
                             thinking_delta: None,
                         };
-                        if tx.send(Ok(chunk)).await.is_err() {
+                        if tx
+                            .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                            .await
+                            .is_err()
+                        {
                             return Ok(());
                         }
                     }
                     AnthropicStreamDelta::ThinkingDelta { thinking } => {
+                        append_anthropic_block_string(
+                            &mut replay_content_blocks,
+                            index,
+                            "thinking",
+                            &thinking,
+                        );
                         thinking_text.push_str(&thinking);
                         current_thinking_text.push_str(&thinking);
                         let chunk = StreamChunk {
@@ -1000,14 +1091,28 @@ async fn parse_anthropic_stream(
                             usage: None,
                             thinking_delta: Some(thinking),
                         };
-                        if tx.send(Ok(chunk)).await.is_err() {
+                        if tx
+                            .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                            .await
+                            .is_err()
+                        {
                             return Ok(());
                         }
                     }
                     AnthropicStreamDelta::SignatureDelta { signature } => {
+                        append_anthropic_block_string(
+                            &mut replay_content_blocks,
+                            index,
+                            "signature",
+                            &signature,
+                        );
                         current_thinking_signature.push_str(&signature);
                     }
                     AnthropicStreamDelta::InputJsonDelta { partial_json } => {
+                        tool_input_deltas
+                            .entry(index)
+                            .or_default()
+                            .push_str(&partial_json);
                         let chunk = StreamChunk {
                             delta: String::new(),
                             tool_call_delta: Some(ToolCallDelta {
@@ -1021,11 +1126,35 @@ async fn parse_anthropic_stream(
                             usage: None,
                             thinking_delta: None,
                         };
-                        if tx.send(Ok(chunk)).await.is_err() {
+                        if tx
+                            .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                            .await
+                            .is_err()
+                        {
                             return Ok(());
                         }
                     }
                     AnthropicStreamDelta::CitationsDelta { citation } => {
+                        if let Some(raw_citation) = raw_event
+                            .pointer("/delta/citation")
+                            .cloned()
+                            .filter(|value| !value.is_null())
+                        {
+                            if let Some(block) = replay_content_blocks
+                                .get_mut(&index)
+                                .and_then(serde_json::Value::as_object_mut)
+                            {
+                                block
+                                    .entry("citations".to_string())
+                                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                                if let Some(citations) = block
+                                    .get_mut("citations")
+                                    .and_then(serde_json::Value::as_array_mut)
+                                {
+                                    citations.push(raw_citation);
+                                }
+                            }
+                        }
                         if let AnthropicCitation::WebSearchResultLocation { url, title } = citation
                         {
                             if seen_citation_urls.insert(url.clone()) {
@@ -1041,7 +1170,11 @@ async fn parse_anthropic_stream(
                                     usage: None,
                                     thinking_delta: None,
                                 };
-                                if tx.send(Ok(chunk)).await.is_err() {
+                                if tx
+                                    .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                                    .await
+                                    .is_err()
+                                {
                                     return Ok(());
                                 }
                             }
@@ -1081,7 +1214,11 @@ async fn parse_anthropic_stream(
                                 usage: None,
                                 thinking_delta: None,
                             };
-                            if tx.send(Ok(chunk)).await.is_err() {
+                            if tx
+                                .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                                .await
+                                .is_err()
+                            {
                                 return Ok(());
                             }
                         }
@@ -1111,6 +1248,18 @@ async fn parse_anthropic_stream(
                             provider_raw: None,
                         }
                     });
+                    if let Some(replay) = anthropic_pause_replay_payload(
+                        finish.as_ref(),
+                        replay_content_blocks.values().cloned().collect(),
+                    ) {
+                        if tx
+                            .send(Ok(AnthropicParsedStreamItem::Replay(replay)))
+                            .await
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
                     let chunk = StreamChunk {
                         delta: String::new(),
                         tool_call_delta: None,
@@ -1118,14 +1267,28 @@ async fn parse_anthropic_stream(
                         usage: usage_info,
                         thinking_delta: None,
                     };
-                    if tx.send(Ok(chunk)).await.is_err() {
+                    if tx
+                        .send(Ok(AnthropicParsedStreamItem::Chunk(Box::new(chunk))))
+                        .await
+                        .is_err()
+                    {
                         return Ok(());
                     }
                 }
                 AnthropicStreamEvent::MessageStop => {
                     return Ok(());
                 }
-                AnthropicStreamEvent::ContentBlockStop { .. } => {
+                AnthropicStreamEvent::ContentBlockStop { index } => {
+                    if let Some(input_json) = tool_input_deltas.remove(&index) {
+                        if let Ok(input) = serde_json::from_str::<serde_json::Value>(&input_json) {
+                            if let Some(block) = replay_content_blocks
+                                .get_mut(&index)
+                                .and_then(serde_json::Value::as_object_mut)
+                            {
+                                block.insert("input".to_string(), input);
+                            }
+                        }
+                    }
                     if current_block_is_thinking && !current_thinking_signature.trim().is_empty() {
                         replay_thinking_blocks.push(
                             super::provider_turn::AnthropicThinkingBlock::Thinking {
@@ -1336,6 +1499,61 @@ mod tests {
         assert_eq!(value[0]["content"][1]["type"], "redacted_thinking");
         assert_eq!(value[0]["content"][1]["data"], "opaque");
         assert_eq!(value[0]["content"][2]["type"], "tool_use");
+    }
+
+    #[test]
+    fn paused_turn_native_blocks_replay_verbatim() {
+        let blocks = vec![
+            serde_json::json!({"type":"text","text":"Searching"}),
+            serde_json::json!({
+                "type":"server_tool_use",
+                "id":"srvtoolu_1",
+                "name":"web_search",
+                "input":{"query":"Nexa"}
+            }),
+            serde_json::json!({
+                "type":"web_search_tool_result",
+                "tool_use_id":"srvtoolu_1",
+                "content":[{"type":"web_search_result","url":"https://example.com"}]
+            }),
+        ];
+        let payload =
+            anthropic_pause_replay_payload(Some(&FinishReason::ProviderPause), blocks.clone())
+                .expect("pause_turn should retain replayable provider blocks");
+        let route = super::super::provider_turn::RouteSnapshot {
+            provider_endpoint_id: "anthropic-public".to_string(),
+            provider_family: "anthropic".to_string(),
+            api_style: ReasoningApiStyle::AnthropicMessages,
+            model_id: "claude-sonnet-5".to_string(),
+            reasoning_profile_id: "anthropic-test".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy:
+                super::super::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+        };
+        let mut message = Message::text(Role::Assistant, "Searching");
+        message.set_provider_turn(
+            super::super::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+                "turn-item",
+                "sample",
+                route,
+                "Searching",
+                None,
+                None,
+                Vec::new(),
+                false,
+                Some(payload),
+            ),
+        );
+
+        let (_, converted) = convert_messages(&[message]);
+        let value = serde_json::to_value(converted).expect("Anthropic messages");
+
+        assert_eq!(value[0]["content"], serde_json::Value::Array(blocks));
+        assert!(anthropic_pause_replay_payload(
+            Some(&FinishReason::Stop),
+            vec![serde_json::json!({"type":"text","text":"done"})],
+        )
+        .is_none());
     }
 
     #[test]
@@ -1857,13 +2075,20 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self.check_response(response).await?;
 
-        let resp: AnthropicResponse = response
+        let raw_response: serde_json::Value = response
             .json()
             .await
             .inspect_err(|error| {
                 self.transport.record_transport_failure(&error.to_string());
             })
             .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        let raw_content_blocks = raw_response
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let resp: AnthropicResponse = serde_json::from_value(raw_response)
+            .map_err(|e| CoreError::Llm(format!("Failed to decode response: {e}")))?;
         self.transport.record_transport_success();
 
         // Extract text, thinking, and tool calls from content blocks.
@@ -1974,6 +2199,8 @@ impl LlmProvider for AnthropicProvider {
 
         let finish_reason =
             normalized_finish_reason(resp.stop_reason.as_deref(), !tool_calls.is_empty());
+        let provider_replay =
+            anthropic_pause_replay_payload(Some(&finish_reason), raw_content_blocks);
 
         let estimated_thinking = if !thinking_parts.is_empty() {
             let thinking_text = thinking_parts.join("");
@@ -2011,7 +2238,7 @@ impl LlmProvider for AnthropicProvider {
             } else {
                 Some(thinking_parts.join(""))
             },
-            provider_replay: None,
+            provider_replay,
         })
     }
 
@@ -2072,10 +2299,23 @@ impl LlmProvider for AnthropicProvider {
         });
 
         let stream = futures::stream::unfold(rx, |mut rx| async {
-            rx.recv().await.map(|item| (item, rx))
+            rx.recv().await.map(|item| {
+                let event = match item {
+                    Ok(AnthropicParsedStreamItem::Chunk(chunk)) => {
+                        ProviderStreamEvent::Chunk { chunk }
+                    }
+                    Ok(AnthropicParsedStreamItem::Replay(replay)) => {
+                        ProviderStreamEvent::ReplayState {
+                            replay: Box::new(replay),
+                        }
+                    }
+                    Err(error) => super::provider_stream_event_from_error(error),
+                };
+                (event, rx)
+            })
         });
 
-        Ok(super::stream_chunks_to_provider_events(Box::pin(stream)))
+        Ok(Box::pin(stream))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {

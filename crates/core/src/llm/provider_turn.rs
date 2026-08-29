@@ -312,12 +312,64 @@ impl GeminiThoughtSignatureSet {
     }
 }
 
+fn anthropic_paused_turn_blocks_are_replayable(blocks: &[serde_json::Value]) -> bool {
+    !blocks.is_empty()
+        && blocks.iter().all(|block| {
+            let Some(block_type) = block.get("type").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            match block_type {
+                "text" => block
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "thinking" => {
+                    block
+                        .get("thinking")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some()
+                        && block
+                            .get("signature")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty())
+                }
+                "redacted_thinking" => block
+                    .get("data")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "server_tool_use" => {
+                    block
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                        && block
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty())
+                        && block.get("input").is_some()
+                }
+                result_type if result_type.ends_with("_tool_result") => {
+                    block
+                        .get("tool_use_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                        && block.get("content").is_some()
+                }
+                _ => false,
+            }
+        })
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum ProviderReplayPayload {
     DeepSeekReasoningContent(String),
     DeepSeekResponseItems(ResponsesReplayPayload),
     AnthropicThinkingBlocks(Vec<AnthropicThinkingBlock>),
+    /// Exact ordered assistant content returned with Anthropic `pause_turn`.
+    /// Provider-owned tool-use/result blocks must be replayed verbatim to
+    /// resume the same hosted-tool turn rather than starting a new one.
+    AnthropicPausedTurnBlocks(Vec<serde_json::Value>),
     OpenAiResponseItems(ResponsesReplayPayload),
     GeminiThoughtSignatures(GeminiThoughtSignatureSet),
     OpenAiCompatibleReasoningContent {
@@ -335,6 +387,9 @@ impl ProviderReplayPayload {
             Self::DeepSeekReasoningContent(content)
             | Self::OpenAiCompatibleReasoningContent { content, .. } => !content.trim().is_empty(),
             Self::AnthropicThinkingBlocks(blocks) => !blocks.is_empty(),
+            Self::AnthropicPausedTurnBlocks(blocks) => {
+                anthropic_paused_turn_blocks_are_replayable(blocks)
+            }
             Self::OpenRouterReasoningDetails(details) => !details.is_empty(),
             Self::DeepSeekResponseItems(payload) => payload.is_structurally_complete(false),
             Self::OpenAiResponseItems(payload) => payload.is_structurally_complete(true),
@@ -355,12 +410,17 @@ impl ProviderReplayPayload {
         }
     }
 
+    pub fn resumes_provider_pause(&self) -> bool {
+        matches!(self, Self::AnthropicPausedTurnBlocks(_)) && self.is_present()
+    }
+
     fn authorizes_tool_calls(&self, route: &RouteSnapshot, tool_calls: &[ToolCallRequest]) -> bool {
         match self {
             Self::DeepSeekResponseItems(payload) => {
                 payload.authorizes_tool_calls(tool_calls, false)
             }
             Self::OpenAiResponseItems(payload) => payload.authorizes_tool_calls(tool_calls, true),
+            Self::AnthropicPausedTurnBlocks(_) => tool_calls.is_empty() && self.is_present(),
             Self::GeminiThoughtSignatures(payload) => payload.authorizes_tool_calls(
                 tool_calls,
                 route
@@ -461,6 +521,7 @@ pub enum ProviderReplayItem {
     DeepSeekReasoningContent(String),
     DeepSeekResponseItem(serde_json::Value),
     AnthropicThinkingBlock(AnthropicThinkingBlock),
+    AnthropicPausedTurnBlock(serde_json::Value),
     OpenAiResponseItem(serde_json::Value),
     GeminiContentPart(serde_json::Value),
     OpenAiCompatibleReasoningContent {
@@ -480,6 +541,11 @@ impl ProviderReplayItem {
                 .iter()
                 .cloned()
                 .map(Self::AnthropicThinkingBlock)
+                .collect(),
+            ProviderReplayPayload::AnthropicPausedTurnBlocks(blocks) => blocks
+                .iter()
+                .cloned()
+                .map(Self::AnthropicPausedTurnBlock)
                 .collect(),
             ProviderReplayPayload::DeepSeekResponseItems(payload) => payload
                 .items

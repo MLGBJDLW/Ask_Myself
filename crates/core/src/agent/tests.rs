@@ -3814,6 +3814,16 @@ struct PostSynthesisSteeringProvider {
     saw_steering_on_replacement: Arc<Mutex<bool>>,
 }
 
+struct ProviderPauseReplayProvider {
+    stream_calls: Arc<AtomicUsize>,
+    saw_native_pause_blocks: Arc<Mutex<bool>>,
+}
+
+struct LoopGuardBudgetProvider {
+    stream_calls: Arc<AtomicUsize>,
+    tools_visible_on_strategy_change: Arc<Mutex<bool>>,
+}
+
 const LOOP_GUARD_REPEATED_DRAFT: &str = "This repeated stale draft keeps restating the same incomplete conclusion without taking a new action or adding useful evidence.";
 
 #[async_trait]
@@ -3943,6 +3953,189 @@ impl LlmProvider for PostSynthesisSteeringProvider {
                 None
             },
         )))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ProviderPauseReplayProvider {
+    fn name(&self) -> &str {
+        "anthropic-pause-replay-mock"
+    }
+
+    fn reasoning_replay_policy(
+        &self,
+        _model: &str,
+    ) -> crate::llm::reasoning_profile::ReasoningReplayPolicy {
+        crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall
+    }
+
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        crate::llm::provider_turn::RouteSnapshot {
+            provider_endpoint_id: "anthropic-test".to_string(),
+            provider_family: "anthropic".to_string(),
+            api_style: crate::llm::reasoning_profile::ReasoningApiStyle::AnthropicMessages,
+            model_id: request.model.clone(),
+            reasoning_profile_id: "anthropic-pause-test".to_string(),
+            reasoning_profile_version: 1,
+            replay_policy: crate::llm::reasoning_profile::ReasoningReplayPolicy::RequiredOnToolCall,
+        }
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["claude-sonnet-5".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call_no == 0 {
+            let blocks = vec![
+                serde_json::json!({"type":"text","text":"Searching"}),
+                serde_json::json!({
+                    "type":"server_tool_use",
+                    "id":"srvtoolu_1",
+                    "name":"web_search",
+                    "input":{"query":"Nexa"}
+                }),
+                serde_json::json!({
+                    "type":"web_search_tool_result",
+                    "tool_use_id":"srvtoolu_1",
+                    "content":[{"type":"web_search_result","url":"https://example.com"}]
+                }),
+            ];
+            return Ok(Box::pin(stream::iter(vec![
+                ProviderStreamEvent::ReplayState {
+                    replay: Box::new(
+                        crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
+                            blocks,
+                        ),
+                    ),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
+                        tool_call_delta: None,
+                        finish_reason: Some(FinishReason::ProviderPause),
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+            ])));
+        }
+
+        *self.saw_native_pause_blocks.lock().unwrap() = request.messages.iter().any(|message| {
+            message.provider_turn().is_some_and(|envelope| {
+                matches!(
+                    &envelope.replay_payload,
+                    crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
+                        blocks
+                    ) if blocks.iter().any(|block| {
+                        block.get("type").and_then(serde_json::Value::as_str)
+                            == Some("server_tool_use")
+                    })
+                )
+            })
+        });
+        Ok(Box::pin(stream::iter(vec![ProviderStreamEvent::Chunk {
+            chunk: Box::new(StreamChunk {
+                delta: "completed after provider pause".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }),
+        }])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LoopGuardBudgetProvider {
+    fn name(&self) -> &str {
+        "loop-guard-budget-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["mock-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = if call_no < 3 {
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: format!("repeat-{call_no}"),
+                    name: Some("read_evidence".to_string()),
+                    arguments_delta: r#"{"tasks":[],"scope":"same"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else if call_no == 3 {
+            *self.tools_visible_on_strategy_change.lock().unwrap() = request
+                .tools
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|tool| tool.name == "alternate_action");
+            StreamChunk {
+                delta: String::new(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "alternate-3".to_string(),
+                    name: Some("alternate_action".to_string()),
+                    arguments_delta: r#"{"tasks":[],"scope":"different"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: None,
+            }
+        } else {
+            StreamChunk {
+                delta: "final after alternate strategy".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }
+        };
+        Ok(Box::pin(stream::iter(vec![ProviderStreamEvent::Chunk {
+            chunk: Box::new(chunk),
+        }])))
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
@@ -5978,6 +6171,158 @@ async fn answer_only_synthesis_steering_gets_a_replacement_sample() {
     assert!(
         *saw_steering_on_replacement.lock().unwrap(),
         "the replacement sample must include the late steering message"
+    );
+}
+
+#[tokio::test]
+async fn provider_pause_recovery_replays_native_hosted_tool_blocks() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_native_pause_blocks = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ProviderPauseReplayProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_native_pause_blocks: Arc::clone(&saw_native_pause_blocks),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Resume the provider-hosted search safely.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("pause_turn should resume from provider-native state");
+
+    assert_eq!(
+        final_message.text_content(),
+        "completed after provider pause"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(
+        *saw_native_pause_blocks.lock().unwrap(),
+        "the recovery request must contain the original server_tool_use block"
+    );
+}
+
+#[tokio::test]
+async fn provider_pause_without_native_state_fails_closed() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            first_chunks: vec![StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::ProviderPause),
+                usage: None,
+                thinking_delta: None,
+            }],
+            final_answer: "must not restart the hosted tool",
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Do not duplicate the provider-hosted search.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("missing pause replay state must stop the turn");
+
+    assert!(error.to_string().contains("missing_replay_state"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn loop_guard_blocked_batch_does_not_consume_the_remaining_tool_round() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "read_evidence",
+        executions: Arc::clone(&executions),
+    }));
+    registry.register(Box::new(CountingNamedMockTool {
+        name: "alternate_action",
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let tools_visible_on_strategy_change = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(LoopGuardBudgetProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            tools_visible_on_strategy_change: Arc::clone(&tools_visible_on_strategy_change),
+        }),
+        registry,
+        AgentConfig {
+            system_prompt: "stable system".to_string(),
+            model: Some("mock-model".to_string()),
+            max_iterations: 3,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(256);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Try evidence, then change strategy when instructed.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the alternate strategy should retain the unspent tool round");
+
+    assert_eq!(
+        final_message.text_content(),
+        "final after alternate strategy"
+    );
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        3,
+        "two repeated batches and one alternate batch should execute; the blocked third repeat must not"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 5);
+    assert!(
+        *tools_visible_on_strategy_change.lock().unwrap(),
+        "the strategy-change sample must still have tool authority"
     );
 }
 
