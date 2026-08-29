@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.13.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.2...nexa-monorepo-v0.13.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** align suppressed tool accounting ([61d19a7](https://github.com/MLGBJDLW/Nexa/commit/61d19a71c21dc26169be0a597f87ff6272e8941d))
+* **agent:** charge failed direct dispatch rounds ([864fe61](https://github.com/MLGBJDLW/Nexa/commit/864fe613124daafcd94a4f7bfec2849f9cbd890d))
+* **agent:** commit only novel recovery progress ([35c5ffc](https://github.com/MLGBJDLW/Nexa/commit/35c5ffcc3f31723ec29a719d73d1a36c4befe366))
+* **agent:** commit pending text before tools ([95ea0fc](https://github.com/MLGBJDLW/Nexa/commit/95ea0fcc858ff76fd9df19f3d6fd406e922caa6a))
+* **agent:** detect stalled continuation fragments ([2fcacb4](https://github.com/MLGBJDLW/Nexa/commit/2fcacb4b0f1f586239956ce1409d1f25a8723729))
+* **agent:** enforce budgets before controller tools ([853f23a](https://github.com/MLGBJDLW/Nexa/commit/853f23a850a5b2163f757ce99c2f31d609fa14fc))
+* **agent:** make output recovery progress-aware ([6e739f5](https://github.com/MLGBJDLW/Nexa/commit/6e739f5717724e9f7d184b53f33c461875e61f0b))
+* **agent:** preserve answer-only replacement authority ([973dc3f](https://github.com/MLGBJDLW/Nexa/commit/973dc3fc04e2c2b6f64c2b8e3e82d12db02758be))
+* **agent:** preserve canonical interrupted recovery drafts ([e35ec5c](https://github.com/MLGBJDLW/Nexa/commit/e35ec5c09b7201b8e005e598bc439b06edd4fafc))
+* **agent:** preserve committed recovery state ([bb4c686](https://github.com/MLGBJDLW/Nexa/commit/bb4c6860cbea0152e244d1959d37b3b77fbbb76c))
+* **agent:** preserve continuation separators ([4391ec3](https://github.com/MLGBJDLW/Nexa/commit/4391ec349643a87af015f10bcdd03fc06a2b6c82))
+* **agent:** preserve endpoint catalog authority ([2aed665](https://github.com/MLGBJDLW/Nexa/commit/2aed6657d6f81f5cbfd982c390f8271f187ce2fe))
+* **agent:** preserve intentional repeated continuations ([bdbd5cc](https://github.com/MLGBJDLW/Nexa/commit/bdbd5cc423d6ef3f19f2dfb24a607d7e83ce49e5))
+* **agent:** preserve pending continuation order ([20208d9](https://github.com/MLGBJDLW/Nexa/commit/20208d9e5b6bb19b59131d937a3f35a7e3b321d8))
+* **agent:** preserve recovery progress across tool branches ([eb95a66](https://github.com/MLGBJDLW/Nexa/commit/eb95a66f86726f56720acc54fd5d361d70c7755e))
+* **agent:** preserve recovery state authority ([bfe7be8](https://github.com/MLGBJDLW/Nexa/commit/bfe7be8ca317d247e85cbbde4452fe510c8ddb5a))
+* **agent:** retain accepted text on draft rejection ([8128156](https://github.com/MLGBJDLW/Nexa/commit/81281569593f050d9f84cdfebf17a1b50307f9fc))
+* **agent:** separate provider recovery from tool rounds ([f9589df](https://github.com/MLGBJDLW/Nexa/commit/f9589dfa0e0fbe53985c3577eab9f54a7c740d8f))
+* **agent:** stage recovery text until tool validation ([dc94577](https://github.com/MLGBJDLW/Nexa/commit/dc9457723eeb39494c54ad1107ffbbe0a4d98ff9))
+* **anthropic:** preserve non-streaming pause recovery ([753f6b5](https://github.com/MLGBJDLW/Nexa/commit/753f6b53729a8d2d4853be22378e99b47cdf3e6e))
+* **anthropic:** preserve pause state across draft rejection ([3cc6dd5](https://github.com/MLGBJDLW/Nexa/commit/3cc6dd578addec9e38bd6791e6585d0939737af6))
+* **ci:** validate release metadata diffs ([749f2a8](https://github.com/MLGBJDLW/Nexa/commit/749f2a8ecd89d41bf80b6b82b1536a73ab574103))
+* **openai:** classify Responses safety terminals ([2704021](https://github.com/MLGBJDLW/Nexa/commit/27040217db278dda8e2d2747764b7ac817b2f1c3))
+* **release:** preserve Cargo lock block separators ([127d5e3](https://github.com/MLGBJDLW/Nexa/commit/127d5e3dd0d219e5fa8b54f41e5e46f95a2698f5))
+* **settings:** preserve explicit agent budget authority ([7c656ea](https://github.com/MLGBJDLW/Nexa/commit/7c656eaead36e0db64e3a17102877e50874b8b8d))
+
 ## [0.13.2](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.1...nexa-monorepo-v0.13.2) (2026-08-28)
 
 
