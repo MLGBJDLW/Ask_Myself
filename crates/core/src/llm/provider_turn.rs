@@ -314,6 +314,14 @@ impl GeminiThoughtSignatureSet {
 
 fn anthropic_paused_turn_blocks_are_replayable(blocks: &[serde_json::Value]) -> bool {
     !blocks.is_empty()
+        && blocks.iter().any(|block| {
+            block
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|block_type| {
+                    block_type == "server_tool_use" || block_type.ends_with("_tool_result")
+                })
+        })
         && blocks.iter().all(|block| {
             let Some(block_type) = block.get("type").and_then(serde_json::Value::as_str) else {
                 return false;

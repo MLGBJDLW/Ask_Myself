@@ -846,11 +846,17 @@ enum AnthropicParsedStreamItem {
 
 fn anthropic_pause_replay_payload(
     finish_reason: Option<&FinishReason>,
-    content_blocks: Vec<serde_json::Value>,
+    mut content_blocks: Vec<serde_json::Value>,
 ) -> Option<super::provider_turn::ProviderReplayPayload> {
     if !matches!(finish_reason, Some(FinishReason::ProviderPause)) {
         return None;
     }
+    // `pause_turn` commits provider-hosted tool state, but a concurrent client
+    // `tool_use` block remains a draft because this terminal does not authorize
+    // client dispatch. Preserve the former verbatim and exclude the latter from
+    // the native assistant replay envelope.
+    content_blocks
+        .retain(|block| block.get("type").and_then(serde_json::Value::as_str) != Some("tool_use"));
     let payload =
         super::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(content_blocks);
     payload.is_present().then_some(payload)
@@ -1502,8 +1508,8 @@ mod tests {
     }
 
     #[test]
-    fn paused_turn_native_blocks_replay_verbatim() {
-        let blocks = vec![
+    fn paused_turn_replays_hosted_blocks_and_drops_client_drafts() {
+        let source_blocks = vec![
             serde_json::json!({"type":"text","text":"Searching"}),
             serde_json::json!({
                 "type":"server_tool_use",
@@ -1516,9 +1522,16 @@ mod tests {
                 "tool_use_id":"srvtoolu_1",
                 "content":[{"type":"web_search_result","url":"https://example.com"}]
             }),
+            serde_json::json!({
+                "type":"tool_use",
+                "id":"toolu_draft",
+                "name":"write_file",
+                "input":{"path":"draft.txt"}
+            }),
         ];
+        let expected_blocks = source_blocks[..3].to_vec();
         let payload =
-            anthropic_pause_replay_payload(Some(&FinishReason::ProviderPause), blocks.clone())
+            anthropic_pause_replay_payload(Some(&FinishReason::ProviderPause), source_blocks)
                 .expect("pause_turn should retain replayable provider blocks");
         let route = super::super::provider_turn::RouteSnapshot {
             provider_endpoint_id: "anthropic-public".to_string(),
@@ -1548,10 +1561,18 @@ mod tests {
         let (_, converted) = convert_messages(&[message]);
         let value = serde_json::to_value(converted).expect("Anthropic messages");
 
-        assert_eq!(value[0]["content"], serde_json::Value::Array(blocks));
+        assert_eq!(
+            value[0]["content"],
+            serde_json::Value::Array(expected_blocks)
+        );
         assert!(anthropic_pause_replay_payload(
             Some(&FinishReason::Stop),
             vec![serde_json::json!({"type":"text","text":"done"})],
+        )
+        .is_none());
+        assert!(anthropic_pause_replay_payload(
+            Some(&FinishReason::ProviderPause),
+            vec![serde_json::json!({"type":"text","text":"still working"})],
         )
         .is_none());
     }

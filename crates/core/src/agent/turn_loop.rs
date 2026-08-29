@@ -39,6 +39,53 @@ struct ProviderContextLimitRecoveryContext<'a> {
     persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
 }
 
+struct RecoveryAssistantMessageContext<'a> {
+    full_content: &'a str,
+    iteration_thinking: &'a str,
+    recovery_reasoning: Option<String>,
+    sample_id: &'a str,
+    route_snapshot: &'a crate::llm::provider_turn::RouteSnapshot,
+    reasoning_was_requested: bool,
+    provider_replay: Option<&'a crate::llm::provider_turn::ProviderReplayPayload>,
+}
+
+fn capture_recovery_assistant_message(ctx: RecoveryAssistantMessageContext<'_>) -> Message {
+    let RecoveryAssistantMessageContext {
+        full_content,
+        iteration_thinking,
+        recovery_reasoning,
+        sample_id,
+        route_snapshot,
+        reasoning_was_requested,
+        provider_replay,
+    } = ctx;
+    let mut message = Message {
+        role: Role::Assistant,
+        parts: vec![ContentPart::Text {
+            text: full_content.to_string(),
+        }],
+        name: None,
+        tool_calls: None,
+        reasoning_content: recovery_reasoning.clone(),
+        prompt_cache_hint: None,
+    };
+    message.set_provider_turn(
+        crate::llm::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
+            Uuid::new_v4().to_string(),
+            sample_id.to_string(),
+            route_snapshot.clone(),
+            message.text_content(),
+            crate::llm::reasoning_replay::sanitize_reasoning_text(Some(iteration_thinking))
+                .as_deref(),
+            recovery_reasoning.as_deref(),
+            Vec::new(),
+            reasoning_was_requested,
+            provider_replay.cloned(),
+        ),
+    );
+    message
+}
+
 fn awaiting_user_input_interaction_id(
     summaries: &[tool_dispatch::ToolDispatchSummary],
 ) -> Option<String> {
@@ -1461,39 +1508,46 @@ impl AgentExecutor {
                 &full_content,
                 !tool_calls.is_empty(),
             );
+            let resumes_provider_pause = matches!(
+                &recovery_decision,
+                OutputRecoveryDecision::Continue {
+                    cause: OutputRecoveryCause::ProviderPause,
+                    ..
+                } | OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProviderPause)
+            );
+            if resumes_provider_pause
+                && provider_replay
+                    .as_ref()
+                    .is_none_or(|replay| !replay.resumes_provider_pause())
+            {
+                let trace_message = "provider_pause_missing_replay_state: the provider paused a hosted-tool turn without replayable native assistant blocks".to_string();
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &trace_message,
+                    "error",
+                );
+                emit_error_and_finalize_turn(
+                    &tx,
+                    db,
+                    &mut trace,
+                    turn_id,
+                    route_plan.kind,
+                    &persisted_trace_items,
+                    TurnErrorMessages {
+                        frontend_message: "The provider paused its hosted-tool turn without enough native state to resume safely. Nexa stopped instead of restarting or duplicating the provider tool.".to_string(),
+                        trace_message: trace_message.clone(),
+                    },
+                )
+                .await;
+                turn_state.finish(TurnOutcome::Failed);
+                return Err(CoreError::Agent(trace_message));
+            }
             let mut tool_round_rejection_cause = None;
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
                     had_visible_content,
                 } => {
-                    if cause == OutputRecoveryCause::ProviderPause
-                        && provider_replay
-                            .as_ref()
-                            .is_none_or(|replay| !replay.resumes_provider_pause())
-                    {
-                        let trace_message = "provider_pause_missing_replay_state: the provider paused a hosted-tool turn without replayable native assistant blocks".to_string();
-                        append_developer_persisted_trace_status(
-                            &mut persisted_trace_items,
-                            &trace_message,
-                            "error",
-                        );
-                        emit_error_and_finalize_turn(
-                            &tx,
-                            db,
-                            &mut trace,
-                            turn_id,
-                            route_plan.kind,
-                            &persisted_trace_items,
-                            TurnErrorMessages {
-                                frontend_message: "The provider paused its hosted-tool turn without enough native state to resume safely. Nexa stopped instead of restarting or duplicating the provider tool.".to_string(),
-                                trace_message: trace_message.clone(),
-                            },
-                        )
-                        .await;
-                        turn_state.finish(TurnOutcome::Failed);
-                        return Err(CoreError::Agent(trace_message));
-                    }
                     append_persisted_trace_thinking(
                         &mut persisted_trace_items,
                         &iteration_thinking,
@@ -1506,33 +1560,17 @@ impl AgentExecutor {
                     {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
-                        let mut recovery_message = Message {
-                            role: Role::Assistant,
-                            parts: vec![ContentPart::Text {
-                                text: full_content.clone(),
-                            }],
-                            name: None,
-                            tool_calls: None,
-                            reasoning_content: recovery_reasoning.clone(),
-                            prompt_cache_hint: None,
-                        };
-                        recovery_message.set_provider_turn(
-                            crate::llm::provider_turn::ProviderTurnEnvelope::capture_with_replay_payload(
-                                Uuid::new_v4().to_string(),
-                                sample_id,
-                                route_snapshot,
-                                recovery_message.text_content(),
-                                crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
-                                    &iteration_thinking,
-                                ))
-                                .as_deref(),
-                                recovery_reasoning.as_deref(),
-                                Vec::new(),
+                        messages.push(capture_recovery_assistant_message(
+                            RecoveryAssistantMessageContext {
+                                full_content: &full_content,
+                                iteration_thinking: &iteration_thinking,
+                                recovery_reasoning,
+                                sample_id: &sample_id,
+                                route_snapshot: &route_snapshot,
                                 reasoning_was_requested,
-                                provider_replay,
-                            ),
-                        );
-                        messages.push(recovery_message);
+                                provider_replay: provider_replay.as_ref(),
+                            },
+                        ));
                     }
 
                     if cause == OutputRecoveryCause::ContextLimit {
@@ -1601,6 +1639,25 @@ impl AgentExecutor {
                 }
                 OutputRecoveryDecision::RejectToolRound(cause) => {
                     tool_round_rejection_cause = Some(cause);
+                    if cause == ToolRoundRejectionCause::ProviderPause {
+                        append_persisted_trace_thinking(
+                            &mut persisted_trace_items,
+                            &iteration_thinking,
+                        );
+                        let recovery_reasoning =
+                            self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        messages.push(capture_recovery_assistant_message(
+                            RecoveryAssistantMessageContext {
+                                full_content: &full_content,
+                                iteration_thinking: &iteration_thinking,
+                                recovery_reasoning,
+                                sample_id: &sample_id,
+                                route_snapshot: &route_snapshot,
+                                reasoning_was_requested,
+                                provider_replay: provider_replay.as_ref(),
+                            },
+                        ));
+                    }
                     append_internal_persisted_trace_status(
                         &mut persisted_trace_items,
                         "The provider terminal state did not commit a safe tool-call response. The draft calls will be rejected and re-planned without execution.",

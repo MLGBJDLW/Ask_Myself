@@ -4030,6 +4030,21 @@ impl LlmProvider for ProviderPauseReplayProvider {
                 ProviderStreamEvent::Chunk {
                     chunk: Box::new(StreamChunk {
                         delta: String::new(),
+                        tool_call_delta: Some(ToolCallDelta {
+                            id: "toolu_draft".to_string(),
+                            name: Some("write_file".to_string()),
+                            arguments_delta: r#"{"path":"draft.txt"}"#.into(),
+                            index: Some(0),
+                            thought_signature: None,
+                        }),
+                        finish_reason: None,
+                        usage: None,
+                        thinking_delta: None,
+                    }),
+                },
+                ProviderStreamEvent::Chunk {
+                    chunk: Box::new(StreamChunk {
+                        delta: String::new(),
                         tool_call_delta: None,
                         finish_reason: Some(FinishReason::ProviderPause),
                         usage: None,
@@ -4048,6 +4063,9 @@ impl LlmProvider for ProviderPauseReplayProvider {
                     ) if blocks.iter().any(|block| {
                         block.get("type").and_then(serde_json::Value::as_str)
                             == Some("server_tool_use")
+                    }) && blocks.iter().all(|block| {
+                        block.get("type").and_then(serde_json::Value::as_str)
+                            != Some("tool_use")
                     })
                 )
             })
@@ -6175,7 +6193,7 @@ async fn answer_only_synthesis_steering_gets_a_replacement_sample() {
 }
 
 #[tokio::test]
-async fn provider_pause_recovery_replays_native_hosted_tool_blocks() {
+async fn provider_pause_recovery_replays_native_state_after_rejecting_client_draft() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let saw_native_pause_blocks = Arc::new(Mutex::new(false));
     let executor = AgentExecutor::new(
