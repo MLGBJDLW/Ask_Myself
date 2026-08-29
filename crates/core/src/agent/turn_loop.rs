@@ -1536,7 +1536,10 @@ impl AgentExecutor {
                 OutputRecoveryDecision::Continue {
                     cause: OutputRecoveryCause::ProviderPause,
                     ..
-                } | OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProviderPause)
+                } | OutputRecoveryDecision::RejectToolRound {
+                    cause: ToolRoundRejectionCause::ProviderPause,
+                    ..
+                }
             );
             if resumes_provider_pause
                 && provider_replay
@@ -1566,6 +1569,7 @@ impl AgentExecutor {
                 return Err(CoreError::Agent(trace_message));
             }
             let mut tool_round_rejection_cause = None;
+            let mut tool_round_rejection_committed_progress = false;
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
@@ -1665,8 +1669,12 @@ impl AgentExecutor {
                     next_step_purpose = TurnStepPurpose::Recovery;
                     continue 'react_loop;
                 }
-                OutputRecoveryDecision::RejectToolRound(cause) => {
+                OutputRecoveryDecision::RejectToolRound {
+                    cause,
+                    committed_progress,
+                } => {
                     tool_round_rejection_cause = Some(cause);
+                    tool_round_rejection_committed_progress = committed_progress;
                     if cause == ToolRoundRejectionCause::ProviderPause {
                         append_persisted_trace_thinking(
                             &mut persisted_trace_items,
@@ -1715,14 +1723,15 @@ impl AgentExecutor {
                     }
                     None
                 }
-                OutputRecoveryDecision::ToolRound => {
+                OutputRecoveryDecision::ToolRound { visible_delta } => {
                     if buffer_answer_projection {
                         commit_buffered_answer_projection(
                             &tx,
                             &mut accumulated_content,
-                            &full_content,
+                            &visible_delta,
                         )
                         .await;
+                        full_content = visible_delta;
                     }
                     None
                 }
@@ -1897,9 +1906,14 @@ impl AgentExecutor {
                             "incomplete_tool_envelope"
                         }
                     };
-                    if let Some(intervention) = loop_guard
-                        .observe_protocol_rejection(protocol_fault_code, &protocol_guard_calls)
-                    {
+                    let protocol_intervention = if tool_round_rejection_committed_progress {
+                        loop_guard.record_protocol_progress();
+                        None
+                    } else {
+                        loop_guard
+                            .observe_protocol_rejection(protocol_fault_code, &protocol_guard_calls)
+                    };
+                    if let Some(intervention) = protocol_intervention {
                         append_developer_persisted_trace_status(
                             &mut persisted_trace_items,
                             &intervention.reason,

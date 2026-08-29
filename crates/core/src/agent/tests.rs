@@ -2513,14 +2513,16 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunk = match call_no {
             0 => StreamChunk {
-                delta: String::new(),
+                delta: "abc".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Length),
                 usage: None,
                 thinking_delta: Some("initial reasoning filled the response budget".to_string()),
             },
             1 => StreamChunk {
-                delta: String::new(),
+                // The recovery projection must remove the replayed boundary
+                // before this text is paired with the committed tool call.
+                delta: "cde".to_string(),
                 tool_call_delta: Some(ToolCallDelta {
                     id: "recovery-tool-call".to_string(),
                     name: Some("mock_tool".to_string()),
@@ -2533,7 +2535,7 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
                 thinking_delta: None,
             },
             _ if request.reasoning_enabled == Some(false) => StreamChunk {
-                delta: "recovered final answer after tool use".to_string(),
+                delta: " final answer after tool use".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -3929,6 +3931,7 @@ struct PostSynthesisSteeringProvider {
 struct ProviderPauseReplayProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_native_pause_blocks: Arc<Mutex<bool>>,
+    pause_count: usize,
 }
 
 struct LoopGuardBudgetProvider {
@@ -4116,18 +4119,41 @@ impl LlmProvider for ProviderPauseReplayProvider {
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        if call_no == 0 {
+        if call_no > 0 {
+            let saw_native_pause_blocks = request.messages.iter().any(|message| {
+                message.provider_turn().is_some_and(|envelope| {
+                    matches!(
+                        &envelope.replay_payload,
+                        crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
+                            blocks
+                        ) if blocks.iter().any(|block| {
+                            block.get("type").and_then(serde_json::Value::as_str)
+                                == Some("server_tool_use")
+                        }) && blocks.iter().all(|block| {
+                            block.get("type").and_then(serde_json::Value::as_str)
+                                != Some("tool_use")
+                        })
+                    )
+                })
+            });
+            let mut all_replays_were_native = self.saw_native_pause_blocks.lock().unwrap();
+            *all_replays_were_native =
+                (*all_replays_were_native || call_no == 1) && saw_native_pause_blocks;
+        }
+
+        if call_no < self.pause_count {
+            let server_tool_id = format!("srvtoolu_{}", call_no + 1);
             let blocks = vec![
-                serde_json::json!({"type":"text","text":"Searching"}),
+                serde_json::json!({"type":"text","text":format!("Searching {call_no}")}),
                 serde_json::json!({
                     "type":"server_tool_use",
-                    "id":"srvtoolu_1",
+                    "id":server_tool_id,
                     "name":"web_search",
-                    "input":{"query":"Nexa"}
+                    "input":{"query":format!("Nexa {call_no}")}
                 }),
                 serde_json::json!({
                     "type":"web_search_tool_result",
-                    "tool_use_id":"srvtoolu_1",
+                    "tool_use_id":server_tool_id,
                     "content":[{"type":"web_search_result","url":"https://example.com"}]
                 }),
             ];
@@ -4143,7 +4169,7 @@ impl LlmProvider for ProviderPauseReplayProvider {
                     chunk: Box::new(StreamChunk {
                         delta: String::new(),
                         tool_call_delta: Some(ToolCallDelta {
-                            id: "toolu_draft".to_string(),
+                            id: format!("toolu_draft_{call_no}"),
                             name: Some("write_file".to_string()),
                             arguments_delta: r#"{"path":"draft.txt"}"#.into(),
                             index: Some(0),
@@ -4165,23 +4191,6 @@ impl LlmProvider for ProviderPauseReplayProvider {
                 },
             ])));
         }
-
-        *self.saw_native_pause_blocks.lock().unwrap() = request.messages.iter().any(|message| {
-            message.provider_turn().is_some_and(|envelope| {
-                matches!(
-                    &envelope.replay_payload,
-                    crate::llm::provider_turn::ProviderReplayPayload::AnthropicPausedTurnBlocks(
-                        blocks
-                    ) if blocks.iter().any(|block| {
-                        block.get("type").and_then(serde_json::Value::as_str)
-                            == Some("server_tool_use")
-                    }) && blocks.iter().all(|block| {
-                        block.get("type").and_then(serde_json::Value::as_str)
-                            != Some("tool_use")
-                    })
-                )
-            })
-        });
         Ok(Box::pin(stream::iter(vec![ProviderStreamEvent::Chunk {
             chunk: Box::new(StreamChunk {
                 delta: "completed after provider pause".to_string(),
@@ -6312,6 +6321,7 @@ async fn provider_pause_recovery_replays_native_state_after_rejecting_client_dra
         Box::new(ProviderPauseReplayProvider {
             stream_calls: Arc::clone(&stream_calls),
             saw_native_pause_blocks: Arc::clone(&saw_native_pause_blocks),
+            pause_count: 1,
         }),
         ToolRegistry::new(),
         AgentConfig {
@@ -6348,6 +6358,50 @@ async fn provider_pause_recovery_replays_native_state_after_rejecting_client_dra
         *saw_native_pause_blocks.lock().unwrap(),
         "the recovery request must contain the original server_tool_use block"
     );
+}
+
+#[tokio::test]
+async fn advancing_provider_pause_state_resets_rejected_draft_stalls() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_native_pause_blocks = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(ProviderPauseReplayProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_native_pause_blocks: Arc::clone(&saw_native_pause_blocks),
+            pause_count: 4,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("claude-sonnet-5".to_string()),
+            provider_type: Some(ProviderType::Anthropic),
+            max_iterations: 0,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            Vec::new(),
+            vec![ContentPart::Text {
+                text: "Allow the provider-hosted search to advance across pauses.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("advancing native pause state must reset rejected-draft stalls");
+
+    assert_eq!(
+        final_message.text_content(),
+        "completed after provider pause"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 5);
+    assert!(*saw_native_pause_blocks.lock().unwrap());
 }
 
 #[tokio::test]
@@ -6893,7 +6947,7 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
 
     assert_eq!(
         final_msg.text_content(),
-        "recovered final answer after tool use"
+        "abcde final answer after tool use"
     );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
     assert_eq!(
@@ -6902,12 +6956,15 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
         "the recovery phase must keep reasoning disabled until a visible answer terminates it"
     );
 
+    let mut streamed = String::new();
     while let Ok(event) = rx.try_recv() {
         if let AgentEvent::TextDelta { delta } = event {
             assert_ne!(delta, "initial reasoning filled the response budget");
             assert_ne!(delta, "reasoning was incorrectly re-enabled");
+            streamed.push_str(&delta);
         }
     }
+    assert_eq!(streamed, "abcde final answer after tool use");
 }
 
 #[tokio::test]

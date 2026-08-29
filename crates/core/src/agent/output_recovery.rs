@@ -153,8 +153,13 @@ pub(super) enum OutputRecoveryDecision {
         cause: OutputRecoveryCause,
         visible_delta: String,
     },
-    RejectToolRound(ToolRoundRejectionCause),
-    ToolRound,
+    RejectToolRound {
+        cause: ToolRoundRejectionCause,
+        committed_progress: bool,
+    },
+    ToolRound {
+        visible_delta: String,
+    },
     Final {
         content: String,
         visible_delta: String,
@@ -171,7 +176,7 @@ pub(super) enum OutputRecoveryDecision {
 pub(super) struct OutputRecovery {
     active: bool,
     visible_prefix: String,
-    pending_ambiguous_fragment: Option<String>,
+    pending_ambiguous_fragments: Vec<String>,
     expected_continuation_ack: Option<String>,
     next_continuation_ack: u32,
     empty_terminal_retried: bool,
@@ -223,14 +228,25 @@ impl OutputRecovery {
             // continuation cursor. If it confirms a previously ambiguous
             // duplicate, commit that logical fragment once rather than both
             // the proposal and its confirmation.
-            if self.pending_ambiguous_fragment.as_deref() == Some(fragment) {
-                self.pending_ambiguous_fragment = None;
-                self.visible_prefix.push_str(fragment);
-                return ContinuationCommit::Committed(fragment.to_string());
+            let pending_confirms_current = self
+                .pending_ambiguous_fragments
+                .last()
+                .is_some_and(|pending| pending == fragment);
+            let pending = std::mem::take(&mut self.pending_ambiguous_fragments);
+            let mut visible_delta = String::new();
+            for pending_fragment in pending {
+                self.visible_prefix.push_str(&pending_fragment);
+                visible_delta.push_str(&pending_fragment);
             }
-            self.pending_ambiguous_fragment = None;
-            self.visible_prefix.push_str(fragment);
-            return ContinuationCommit::Committed(fragment.to_string());
+            if !pending_confirms_current {
+                self.visible_prefix.push_str(fragment);
+                visible_delta.push_str(fragment);
+            }
+            return if visible_delta.is_empty() {
+                ContinuationCommit::Empty
+            } else {
+                ContinuationCommit::Committed(visible_delta)
+            };
         }
 
         let overlap = longest_suffix_prefix_overlap(&self.visible_prefix, fragment);
@@ -240,12 +256,12 @@ impl OutputRecovery {
             // Occurrence is not proof of replay. Hold one logical fragment
             // until either a fresh acknowledgement confirms it or later novel
             // text demonstrates that the provider moved past it.
-            self.pending_ambiguous_fragment = Some(fragment.to_string());
+            self.pending_ambiguous_fragments.push(fragment.to_string());
             return ContinuationCommit::AmbiguousReplay;
         }
 
         let mut visible_delta = String::new();
-        if let Some(pending) = self.pending_ambiguous_fragment.take() {
+        for pending in std::mem::take(&mut self.pending_ambiguous_fragments) {
             self.visible_prefix.push_str(&pending);
             visible_delta.push_str(&pending);
         }
@@ -289,7 +305,10 @@ impl OutputRecovery {
 
         if matches!(finish_reason, Some(FinishReason::MalformedToolCall)) {
             return if has_tool_calls {
-                OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::MalformedToolCall)
+                OutputRecoveryDecision::RejectToolRound {
+                    cause: ToolRoundRejectionCause::MalformedToolCall,
+                    committed_progress: false,
+                }
             } else {
                 OutputRecoveryDecision::Reject(OutputRecoveryFailure::MalformedToolCall)
             };
@@ -300,7 +319,10 @@ impl OutputRecovery {
             Some(FinishReason::ProtocolIncomplete | FinishReason::Other)
         ) {
             return if has_tool_calls {
-                OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProtocolIncomplete)
+                OutputRecoveryDecision::RejectToolRound {
+                    cause: ToolRoundRejectionCause::ProtocolIncomplete,
+                    committed_progress: false,
+                }
             } else {
                 OutputRecoveryDecision::Reject(OutputRecoveryFailure::ProtocolIncomplete)
             };
@@ -313,9 +335,10 @@ impl OutputRecovery {
                 // A length-terminated tool envelope is discarded in full. Its
                 // adjacent prose is a draft from the same rejected sample and
                 // must not leak back into the eventual answer.
-                return OutputRecoveryDecision::RejectToolRound(
-                    ToolRoundRejectionCause::OutputLimit,
-                );
+                return OutputRecoveryDecision::RejectToolRound {
+                    cause: ToolRoundRejectionCause::OutputLimit,
+                    committed_progress: false,
+                };
             }
 
             self.active = true;
@@ -364,13 +387,17 @@ impl OutputRecovery {
             // sample must still pass through buffered, progress-aware commit.
             self.active = true;
             if has_tool_calls {
-                return OutputRecoveryDecision::RejectToolRound(match cause {
+                let rejection_cause = match cause {
                     OutputRecoveryCause::ProviderPause => ToolRoundRejectionCause::ProviderPause,
                     OutputRecoveryCause::ContextLimit => ToolRoundRejectionCause::ContextLimit,
                     OutputRecoveryCause::OutputLimit | OutputRecoveryCause::EmptyTerminal => {
                         unreachable!("only resumable provider terminals reach this branch")
                     }
-                });
+                };
+                return OutputRecoveryDecision::RejectToolRound {
+                    cause: rejection_cause,
+                    committed_progress: provider_state_progress,
+                };
             }
             self.consecutive_no_progress_output_limits = 0;
             let visible_delta = match self
@@ -400,11 +427,20 @@ impl OutputRecovery {
         }
 
         if has_tool_calls {
-            self.pending_ambiguous_fragment = None;
+            let visible_delta = if self.active {
+                match self.commit_continuation_fragment(content, continuation_acknowledged) {
+                    ContinuationCommit::Committed(delta) => delta,
+                    ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
+                        String::new()
+                    }
+                }
+            } else {
+                content.to_string()
+            };
             self.consecutive_no_progress_output_limits = 0;
             self.consecutive_no_progress_resumable_terminals = 0;
             self.last_provider_pause_state = None;
-            return OutputRecoveryDecision::ToolRound;
+            return OutputRecoveryDecision::ToolRound { visible_delta };
         }
 
         if has_visible_content {
@@ -429,7 +465,7 @@ impl OutputRecovery {
             };
             let final_content = std::mem::take(&mut self.visible_prefix);
             self.active = false;
-            self.pending_ambiguous_fragment = None;
+            self.pending_ambiguous_fragments.clear();
             self.expected_continuation_ack = None;
             self.empty_terminal_retried = false;
             self.consecutive_no_progress_output_limits = 0;
@@ -471,7 +507,9 @@ mod tests {
         assert!(recovery.reserves_answer_channel());
         assert_eq!(
             recovery.observe(Some(&FinishReason::ToolCalls), "", true),
-            OutputRecoveryDecision::ToolRound
+            OutputRecoveryDecision::ToolRound {
+                visible_delta: String::new(),
+            }
         );
         assert!(recovery.reserves_answer_channel());
         assert_eq!(
@@ -489,7 +527,10 @@ mod tests {
         let mut recovery = OutputRecovery::default();
         assert_eq!(
             recovery.observe(Some(&FinishReason::Length), "partial answer; ", true),
-            OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::OutputLimit)
+            OutputRecoveryDecision::RejectToolRound {
+                cause: ToolRoundRejectionCause::OutputLimit,
+                committed_progress: false,
+            }
         );
         assert!(!recovery.reserves_answer_channel());
         assert_eq!(
@@ -579,6 +620,58 @@ mod tests {
     }
 
     #[test]
+    fn every_ambiguous_fragment_is_retained_until_later_progress() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo bar", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "foo", false),
+            OutputRecoveryDecision::Continue {
+                visible_delta,
+                ..
+            } if visible_delta.is_empty()
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "bar", false),
+            OutputRecoveryDecision::Continue {
+                visible_delta,
+                ..
+            } if visible_delta.is_empty()
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), " baz", false),
+            OutputRecoveryDecision::Final {
+                content: "foo barfoobar baz".to_string(),
+                visible_delta: "foobar baz".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn recovery_tool_round_text_is_committed_through_overlap_normalization() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "abc", false),
+            OutputRecoveryDecision::Continue { .. }
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, true);
+
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::ToolCalls), "cde", true),
+            OutputRecoveryDecision::ToolRound {
+                visible_delta: "de".to_string(),
+            }
+        );
+        assert_eq!(recovery.visible_prefix, "abcde");
+    }
+
+    #[test]
     fn fresh_continuation_ack_preserves_intentional_exact_repetition() {
         let mut recovery = OutputRecovery::default();
         assert!(matches!(
@@ -640,7 +733,9 @@ mod tests {
             ));
             assert_eq!(
                 recovery.observe(Some(&FinishReason::ToolCalls), "", true),
-                OutputRecoveryDecision::ToolRound
+                OutputRecoveryDecision::ToolRound {
+                    visible_delta: String::new(),
+                }
             );
         }
     }
@@ -695,7 +790,10 @@ mod tests {
                 true,
                 Some("committed-provider-state"),
             ),
-            OutputRecoveryDecision::RejectToolRound(ToolRoundRejectionCause::ProviderPause)
+            OutputRecoveryDecision::RejectToolRound {
+                cause: ToolRoundRejectionCause::ProviderPause,
+                committed_progress: true,
+            }
         );
         assert!(paused_draft.reserves_answer_channel());
     }

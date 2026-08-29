@@ -56,14 +56,18 @@ impl AgentLoopGuard {
         Self::default()
     }
 
+    pub(crate) fn record_protocol_progress(&mut self) {
+        self.last_protocol_fault_signature = None;
+        self.consecutive_protocol_fault_count = 0;
+        self.protocol_fault_intervention_used = false;
+    }
+
     pub(crate) fn observe_model_step(
         &mut self,
         assistant_text: &str,
         tool_calls: &[ToolCallRequest],
     ) -> Option<LoopGuardIntervention> {
-        self.last_protocol_fault_signature = None;
-        self.consecutive_protocol_fault_count = 0;
-        self.protocol_fault_intervention_used = false;
+        self.record_protocol_progress();
         if !tool_calls.is_empty() {
             let has_action_progress = tool_calls
                 .iter()
@@ -523,6 +527,31 @@ mod tests {
         assert_eq!(
             guard
                 .observe_protocol_rejection("output_limit", &[changed_again])
+                .unwrap()
+                .action,
+            LoopGuardAction::ChangeStrategy
+        );
+    }
+
+    #[test]
+    fn provider_native_progress_resets_rejected_protocol_streak() {
+        let mut guard = AgentLoopGuard::new();
+        let rejected = call(r#"{"draft":"uncommitted"}"#);
+        for _ in 0..2 {
+            assert!(guard
+                .observe_protocol_rejection("provider_pause", std::slice::from_ref(&rejected))
+                .is_none());
+            guard.record_protocol_progress();
+        }
+
+        for _ in 0..2 {
+            assert!(guard
+                .observe_protocol_rejection("provider_pause", std::slice::from_ref(&rejected))
+                .is_none());
+        }
+        assert_eq!(
+            guard
+                .observe_protocol_rejection("provider_pause", &[rejected])
                 .unwrap()
                 .action,
             LoopGuardAction::ChangeStrategy
