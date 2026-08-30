@@ -1140,6 +1140,7 @@ fn spawn_outbox_actor(
                                         ),
                                     );
                                 }
+                                let event = approval_event_for_delivery(event);
                                 actor.delivery.deliver_run_event(
                                     &actor.conversation_id,
                                     &event,
@@ -1360,7 +1361,11 @@ async fn commit_and_deliver(
         return Ok(());
     }
     let events = std::mem::take(pending);
-    let durable_events = events.clone();
+    let durable_events = events
+        .iter()
+        .cloned()
+        .map(approval_event_for_persistence)
+        .collect::<Vec<_>>();
     let durable_run_id = run_id.to_string();
     let snapshots = database
         .write(move |database| {
@@ -1370,13 +1375,35 @@ async fn commit_and_deliver(
         .await?
         .value;
 
-    for event in &events {
-        delivery.deliver_run_event(conversation_id, event);
+    for event in events.into_iter().map(approval_event_for_delivery) {
+        delivery.deliver_run_event(conversation_id, &event);
     }
     for snapshot in snapshots {
         delivery.deliver_task_run_snapshot(conversation_id, snapshot);
     }
     Ok(())
+}
+
+fn approval_event_for_persistence(mut event: AgentRunEvent) -> AgentRunEvent {
+    if event.kind != AgentRunEventKind::ApprovalRequested {
+        return event;
+    }
+    let Some(payload) = event.payload.as_object_mut() else {
+        return event;
+    };
+    if let Some(request) = payload.remove("_durableRequest") {
+        payload.insert("request".to_string(), request);
+    }
+    event
+}
+
+fn approval_event_for_delivery(mut event: AgentRunEvent) -> AgentRunEvent {
+    if event.kind == AgentRunEventKind::ApprovalRequested {
+        if let Some(payload) = event.payload.as_object_mut() {
+            payload.remove("_durableRequest");
+        }
+    }
+    event
 }
 
 async fn commit_pause_checkpoint_and_deliver(
@@ -1442,10 +1469,12 @@ fn validate_producer_lifecycle(event: &AgentRunEvent) -> Result<(), &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentEvent;
     use crate::agent_run::{
         AgentRunDisplayKind, AgentRunEventImportance, AgentRunEventKind, AgentRunEventPersistence,
         AgentRunEventVisibility, AgentRunPhase, AGENT_RUN_EVENT_VERSION,
     };
+    use crate::approval::{ApprovalRequest, ApprovalRisk};
     use crate::conversation::{ConversationMessage, CreateConversationInput};
     use crate::db::Database;
     use crate::llm::Role;
@@ -1514,6 +1543,78 @@ mod tests {
             .mark_agent_task_run_started(&run.id, "responding")
             .expect("started task run");
         (conversation.id, turn.id, run.id)
+    }
+
+    #[tokio::test]
+    async fn approval_delivery_keeps_live_target_while_durable_ledger_uses_safe_summary() {
+        let database = Database::open_memory().expect("in-memory database");
+        let (conversation_id, turn_id, run_id) = create_started_run(&database);
+        let executor = DatabaseExecutor::new(database.clone(), 8).expect("database executor");
+        let delivery = Arc::new(CaptureDelivery::default());
+        let outboxes = AgentRunEventOutboxes::new(executor, delivery.clone());
+        let outbox = outboxes
+            .open(&conversation_id, &run_id)
+            .await
+            .expect("run outbox");
+        let sentinel = "private-window-title-and-element-98d4";
+        let request = ApprovalRequest::new(
+            "approval-sensitive",
+            "computer_control",
+            &serde_json::json!({
+                "action": "click",
+                "observation_id": "observation-a",
+                "window_id": 42,
+                "element_id": "e7"
+            }),
+            ApprovalRisk::High,
+            format!("Allow click in Editor window '{sentinel}' element '{sentinel}'?"),
+        )
+        .with_durable_reason(Some(
+            "Allow click in app 'Editor'; window title redacted (39 character(s)); target e7 button with element name redacted (39 character(s)) at [1, 2, 30x20]."
+                .to_string(),
+        ));
+        outbox
+            .submit(
+                AgentRunEvent::from_agent_event(&AgentEvent::ApprovalRequested { request })
+                    .with_context(Some(&run_id), Some(&turn_id), None),
+            )
+            .expect("approval submission");
+        outbox
+            .submit(AgentRunEvent::terminal_status(
+                &run_id,
+                Some(&turn_id),
+                0,
+                "completed",
+                "completed",
+                None,
+            ))
+            .expect("terminal submission");
+        outbox
+            .wait_for_terminal_commit()
+            .await
+            .expect("terminal durability");
+
+        let stored = database
+            .list_agent_run_events(&run_id)
+            .expect("durable run ledger");
+        let stored_approval = stored
+            .iter()
+            .find(|event| event.kind == AgentRunEventKind::ApprovalRequested)
+            .expect("stored approval");
+        let stored_json = stored_approval.payload.to_string();
+        assert!(!stored_json.contains(sentinel));
+        assert!(stored_json.contains("window title redacted"));
+        assert!(stored_json.contains("element name redacted"));
+        assert!(!stored_json.contains("_durableRequest"));
+
+        let delivered = delivery.events.lock().expect("capture lock").clone();
+        let delivered_approval = delivered
+            .iter()
+            .find(|event| event.kind == AgentRunEventKind::ApprovalRequested)
+            .expect("delivered approval");
+        let delivered_json = delivered_approval.payload.to_string();
+        assert!(delivered_json.contains(sentinel));
+        assert!(!delivered_json.contains("_durableRequest"));
     }
 
     #[tokio::test]

@@ -55,6 +55,8 @@ pub struct ApprovalRequest {
     pub reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_preview: Option<ApprovalCheckpointPreview>,
+    #[serde(skip)]
+    durable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +100,30 @@ impl ApprovalRequest {
             risk_level,
             reason: reason.into(),
             checkpoint_preview: checkpoint_preview(&tool_name, arguments),
+            durable_reason: None,
         }
+    }
+
+    pub fn with_durable_reason(mut self, reason: Option<String>) -> Self {
+        self.durable_reason = reason;
+        self
+    }
+
+    pub fn audit_safe_for_persistence(&self) -> Self {
+        let mut projected = self.clone();
+        if let Some(reason) = self.durable_reason.as_ref() {
+            projected.reason = reason.clone();
+        } else if matches!(
+            self.tool_name.as_str(),
+            "computer_control" | "computer_observe"
+        ) {
+            projected.reason = format!(
+                "Approval required for {}; transient screen-derived target text was redacted.",
+                self.tool_name
+            );
+        }
+        projected.durable_reason = None;
+        projected
     }
 }
 

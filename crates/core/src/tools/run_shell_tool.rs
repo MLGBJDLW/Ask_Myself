@@ -14,7 +14,9 @@ mod policy;
 mod shell_adapter;
 mod tool_impl;
 
-pub use tool_impl::RunShellTool;
+pub use tool_impl::{
+    managed_loopback_permits, ManagedLoopbackPermit, ManagedLoopbackPermitIssuer, RunShellTool,
+};
 
 pub(crate) fn uses_managed_background(parsed_args: &serde_json::Value) -> bool {
     let Ok(parsed) = serde_json::from_value::<parser::RunShellArgs>(parsed_args.clone()) else {

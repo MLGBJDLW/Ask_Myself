@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::AgentEvent;
+use crate::agent::{AgentEvent, ToolRunItem, ToolRunStatus};
 use crate::agent_run::{AgentRunEvent, AgentRunEventKind, AgentRunPhase};
 use crate::approval::{ApprovalDecision, ApprovalRequest, ApprovalRisk};
 use crate::error::CoreError;
@@ -825,12 +825,32 @@ fn mock_replay_events(trajectory: &Trajectory, input: &AgentTurnInput) -> Vec<Ag
             let tool_name = tool_name_from_value(tool_call)
                 .unwrap_or_else(|| format!("mock_tool_{}", index + 1));
             let call_id = tool_call_id_from_value(tool_call, index);
+            let arguments = tool_arguments_from_value(tool_call);
+            let args_value = serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
+            let capabilities = crate::tools::capability::fallback_registry_run_capabilities(
+                &tool_name,
+                &args_value,
+            );
+            let render_kind = capabilities.render_kind;
+            let owner = crate::plugins::capability_owner_for_tool(&tool_name);
             push_mock_agent_event(
                 &mut events,
-                AgentEvent::ToolCallStart {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    arguments: tool_arguments_from_value(tool_call),
+                AgentEvent::ToolRunStarted {
+                    run: ToolRunItem {
+                        call_id: call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        owner: owner.clone(),
+                        provider_executed: false,
+                        status: ToolRunStatus::Running,
+                        arguments: Some(arguments.clone()),
+                        render_kind,
+                        capabilities: capabilities.clone(),
+                        content: None,
+                        is_error: None,
+                        artifacts: None,
+                        progress_note: None,
+                        duration_ms: None,
+                    },
                 },
                 &run_id,
                 &turn_id,
@@ -838,12 +858,26 @@ fn mock_replay_events(trajectory: &Trajectory, input: &AgentTurnInput) -> Vec<Ag
             );
             push_mock_agent_event(
                 &mut events,
-                AgentEvent::ToolCallResult {
-                    call_id,
-                    tool_name: tool_name.clone(),
-                    content: tool_result_content_from_value(tool_call, &tool_name),
-                    is_error: tool_call_is_error(tool_call),
-                    artifacts: tool_artifacts_from_value(tool_call),
+                AgentEvent::ToolRunCompleted {
+                    run: ToolRunItem {
+                        call_id,
+                        tool_name: tool_name.clone(),
+                        owner,
+                        provider_executed: false,
+                        status: if tool_call_is_error(tool_call) {
+                            ToolRunStatus::Failed
+                        } else {
+                            ToolRunStatus::Completed
+                        },
+                        arguments: Some(arguments),
+                        render_kind,
+                        capabilities,
+                        content: Some(tool_result_content_from_value(tool_call, &tool_name)),
+                        is_error: Some(tool_call_is_error(tool_call)),
+                        artifacts: tool_artifacts_from_value(tool_call),
+                        progress_note: None,
+                        duration_ms: None,
+                    },
                 },
                 &run_id,
                 &turn_id,

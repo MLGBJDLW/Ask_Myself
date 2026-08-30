@@ -12,8 +12,10 @@ use crate::error::CoreError;
 const MAX_DIMENSION: u32 = 1568; // Anthropic's recommended max
 /// JPEG quality for compressed images (0-100).
 const JPEG_QUALITY: u8 = 80;
-/// Maximum image file size in bytes (before base64) — ~5 MB.
-const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
+/// Maximum local image input before it is normalized to the shared 1568px,
+/// JPEG-80 provider/UI envelope. Tool screenshots can be larger than ordinary
+/// uploads, but never reach a model or tool card in their original form.
+const MAX_IMAGE_SIZE: usize = 12 * 1024 * 1024;
 
 /// Returns `true` if the MIME type is a supported image format.
 pub fn is_supported_image(mime: &str) -> bool {

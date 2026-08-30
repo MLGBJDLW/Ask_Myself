@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::route_name_for_behavioral_eval;
 use crate::intelligence::{build_task_plan, EvidenceMode, TaskPlanningInput};
+use crate::tool_visibility_policy::{resolve_turn_capability_requirements, ToolVisibilityInput};
 use crate::tools::default_tool_registry;
 
 #[derive(Debug, Clone)]
@@ -130,7 +130,7 @@ fn cases() -> Vec<BehavioralEvalCase> {
             query: "Open this JavaScript app in the browser, click Sign in, and verify the page",
             system_prompt: "",
             has_sources: false,
-            expected_route: "CodebaseOperation",
+            expected_route: "WebLookup",
             expected_evidence_mode: Some(EvidenceMode::Prefer),
             required_tools: &["browser_session", "activity_observe"],
             required_plan_tools: &[],
@@ -188,20 +188,23 @@ pub fn run_core_behavioral_eval() -> BehavioralEvalReport {
     let mut results = Vec::new();
 
     for case in cases() {
-        let route =
-            route_name_for_behavioral_eval(case.query, case.system_prompt, case.has_sources);
+        let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+            query: case.query,
+            system_prompt: case.system_prompt,
+            has_sources: case.has_sources,
+        });
+        let route = requirements.route.as_str();
         let tools = registry
-            .select_tools(case.query, case.has_sources)
+            .select_tools_for_decision(&requirements)
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
-        let plan = build_task_plan(TaskPlanningInput {
-            user_query: case.query,
-            route_kind: route,
-            has_sources: case.has_sources,
-            source_scope_count: if case.has_sources { 1 } else { 0 },
-            collection_context: case.system_prompt.contains("## Collection Context"),
-        });
+        let plan = build_task_plan(TaskPlanningInput::for_requirements(
+            case.query,
+            &requirements,
+            case.has_sources,
+            if case.has_sources { 1 } else { 0 },
+        ));
 
         let missing_tools = case
             .required_tools

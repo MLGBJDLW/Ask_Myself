@@ -361,6 +361,31 @@ fn test_managed_wait_budget_is_a_short_observation_quantum() {
     assert_eq!(managed_wait_budget_secs(Some(900)), 3);
 }
 
+#[tokio::test]
+async fn managed_loopback_permit_has_refreshable_expiry_and_live_service_identity() {
+    let issuer = ManagedLoopbackPermitIssuer::new_with_ttl(
+        "service-a",
+        Some(42),
+        std::time::Duration::from_millis(20),
+    );
+    let permit = issuer.issue("http://127.0.0.1:4173", "127.0.0.1", 4173);
+
+    assert!(permit.is_live());
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    assert!(
+        !permit.is_live(),
+        "an unrefreshed service lease must expire"
+    );
+
+    issuer.refresh();
+    assert!(
+        permit.is_live(),
+        "refreshing the same live service identity should renew existing tab permits"
+    );
+    issuer.revoke();
+    assert!(!permit.is_live());
+}
+
 #[test]
 fn managed_process_ownership_is_conversation_scoped() {
     let owner = Some("conversation-1".to_string());
@@ -473,7 +498,7 @@ async fn isolated_process_can_write_worktree_but_not_host_paths() {
 }
 
 #[tokio::test]
-#[ignore = "requires python3 on PATH"]
+#[ignore = "requires python on PATH"]
 async fn test_managed_http_service_start_status_and_stop() {
     let port = {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -482,9 +507,11 @@ async fn test_managed_http_service_start_status_and_stop() {
     let tmp = tempfile::tempdir().unwrap();
     let db = db_with_source(tmp.path());
     let tool = RunShellTool;
+    let conversation_id = "managed-http-conversation";
+    let service_id = format!("managed-http-{}", uuid::Uuid::new_v4());
     let ready_url = format!("http://127.0.0.1:{port}");
     let start_args = json!({
-        "command": format!("python3 -m http.server {port}"),
+        "command": format!("python -m http.server {port}"),
         "cwd": tmp.path().to_string_lossy(),
         "background": true,
         "ready_url": ready_url,
@@ -492,12 +519,10 @@ async fn test_managed_http_service_start_status_and_stop() {
     });
 
     let started = tool
-        .execute(crate::tools::ToolExecutionContext::new(
-            "managed-http",
-            &start_args.to_string(),
-            &db,
-            &[],
-        ))
+        .execute(
+            crate::tools::ToolExecutionContext::new(&service_id, &start_args.to_string(), &db, &[])
+                .with_conversation_id(Some(conversation_id)),
+        )
         .await
         .expect("managed service should return a tool result");
     assert!(
@@ -507,18 +532,33 @@ async fn test_managed_http_service_start_status_and_stop() {
     );
     assert_eq!(started.artifacts.as_ref().unwrap()["status"], "ready");
 
+    let permits = managed_loopback_permits(conversation_id).await;
+    assert_eq!(permits.len(), 1);
+    assert_eq!(permits[0].service_id, service_id);
+    assert_eq!(permits[0].origin, format!("http://127.0.0.1:{port}"));
+    assert_eq!(permits[0].host, "127.0.0.1");
+    assert_eq!(permits[0].port, port);
+    assert!(permits[0].process_id.is_some());
+    assert!(permits[0].is_live());
+    assert!(managed_loopback_permits("another-conversation")
+        .await
+        .is_empty());
+
     let status_args = json!({
         "service_action": "status",
-        "service_id": "managed-http",
+        "service_id": service_id,
         "cwd": tmp.path().to_string_lossy(),
     });
     let status = tool
-        .execute(crate::tools::ToolExecutionContext::new(
-            "managed-http-status",
-            &status_args.to_string(),
-            &db,
-            &[],
-        ))
+        .execute(
+            crate::tools::ToolExecutionContext::new(
+                "managed-http-status",
+                &status_args.to_string(),
+                &db,
+                &[],
+            )
+            .with_conversation_id(Some(conversation_id)),
+        )
         .await
         .expect("managed status should return a tool result");
     assert!(
@@ -530,16 +570,19 @@ async fn test_managed_http_service_start_status_and_stop() {
 
     let stop_args = json!({
         "service_action": "stop",
-        "service_id": "managed-http",
+        "service_id": service_id,
         "cwd": tmp.path().to_string_lossy(),
     });
     let stopped = tool
-        .execute(crate::tools::ToolExecutionContext::new(
-            "managed-http-stop",
-            &stop_args.to_string(),
-            &db,
-            &[],
-        ))
+        .execute(
+            crate::tools::ToolExecutionContext::new(
+                "managed-http-stop",
+                &stop_args.to_string(),
+                &db,
+                &[],
+            )
+            .with_conversation_id(Some(conversation_id)),
+        )
         .await
         .expect("managed stop should return a tool result");
     assert!(
@@ -548,6 +591,7 @@ async fn test_managed_http_service_start_status_and_stop() {
         stopped.content
     );
     assert_eq!(stopped.artifacts.as_ref().unwrap()["status"], "stopped");
+    assert!(managed_loopback_permits(conversation_id).await.is_empty());
 }
 
 #[tokio::test]

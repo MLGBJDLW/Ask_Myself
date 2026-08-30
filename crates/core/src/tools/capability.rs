@@ -36,6 +36,8 @@ pub enum ToolCategory {
     Terminal,
     /// Static or rendered browser observations without page mutation.
     BrowserRead,
+    /// Pixel-bearing rendered-state evidence used for visual completion gates.
+    VisualObservation,
     /// Stateful browser sessions and page interaction.
     BrowserInteract,
     /// Native desktop observation and interaction.
@@ -156,6 +158,7 @@ pub fn category_label(category: ToolCategory) -> &'static str {
         ToolCategory::Process => "process",
         ToolCategory::Terminal => "terminal",
         ToolCategory::BrowserRead => "browser_read",
+        ToolCategory::VisualObservation => "visual_observation",
         ToolCategory::BrowserInteract => "browser_interact",
         ToolCategory::DesktopInteract => "desktop_interact",
         ToolCategory::DocumentAnalysis => "document_analysis",
@@ -372,6 +375,7 @@ fn generic_access_profile(
             category,
             ToolCategory::Web
                 | ToolCategory::BrowserRead
+                | ToolCategory::VisualObservation
                 | ToolCategory::BrowserInteract
                 | ToolCategory::Mcp
         )

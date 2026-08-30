@@ -1197,6 +1197,11 @@ fn agent_event_payload(event: &AgentEvent) -> serde_json::Value {
 
     if let Some(run) = canonical_tool_run {
         serde_json::json!({ "run": run })
+    } else if let AgentEvent::ApprovalRequested { request } = event {
+        serde_json::json!({
+            "request": request,
+            "_durableRequest": request.audit_safe_for_persistence()
+        })
     } else {
         serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}))
     }
@@ -1225,7 +1230,9 @@ fn compatibility_tool_run(
         owner: invocation.owner,
         provider_executed: false,
         status,
-        arguments: arguments.map(str::to_string),
+        arguments: arguments.map(|arguments| {
+            crate::tool_argument_projection::audit_safe_arguments_string(tool_name, arguments)
+        }),
         render_kind: capabilities.render_kind,
         capabilities,
         content,

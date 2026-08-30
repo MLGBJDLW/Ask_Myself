@@ -434,6 +434,17 @@ pub struct ToolContractError {
     pub expected_format: serde_json::Value,
     pub retryable: bool,
     pub trust_boundary: TrustBoundary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effect: Option<ToolSideEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_consumed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSideEffect {
+    NotStarted,
+    MayHaveOccurred,
 }
 
 pub(crate) fn structured_tool_error_result(
@@ -443,8 +454,46 @@ pub(crate) fn structured_tool_error_result(
     expected_format: serde_json::Value,
     retryable: bool,
 ) -> ToolResult {
-    let code = code.into();
-    let message = message.into();
+    build_structured_tool_error_result(
+        call_id,
+        code.into(),
+        message.into(),
+        expected_format,
+        retryable,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn structured_tool_error_result_with_side_effect(
+    call_id: &str,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    expected_format: serde_json::Value,
+    retryable: bool,
+    side_effect: ToolSideEffect,
+    observation_consumed: Option<bool>,
+) -> ToolResult {
+    build_structured_tool_error_result(
+        call_id,
+        code.into(),
+        message.into(),
+        expected_format,
+        retryable,
+        Some(side_effect),
+        observation_consumed,
+    )
+}
+
+fn build_structured_tool_error_result(
+    call_id: &str,
+    code: String,
+    message: String,
+    expected_format: serde_json::Value,
+    retryable: bool,
+    side_effect: Option<ToolSideEffect>,
+    observation_consumed: Option<bool>,
+) -> ToolResult {
     let error = ToolContractError {
         kind: "toolContractError".to_string(),
         code: code.clone(),
@@ -452,6 +501,8 @@ pub(crate) fn structured_tool_error_result(
         expected_format,
         retryable,
         trust_boundary: TrustBoundary::tool_error(),
+        side_effect,
+        observation_consumed,
     };
     let content = format!(
         "Error: {message}\n\nCode: {code}\nRetryable: {retryable}\nUse the expected JSON shape shown in artifacts.expectedFormat before calling the tool again."
@@ -582,6 +633,28 @@ pub trait Tool: Send + Sync {
     /// can describe the specific action.
     fn confirmation_message(&self, _args: &serde_json::Value) -> Option<String> {
         None
+    }
+
+    /// Build an approval explanation against the exact conversation-scoped
+    /// observation that will authorize execution. Tools without ephemeral
+    /// observation state inherit the ordinary argument-only explanation.
+    fn confirmation_message_in_context(
+        &self,
+        args: &serde_json::Value,
+        _conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(self.confirmation_message(args))
+    }
+
+    /// Optional audit-safe counterpart to the live approval explanation.
+    /// The live callback keeps the human-readable target, while durable Run
+    /// Events use this projection to avoid storing transient screen text.
+    fn confirmation_message_for_persistence_in_context(
+        &self,
+        _args: &serde_json::Value,
+        _conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(None)
     }
 
     /// Preferred frontend renderer family for this tool.
@@ -767,6 +840,30 @@ impl ToolRegistry {
     /// Get the confirmation message for a tool with the given arguments.
     pub fn confirmation_message(&self, name: &str, args: &serde_json::Value) -> Option<String> {
         self.get(name).and_then(|t| t.confirmation_message(args))
+    }
+
+    pub fn confirmation_message_in_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        self.get(name)
+            .map(|tool| tool.confirmation_message_in_context(args, conversation_id))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub fn confirmation_message_for_persistence_in_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        self.get(name)
+            .map(|tool| tool.confirmation_message_for_persistence_in_context(args, conversation_id))
+            .transpose()
+            .map(Option::flatten)
     }
 
     pub fn run_capabilities(&self, name: &str, args: &serde_json::Value) -> ToolRunCapabilities {
@@ -1346,45 +1443,23 @@ fn core_error_contract(error: &CoreError) -> (&'static str, bool) {
     }
 }
 
-fn computer_control_error_contract(error: &CoreError) -> (&'static str, bool) {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("already used")
-        || message.contains("observation expired")
-        || message.contains("unknown computer observation")
-        || message.contains("observation is stale")
-        || message.contains("observe it again")
-        || message.contains("capture the window again")
-        || message.contains("moved or resized")
-        || message.contains("changed materially")
-    {
-        return ("computer_observation_stale", true);
-    }
-    if message.contains("protected from computer control")
-        || message.contains("password element")
-        || message.contains("secrets must never")
-    {
-        return ("computer_action_refused", false);
-    }
-    if message.contains("user takeover")
-        || message.contains("cursor moved during")
-        || message.contains("keyboard focus left")
-    {
-        return ("computer_user_takeover", false);
-    }
-    if message.contains("effect is uncertain")
-        || matches!(error, CoreError::Internal(_) | CoreError::Io(_))
-        || message.contains("click mouse")
-        || message.contains("drag mouse")
-        || message.contains("scroll vertically")
-        || message.contains("scroll horizontally")
-        || message.contains("type text")
-        || message.contains("send key")
-        || message.contains("ui automation value")
-        || message.contains("invoke ui automation")
-    {
-        return ("computer_action_uncertain", false);
-    }
-    ("invalid_computer_action", true)
+fn conservative_unstructured_computer_failure(
+    call_id: &str,
+    schema: serde_json::Value,
+) -> ToolResult {
+    structured_tool_error_result_with_side_effect(
+        call_id,
+        "computer_action_uncertain",
+        "Computer control violated its typed failure contract. Effect may have occurred; sensitive details were omitted and the action must not be blindly retried.",
+        serde_json::json!({
+            "tool": "computer_control",
+            "arguments": schema,
+            "recovery": "inspect fresh visual state or ask the user; do not blindly retry"
+        }),
+        false,
+        ToolSideEffect::MayHaveOccurred,
+        None,
+    )
 }
 
 fn normalize_tool_execution_result(
@@ -1395,21 +1470,18 @@ fn normalize_tool_execution_result(
 ) -> ToolResult {
     match result {
         Ok(result) if result.is_error && result.artifacts.is_none() => {
-            let computer_control_error = tool_name == "computer_control";
-            let (code, retryable) = if computer_control_error {
-                ("computer_action_uncertain", false)
-            } else {
-                classify_tool_result_error(&result.content)
-            };
+            if tool_name == "computer_control" {
+                tracing::error!(
+                    tool = tool_name,
+                    "computer control returned an unstructured failure"
+                );
+                return conservative_unstructured_computer_failure(call_id, schema);
+            }
+            let (code, retryable) = classify_tool_result_error(&result.content);
             structured_tool_error_result(
                 call_id,
                 code,
-                if computer_control_error {
-                    "Computer action returned an unstructured failure. Effect is uncertain; sensitive details were omitted and the action must not be blindly retried."
-                        .to_string()
-                } else {
-                    result.content
-                },
+                result.content,
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
@@ -1424,22 +1496,16 @@ fn normalize_tool_execution_result(
         }
         Ok(result) => result,
         Err(error) => {
-            let (code, retryable) = if tool_name == "computer_control" {
-                computer_control_error_contract(&error)
-            } else {
-                core_error_contract(&error)
-            };
-            let message = if tool_name == "computer_control" {
-                match code {
-                    "computer_observation_stale" => "Computer observation is stale, consumed, or no longer matches the target. Re-observe before acting.".to_string(),
-                    "computer_action_refused" => "Computer action was refused by a protected-target or sensitive-input safety rule.".to_string(),
-                    "computer_user_takeover" => "Computer action stopped because user input or focus takeover was detected.".to_string(),
-                    "computer_action_uncertain" => "Computer action may have been partially delivered. Effect is uncertain; inspect fresh state and do not blindly retry.".to_string(),
-                    _ => "Computer action arguments or preconditions were invalid. Review the schema and fresh observation without reusing sensitive values.".to_string(),
-                }
-            } else {
-                format!("{tool_name} failed: {error}")
-            };
+            if tool_name == "computer_control" {
+                tracing::error!(
+                    tool = tool_name,
+                    error = %error,
+                    "computer control escaped its typed failure projection"
+                );
+                return conservative_unstructured_computer_failure(call_id, schema);
+            }
+            let (code, retryable) = core_error_contract(&error);
+            let message = format!("{tool_name} failed: {error}");
             structured_tool_error_result(
                 call_id,
                 code,
@@ -1447,11 +1513,7 @@ fn normalize_tool_execution_result(
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
-                    "recovery": if code == "computer_observation_stale" {
-                        "re-observe the target window and choose a target from the fresh observation; never reuse the consumed or stale token"
-                    } else if code == "computer_action_uncertain" {
-                        "the action may have been partially delivered; inspect fresh state or ask the user, and do not blindly retry"
-                    } else if retryable {
+                    "recovery": if retryable {
                         "inspect the structured code, repair arguments or runtime preconditions, and retry once with a materially corrected call"
                     } else {
                         "stop and wait for user intent or permissions to change"
@@ -1887,6 +1949,37 @@ mod tests {
     }
 
     #[test]
+    fn explicit_browser_interaction_gets_observation_and_session_tools_immediately() {
+        let registry = default_tool_registry();
+        for query in [
+            "Open the browser, visit https://example.com, and click More information",
+            "打开浏览器访问 example.com 并点击 More information",
+        ] {
+            let names = registry
+                .select_tools(query, false)
+                .into_iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>();
+            assert!(names.iter().any(|name| name == "browser_session"));
+            assert!(names.iter().any(|name| name == "browser_evidence_capture"));
+        }
+    }
+
+    #[test]
+    fn implicit_html_artifact_gets_process_and_visual_tools_immediately() {
+        let registry = default_tool_registry();
+        let names = registry
+            .select_tools("帮我用html写一个黑洞演示图", false)
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+
+        for required in ["run_shell", "browser_evidence_capture", "browser_session"] {
+            assert!(names.iter().any(|name| name == required));
+        }
+    }
+
+    #[test]
     fn select_tools_keeps_desktop_automation_for_local_path_handoffs() {
         let registry = default_tool_registry();
         let defs = registry.select_tools("Reveal this file in Explorer", false);
@@ -2018,6 +2111,7 @@ mod tests {
             route_categories: Vec::new(),
             signals: Vec::new(),
             log: Vec::new(),
+            interaction: Default::default(),
         };
         let defs = registry.select_tools_for_decision(&decision);
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
@@ -2640,26 +2734,7 @@ mod tests {
     }
 
     #[test]
-    fn computer_control_errors_distinguish_reobserve_from_uncertain_delivery() {
-        assert_eq!(
-            computer_control_error_contract(&CoreError::InvalidInput(
-                "Desktop observation is stale; observe it again".to_string()
-            )),
-            ("computer_observation_stale", true)
-        );
-        assert_eq!(
-            computer_control_error_contract(&CoreError::Internal(
-                "click mouse: input driver disconnected".to_string()
-            )),
-            ("computer_action_uncertain", false)
-        );
-        assert_eq!(
-            computer_control_error_contract(&CoreError::InvalidInput(
-                "Cursor moved during click preparation, indicating user takeover".to_string()
-            )),
-            ("computer_user_takeover", false)
-        );
-
+    fn unexpected_computer_control_errors_fail_closed_without_leaking_details() {
         let sentinel = "error-path-secret-73df";
         let projected = normalize_tool_execution_result(
             "call-sensitive",
@@ -2671,6 +2746,11 @@ mod tests {
         );
         let serialized = serde_json::to_string(&projected).unwrap();
         assert!(!serialized.contains(sentinel));
-        assert!(serialized.contains("invalid_computer_action"));
+        assert!(serialized.contains("computer_action_uncertain"));
+        assert!(serialized.contains("may_have_occurred"));
+        let artifacts = projected.artifacts.expect("typed error artifacts");
+        assert_eq!(artifacts["sideEffect"], "may_have_occurred");
+        assert!(artifacts.get("effectMayHaveOccurred").is_none());
+        assert!(artifacts.get("failurePhase").is_none());
     }
 }

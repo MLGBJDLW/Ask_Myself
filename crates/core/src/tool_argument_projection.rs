@@ -10,6 +10,42 @@ pub fn is_sensitive_computer_control_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("computer_control")
 }
 
+pub fn is_browser_session_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("browser_session")
+}
+
+fn browser_session_arguments_contain_sensitive_input(arguments: &Value) -> bool {
+    let Some(object) = arguments.as_object() else {
+        return true;
+    };
+    object.contains_key("text")
+        || object.contains_key("value")
+        || object.contains_key("key")
+        || object
+            .get("condition")
+            .and_then(Value::as_object)
+            .is_some_and(|condition| {
+                ["text", "name", "pattern"]
+                    .iter()
+                    .any(|field| condition.contains_key(*field))
+            })
+}
+
+pub fn tool_arguments_contain_sensitive_input(tool_name: &str, arguments: &Value) -> bool {
+    is_sensitive_computer_control_name(tool_name)
+        || (is_browser_session_name(tool_name)
+            && browser_session_arguments_contain_sensitive_input(arguments))
+}
+
+pub fn tool_call_contains_sensitive_input(tool_name: &str, arguments: &str) -> bool {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(arguments) => tool_arguments_contain_sensitive_input(tool_name, &arguments),
+        Err(_) => {
+            is_sensitive_computer_control_name(tool_name) || is_browser_session_name(tool_name)
+        }
+    }
+}
+
 fn text_summary(value: &str) -> Value {
     json!({
         "redacted": true,
@@ -71,9 +107,16 @@ fn redacted_invalid_value(kind: &str, value: &Value) -> Value {
 
 /// Return the audit-safe form of a parsed tool argument object.
 pub fn audit_safe_arguments(tool_name: &str, arguments: &Value) -> Value {
-    if !is_sensitive_computer_control_name(tool_name) {
-        return arguments.clone();
+    if is_sensitive_computer_control_name(tool_name) {
+        return audit_safe_computer_control_arguments(arguments);
     }
+    if is_browser_session_name(tool_name) {
+        return audit_safe_browser_session_arguments(arguments);
+    }
+    arguments.clone()
+}
+
+fn audit_safe_computer_control_arguments(arguments: &Value) -> Value {
     let Some(object) = arguments.as_object() else {
         return json!({
             "redacted": true,
@@ -247,14 +290,289 @@ pub fn audit_safe_arguments(tool_name: &str, arguments: &Value) -> Value {
     Value::Object(projected)
 }
 
+fn audit_safe_browser_condition(condition: &Value) -> Value {
+    let Some(object) = condition.as_object() else {
+        return redacted_invalid_value("condition", condition);
+    };
+    let mut projected = serde_json::Map::new();
+    if let Some(condition_type) = object.get("type") {
+        let safe = condition_type
+            .as_str()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .filter(|candidate| {
+                matches!(
+                    candidate.as_str(),
+                    "page_loaded"
+                        | "text_present"
+                        | "text_absent"
+                        | "url_matches"
+                        | "element_present"
+                        | "element_absent"
+                )
+            });
+        projected.insert(
+            "type".to_string(),
+            safe.map(Value::String)
+                .unwrap_or_else(|| redacted_invalid_value("conditionType", condition_type)),
+        );
+    }
+    for key in ["ref", "targetRef"] {
+        if let Some(value) = object.get(key) {
+            projected.insert(
+                key.to_string(),
+                value
+                    .as_str()
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or_else(|| redacted_invalid_value(key, value)),
+            );
+        }
+    }
+    for key in ["text", "name", "pattern"] {
+        if let Some(value) = object.get(key) {
+            let mut summary = value
+                .as_str()
+                .map(text_summary)
+                .unwrap_or_else(|| redacted_invalid_value(key, value));
+            if summary.is_object() {
+                summary["kind"] = Value::String(format!("condition{key}"));
+            }
+            projected.insert(key.to_string(), summary);
+        }
+    }
+    if let Some(role) = object.get("role") {
+        projected.insert(
+            "role".to_string(),
+            role.as_str()
+                .map(|value| Value::String(value.to_string()))
+                .unwrap_or_else(|| redacted_invalid_value("role", role)),
+        );
+    }
+    let known = [
+        "type",
+        "ref",
+        "targetRef",
+        "text",
+        "name",
+        "pattern",
+        "role",
+    ];
+    let unknown_field_count = object
+        .keys()
+        .filter(|key| !known.contains(&key.as_str()))
+        .count();
+    if unknown_field_count > 0 {
+        projected.insert("unknownFieldCount".to_string(), unknown_field_count.into());
+    }
+    Value::Object(projected)
+}
+
+fn audit_safe_browser_session_arguments(arguments: &Value) -> Value {
+    let Some(object) = arguments.as_object() else {
+        return json!({
+            "redacted": true,
+            "kind": "invalidBrowserSessionArgumentsRoot",
+            "invalidShape": true
+        });
+    };
+    let mut projected = serde_json::Map::new();
+    if let Some(action) = object.get("action") {
+        let safe = action
+            .as_str()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .filter(|candidate| {
+                matches!(
+                    candidate.as_str(),
+                    "create_session"
+                        | "list_sessions"
+                        | "list_tabs"
+                        | "open_tab"
+                        | "activate_tab"
+                        | "navigate"
+                        | "go_back"
+                        | "go_forward"
+                        | "reload"
+                        | "observe"
+                        | "move"
+                        | "hover"
+                        | "click"
+                        | "double_click"
+                        | "drag"
+                        | "type"
+                        | "select"
+                        | "press"
+                        | "scroll"
+                        | "wait_for"
+                        | "close_tab"
+                        | "close_session"
+                )
+            });
+        projected.insert(
+            "action".to_string(),
+            safe.map(Value::String)
+                .unwrap_or_else(|| redacted_invalid_value("action", action)),
+        );
+    }
+    for key in [
+        "sessionId",
+        "session_id",
+        "tabId",
+        "tab_id",
+        "observationId",
+        "observation_id",
+        "targetRef",
+        "target_ref",
+        "endRef",
+        "end_ref",
+        "url",
+    ] {
+        if let Some(value) = object.get(key) {
+            projected.insert(
+                key.to_string(),
+                value
+                    .as_str()
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or_else(|| redacted_invalid_value(key, value)),
+            );
+        }
+    }
+    for key in ["text", "value"] {
+        if let Some(value) = object.get(key) {
+            projected.insert(
+                key.to_string(),
+                value
+                    .as_str()
+                    .map(text_summary)
+                    .unwrap_or_else(|| redacted_invalid_value(key, value)),
+            );
+        }
+    }
+    if let Some(value) = object.get("key") {
+        projected.insert(
+            "key".to_string(),
+            value
+                .as_str()
+                .map(key_sequence_summary)
+                .unwrap_or_else(|| redacted_invalid_value("key", value)),
+        );
+    }
+    if let Some(value) = object.get("button") {
+        let safe = value
+            .as_str()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .filter(|candidate| matches!(candidate.as_str(), "left" | "middle" | "right"));
+        projected.insert(
+            "button".to_string(),
+            safe.map(Value::String)
+                .unwrap_or_else(|| redacted_invalid_value("button", value)),
+        );
+    }
+    if let Some(value) = object.get("modifiers") {
+        let safe = value.as_array().and_then(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|candidate| {
+                            matches!(*candidate, "Alt" | "Control" | "Meta" | "Shift")
+                        })
+                        .map(|value| Value::String(value.to_string()))
+                })
+                .collect::<Option<Vec<_>>>()
+        });
+        projected.insert(
+            "modifiers".to_string(),
+            safe.map(Value::Array)
+                .unwrap_or_else(|| redacted_invalid_value("modifiers", value)),
+        );
+    }
+    for key in [
+        "scrollX",
+        "scroll_x",
+        "scrollY",
+        "scroll_y",
+        "timeoutMs",
+        "timeout_ms",
+    ] {
+        if let Some(value) = object.get(key) {
+            projected.insert(
+                key.to_string(),
+                match value {
+                    Value::Number(_) => value.clone(),
+                    _ => redacted_invalid_value(key, value),
+                },
+            );
+        }
+    }
+    for key in ["wait_for_previous", "waitForPrevious"] {
+        if let Some(value) = object.get(key) {
+            projected.insert(
+                key.to_string(),
+                match value {
+                    Value::Bool(_) => value.clone(),
+                    _ => redacted_invalid_value(key, value),
+                },
+            );
+        }
+    }
+    if let Some(condition) = object.get("condition") {
+        projected.insert(
+            "condition".to_string(),
+            audit_safe_browser_condition(condition),
+        );
+    }
+    let known = [
+        "action",
+        "sessionId",
+        "session_id",
+        "tabId",
+        "tab_id",
+        "url",
+        "observationId",
+        "observation_id",
+        "targetRef",
+        "target_ref",
+        "endRef",
+        "end_ref",
+        "text",
+        "value",
+        "key",
+        "button",
+        "modifiers",
+        "scrollX",
+        "scroll_x",
+        "scrollY",
+        "scroll_y",
+        "condition",
+        "timeoutMs",
+        "timeout_ms",
+        "wait_for_previous",
+        "waitForPrevious",
+    ];
+    let unknown_field_count = object
+        .keys()
+        .filter(|key| !known.contains(&key.as_str()))
+        .count();
+    if unknown_field_count > 0 {
+        projected.insert("unknownFieldCount".to_string(), unknown_field_count.into());
+    }
+    Value::Object(projected)
+}
+
 /// Parse and project a raw argument string. Invalid partial JSON is hidden for
 /// sensitive tools rather than copied into UI or persistence verbatim.
 pub fn audit_safe_arguments_string(tool_name: &str, arguments: &str) -> String {
     match serde_json::from_str::<Value>(arguments) {
         Ok(value) => serde_json::to_string(&audit_safe_arguments(tool_name, &value))
             .unwrap_or_else(|_| "{\"redacted\":true}".to_string()),
-        Err(_) if is_sensitive_computer_control_name(tool_name) => {
-            "{\"redacted\":true,\"kind\":\"incompleteComputerControlArguments\"}".to_string()
+        Err(_)
+            if is_sensitive_computer_control_name(tool_name)
+                || is_browser_session_name(tool_name) =>
+        {
+            "{\"redacted\":true,\"kind\":\"incompleteSensitiveInteractionArguments\"}".to_string()
         }
         Err(_) => arguments.to_string(),
     }
@@ -262,12 +580,12 @@ pub fn audit_safe_arguments_string(tool_name: &str, arguments: &str) -> String {
 
 /// Clone a tool call for durable storage. Provider-native thought signatures
 /// can themselves embed the original function-call arguments, so sensitive
-/// computer-control calls retain replay metadata only through the separately
+/// interaction calls retain replay metadata only through the separately
 /// projected provider envelope.
 pub fn audit_safe_tool_call(call: &crate::llm::ToolCallRequest) -> crate::llm::ToolCallRequest {
     let mut projected = call.clone();
     projected.arguments = audit_safe_arguments_string(&call.name, &call.arguments);
-    if is_sensitive_computer_control_name(&call.name) {
+    if tool_call_contains_sensitive_input(&call.name, &call.arguments) {
         projected.thought_signature = None;
     }
     projected
@@ -278,7 +596,7 @@ pub fn audit_safe_tool_calls(
 ) -> Vec<crate::llm::ToolCallRequest> {
     let sensitive_batch = calls
         .iter()
-        .any(|call| is_sensitive_computer_control_name(&call.name));
+        .any(|call| tool_call_contains_sensitive_input(&call.name, &call.arguments));
     calls
         .iter()
         .map(|call| {
@@ -312,6 +630,45 @@ mod tests {
         assert!(!serialized.contains("sentinel-key"));
         assert_eq!(projected["text"]["charCount"], sentinel.chars().count());
         assert_eq!(projected["key_sequence"]["keyCount"], 2);
+    }
+
+    #[test]
+    fn browser_session_projection_never_contains_typed_text_selected_values_or_keys() {
+        let sentinel = "browser-input-secret-719d";
+        let projected = audit_safe_arguments(
+            "browser_session",
+            &json!({
+                "action": "type",
+                "sessionId": "browser-a",
+                "observationId": "observation-a",
+                "targetRef": "e7",
+                "text": sentinel,
+                "value": format!("selected-{sentinel}"),
+                "key": format!("Control+{sentinel}"),
+            }),
+        );
+        let serialized = serde_json::to_string(&projected).unwrap();
+
+        assert!(!serialized.contains(sentinel));
+        assert_eq!(projected["text"]["charCount"], sentinel.chars().count());
+        assert_eq!(
+            projected["value"]["charCount"],
+            format!("selected-{sentinel}").chars().count()
+        );
+        assert_eq!(projected["key"]["keyCount"], 2);
+        assert_eq!(projected["action"], "type");
+        assert_eq!(projected["targetRef"], "e7");
+    }
+
+    #[test]
+    fn malformed_streaming_browser_arguments_fail_closed() {
+        let projected = audit_safe_arguments_string(
+            "browser_session",
+            r#"{"action":"type","text":"browser-stream-secret"#,
+        );
+
+        assert!(!projected.contains("browser-stream-secret"));
+        assert!(projected.contains("redacted"));
     }
 
     #[test]

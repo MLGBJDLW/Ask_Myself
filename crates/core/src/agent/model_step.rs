@@ -125,7 +125,6 @@ pub(super) struct ModelStepOutput {
     pub(super) answer_delta_seen: bool,
     pub(super) thinking_delta_seen: bool,
     pub(super) finish_reason: Option<FinishReason>,
-    pub(super) started_call_ids: HashSet<String>,
     pub(super) tool_run_started_ids: HashSet<String>,
     pub(super) prompt_cache_observation: Option<prompt_cache::PromptCacheTraceObservation>,
     pub(super) request_latency_ms: u64,
@@ -157,9 +156,7 @@ fn reset_iteration_capture_for_new_sample(
     answer_delta_seen: &mut bool,
     thinking_delta_seen: &mut bool,
     finish_reason: &mut Option<FinishReason>,
-    preparing_call_ids: &mut HashSet<String>,
     tool_input_session: &mut tool_input_session::ToolInputSession,
-    started_call_ids: &mut HashSet<String>,
     tool_run_started_ids: &mut HashSet<String>,
     chunk_count: &mut usize,
 ) {
@@ -173,9 +170,7 @@ fn reset_iteration_capture_for_new_sample(
     *answer_delta_seen = false;
     *thinking_delta_seen = false;
     *finish_reason = None;
-    preparing_call_ids.clear();
     tool_input_session.reset();
-    started_call_ids.clear();
     tool_run_started_ids.clear();
     *chunk_count = 0;
 }
@@ -347,9 +342,7 @@ impl AgentExecutor {
         let mut answer_delta_seen = false;
         let mut thinking_delta_seen = false;
         let mut finish_reason: Option<FinishReason> = None;
-        let mut preparing_call_ids: HashSet<String> = HashSet::new();
         let mut tool_input_session = tool_input_session::ToolInputSession::default();
-        let mut started_call_ids: HashSet<String> = HashSet::new();
         let mut tool_run_started_ids: HashSet<String> = HashSet::new();
         let mut chunk_count: usize = 0;
         let mut discarded_sample_tokens = 0_u32;
@@ -392,9 +385,7 @@ impl AgentExecutor {
                         &mut answer_delta_seen,
                         &mut thinking_delta_seen,
                         &mut finish_reason,
-                        &mut preparing_call_ids,
                         &mut tool_input_session,
-                        &mut started_call_ids,
                         &mut tool_run_started_ids,
                         &mut chunk_count,
                     );
@@ -482,9 +473,7 @@ impl AgentExecutor {
                             &mut answer_delta_seen,
                             &mut thinking_delta_seen,
                             &mut finish_reason,
-                            &mut preparing_call_ids,
                             &mut tool_input_session,
-                            &mut started_call_ids,
                             &mut tool_run_started_ids,
                             &mut chunk_count,
                         );
@@ -657,9 +646,9 @@ impl AgentExecutor {
                         // still being assembled. Do not stream partial
                         // generic arguments to the UI; they are often
                         // invalid JSON until the provider finishes the call.
-                        if let Some((tc_index, tc)) = resolve_delta_target(&tool_calls, tc_delta) {
+                        if let Some((_tc_index, tc)) = resolve_delta_target(&tool_calls, tc_delta) {
                             let first_preparing =
-                                !tc.name.is_empty() && preparing_call_ids.insert(tc.id.clone());
+                                !tc.name.is_empty() && tool_run_started_ids.insert(tc.id.clone());
                             let should_project = !tc.name.is_empty()
                                 && !tc_delta.arguments_delta.is_empty()
                                 && tool_input_session.should_project(&tc.id, tc.arguments.len());
@@ -680,30 +669,20 @@ impl AgentExecutor {
                                 };
 
                                 if first_preparing {
-                                    if tool_run_started_ids.insert(tc.id.clone()) {
-                                        let _ = tx
-                                            .send(AgentEvent::ToolRunStarted {
-                                                run: build_tool_run_item(
-                                                    &self.tools,
-                                                    &tc.id,
-                                                    &tc.name,
-                                                    ToolRunStatus::Preparing,
-                                                    preview_arguments,
-                                                    None,
-                                                    None,
-                                                    None,
-                                                    None,
-                                                    None,
-                                                ),
-                                            })
-                                            .await;
-                                    }
                                     let _ = tx
-                                        .send(AgentEvent::ToolCallPreparing {
-                                            call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            args_bytes: tc.arguments.len() as u32,
-                                            index: tc_index as u32,
+                                        .send(AgentEvent::ToolRunStarted {
+                                            run: build_tool_run_item(
+                                                &self.tools,
+                                                &tc.id,
+                                                &tc.name,
+                                                ToolRunStatus::Preparing,
+                                                preview_arguments,
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                                None,
+                                            ),
                                         })
                                         .await;
                                 } else if preview_arguments.is_some() {
@@ -818,8 +797,6 @@ impl AgentExecutor {
                     iteration_thinking = response.thinking.unwrap_or_default();
                     thinking_delta_seen = !iteration_thinking.is_empty();
                     tool_calls = response.tool_calls.unwrap_or_default();
-                    preparing_call_ids.clear();
-                    started_call_ids.clear();
                     tool_run_started_ids.clear();
                     chunk_usage = Some(response.usage);
                     finish_reason = Some(response.finish_reason);
@@ -838,7 +815,7 @@ impl AgentExecutor {
                             })
                             .await;
                     }
-                    for (index, tool_call) in tool_calls.iter().enumerate() {
+                    for tool_call in &tool_calls {
                         if tool_call.name.is_empty() {
                             continue;
                         }
@@ -856,7 +833,6 @@ impl AgentExecutor {
                         } else {
                             None
                         };
-                        preparing_call_ids.insert(tool_call.id.clone());
                         if tool_run_started_ids.insert(tool_call.id.clone()) {
                             let _ = tx
                                 .send(AgentEvent::ToolRunStarted {
@@ -875,14 +851,6 @@ impl AgentExecutor {
                                 })
                                 .await;
                         }
-                        let _ = tx
-                            .send(AgentEvent::ToolCallPreparing {
-                                call_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                args_bytes: tool_call.arguments.len() as u32,
-                                index: index as u32,
-                            })
-                            .await;
                     }
                     info!(
                         "Completion complete: {} chars, {} tool calls",
@@ -1001,9 +969,7 @@ impl AgentExecutor {
                                     &mut answer_delta_seen,
                                     &mut thinking_delta_seen,
                                     &mut finish_reason,
-                                    &mut preparing_call_ids,
                                     &mut tool_input_session,
-                                    &mut started_call_ids,
                                     &mut tool_run_started_ids,
                                     &mut chunk_count,
                                 );
@@ -1697,8 +1663,6 @@ impl AgentExecutor {
             iteration_thinking = recovered_thinking.unwrap_or_default();
             thinking_delta_seen = !iteration_thinking.is_empty();
             tool_calls = recovered_tool_calls;
-            preparing_call_ids.clear();
-            started_call_ids.clear();
             tool_run_started_ids.clear();
             chunk_usage = Some(response.usage);
             finish_reason = Some(response.finish_reason);
@@ -1744,7 +1708,6 @@ impl AgentExecutor {
             answer_delta_seen,
             thinking_delta_seen,
             finish_reason,
-            started_call_ids,
             tool_run_started_ids,
             prompt_cache_observation,
             request_latency_ms: attempt_timing.request_latency_ms,

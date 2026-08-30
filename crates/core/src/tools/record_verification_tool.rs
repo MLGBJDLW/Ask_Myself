@@ -52,10 +52,10 @@ fn status_label(status: VerificationStatus) -> &'static str {
     }
 }
 
-fn overall_status(passed: usize, failed: usize, pending: usize) -> &'static str {
+fn overall_status(passed: usize, failed: usize, pending: usize, skipped: usize) -> &'static str {
     if failed > 0 {
         "failed"
-    } else if passed > 0 && pending == 0 {
+    } else if passed > 0 && pending == 0 && skipped == 0 {
         "passed"
     } else if passed > 0 {
         "partial"
@@ -136,7 +136,7 @@ impl Tool for RecordVerificationTool {
             }));
         }
 
-        let overall = overall_status(passed, failed, pending);
+        let overall = overall_status(passed, failed, pending, skipped);
         let total_checks = checks.len();
         let artifact = serde_json::json!({
             "kind": "verification",
@@ -213,5 +213,32 @@ mod tests {
         assert_eq!(artifact["overallStatus"], "partial");
         assert_eq!(artifact["counts"]["passed"], 1);
         assert_eq!(artifact["counts"]["pending"], 1);
+    }
+
+    #[tokio::test]
+    async fn skipped_check_prevents_passed_overall_status() {
+        let tool = RecordVerificationTool;
+        let db = Database::open_memory().unwrap();
+        let args = serde_json::json!({
+            "checks": [
+                { "name": "File written", "status": "passed" },
+                { "name": "Rendered visual check", "status": "skipped" }
+            ]
+        })
+        .to_string();
+
+        let result = tool
+            .execute(crate::tools::ToolExecutionContext::new(
+                "call-skipped",
+                &args,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let artifact = result.artifacts.unwrap();
+
+        assert_eq!(artifact["overallStatus"], "partial");
+        assert_eq!(artifact["counts"]["skipped"], 1);
     }
 }

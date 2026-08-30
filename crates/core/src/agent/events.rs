@@ -79,8 +79,8 @@ pub enum AgentEvent {
         #[serde(default)]
         discard_sample: bool,
     },
-    /// The model has started assembling a tool call, but the arguments are not
-    /// stable enough to render or execute yet.
+    /// Retired serialized compatibility envelope. New producers emit a
+    /// `ToolRunStarted` item with `Preparing` status instead.
     ToolCallPreparing {
         #[serde(rename = "callId")]
         call_id: String,
@@ -91,7 +91,8 @@ pub enum AgentEvent {
         /// Tool-call index when the provider streams multiple calls in parallel.
         index: u32,
     },
-    /// A tool call is about to be executed with complete arguments.
+    /// Retired serialized compatibility envelope. New producers emit
+    /// `ToolRunUpdated` with complete arguments instead.
     ToolCallStart {
         #[serde(rename = "callId")]
         call_id: String,
@@ -99,12 +100,8 @@ pub enum AgentEvent {
         tool_name: String,
         arguments: String,
     },
-    /// Legacy incremental fragment of tool-call arguments streamed mid-response.
-    ///
-    /// Generic tools should not rely on this because partial JSON arguments are
-    /// often syntactically invalid. The main agent loop now emits
-    /// `ToolCallPreparing` while arguments are still being assembled, then
-    /// `ToolCallStart` once the complete argument string is available.
+    /// Retired serialized compatibility envelope for an argument fragment.
+    /// Generic tools never consume or produce partial JSON arguments.
     ToolCallArgsDelta {
         #[serde(rename = "callId")]
         call_id: String,
@@ -115,9 +112,8 @@ pub enum AgentEvent {
         /// Tool-call index when the provider streams multiple calls in parallel.
         index: u32,
     },
-    /// Heartbeat emitted while a long-running tool is still executing.
-    ///
-    /// Used to keep the frontend watchdog alive for long-running tools.
+    /// Retired serialized compatibility envelope. Heartbeats and activity now
+    /// use `ToolRunUpdated`.
     ToolCallProgress {
         #[serde(rename = "callId")]
         call_id: String,
@@ -127,7 +123,8 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         activity: Option<ActivityEvent>,
     },
-    /// Result of a tool execution.
+    /// Retired serialized compatibility envelope. New producers emit
+    /// `ToolRunCompleted`.
     ToolCallResult {
         #[serde(rename = "callId")]
         call_id: String,

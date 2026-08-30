@@ -16,6 +16,7 @@ pub enum ToolVisibilityRouteKind {
     CodebaseOperation,
     FileOperation,
     WebLookup,
+    InteractionOperation,
     SourceManagement,
 }
 
@@ -29,6 +30,7 @@ impl ToolVisibilityRouteKind {
             Self::CodebaseOperation => "CodebaseOperation",
             Self::FileOperation => "FileOperation",
             Self::WebLookup => "WebLookup",
+            Self::InteractionOperation => "InteractionOperation",
             Self::SourceManagement => "SourceManagement",
         }
     }
@@ -50,7 +52,10 @@ pub enum ToolVisibilitySignalKind {
     Process,
     Terminal,
     Browser,
+    WebArtifactAuthoring,
+    BrowserInteraction,
     Desktop,
+    DesktopInteraction,
     DocumentAnalysis,
     LinkedSources,
 }
@@ -83,12 +88,101 @@ pub struct ToolVisibilityDecisionLogEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ToolVisibilityDecision {
+pub struct TurnCapabilityRequirements {
     pub route: ToolVisibilityRouteKind,
     pub active_categories: Vec<ToolCategory>,
     pub route_categories: Vec<ToolCategory>,
     pub signals: Vec<ToolVisibilitySignal>,
     pub log: Vec<ToolVisibilityDecisionLogEntry>,
+    #[serde(default)]
+    pub interaction: TurnInteractionRequirements,
+}
+
+/// Backwards-compatible trace vocabulary. Tool visibility is now one
+/// projection of the authoritative per-turn capability requirements.
+pub type ToolVisibilityDecision = TurnCapabilityRequirements;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum VisualObservationRequirement {
+    #[default]
+    NotRequired,
+    AfterLastMutation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DesktopObservationRequirement {
+    #[default]
+    NotRequired,
+    BeforeControlAndAfterLastControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnInteractionRequirements {
+    pub visual_observation: VisualObservationRequirement,
+    pub browser_observation: bool,
+    pub browser_interaction: bool,
+    pub desktop_observation: DesktopObservationRequirement,
+    pub desktop_interaction: bool,
+}
+
+impl TurnCapabilityRequirements {
+    pub fn requires_visual_observation_after_mutation(&self) -> bool {
+        self.interaction.visual_observation == VisualObservationRequirement::AfterLastMutation
+    }
+
+    pub fn requires_completion_gate(&self) -> bool {
+        self.interaction.requires_completion_gate()
+    }
+
+    pub fn for_route(route: ToolVisibilityRouteKind) -> Self {
+        let route_categories = route_categories(route);
+        let mut active_categories = vec![ToolCategory::Core];
+        for category in &route_categories {
+            if !active_categories.contains(category) {
+                active_categories.push(*category);
+            }
+        }
+        Self {
+            route,
+            active_categories,
+            route_categories,
+            signals: Vec::new(),
+            log: Vec::new(),
+            interaction: TurnInteractionRequirements::default(),
+        }
+    }
+
+    pub fn for_route_name(route: &str) -> Self {
+        let route = match route {
+            "CollectionFocused" => ToolVisibilityRouteKind::CollectionFocused,
+            "KnowledgeRetrieval" => ToolVisibilityRouteKind::KnowledgeRetrieval,
+            "ConversationRecall" => ToolVisibilityRouteKind::ConversationRecall,
+            "CodebaseOperation" => ToolVisibilityRouteKind::CodebaseOperation,
+            "FileOperation" => ToolVisibilityRouteKind::FileOperation,
+            "WebLookup" => ToolVisibilityRouteKind::WebLookup,
+            "InteractionOperation" => ToolVisibilityRouteKind::InteractionOperation,
+            "SourceManagement" => ToolVisibilityRouteKind::SourceManagement,
+            _ => ToolVisibilityRouteKind::DirectResponse,
+        };
+        Self::for_route(route)
+    }
+}
+
+impl TurnInteractionRequirements {
+    pub fn requires_visual_observation_after_mutation(self) -> bool {
+        self.visual_observation == VisualObservationRequirement::AfterLastMutation
+    }
+
+    pub fn requires_desktop_observation(self) -> bool {
+        self.desktop_observation == DesktopObservationRequirement::BeforeControlAndAfterLastControl
+    }
+
+    pub fn requires_completion_gate(self) -> bool {
+        self.requires_visual_observation_after_mutation() || self.requires_desktop_observation()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +193,12 @@ pub struct ToolVisibilityInput<'a> {
 }
 
 pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityDecision {
+    resolve_turn_capability_requirements(input)
+}
+
+pub fn resolve_turn_capability_requirements(
+    input: ToolVisibilityInput<'_>,
+) -> TurnCapabilityRequirements {
     let query = input.query.to_lowercase();
     let collection_context = system_prompt_has_collection_context(input.system_prompt);
     let mut signals = Vec::new();
@@ -213,15 +313,40 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         ToolVisibilitySignalKind::Terminal,
         "query refers to the user-visible terminal or an interactive shell",
     );
-    push_term_signal(
-        &query,
-        BROWSER_TERMS,
-        &mut signals,
-        &mut log,
-        "signal.browser",
-        ToolVisibilitySignalKind::Browser,
-        "query refers to browser inspection, interaction, or a local web app",
-    );
+    if query_requests_browser_operation(&query) {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.browser",
+            ToolVisibilitySignalKind::Browser,
+            BROWSER_TERMS
+                .iter()
+                .filter(|term| query.contains(**term))
+                .map(|term| (*term).to_string())
+                .collect(),
+            "query explicitly requests browser observation or interaction",
+        );
+    }
+    if query_requests_web_artifact_authoring(&query) {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.web_artifact_authoring",
+            ToolVisibilitySignalKind::WebArtifactAuthoring,
+            vec!["web artifact medium + authoring intent".to_string()],
+            "a runnable web artifact requires a process plus rendered visual observation",
+        );
+    }
+    if query_requests_browser_interaction(&query) {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.browser_interaction",
+            ToolVisibilitySignalKind::BrowserInteraction,
+            vec!["browser interaction intent".to_string()],
+            "the requested rendered experience includes explicit user interaction",
+        );
+    }
     if !has_signal(&signals, ToolVisibilitySignalKind::Browser)
         && query_has_web_navigation_handoff(&query)
     {
@@ -246,15 +371,33 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
             "an explicit local path handoff needs the visible desktop opener",
         );
     }
-    push_term_signal(
-        &query,
-        DESKTOP_TERMS,
-        &mut signals,
-        &mut log,
-        "signal.desktop",
-        ToolVisibilitySignalKind::Desktop,
-        "query refers to a native desktop window or input action",
-    );
+    if query_requests_desktop_operation(&query) {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.desktop",
+            ToolVisibilitySignalKind::Desktop,
+            DESKTOP_TERMS
+                .iter()
+                .chain(NATIVE_DESKTOP_APP_TERMS.iter())
+                .filter(|term| query.contains(**term))
+                .map(|term| (*term).to_string())
+                .collect(),
+            "query explicitly requests native desktop observation or input",
+        );
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::Desktop)
+        && contains_any(&query, DESKTOP_INTERACTION_TERMS)
+    {
+        push_signal(
+            &mut signals,
+            &mut log,
+            "signal.desktop_interaction",
+            ToolVisibilitySignalKind::DesktopInteraction,
+            vec!["desktop input intent".to_string()],
+            "the request requires native desktop input after an observation",
+        );
+    }
     push_term_signal(
         &query,
         DOCUMENT_ANALYSIS_TERMS,
@@ -381,9 +524,50 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         activate_category(
             &mut active_categories,
             &mut log,
-            "category.browser_interact",
+            "category.browser_visual_observation",
+            ToolCategory::VisualObservation,
+            "browser work needs rendered-state evidence",
+        );
+        if !has_signal(&signals, ToolVisibilitySignalKind::WebArtifactAuthoring)
+            || has_signal(&signals, ToolVisibilitySignalKind::BrowserInteraction)
+        {
+            activate_category(
+                &mut active_categories,
+                &mut log,
+                "category.browser_interact",
+                ToolCategory::BrowserInteract,
+                "the browser request needs stateful page interaction",
+            );
+        }
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::WebArtifactAuthoring) {
+        for (rule_id, category, reason) in [
+            (
+                "category.web_artifact_process",
+                ToolCategory::Process,
+                "a generated web artifact must be served or rendered",
+            ),
+            (
+                "category.web_artifact_browser_read",
+                ToolCategory::BrowserRead,
+                "a generated web artifact must be inspected in a browser",
+            ),
+            (
+                "category.web_artifact_visual_observation",
+                ToolCategory::VisualObservation,
+                "a generated web artifact needs pixel-bearing visual evidence",
+            ),
+        ] {
+            activate_category(&mut active_categories, &mut log, rule_id, category, reason);
+        }
+    }
+    if has_signal(&signals, ToolVisibilitySignalKind::BrowserInteraction) {
+        activate_category(
+            &mut active_categories,
+            &mut log,
+            "category.explicit_browser_interaction",
             ToolCategory::BrowserInteract,
-            "browser signal may require stateful page interaction",
+            "the rendered experience includes an explicit interaction contract",
         );
     }
     if has_signal(&signals, ToolVisibilitySignalKind::Desktop) {
@@ -427,12 +611,26 @@ pub fn decide_tool_visibility(input: ToolVisibilityInput<'_>) -> ToolVisibilityD
         );
     }
 
-    ToolVisibilityDecision {
+    let interaction = TurnInteractionRequirements {
+        visual_observation: (has_signal(&signals, ToolVisibilitySignalKind::WebArtifactAuthoring)
+            || has_signal(&signals, ToolVisibilitySignalKind::Browser))
+        .then_some(VisualObservationRequirement::AfterLastMutation)
+        .unwrap_or_default(),
+        browser_observation: has_signal(&signals, ToolVisibilitySignalKind::Browser),
+        browser_interaction: has_signal(&signals, ToolVisibilitySignalKind::BrowserInteraction),
+        desktop_observation: has_signal(&signals, ToolVisibilitySignalKind::Desktop)
+            .then_some(DesktopObservationRequirement::BeforeControlAndAfterLastControl)
+            .unwrap_or_default(),
+        desktop_interaction: has_signal(&signals, ToolVisibilitySignalKind::DesktopInteraction),
+    };
+
+    TurnCapabilityRequirements {
         route,
         active_categories,
         route_categories,
         signals,
         log,
+        interaction,
     }
 }
 
@@ -448,6 +646,12 @@ fn select_route(has_sources: bool, signals: &[ToolVisibilitySignal]) -> ToolVisi
     }
     if has_signal(signals, ToolVisibilitySignalKind::SourceManagement) {
         return ToolVisibilityRouteKind::SourceManagement;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::Desktop) {
+        return ToolVisibilityRouteKind::InteractionOperation;
+    }
+    if has_signal(signals, ToolVisibilitySignalKind::WebArtifactAuthoring) {
+        return ToolVisibilityRouteKind::CodebaseOperation;
     }
     if has_signal(signals, ToolVisibilitySignalKind::CodeOrToolOperation)
         || has_signal(signals, ToolVisibilitySignalKind::Process)
@@ -489,6 +693,7 @@ fn route_categories(route: ToolVisibilityRouteKind) -> Vec<ToolCategory> {
             ]
         }
         ToolVisibilityRouteKind::WebLookup => vec![ToolCategory::Web],
+        ToolVisibilityRouteKind::InteractionOperation => vec![ToolCategory::DesktopInteract],
         ToolVisibilityRouteKind::DirectResponse => Vec::new(),
     }
 }
@@ -511,6 +716,9 @@ fn route_reason(route: ToolVisibilityRouteKind) -> &'static str {
             "conversation recall should inspect current conversation context first"
         }
         ToolVisibilityRouteKind::WebLookup => "URL or web requests need web tools",
+        ToolVisibilityRouteKind::InteractionOperation => {
+            "native desktop work requires an observe-control-observe interaction contract"
+        }
         ToolVisibilityRouteKind::KnowledgeRetrieval => {
             "sourced question needs grounded retrieval and evidence synthesis"
         }
@@ -531,13 +739,30 @@ fn push_term_signal(
 ) {
     let matched_terms = terms
         .iter()
-        .filter(|term| query.contains(**term))
+        .filter(|term| query_contains_signal_term(query, term))
         .map(|term| (*term).to_string())
         .collect::<Vec<_>>();
     if matched_terms.is_empty() {
         return;
     }
     push_signal(signals, log, rule_id, kind, matched_terms, reason);
+}
+
+fn query_contains_signal_term(query: &str, term: &str) -> bool {
+    if term.len() > 3 || !term.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return query.contains(term);
+    }
+    query.match_indices(term).any(|(start, _)| {
+        let before = query[..start].chars().next_back();
+        let end = start + term.len();
+        let after = query[end..].chars().next();
+        before.is_none_or(|character| !is_signal_word_character(character))
+            && after.is_none_or(|character| !is_signal_word_character(character))
+    })
+}
+
+fn is_signal_word_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
 }
 
 fn push_signal(
@@ -591,6 +816,30 @@ fn query_has_web_navigation_handoff(query: &str) -> bool {
 
 fn query_has_local_path_handoff(query: &str) -> bool {
     contains_any(query, LOCAL_PATH_HANDOFF_INTENT_TERMS) && query_has_local_path_target(query)
+}
+
+fn query_requests_web_artifact_authoring(query: &str) -> bool {
+    contains_any(query, WEB_ARTIFACT_MEDIA_TERMS)
+        && contains_any(query, ARTIFACT_AUTHORING_INTENT_TERMS)
+}
+
+fn query_requests_browser_operation(query: &str) -> bool {
+    contains_any(query, BROWSER_TERMS)
+        && (contains_any(query, BROWSER_OPERATION_INTENT_TERMS) || query_has_explicit_url(query))
+}
+
+fn query_requests_browser_interaction(query: &str) -> bool {
+    (query_requests_web_artifact_authoring(query)
+        || query_requests_browser_operation(query)
+        || query_has_web_navigation_handoff(query))
+        && (contains_any(query, BROWSER_INTERACTION_TERMS)
+            || contains_any(query, NAVIGATION_INTENT_TERMS))
+}
+
+fn query_requests_desktop_operation(query: &str) -> bool {
+    (contains_any(query, DESKTOP_TERMS) && contains_any(query, DESKTOP_OPERATION_INTENT_TERMS))
+        || (contains_any(query, NATIVE_DESKTOP_APP_TERMS)
+            && contains_any(query, DESKTOP_INTERACTION_TERMS))
 }
 
 fn query_has_local_path_target(query: &str) -> bool {
@@ -1061,6 +1310,88 @@ const BROWSER_TERMS: &[&str] = &[
     "本地网页",
 ];
 
+const WEB_ARTIFACT_MEDIA_TERMS: &[&str] = &[
+    "html",
+    "canvas",
+    "webgl",
+    "three.js",
+    "threejs",
+    "react app",
+    "vue app",
+    "svelte app",
+    "spa",
+    "single-page app",
+    "single page app",
+    "网页应用",
+    "单页应用",
+    "前端页面",
+];
+
+const ARTIFACT_AUTHORING_INTENT_TERMS: &[&str] = &[
+    "build",
+    "create",
+    "make",
+    "implement",
+    "write",
+    "generate",
+    "design",
+    "制作",
+    "创建",
+    "新建",
+    "实现",
+    "写",
+    "生成",
+    "设计",
+    "做一个",
+];
+
+const BROWSER_INTERACTION_TERMS: &[&str] = &[
+    "interactive",
+    "interaction",
+    "click",
+    "drag",
+    "drop",
+    "type into",
+    "keyboard",
+    "mouse",
+    "scroll",
+    "交互",
+    "点击",
+    "拖拽",
+    "拖动",
+    "输入",
+    "键盘",
+    "鼠标",
+    "滚动",
+];
+
+const BROWSER_OPERATION_INTENT_TERMS: &[&str] = &[
+    "open",
+    "visit",
+    "navigate",
+    "inspect",
+    "check",
+    "verify",
+    "capture",
+    "debug",
+    "click",
+    "drag",
+    "type into",
+    "scroll",
+    "打开",
+    "访问",
+    "导航",
+    "检查",
+    "验证",
+    "截取",
+    "捕获",
+    "调试",
+    "点击",
+    "拖拽",
+    "输入",
+    "滚动",
+];
+
 const NAVIGATION_INTENT_TERMS: &[&str] = &[
     "open",
     "visit",
@@ -1111,6 +1442,78 @@ const DESKTOP_TERMS: &[&str] = &[
     "截图",
     "鼠标",
     "键盘",
+];
+
+const NATIVE_DESKTOP_APP_TERMS: &[&str] = &[
+    "excel",
+    "microsoft word",
+    "powerpoint",
+    "outlook",
+    "teams",
+    "slack",
+    "discord",
+    "wechat",
+    "notepad",
+    "calculator",
+    "file explorer",
+    "微信",
+    "企业微信",
+    "钉钉",
+    "飞书",
+    "记事本",
+    "计算器",
+    "文件资源管理器",
+];
+
+const DESKTOP_INTERACTION_TERMS: &[&str] = &[
+    "click",
+    "drag",
+    "drop",
+    "type into",
+    "keyboard",
+    "mouse",
+    "scroll",
+    "press",
+    "select",
+    "点击",
+    "拖拽",
+    "拖动",
+    "输入",
+    "键盘",
+    "鼠标",
+    "滚动",
+    "按下",
+    "选择",
+];
+
+const DESKTOP_OPERATION_INTENT_TERMS: &[&str] = &[
+    "take a screenshot",
+    "capture",
+    "observe",
+    "inspect",
+    "open",
+    "focus",
+    "click",
+    "drag",
+    "type into",
+    "scroll",
+    "press",
+    "select",
+    "computer use",
+    "截图一下",
+    "截取",
+    "捕获",
+    "观察",
+    "检查",
+    "打开",
+    "聚焦",
+    "点击",
+    "拖拽",
+    "输入",
+    "滚动",
+    "按下",
+    "选择",
+    "电脑操作",
 ];
 
 const DOCUMENT_ANALYSIS_TERMS: &[&str] = &[
@@ -1379,5 +1782,107 @@ mod tests {
         assert!(decision
             .active_categories
             .contains(&ToolCategory::FileSystem));
+    }
+
+    #[test]
+    fn implicit_html_canvas_authoring_requires_process_and_visual_browser_observation() {
+        let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+            query: "帮我用html写一个黑洞演示图",
+            system_prompt: "",
+            has_sources: false,
+        });
+
+        assert_eq!(
+            requirements.route,
+            ToolVisibilityRouteKind::CodebaseOperation
+        );
+        for category in [
+            ToolCategory::Process,
+            ToolCategory::BrowserRead,
+            ToolCategory::VisualObservation,
+        ] {
+            assert!(
+                requirements.active_categories.contains(&category),
+                "missing required capability {category:?}"
+            );
+        }
+        assert!(!requirements
+            .active_categories
+            .contains(&ToolCategory::BrowserInteract));
+        assert!(requirements.requires_visual_observation_after_mutation());
+    }
+
+    #[test]
+    fn explicit_browser_navigation_and_interaction_require_fresh_visual_observation() {
+        for query in [
+            "Open the browser, visit https://example.com, and click More information",
+            "打开浏览器访问 example.com 并点击 More information",
+        ] {
+            let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+                query,
+                system_prompt: "",
+                has_sources: false,
+            });
+
+            assert!(requirements.interaction.browser_observation);
+            assert!(requirements.interaction.browser_interaction);
+            assert!(requirements.requires_visual_observation_after_mutation());
+            assert!(requirements
+                .active_categories
+                .contains(&ToolCategory::BrowserRead));
+            assert!(requirements
+                .active_categories
+                .contains(&ToolCategory::BrowserInteract));
+        }
+    }
+
+    #[test]
+    fn natural_native_app_commands_activate_desktop_observe_control_observe() {
+        for query in ["帮我在微信里点击发送按钮", "请在 Excel 里把 A1 输入为 42"]
+        {
+            let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+                query,
+                system_prompt: "",
+                has_sources: false,
+            });
+
+            assert_eq!(
+                requirements.route,
+                ToolVisibilityRouteKind::InteractionOperation,
+                "{query}"
+            );
+            assert!(requirements.interaction.desktop_interaction, "{query}");
+            assert!(
+                requirements.interaction.requires_desktop_observation(),
+                "{query}"
+            );
+            assert!(
+                requirements
+                    .active_categories
+                    .contains(&ToolCategory::DesktopInteract),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_knowledge_question_does_not_create_an_interaction_gate() {
+        for query in [
+            "What is a browser?",
+            "什么是浏览器？",
+            "What is a model context window?",
+        ] {
+            let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+                query,
+                system_prompt: "",
+                has_sources: false,
+            });
+
+            assert!(!requirements.requires_completion_gate());
+            assert!(!requirements.interaction.browser_observation);
+            assert!(!requirements
+                .active_categories
+                .contains(&ToolCategory::BrowserInteract));
+        }
     }
 }

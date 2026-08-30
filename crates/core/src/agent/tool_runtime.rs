@@ -117,7 +117,12 @@ pub(super) fn build_provider_hosted_tool_run_item(
             ProviderHostedToolStatus::Completed => ToolRunStatus::Completed,
             ProviderHostedToolStatus::Failed => ToolRunStatus::Failed,
         },
-        arguments: event.arguments.clone(),
+        arguments: event.arguments.as_deref().map(|arguments| {
+            crate::tool_argument_projection::audit_safe_arguments_string(
+                &event.tool_name,
+                arguments,
+            )
+        }),
         render_kind: capabilities.render_kind,
         capabilities,
         content: event.content.clone(),
@@ -881,5 +886,38 @@ mod tests {
         let displayed = run.arguments.expect("audit-safe arguments");
         assert!(!displayed.contains(sentinel));
         assert!(displayed.contains("charCount"));
+    }
+
+    #[test]
+    fn browser_session_tool_run_never_exposes_typed_text_selected_values_or_keys() {
+        let tools = default_tool_registry();
+        let sentinel = "browser-tool-run-secret-ef41";
+        let arguments = serde_json::json!({
+            "action": "type",
+            "sessionId": "browser-a",
+            "observationId": "observation-a",
+            "targetRef": "e7",
+            "text": sentinel,
+            "value": format!("selected-{sentinel}"),
+            "key": format!("Control+{sentinel}")
+        })
+        .to_string();
+        let run = build_tool_run_item(
+            &tools,
+            "call-browser-sensitive",
+            "browser_session",
+            ToolRunStatus::Running,
+            Some(&arguments),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let displayed = run.arguments.expect("audit-safe browser arguments");
+
+        assert!(!displayed.contains(sentinel));
+        assert!(displayed.contains("charCount"));
+        assert!(displayed.contains("keyCount"));
     }
 }

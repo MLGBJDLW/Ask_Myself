@@ -85,15 +85,6 @@ impl AgentExecutor {
 
         match result {
             Ok(tool_result) => {
-                let _ = tx
-                    .send(AgentEvent::ToolCallResult {
-                        call_id: tool_result.call_id.clone(),
-                        tool_name: dispatch.tool_name.clone(),
-                        content: tool_result.content.clone(),
-                        is_error: tool_result.is_error,
-                        artifacts: tool_result.artifacts.clone(),
-                    })
-                    .await;
                 let direct_run_status = if tool_result.is_error {
                     ToolRunStatus::Failed
                 } else {
@@ -192,15 +183,6 @@ impl AgentExecutor {
             Err(e) => {
                 warn!("Direct dispatch failed ({}): {}", dispatch.tool_name, e);
                 let content = format!("{} failed: {e}", dispatch.tool_name);
-                let _ = tx
-                    .send(AgentEvent::ToolCallResult {
-                        call_id: call_id.clone(),
-                        tool_name: dispatch.tool_name.clone(),
-                        content: content.clone(),
-                        is_error: true,
-                        artifacts: None,
-                    })
-                    .await;
                 let _ = tx
                     .send(AgentEvent::ToolRunCompleted {
                         run: build_tool_run_item(

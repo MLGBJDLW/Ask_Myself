@@ -273,10 +273,10 @@ impl AgentExecutor {
                 "provider turn tool ledger differs from assistant tool calls".into(),
             ));
         }
-        let sensitive_computer_turn = envelope.contains_sensitive_computer_control();
+        let sensitive_interaction_turn = envelope.contains_sensitive_interaction_input();
         let persistence_envelope = envelope.audit_safe_for_persistence();
         let persistence_tool_calls = persistence_envelope.tool_calls.clone();
-        if !sensitive_computer_turn {
+        if !sensitive_interaction_turn {
             append_persisted_trace_thinking(persisted_trace_items, iteration_thinking);
         }
         if let Some(tid) = turn_id {
@@ -287,7 +287,7 @@ impl AgentExecutor {
                 Some(&trace),
             );
         }
-        let reasoning_envelope = if sensitive_computer_turn {
+        let reasoning_envelope = if sensitive_interaction_turn {
             None
         } else {
             self.reasoning_envelope_for_persistence(
