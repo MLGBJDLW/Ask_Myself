@@ -511,7 +511,10 @@ impl WorkflowIr {
             self.refresh_checkpoint();
             return;
         }
-        if tool_may_mutate_workspace(tool_name) {
+        if tool_may_mutate_workspace(tool_name)
+            || (tool_name == "browser_session"
+                && browser_session_action_invalidates_observation(tool_arguments))
+        {
             self.record_gate(
                 "browser-visual-observation",
                 false,
@@ -1252,6 +1255,18 @@ fn normalized_tool_action(tool_arguments: Option<&str>) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .map(|action| action.trim().to_ascii_lowercase())
         })
+}
+
+fn browser_session_action_invalidates_observation(tool_arguments: Option<&str>) -> bool {
+    match normalized_tool_action(tool_arguments).as_deref() {
+        // Inventory calls do not change the shared page, and observe is the
+        // only action authorized to establish a fresh pixel completion gate.
+        Some("list_sessions" | "list_tabs" | "observe") | None => false,
+        // Every other successful browser_session action either changes the
+        // session/tab/page or advances visible interaction state. Treat future
+        // actions fail-closed so a newly added mutation cannot reuse old pixels.
+        Some(_) => true,
+    }
 }
 
 pub(crate) fn tool_result_requires_desktop_observation(
@@ -2371,6 +2386,131 @@ mod tests {
             "Observed the interacted browser tab.",
         );
         assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn successful_browser_state_changes_invalidate_the_previous_session_observation() {
+        let session_observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "fresh-session-shot" }
+            },
+            "data": { "screenshotHash": "fresh-session-shot" }
+        });
+
+        for action in [
+            "create_session",
+            "open_tab",
+            "activate_tab",
+            "close_tab",
+            "close_session",
+            "navigate",
+            "go_back",
+            "go_forward",
+            "reload",
+            "click",
+            "double_click",
+            "drag",
+            "type",
+            "select",
+            "press",
+            "scroll",
+            "move",
+            "hover",
+            "wait_for",
+        ] {
+            let plan =
+                interaction_plan("Open the browser, visit https://example.com, and click More");
+            let mut workflow =
+                compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-before",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&session_observation),
+                "Observed the browser tab.",
+            );
+            assert!(workflow.completion_allowed(), "setup failed for {action}");
+
+            workflow.observe_tool_result_with_arguments(
+                "browser-action",
+                "browser_session",
+                Some(&format!(r#"{{"action":"{action}"}}"#)),
+                false,
+                Some(&session_observation),
+                "Browser action completed.",
+            );
+            assert!(
+                !workflow.completion_allowed(),
+                "successful browser action `{action}` must invalidate the previous observation even when its result embeds a screenshot"
+            );
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-without-pixels",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&serde_json::json!({
+                    "artifacts": { "kind": "browserObservation" },
+                    "data": {}
+                })),
+                "Observed without a screenshot.",
+            );
+            assert!(
+                !workflow.completion_allowed(),
+                "a screenshot-free observe must not repair `{action}`"
+            );
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-after",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&session_observation),
+                "Observed the changed browser tab.",
+            );
+            assert!(
+                workflow.completion_allowed(),
+                "a fresh screenshot-bearing observe must repair `{action}`"
+            );
+        }
+    }
+
+    #[test]
+    fn browser_inventory_reads_preserve_a_fresh_session_observation() {
+        let plan = interaction_plan("Open the browser, visit https://example.com, and click More");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+        let session_observation = serde_json::json!({
+            "artifacts": { "kind": "browserObservation" },
+            "data": { "screenshotHash": "fresh-session-shot" }
+        });
+        workflow.observe_tool_result_with_arguments(
+            "observe",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&session_observation),
+            "Observed the browser tab.",
+        );
+        assert!(workflow.completion_allowed());
+
+        for action in ["list_sessions", "list_tabs"] {
+            workflow.observe_tool_result_with_arguments(
+                "inventory",
+                "browser_session",
+                Some(&format!(r#"{{"action":"{action}"}}"#)),
+                false,
+                None,
+                "Listed browser state.",
+            );
+            assert!(
+                workflow.completion_allowed(),
+                "read-only browser action `{action}` must not invalidate a fresh observation"
+            );
+        }
     }
 
     #[test]

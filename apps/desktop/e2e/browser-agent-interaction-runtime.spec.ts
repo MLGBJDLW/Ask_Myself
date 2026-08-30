@@ -177,6 +177,28 @@ test('trusted input preparation validates, focuses, and selects editable targets
     .rejects.toThrow(/editable target/);
 });
 
+test('trusted key preparation verifies focus in a same-origin iframe document', async ({ page }) => {
+  await page.setContent(`
+    <!doctype html>
+    <iframe id="frame" srcdoc="<!doctype html><button id='target'>Frame action</button>"></iframe>
+  `);
+  await expect(page.frameLocator('#frame').locator('#target')).toBeVisible();
+  await page.addScriptTag({ content: runtimeSource });
+  const observation = await observe(page);
+  const targetRef = observation.elements.find(element => element.name === 'Frame action')?.ref;
+  expect(targetRef).toBeTruthy();
+
+  const prepared = await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareTrustedKey(value), actionInput(observation, 'press', targetRef!));
+
+  expect(prepared.focused).toBe(true);
+  await expect(page.frameLocator('#frame').locator('#target')).toBeFocused();
+  expect(await page.locator('#frame').evaluate(element => (
+    element.ownerDocument.activeElement === element
+  ))).toBe(true);
+});
+
 test('authenticated trusted input does not masquerade as user takeover state', async ({ page }) => {
   await page.setContent('<!doctype html><button id="target">Open details</button>');
   await page.addScriptTag({ content: runtimeSource });

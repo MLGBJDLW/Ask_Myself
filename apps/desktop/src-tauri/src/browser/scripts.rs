@@ -636,9 +636,10 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   };
   runtime.prepareTrustedKey = (input) => {
     const { el } = validateAction(input);
-    const target = el || document.activeElement || document.body;
+    const ownerDocument = el?.ownerDocument || document;
+    const target = el || ownerDocument.activeElement || ownerDocument.body;
     target?.focus?.();
-    return { focused: document.activeElement === target };
+    return { focused: ownerDocument.activeElement === target };
   };
   runtime.act = (input) => {
     const { el, end } = validateAction(input);

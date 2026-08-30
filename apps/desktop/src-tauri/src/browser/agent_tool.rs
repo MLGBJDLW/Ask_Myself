@@ -551,26 +551,62 @@ impl Tool for NativeBrowserSessionTool {
                 )
             }
             "navigate" => {
+                let url = required(args.url.as_deref(), "url")?;
                 let token = browser_mutation_token(context.arguments);
+                let commit_tracker = BrowserActCommitTracker::default();
                 let mut receipt =
-                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
-                self.state
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?
+                        .with_commit_tracker(commit_tracker.clone());
+                if let Err(error) = self
+                    .state
                     .acquire_agent_control(session_id, context.call_id)
-                    .map_err(Self::invalid)?;
-                self.state
+                {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
+                }
+                if let Err(error) = self
+                    .state
                     .navigate(
                         session_id,
                         tab_id,
-                        required(args.url.as_deref(), "url")?,
+                        url,
                         NavigationActor::Agent,
+                        Some(&commit_tracker),
                     )
                     .await
-                    .map_err(Self::invalid)?;
-                let observation = self
+                {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
+                }
+                let observation = match self
                     .state
                     .observe(session_id, tab_id, context.call_id)
                     .await
-                    .map_err(Self::invalid)?;
+                {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        return finish_browser_action_failure(
+                            &context,
+                            &mut receipt,
+                            &commit_tracker,
+                            &action,
+                            session_id,
+                            error,
+                        );
+                    }
+                };
                 receipt.finish(
                     ActivityState::Completed,
                     serde_json::json!({
@@ -584,28 +620,60 @@ impl Tool for NativeBrowserSessionTool {
             }
             "go_back" | "go_forward" => {
                 let token = browser_mutation_token(context.arguments);
+                let commit_tracker = BrowserActCommitTracker::default();
                 let mut receipt =
-                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
-                self.state
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?
+                        .with_commit_tracker(commit_tracker.clone());
+                if let Err(error) = self
+                    .state
                     .acquire_agent_control(session_id, context.call_id)
-                    .map_err(Self::invalid)?;
-                if action == "go_back" {
+                {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
+                }
+                let traversal_result = if action == "go_back" {
                     self.state
-                        .go_back_as_agent(session_id, tab_id, context.call_id)
+                        .go_back_as_agent(session_id, tab_id, context.call_id, &commit_tracker)
                         .await
-                        .map_err(Self::invalid)?;
                 } else {
                     self.state
-                        .go_forward_as_agent(session_id, tab_id, context.call_id)
+                        .go_forward_as_agent(session_id, tab_id, context.call_id, &commit_tracker)
                         .await
-                        .map_err(Self::invalid)?;
+                };
+                if let Err(error) = traversal_result {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                let observation = self
+                let observation = match self
                     .state
                     .observe(session_id, tab_id, context.call_id)
                     .await
-                    .map_err(Self::invalid)?;
+                {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        return finish_browser_action_failure(
+                            &context,
+                            &mut receipt,
+                            &commit_tracker,
+                            &action,
+                            session_id,
+                            error,
+                        );
+                    }
+                };
                 receipt.finish(
                     ActivityState::Completed,
                     serde_json::json!({
@@ -619,21 +687,55 @@ impl Tool for NativeBrowserSessionTool {
             }
             "reload" => {
                 let token = browser_mutation_token(context.arguments);
+                let commit_tracker = BrowserActCommitTracker::default();
                 let mut receipt =
-                    BrowserActionReceipt::start(&context, session_id, &token, &action)?;
-                self.state
+                    BrowserActionReceipt::start(&context, session_id, &token, &action)?
+                        .with_commit_tracker(commit_tracker.clone());
+                if let Err(error) = self
+                    .state
                     .acquire_agent_control(session_id, context.call_id)
-                    .map_err(Self::invalid)?;
-                self.state
-                    .reload_as_agent(session_id, tab_id, context.call_id)
+                {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
+                }
+                if let Err(error) = self
+                    .state
+                    .reload_as_agent(session_id, tab_id, context.call_id, &commit_tracker)
                     .await
-                    .map_err(Self::invalid)?;
+                {
+                    return finish_browser_action_failure(
+                        &context,
+                        &mut receipt,
+                        &commit_tracker,
+                        &action,
+                        session_id,
+                        error,
+                    );
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                let observation = self
+                let observation = match self
                     .state
                     .observe(session_id, tab_id, context.call_id)
                     .await
-                    .map_err(Self::invalid)?;
+                {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        return finish_browser_action_failure(
+                            &context,
+                            &mut receipt,
+                            &commit_tracker,
+                            &action,
+                            session_id,
+                            error,
+                        );
+                    }
+                };
                 receipt.finish(
                     ActivityState::Completed,
                     serde_json::json!({
@@ -725,30 +827,14 @@ impl Tool for NativeBrowserSessionTool {
                         outcome.observation
                     }
                     Err(error) => {
-                        let failure = commit_tracker.failure(error);
-                        let effect_may_have_occurred = failure.effect_may_have_occurred();
-                        let receipt_result = receipt.finish(
-                            ActivityState::Failed,
-                            serde_json::json!({
-                                "stage": if effect_may_have_occurred { "uncertain" } else { "precommit_rejected" },
-                                "action": action,
-                                "browserSessionId": session_id,
-                                "effectMayHaveOccurred": effect_may_have_occurred,
-                                "observationConsumed": failure.observation_consumed,
-                            }),
+                        return finish_browser_action_failure(
+                            &context,
+                            &mut receipt,
+                            &commit_tracker,
+                            &action,
+                            session_id,
+                            error,
                         );
-                        if let Err(receipt_error) = receipt_result {
-                            if effect_may_have_occurred {
-                                return Err(CoreError::Internal(format!(
-                                    "Browser action may have occurred and its durable receipt could not be completed: {receipt_error}"
-                                )));
-                            }
-                            return Ok(browser_action_receipt_failure_result(
-                                context.call_id,
-                                failure.observation_consumed,
-                            ));
-                        }
-                        return Ok(browser_action_failure_result(context.call_id, &failure));
                     }
                 };
                 observation_result(context.call_id, observation)
@@ -862,6 +948,40 @@ fn browser_action_failure_result(call_id: &str, failure: &BrowserActFailure) -> 
     }
 }
 
+fn finish_browser_action_failure(
+    context: &ToolExecutionContext<'_>,
+    receipt: &mut BrowserActionReceipt,
+    commit_tracker: &BrowserActCommitTracker,
+    action: &str,
+    session_id: &str,
+    error: String,
+) -> Result<ToolResult, CoreError> {
+    let failure = commit_tracker.failure(error);
+    let effect_may_have_occurred = failure.effect_may_have_occurred();
+    let receipt_result = receipt.finish(
+        ActivityState::Failed,
+        serde_json::json!({
+            "stage": if effect_may_have_occurred { "uncertain" } else { "precommit_rejected" },
+            "action": action,
+            "browserSessionId": session_id,
+            "effectMayHaveOccurred": effect_may_have_occurred,
+            "observationConsumed": failure.observation_consumed,
+        }),
+    );
+    if let Err(receipt_error) = receipt_result {
+        if effect_may_have_occurred {
+            return Err(CoreError::Internal(format!(
+                "Browser action may have occurred and its durable receipt could not be completed: {receipt_error}"
+            )));
+        }
+        return Ok(browser_action_receipt_failure_result(
+            context.call_id,
+            failure.observation_consumed,
+        ));
+    }
+    Ok(browser_action_failure_result(context.call_id, &failure))
+}
+
 fn browser_action_receipt_failure_result(call_id: &str, observation_consumed: bool) -> ToolResult {
     let failure = BrowserActFailure {
         phase: BrowserActFailurePhase::PreCommit,
@@ -946,7 +1066,9 @@ mod tests {
         browser_action_activity_id, browser_action_failure_result, browser_mutation_token,
         condition_matches, BrowserActionReceipt,
     };
-    use crate::browser::state::{BrowserActFailure, BrowserActFailurePhase};
+    use crate::browser::state::{
+        BrowserActCommitTracker, BrowserActFailure, BrowserActFailurePhase,
+    };
 
     #[test]
     fn browser_mutation_tokens_are_stable_and_argument_scoped() {
@@ -987,6 +1109,20 @@ mod tests {
         assert_eq!(artifacts["code"], "browser_action_precommit_rejected");
         assert_eq!(artifacts["sideEffect"], "not_started");
         assert_eq!(artifacts["observationConsumed"], true);
+    }
+
+    #[test]
+    fn browser_post_navigation_observation_failure_is_uncertain_and_not_retryable() {
+        let commit_tracker = BrowserActCommitTracker::default();
+        commit_tracker.mark_committed();
+        let failure = commit_tracker.failure("WebView screenshot capture failed".to_string());
+        let result = browser_action_failure_result("call", &failure);
+        let artifacts = result.artifacts.expect("structured failure artifacts");
+
+        assert_eq!(artifacts["code"], "browser_action_uncertain");
+        assert_eq!(artifacts["sideEffect"], "may_have_occurred");
+        assert_eq!(artifacts["retryable"], false);
+        assert_eq!(artifacts["observationConsumed"], false);
     }
 
     #[test]

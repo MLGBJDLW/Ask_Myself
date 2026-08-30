@@ -10,10 +10,10 @@ use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_
 use super::state::{
     accept_visibility_revision, action_snapshot_changed, agent_tab_surface_is_valid,
     browser_history_target_expression, browser_host_window_allows_agent_action,
-    browser_tab_open_allowed, browser_target_screen_point, next_visibility_request_revision,
-    trusted_action_budget, visibility_request_is_satisfied, with_agent_navigation_approval,
-    BrowserActCommitTracker, BrowserActFailurePhase, BrowserControlOwner, BrowserHistoryDirection,
-    ControlLease,
+    browser_tab_open_allowed, browser_target_screen_point, dispatch_browser_navigation,
+    next_visibility_request_revision, trusted_action_budget, visibility_request_is_satisfied,
+    with_agent_navigation_approval, BrowserActCommitTracker, BrowserActFailurePhase,
+    BrowserControlOwner, BrowserHistoryDirection, ControlLease,
 };
 use super::webview_host::TrustedInputEventBudget;
 use nexa_core::browser_runtime::{
@@ -234,6 +234,20 @@ fn agent_history_traversal_targets_adjacent_entries_and_cleans_failed_approval()
     );
     assert!(result.is_err());
     assert!(approved.lock().unwrap().is_empty());
+}
+
+#[test]
+fn agent_navigation_commit_tracker_changes_only_after_successful_webview_dispatch() {
+    let rejected_tracker = BrowserActCommitTracker::default();
+    let rejected: Result<(), String> = dispatch_browser_navigation(Some(&rejected_tracker), || {
+        Err("WebView rejected navigation".to_string())
+    });
+    assert!(rejected.is_err());
+    assert!(!rejected_tracker.effect_may_have_occurred());
+
+    let committed_tracker = BrowserActCommitTracker::default();
+    dispatch_browser_navigation(Some(&committed_tracker), || Ok(())).unwrap();
+    assert!(committed_tracker.effect_may_have_occurred());
 }
 
 #[test]

@@ -82,7 +82,7 @@ pub async fn browser_navigate_cmd(
     url: String,
 ) -> Result<BrowserTabInfo, String> {
     state
-        .navigate(&session_id, &tab_id, &url, NavigationActor::User)
+        .navigate(&session_id, &tab_id, &url, NavigationActor::User, None)
         .await
 }
 

@@ -778,7 +778,14 @@ impl BrowserState {
         tab_id: &str,
         input: &str,
         actor: NavigationActor,
+        commit_tracker: Option<&BrowserActCommitTracker>,
     ) -> Result<BrowserTabInfo, String> {
+        if actor == NavigationActor::Agent && commit_tracker.is_none() {
+            return Err(
+                "Agent browser navigation requires durable commit tracking before dispatch"
+                    .to_string(),
+            );
+        }
         let url = if actor == NavigationActor::Agent {
             normalize_browser_url_candidate(input)?
         } else {
@@ -840,7 +847,11 @@ impl BrowserState {
                     .map_err(|_| "Browser navigation policy is unavailable".to_string())?
                     .insert(url.to_string());
             }
-            if let Err(error) = tab.webview.navigate(url.clone()) {
+            if let Err(error) = dispatch_browser_navigation(commit_tracker, || {
+                tab.webview
+                    .navigate(url.clone())
+                    .map_err(|error| error.to_string())
+            }) {
                 if actor == NavigationActor::Agent {
                     if let Ok(mut approved) = tab.approved_agent_urls.lock() {
                         approved.remove(url.as_str());
@@ -1075,9 +1086,16 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
     ) -> Result<(), String> {
-        self.traverse_history_as_agent(session_id, tab_id, call_id, BrowserHistoryDirection::Back)
-            .await
+        self.traverse_history_as_agent(
+            session_id,
+            tab_id,
+            call_id,
+            BrowserHistoryDirection::Back,
+            commit_tracker,
+        )
+        .await
     }
 
     pub async fn go_forward_as_agent(
@@ -1085,12 +1103,14 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
     ) -> Result<(), String> {
         self.traverse_history_as_agent(
             session_id,
             tab_id,
             call_id,
             BrowserHistoryDirection::Forward,
+            commit_tracker,
         )
         .await
     }
@@ -1101,6 +1121,7 @@ impl BrowserState {
         tab_id: &str,
         call_id: &str,
         direction: BrowserHistoryDirection,
+        commit_tracker: &BrowserActCommitTracker,
     ) -> Result<(), String> {
         let (webview, lease_generation) = {
             let runtime = self
@@ -1163,9 +1184,11 @@ impl BrowserState {
         let target_key = serde_json::to_string(&target.key)
             .map_err(|error| format!("Browser history key was invalid: {error}"))?;
         with_agent_navigation_approval(&tab.approved_agent_urls, approval, || {
-            tab.webview
-                .eval(format!("window.navigation.traverseTo({target_key})"))
-                .map_err(|error| error.to_string())
+            dispatch_browser_navigation(Some(commit_tracker), || {
+                tab.webview
+                    .eval(format!("window.navigation.traverseTo({target_key})"))
+                    .map_err(|error| error.to_string())
+            })
         })
     }
 
@@ -2248,6 +2271,7 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
     ) -> Result<(), String> {
         let (current_url, lease_generation) = {
             let runtime = self
@@ -2291,7 +2315,9 @@ impl BrowserState {
         let tab = require_agent_tab_surface(session, tab_id)?;
         let approval = current_url.to_string();
         with_agent_navigation_approval(&tab.approved_agent_urls, approval, || {
-            tab.webview.reload().map_err(|error| error.to_string())
+            dispatch_browser_navigation(Some(commit_tracker), || {
+                tab.webview.reload().map_err(|error| error.to_string())
+            })
         })
     }
 
@@ -3014,6 +3040,19 @@ pub(super) fn with_agent_navigation_approval(
         return Err(error);
     }
     Ok(())
+}
+
+pub(super) fn dispatch_browser_navigation<T>(
+    commit_tracker: Option<&BrowserActCommitTracker>,
+    navigate: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let result = navigate();
+    if result.is_ok() {
+        if let Some(commit_tracker) = commit_tracker {
+            commit_tracker.mark_committed();
+        }
+    }
+    result
 }
 
 fn session_info(session: &BrowserSession) -> BrowserSessionInfo {

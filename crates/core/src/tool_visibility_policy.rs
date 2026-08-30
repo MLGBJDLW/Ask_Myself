@@ -387,7 +387,7 @@ pub fn resolve_turn_capability_requirements(
         );
     }
     if has_signal(&signals, ToolVisibilitySignalKind::Desktop)
-        && contains_any(&query, DESKTOP_INTERACTION_TERMS)
+        && query_requests_desktop_interaction(&query)
     {
         push_signal(
             &mut signals,
@@ -846,7 +846,14 @@ fn query_requests_browser_interaction(query: &str) -> bool {
 fn query_requests_desktop_operation(query: &str) -> bool {
     (contains_any(query, DESKTOP_TERMS) && contains_any(query, DESKTOP_OPERATION_INTENT_TERMS))
         || (contains_any(query, NATIVE_DESKTOP_APP_TERMS)
-            && contains_any(query, DESKTOP_INTERACTION_TERMS))
+            && contains_any(query, DESKTOP_OPERATION_INTENT_TERMS))
+}
+
+fn query_requests_desktop_interaction(query: &str) -> bool {
+    contains_any(query, DESKTOP_INTERACTION_TERMS)
+        || (contains_any(query, NATIVE_DESKTOP_APP_TERMS)
+            && contains_any(query, DESKTOP_OPERATION_INTENT_TERMS)
+            && contains_any(query, DESKTOP_APP_ACTIVATION_TERMS))
 }
 
 fn query_has_local_path_target(query: &str) -> bool {
@@ -1493,6 +1500,9 @@ const DESKTOP_INTERACTION_TERMS: &[&str] = &[
     "选择",
 ];
 
+const DESKTOP_APP_ACTIVATION_TERMS: &[&str] =
+    &["open", "focus", "launch", "start", "打开", "聚焦", "启动"];
+
 const DESKTOP_OPERATION_INTENT_TERMS: &[&str] = &[
     "take a screenshot",
     "capture",
@@ -1500,6 +1510,8 @@ const DESKTOP_OPERATION_INTENT_TERMS: &[&str] = &[
     "inspect",
     "open",
     "focus",
+    "launch",
+    "start",
     "click",
     "drag",
     "type into",
@@ -1514,6 +1526,7 @@ const DESKTOP_OPERATION_INTENT_TERMS: &[&str] = &[
     "检查",
     "打开",
     "聚焦",
+    "启动",
     "点击",
     "拖拽",
     "输入",
@@ -1845,8 +1858,16 @@ mod tests {
 
     #[test]
     fn natural_native_app_commands_activate_desktop_observe_control_observe() {
-        for query in ["帮我在微信里点击发送按钮", "请在 Excel 里把 A1 输入为 42"]
-        {
+        for query in [
+            "帮我在微信里点击发送按钮",
+            "请在 Excel 里把 A1 输入为 42",
+            "Open Calculator",
+            "Open Excel",
+            "Focus Microsoft Word",
+            "打开计算器",
+            "打开 Excel",
+            "聚焦微信",
+        ] {
             let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
                 query,
                 system_prompt: "",
@@ -1869,6 +1890,7 @@ mod tests {
                     .contains(&ToolCategory::DesktopInteract),
                 "{query}"
             );
+            assert!(!requirements.interaction.browser_observation, "{query}");
         }
     }
 
@@ -1878,6 +1900,8 @@ mod tests {
             "What is a browser?",
             "什么是浏览器？",
             "What is a model context window?",
+            "What is Microsoft Excel?",
+            "计算器是什么？",
         ] {
             let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
                 query,
