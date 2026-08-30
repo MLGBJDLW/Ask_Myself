@@ -624,11 +624,26 @@ observation-scoped element references with the user.
 Core actions include session/tab creation and selection, explicit navigation,
 back/forward/reload, observation, semantic waits, pointer/keyboard interaction,
 and closing tabs or sessions. When a conversation already owns an active
-workspace, `sessionId` may be omitted; `tabId`, the latest `observationId`, and
-fresh element refs remain explicit where applicable.
+workspace, `sessionId` may be omitted for non-terminal actions. `close_session`
+and `close_tab` always require an explicit `sessionId`; `close_tab` also requires
+the exact `tabId`. The latest `observationId` and fresh element refs remain
+explicit where applicable.
 
 Safety posture:
 - Observe before interaction and use refs only from the latest observation.
+  A successful Agent observation always carries a decoded, bounded screenshot
+  from the visible shared WebView; visual capture failure is a failed
+  observation, not unverifiable success.
+- Non-terminal mutations invalidate earlier visual proof and require a fresh
+  observation. Every requested close requires its typed receipt:
+  `close_session` must report `sessionClosed: true`, while `close_tab` binds the
+  requested session/tab IDs and reports `remainingTabCount`. The receipt
+  replaces a new screenshot only when closing the session or final tab removes
+  the last renderable target; a non-final tab close still requires a fresh
+  observation of the remaining active tab.
+- If temporary-profile cleanup fails after all tabs close, the empty session is
+  retained as `cleanupPending` and the same explicit `sessionId` is used to
+  retry cleanup without repeating native input.
 - Agent navigation is restricted to validated public HTTP(S) targets; private
   network and unapproved navigation remain blocked by the native proxy.
 - User takeover invalidates the Agent control lease and prior observations.

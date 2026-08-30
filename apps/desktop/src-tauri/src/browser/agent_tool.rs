@@ -336,6 +336,16 @@ impl Tool for NativeBrowserSessionTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         let actions = browser_action_names();
+        let session_optional_actions = actions
+            .iter()
+            .copied()
+            .filter(|action| !matches!(*action, "close_tab" | "close_session"))
+            .collect::<Vec<_>>();
+        let action_variants =
+            nexa_core::tools::browser_session_tool::browser_session_action_schema_variants(
+                &actions,
+                &session_optional_actions,
+            );
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -357,6 +367,7 @@ impl Tool for NativeBrowserSessionTool {
                 "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 2500, "default": 2500, "description": "One steering-friendly wait quantum. Repeat wait_for with a fresh observation if the condition is still pending." }
             },
             "required": ["action"],
+            "oneOf": action_variants,
             "additionalProperties": false
         })
     }

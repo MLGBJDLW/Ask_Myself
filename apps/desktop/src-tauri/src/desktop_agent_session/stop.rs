@@ -134,23 +134,7 @@ pub(crate) async fn fence_and_checkpoint_desktop_agent_turn(
     .await?;
 
     let action_receipts = match nexa_core::activity::ActivityRuntime::with_database(db.clone()) {
-        Ok(runtime) => runtime
-            .list()
-            .into_iter()
-            .filter(|record| {
-                record.turn_id.as_deref() == Some(turn_id.as_str())
-                    && matches!(
-                        record.surface,
-                        nexa_core::activity::ActivitySurface::Desktop
-                            | nexa_core::activity::ActivitySurface::Browser
-                    )
-                    && matches!(
-                        record.owner_tool.as_str(),
-                        "computer_control" | "browser_session"
-                    )
-            })
-            .map(|record| record.activity_id)
-            .collect::<Vec<_>>(),
+        Ok(runtime) => action_receipts_requiring_reconciliation(&runtime, &turn_id).await,
         Err(error) => {
             warn!("Could not read action receipts while stopping; forcing reconciliation: {error}");
             vec!["activity_registry_unavailable".to_string()]
@@ -169,6 +153,164 @@ pub(crate) async fn fence_and_checkpoint_desktop_agent_turn(
         .pause_with_checkpoint(&turn_id, &checkpoint_reason)
         .await
         .map(|_| ())
+}
+
+async fn action_receipts_requiring_reconciliation(
+    runtime: &nexa_core::activity::ActivityRuntime,
+    turn_id: &str,
+) -> Vec<String> {
+    let records = runtime
+        .list()
+        .into_iter()
+        .filter(|record| {
+            record.turn_id.as_deref() == Some(turn_id)
+                && matches!(
+                    record.surface,
+                    nexa_core::activity::ActivitySurface::Desktop
+                        | nexa_core::activity::ActivitySurface::Browser
+                )
+                && matches!(
+                    record.owner_tool.as_str(),
+                    "computer_control" | "browser_session"
+                )
+        })
+        .collect::<Vec<_>>();
+
+    // A trusted terminal close receipt proves that this browser session has
+    // reached a state with no observable page. Earlier page mutations from the
+    // same turn are therefore subsumed by that close attempt; carrying any of
+    // them across Stop/Resume would create a fence that a removed or retained
+    // empty session can never clear. Later receipts, every other browser
+    // session, and the desktop surface remain fail-closed.
+    let mut terminal_browser_sessions = HashMap::new();
+    for record in records.iter().filter(|record| {
+        record.owner_tool == "browser_session"
+            && matches!(
+                record.state,
+                nexa_core::activity::ActivityState::Completed
+                    | nexa_core::activity::ActivityState::Failed
+            )
+    }) {
+        match runtime
+            .observe(
+                &record.activity_id,
+                record.last_event_seq.saturating_sub(1),
+                Duration::ZERO,
+            )
+            .await
+        {
+            Ok(observation) if browser_terminal_boundary_is_known(&observation) => {
+                if let (Some(session_id), Some(terminal_at)) =
+                    (&record.session_id, record.completed_at)
+                {
+                    let replace = terminal_browser_sessions
+                        .get(session_id)
+                        .is_none_or(|(known_terminal_at, _)| terminal_at > *known_terminal_at);
+                    if replace {
+                        terminal_browser_sessions.insert(
+                            session_id.clone(),
+                            (terminal_at, record.activity_id.clone()),
+                        );
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(
+                    "Could not inspect terminal browser cleanup receipt {}; preserving the reconciliation fence: {error}",
+                    record.activity_id
+                );
+            }
+        }
+    }
+
+    records
+        .into_iter()
+        .filter(|record| {
+            if record.owner_tool != "browser_session" {
+                return true;
+            }
+            let Some((terminal_at, terminal_activity_id)) = record
+                .session_id
+                .as_ref()
+                .and_then(|session_id| terminal_browser_sessions.get(session_id))
+            else {
+                return true;
+            };
+            if record.activity_id == *terminal_activity_id {
+                return false;
+            }
+            !record
+                .completed_at
+                .is_some_and(|completed_at| completed_at <= *terminal_at)
+        })
+        .map(|record| record.activity_id)
+        .collect()
+}
+
+fn browser_terminal_boundary_is_known(
+    observation: &nexa_core::activity::ActivityObservation,
+) -> bool {
+    if observation.record.surface != nexa_core::activity::ActivitySurface::Browser
+        || observation.record.owner_tool != "browser_session"
+    {
+        return false;
+    }
+    let Some(session_id) = observation.record.session_id.as_deref() else {
+        return false;
+    };
+    let Some(detail) = observation
+        .events
+        .last()
+        .and_then(|event| event.payload.get("detail"))
+    else {
+        return false;
+    };
+    if detail
+        .get("browserSessionId")
+        .and_then(serde_json::Value::as_str)
+        != Some(session_id)
+    {
+        return false;
+    }
+
+    match observation.record.state {
+        nexa_core::activity::ActivityState::Failed => {
+            detail.get("stage").and_then(serde_json::Value::as_str) == Some("cleanup_pending")
+                && detail.get("action").and_then(serde_json::Value::as_str) == Some("close_session")
+                && detail
+                    .get("sessionRetainedForRetry")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        }
+        nexa_core::activity::ActivityState::Completed => {
+            if detail.get("stage").and_then(serde_json::Value::as_str) != Some("observed") {
+                return false;
+            }
+            match detail.get("action").and_then(serde_json::Value::as_str) {
+                Some("close_session") => {
+                    detail
+                        .get("sessionClosed")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                }
+                Some("close_tab") => {
+                    detail
+                        .get("tabId")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|tab_id| !tab_id.is_empty())
+                        && detail.get("tabClosed").and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                        && detail
+                            .get("remainingTabCount")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(0)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 pub(crate) async fn resolve_desktop_pending_approvals_for_stopped_run(
@@ -268,6 +410,275 @@ pub(crate) fn submit_error_as_outbox_failure(
         other => AgentRunEventOutboxFailure::Persistence {
             message: other.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod cleanup_receipt_tests {
+    use super::{action_receipts_requiring_reconciliation, browser_terminal_boundary_is_known};
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn persisted_cleanup_pending_detail_does_not_require_input_reconciliation() {
+        let db = nexa_core::db::Database::open_memory().unwrap();
+        let runtime = nexa_core::activity::ActivityRuntime::with_database(db).unwrap();
+        let record = runtime
+            .start(
+                nexa_core::activity::ActivitySpec::new(
+                    nexa_core::activity::ActivitySurface::Browser,
+                    "browser_session",
+                )
+                .with_activity_id("browser_action:turn:cleanup-call:token")
+                .with_session_id("browser-session-1"),
+            )
+            .unwrap();
+        runtime
+            .transition(
+                &record.activity_id,
+                nexa_core::activity::ActivityState::Failed,
+                serde_json::json!({
+                    "stage": "cleanup_pending",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-1",
+                    "sessionRetainedForRetry": true,
+                }),
+            )
+            .unwrap();
+
+        let observation = runtime
+            .observe(&record.activity_id, 0, Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert!(browser_terminal_boundary_is_known(&observation));
+        assert_eq!(
+            observation.events.last().unwrap().payload["detail"]["stage"],
+            "cleanup_pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_pending_subsumes_only_earlier_receipts_from_the_same_browser_session() {
+        let db = nexa_core::db::Database::open_memory().unwrap();
+        let runtime = nexa_core::activity::ActivityRuntime::with_database(db).unwrap();
+        let turn_id = "turn-with-terminal-browser-cleanup";
+
+        for (activity_id, session_id) in [
+            ("browser_action:turn:navigate:same", "browser-session-1"),
+            ("browser_action:turn:navigate:other", "browser-session-2"),
+        ] {
+            let record = runtime
+                .start(
+                    nexa_core::activity::ActivitySpec::new(
+                        nexa_core::activity::ActivitySurface::Browser,
+                        "browser_session",
+                    )
+                    .with_activity_id(activity_id)
+                    .with_session_id(session_id)
+                    .with_turn_id(turn_id),
+                )
+                .unwrap();
+            runtime
+                .transition(
+                    &record.activity_id,
+                    nexa_core::activity::ActivityState::Completed,
+                    serde_json::json!({ "stage": "action_completed" }),
+                )
+                .unwrap();
+        }
+
+        let cleanup = runtime
+            .start(
+                nexa_core::activity::ActivitySpec::new(
+                    nexa_core::activity::ActivitySurface::Browser,
+                    "browser_session",
+                )
+                .with_activity_id("browser_action:turn:cleanup:same")
+                .with_session_id("browser-session-1")
+                .with_turn_id(turn_id),
+            )
+            .unwrap();
+        runtime
+            .transition(
+                &cleanup.activity_id,
+                nexa_core::activity::ActivityState::Failed,
+                serde_json::json!({
+                    "stage": "cleanup_pending",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-1",
+                    "sessionRetainedForRetry": true,
+                }),
+            )
+            .unwrap();
+
+        let later_same_session = runtime
+            .start(
+                nexa_core::activity::ActivitySpec::new(
+                    nexa_core::activity::ActivitySurface::Browser,
+                    "browser_session",
+                )
+                .with_activity_id("browser_action:turn:navigate:same-after-cleanup")
+                .with_session_id("browser-session-1")
+                .with_turn_id(turn_id),
+            )
+            .unwrap();
+        runtime
+            .transition(
+                &later_same_session.activity_id,
+                nexa_core::activity::ActivityState::Completed,
+                serde_json::json!({ "stage": "action_completed" }),
+            )
+            .unwrap();
+
+        let receipts = action_receipts_requiring_reconciliation(&runtime, turn_id)
+            .await
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        assert!(!receipts.contains("browser_action:turn:navigate:same"));
+        assert!(!receipts.contains("browser_action:turn:cleanup:same"));
+        assert_eq!(
+            receipts,
+            HashSet::from([
+                "browser_action:turn:navigate:other".to_string(),
+                "browser_action:turn:navigate:same-after-cleanup".to_string(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_terminal_close_receipts_do_not_create_an_unobservable_resume_fence() {
+        let db = nexa_core::db::Database::open_memory().unwrap();
+        let runtime = nexa_core::activity::ActivityRuntime::with_database(db).unwrap();
+        let turn_id = "turn-with-successful-terminal-closes";
+
+        for (activity_id, session_id, detail) in [
+            (
+                "browser_action:turn:close-session:terminal",
+                "browser-session-closed",
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-closed",
+                    "sessionClosed": true,
+                }),
+            ),
+            (
+                "browser_action:turn:close-tab:terminal",
+                "browser-session-empty",
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": "close_tab",
+                    "browserSessionId": "browser-session-empty",
+                    "tabId": "tab-final",
+                    "tabClosed": true,
+                    "remainingTabCount": 0,
+                }),
+            ),
+            (
+                "browser_action:turn:close-tab:nonfinal",
+                "browser-session-nonfinal",
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": "close_tab",
+                    "browserSessionId": "browser-session-nonfinal",
+                    "tabId": "tab-one",
+                    "tabClosed": true,
+                    "remainingTabCount": 1,
+                }),
+            ),
+            (
+                "browser_action:turn:close-session:wrong-scope",
+                "browser-session-expected",
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-other",
+                    "sessionClosed": true,
+                }),
+            ),
+        ] {
+            let record = runtime
+                .start(
+                    nexa_core::activity::ActivitySpec::new(
+                        nexa_core::activity::ActivitySurface::Browser,
+                        "browser_session",
+                    )
+                    .with_activity_id(activity_id)
+                    .with_session_id(session_id)
+                    .with_turn_id(turn_id),
+                )
+                .unwrap();
+            runtime
+                .transition(
+                    &record.activity_id,
+                    nexa_core::activity::ActivityState::Completed,
+                    detail,
+                )
+                .unwrap();
+        }
+
+        let receipts = action_receipts_requiring_reconciliation(&runtime, turn_id)
+            .await
+            .into_iter()
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            receipts,
+            HashSet::from([
+                "browser_action:turn:close-tab:nonfinal".to_string(),
+                "browser_action:turn:close-session:wrong-scope".to_string(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_retry_success_becomes_the_latest_terminal_boundary() {
+        let db = nexa_core::db::Database::open_memory().unwrap();
+        let runtime = nexa_core::activity::ActivityRuntime::with_database(db).unwrap();
+        let turn_id = "turn-with-successful-cleanup-retry";
+
+        for (activity_id, state, detail) in [
+            (
+                "browser_action:turn:cleanup:pending",
+                nexa_core::activity::ActivityState::Failed,
+                serde_json::json!({
+                    "stage": "cleanup_pending",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-1",
+                    "sessionRetainedForRetry": true,
+                }),
+            ),
+            (
+                "browser_action:turn:cleanup:retry-success",
+                nexa_core::activity::ActivityState::Completed,
+                serde_json::json!({
+                    "stage": "observed",
+                    "action": "close_session",
+                    "browserSessionId": "browser-session-1",
+                    "sessionClosed": true,
+                }),
+            ),
+        ] {
+            let record = runtime
+                .start(
+                    nexa_core::activity::ActivitySpec::new(
+                        nexa_core::activity::ActivitySurface::Browser,
+                        "browser_session",
+                    )
+                    .with_activity_id(activity_id)
+                    .with_session_id("browser-session-1")
+                    .with_turn_id(turn_id),
+                )
+                .unwrap();
+            runtime
+                .transition(&record.activity_id, state, detail)
+                .unwrap();
+        }
+
+        assert!(action_receipts_requiring_reconciliation(&runtime, turn_id)
+            .await
+            .is_empty());
     }
 }
 

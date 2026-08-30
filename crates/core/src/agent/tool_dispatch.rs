@@ -424,6 +424,14 @@ mod action_reconciliation_tests {
             })),
         ));
         assert!(!tool_result_requires_action_reconciliation(
+            "browser_session",
+            true,
+            Some(&serde_json::json!({
+                "code": "browser_cleanup_pending",
+                "sideEffect": "may_have_occurred",
+            })),
+        ));
+        assert!(!tool_result_requires_action_reconciliation(
             "computer_control",
             true,
             Some(&serde_json::json!({

@@ -1283,6 +1283,98 @@ fn json_value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
     }
 }
 
+fn schema_required_fields(schema: &serde_json::Value) -> Vec<&str> {
+    schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+
+fn object_matches_schema_properties(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+) -> bool {
+    if let Some(expected) = schema.get("type").and_then(serde_json::Value::as_str) {
+        if expected != "object" {
+            return false;
+        }
+    }
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return true;
+    };
+    properties.iter().all(|(field, field_schema)| {
+        let Some(value) = object.get(field) else {
+            return true;
+        };
+        field_schema
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|expected| json_value_matches_type(value, expected))
+            && field_schema
+                .get("enum")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|allowed| allowed.contains(value))
+            && field_schema
+                .get("const")
+                .is_none_or(|expected| expected == value)
+    })
+}
+
+fn object_matches_schema_branch(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+) -> bool {
+    schema_required_fields(schema)
+        .iter()
+        .all(|field| object.contains_key(*field))
+        && object_matches_schema_properties(object, schema)
+}
+
+fn schema_branch_is_locally_decidable(schema: &serde_json::Value) -> bool {
+    let Some(branch) = schema.as_object() else {
+        return false;
+    };
+    if !branch
+        .keys()
+        .all(|key| matches!(key.as_str(), "type" | "properties" | "required"))
+    {
+        return false;
+    }
+    if let Some(branch_type) = branch.get("type") {
+        if branch_type.as_str() != Some("object") {
+            return false;
+        }
+    }
+    if branch.get("required").is_some_and(|required| {
+        required
+            .as_array()
+            .is_none_or(|fields| fields.iter().any(|field| !field.is_string()))
+    }) {
+        return false;
+    }
+    branch.get("properties").is_none_or(|properties| {
+        properties.as_object().is_some_and(|properties| {
+            properties.values().all(|property| {
+                property.as_object().is_some_and(|property| {
+                    property
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "type" | "enum" | "const"))
+                        && property
+                            .get("type")
+                            .is_none_or(serde_json::Value::is_string)
+                        && property.get("enum").is_none_or(serde_json::Value::is_array)
+                })
+            })
+        })
+    })
+}
+
 fn top_level_argument_issue(
     value: &serde_json::Value,
     schema: &serde_json::Value,
@@ -1333,6 +1425,47 @@ fn top_level_argument_issue(
                 ));
             }
         }
+    }
+
+    if let Some(variants) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
+        if variants.is_empty() || !variants.iter().all(schema_branch_is_locally_decidable) {
+            return None;
+        }
+        let matching = variants
+            .iter()
+            .filter(|variant| object_matches_schema_branch(object, variant))
+            .count();
+        if matching == 1 {
+            return None;
+        }
+        if matching == 0 {
+            let property_candidates = variants
+                .iter()
+                .filter(|variant| object_matches_schema_properties(object, variant))
+                .collect::<Vec<_>>();
+            if property_candidates.len() == 1 {
+                let missing = schema_required_fields(property_candidates[0])
+                    .into_iter()
+                    .filter(|field| !object.contains_key(*field))
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Some((
+                        "missing_required_arguments",
+                        format!("Missing required tool argument(s): {}", missing.join(", ")),
+                    ));
+                }
+            }
+            return Some((
+                "invalid_arguments_shape",
+                "Tool arguments must match exactly one supported argument shape.".to_string(),
+            ));
+        }
+        return Some((
+            "invalid_arguments_shape",
+            format!(
+                "Tool arguments matched {matching} mutually exclusive argument shapes; expected exactly one."
+            ),
+        ));
     }
     None
 }
@@ -2068,6 +2201,69 @@ mod tests {
         assert_eq!(value["prompt"], "A legacy enhanced prompt");
         assert_eq!(value["prompt_extend"], true);
         assert!(value.get("promptExtend").is_none());
+    }
+
+    #[test]
+    fn browser_close_one_of_targets_are_validated_before_execution() {
+        let schema = browser_session_tool::BrowserSessionTool::default()
+            .definition()
+            .parameters;
+
+        for (arguments, missing) in [
+            (r#"{"action":"close_session"}"#, "sessionId"),
+            (r#"{"action":"close_tab","sessionId":"browser-1"}"#, "tabId"),
+        ] {
+            let (code, message) = normalize_tool_arguments("browser_session", arguments, &schema)
+                .expect_err("missing terminal targets must fail before tool execution");
+            assert_eq!(code, "missing_required_arguments");
+            assert!(message.contains(missing), "unexpected error: {message}");
+        }
+
+        for arguments in [
+            r#"{"action":"close_session","sessionId":"browser-1"}"#,
+            r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#,
+            r#"{"action":"observe","sessionId":"browser-1","wait_for_previous":true}"#,
+        ] {
+            normalize_tool_arguments("browser_session", arguments, &schema)
+                .expect("complete close targets and non-close calls must remain valid");
+        }
+
+        let (code, message) = normalize_tool_arguments(
+            "browser_session",
+            r#"{"action":"observe","wait_for_previous":true}"#,
+            &schema,
+        )
+        .expect_err("the headless browser runtime requires an explicit non-create session");
+        assert_eq!(code, "missing_required_arguments");
+        assert!(message.contains("sessionId"), "unexpected error: {message}");
+    }
+
+    #[test]
+    fn complex_remote_one_of_schemas_are_not_partially_evaluated() {
+        let constrained_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": "number" }
+            },
+            "oneOf": [
+                { "properties": { "n": { "type": "number", "minimum": 0 } } },
+                { "properties": { "n": { "type": "number", "maximum": -1 } } }
+            ]
+        });
+
+        normalize_tool_arguments("remote_mcp_tool", r#"{"n":2}"#, &constrained_schema)
+            .expect("unknown oneOf keywords must stay owned by the remote schema/runtime");
+
+        let union_type_schema = serde_json::json!({
+            "type": "object",
+            "properties": { "value": {} },
+            "oneOf": [
+                { "type": ["object", "null"] },
+                { "type": "object", "required": ["value"] }
+            ]
+        });
+        normalize_tool_arguments("remote_mcp_tool", r#"{"value":1}"#, &union_type_schema)
+            .expect("union branch types must remain owned by the remote schema/runtime");
     }
 
     #[test]

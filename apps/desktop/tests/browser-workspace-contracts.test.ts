@@ -163,6 +163,27 @@ test('last-tab cleanup failure exposes authoritative retry state instead of a fa
   );
 });
 
+test('browser close schemas expose their explicit terminal targets', () => {
+  const nativeTool = source('src-tauri/src/browser/agent_tool.rs');
+  const sharedTool = source('../../crates/core/src/tools/browser_session_tool.rs');
+
+  assert(
+    nativeTool.includes('browser_session_action_schema_variants')
+      && nativeTool.includes('&session_optional_actions')
+      && nativeTool.includes('!matches!(*action, "close_tab" | "close_session")'),
+    'the native Browser Workspace schema must reuse the terminal target contract',
+  );
+  assert(
+    sharedTool.includes('"properties": { "action": { "enum": session_required_actions } }')
+      && sharedTool.includes('"required": ["sessionId"]'),
+    'close_session must advertise its explicit sessionId requirement',
+  );
+  assert(
+    /"close_tab"[\s\S]*"required": \["sessionId", "tabId"\]/.test(sharedTool),
+    'close_tab must advertise its explicit sessionId and tabId requirements',
+  );
+});
+
 test('HTTP links have one in-app destination and the duplicate web preview is removed', () => {
   const preview = source('src/features/preview/FilePreviewProvider.tsx');
   const previewApi = source('src/lib/api.ts');
