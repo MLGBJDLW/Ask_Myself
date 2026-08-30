@@ -9,7 +9,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use crate::error::CoreError;
 
 /// Maximum image dimension (width or height) for LLM submission.
-const MAX_DIMENSION: u32 = 1568; // Anthropic's recommended max
+///
+/// Producers whose pixel coordinates are exposed to a model must use this
+/// same envelope before they publish coordinate metadata. Re-normalizing
+/// those images may change their encoding, but must not change their pixel
+/// dimensions.
+pub const MAX_LLM_IMAGE_DIMENSION: u32 = 1_568;
 /// JPEG quality for compressed images (0-100).
 const JPEG_QUALITY: u8 = 80;
 /// Maximum local image input before it is normalized to the shared 1568px,
@@ -58,10 +63,10 @@ pub fn prepare_image_for_llm(
     let (w, h) = (img.width(), img.height());
 
     // Resize if needed, preserving aspect ratio.
-    let img = if w > MAX_DIMENSION || h > MAX_DIMENSION {
+    let img = if w > MAX_LLM_IMAGE_DIMENSION || h > MAX_LLM_IMAGE_DIMENSION {
         img.resize(
-            MAX_DIMENSION,
-            MAX_DIMENSION,
+            MAX_LLM_IMAGE_DIMENSION,
+            MAX_LLM_IMAGE_DIMENSION,
             image::imageops::FilterType::Lanczos3,
         )
     } else {

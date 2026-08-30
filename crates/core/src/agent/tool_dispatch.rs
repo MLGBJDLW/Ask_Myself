@@ -1786,15 +1786,16 @@ mod visual_attachment_tests {
     }
 
     #[test]
-    fn large_valid_tool_screenshot_is_normalized_for_model_and_tool_card() {
+    fn coordinate_bearing_screenshot_is_reencoded_without_changing_model_pixel_dimensions() {
+        let edge = crate::media::MAX_LLM_IMAGE_DIMENSION;
         let mut seed = 0x1234_5678_u32;
-        let pixels = (0..(1_400 * 1_400 * 3))
+        let pixels = (0..(edge as usize * edge as usize * 3))
             .map(|_| {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 (seed >> 24) as u8
             })
             .collect::<Vec<_>>();
-        let image = image::RgbImage::from_raw(1_400, 1_400, pixels).expect("rgb image");
+        let image = image::RgbImage::from_raw(edge, edge, pixels).expect("rgb image");
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(image)
             .write_to(&mut encoded, image::ImageFormat::Png)
@@ -1810,9 +1811,19 @@ mod visual_attachment_tests {
         }]);
         assert_eq!(normalized.len(), 1);
         assert_eq!(normalized[0].mime_type, "image/jpeg");
-        assert!(normalized[0].data["base64"]
+        let normalized_base64 = normalized[0].data["base64"]
             .as_str()
-            .is_some_and(|data| data.len() <= MAX_EPHEMERAL_UI_IMAGE_BASE64_BYTES));
+            .expect("normalized screenshot bytes");
+        assert!(normalized_base64.len() <= MAX_EPHEMERAL_UI_IMAGE_BASE64_BYTES);
+        let normalized_bytes = STANDARD
+            .decode(normalized_base64)
+            .expect("normalized screenshot base64");
+        let normalized_image =
+            image::load_from_memory(&normalized_bytes).expect("normalized screenshot image");
+        assert_eq!(
+            (normalized_image.width(), normalized_image.height()),
+            (edge, edge)
+        );
         assert!(ephemeral_tool_visual_evidence("computer_observe", &normalized).is_some());
     }
 

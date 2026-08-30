@@ -2567,7 +2567,11 @@ mod platform {
         WaitOutcome, WindowSnapshot,
     };
 
-    const MAX_CAPTURE_EDGE: u32 = 1_600;
+    // Coordinate-bearing screenshots must already fit the same pixel envelope
+    // used by the model image normalizer. The dispatcher may re-encode a noisy
+    // PNG to bounded JPEG, but it must never resize pixels after observation
+    // metadata and the single-use control token have been published.
+    const MAX_CAPTURE_EDGE: u32 = crate::media::MAX_LLM_IMAGE_DIMENSION;
     const MAX_NATIVE_CAPTURE_PIXELS: u64 = 16_777_216;
     const MAX_SCREENSHOT_PNG_BYTES: usize = 12 * 1024 * 1024;
     const INPUT_SETTLE: Duration = Duration::from_millis(70);
@@ -5049,6 +5053,74 @@ mod platform {
     #[cfg(test)]
     mod native_input_tests {
         use super::*;
+
+        #[test]
+        fn captured_frames_fit_the_model_image_dimension_envelope() {
+            let image = RgbaImage::new(2_000, 1_000);
+            let (_png, image_width, image_height, native_width, native_height) =
+                resized_png(image).expect("bounded capture");
+
+            assert_eq!(MAX_CAPTURE_EDGE, crate::media::MAX_LLM_IMAGE_DIMENSION);
+            assert_eq!((native_width, native_height), (2_000, 1_000));
+            assert_eq!(
+                (image_width, image_height),
+                (
+                    crate::media::MAX_LLM_IMAGE_DIMENSION,
+                    crate::media::MAX_LLM_IMAGE_DIMENSION / 2,
+                )
+            );
+        }
+
+        #[test]
+        fn model_image_pixel_endpoints_map_to_native_window_endpoints() {
+            let model_width = crate::media::MAX_LLM_IMAGE_DIMENSION;
+            let model_height = model_width / 2;
+            let current = WindowSnapshot {
+                id: 42,
+                pid: 7,
+                process_started_at_100ns: 123,
+                executable_path_hash: "exe-hash".to_string(),
+                window_class: "EditorWindow".to_string(),
+                session_id: 1,
+                app_name: "Editor".to_string(),
+                title: "Document".to_string(),
+                x: 100,
+                y: 200,
+                width: model_width * 2,
+                height: model_height * 2,
+                minimized: false,
+                maximized: false,
+                focused: true,
+            };
+            let observed = ObservedWindow {
+                snapshot: current.clone(),
+                image_width: Some(model_width),
+                image_height: Some(model_height),
+                native_image_width: Some(current.width),
+                native_image_height: Some(current.height),
+                screenshot_signature: None,
+                screenshot_guard: None,
+                elements: Vec::new(),
+            };
+
+            let point = image_point(
+                Some(f64::from(model_width - 1)),
+                Some(f64::from(model_height - 1)),
+                CoordinateSpace::CapturedImagePixels,
+                &observed,
+                &current,
+                "click",
+            )
+            .expect("coordinate mapping");
+
+            assert_eq!(
+                point,
+                (
+                    current.x + current.width as i32 - 1,
+                    current.y + current.height as i32 - 1,
+                )
+            );
+        }
 
         #[test]
         fn text_input_normalizes_crlf_and_never_duplicates_control_characters() {
