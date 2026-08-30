@@ -1,4 +1,5 @@
 use super::*;
+use async_trait::async_trait;
 use nexa_core::agent_run::{AgentRunEventKind, AgentRunPhase};
 use nexa_core::app_settings::ShellAccessMode;
 use nexa_core::approval::{ApprovalRisk, ToolApprovalMode};
@@ -10,13 +11,85 @@ use nexa_core::llm::ProviderType;
 use nexa_core::run_event_outbox::{AgentRunEventDelivery, AgentRunEventOutboxes};
 use nexa_core::runtime::{ActiveAgentTurn, AgentTurnHandle};
 use nexa_core::sources::CreateSourceInput;
+use nexa_core::tools::{Tool, ToolExecutionContext, ToolResult};
 use nexa_core::workflow_automation::{
     SaveWorkflowAutomationInput, WorkflowAutomationApprovalPolicy, WorkflowAutomationTrigger,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
+const DESKTOP_DELEGATION_TOOL_NAMES: &[&str] = &[
+    "spawn_subagent",
+    "spawn_subagent_batch",
+    "judge_subagent_results",
+    "observe_subagent_batch",
+    "observe_subagent",
+    "wait_subagent",
+    "send_subagent_input",
+    "cancel_subagent",
+    "close_subagent",
+];
+
+fn desktop_delegation_tool_registry() -> ToolRegistry {
+    let runtime = DelegationRuntime::new(
+        ProviderConfig {
+            provider_type: ProviderType::OpenAi,
+            base_url: None,
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+            streaming: Default::default(),
+        },
+        AgentConfig::default(),
+        None,
+        None,
+        SubagentLifecycleRuntime::default(),
+        CancellationToken::new(),
+        None,
+        None,
+    );
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SubagentTool::from_runtime(runtime.clone())));
+    registry.register(Box::new(SubagentBatchTool::from_runtime(runtime.clone())));
+    registry.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+        runtime.clone(),
+    )));
+    registry.register(Box::new(ObserveSubagentBatchTool::from_runtime(
+        runtime.clone(),
+    )));
+    for lifecycle_tool in SubagentLifecycleTool::all(runtime) {
+        registry.register(Box::new(lifecycle_tool));
+    }
+    registry
+}
+
 struct BlockingStopDelivery {
     entered: Arc<AtomicBool>,
+}
+
+struct UnownedDesktopTestTool;
+
+#[async_trait]
+impl Tool for UnownedDesktopTestTool {
+    fn name(&self) -> &str {
+        "unowned_desktop_test_tool"
+    }
+
+    fn description(&self) -> &str {
+        "Injects a tool without a Package Host owner for registry policy tests."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, context: ToolExecutionContext<'_>) -> Result<ToolResult, CoreError> {
+        Ok(ToolResult {
+            call_id: context.call_id.to_string(),
+            content: "unexpected execution".to_string(),
+            is_error: false,
+            artifacts: None,
+        })
+    }
 }
 
 impl AgentRunEventDelivery for BlockingStopDelivery {
@@ -37,6 +110,93 @@ fn registry_health_requires_activity_runtime_core_tools() {
         missing_core_runtime_tools(&ToolRegistry::new()),
         REQUIRED_ACTIVITY_RUNTIME_TOOLS
     );
+}
+
+#[test]
+fn desktop_delegation_registry_has_one_package_owner_for_every_tool() {
+    let registry = desktop_delegation_tool_registry();
+    assert_eq!(
+        registry.tool_names(),
+        DESKTOP_DELEGATION_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>()
+    );
+
+    let capabilities = PackageRuntimeAssembler::from_host(&BuiltinPackageHost)
+        .expect("built-in package snapshot")
+        .assemble_tool_registry(registry)
+        .expect("desktop delegation tools must all have package owners");
+
+    for tool_name in DESKTOP_DELEGATION_TOOL_NAMES {
+        assert_eq!(
+            capabilities.tool_owners.get(*tool_name).map(String::as_str),
+            Some("delegation"),
+            "{tool_name} should be owned by the delegation package"
+        );
+    }
+}
+
+#[test]
+fn disabling_delegation_removes_every_delegation_tool_from_the_runtime_registry() {
+    let db = Database::open_memory().expect("in-memory database");
+    db.set_package_host_package_enabled("delegation", false)
+        .expect("disable delegation package");
+
+    let capabilities = PackageRuntimeAssembler::database_builtin(&db)
+        .and_then(|assembler| assembler.assemble_tool_registry(desktop_delegation_tool_registry()))
+        .expect("disabled delegation should filter a fully owned desktop registry");
+
+    for tool_name in DESKTOP_DELEGATION_TOOL_NAMES {
+        assert!(
+            !capabilities.tools.contains(tool_name),
+            "{tool_name} must not reach model or execution registries"
+        );
+        assert!(
+            capabilities
+                .excluded_tools
+                .iter()
+                .any(|excluded| excluded == tool_name),
+            "{tool_name} should be reported as excluded by Package Host"
+        );
+    }
+}
+
+#[test]
+fn unowned_tool_uses_the_previous_successful_package_projection_not_the_prefilter_registry() {
+    let assembler =
+        PackageRuntimeAssembler::from_host(&BuiltinPackageHost).expect("built-in package snapshot");
+    let known_good = canonical_builtin_tool_registry().filtered(&["run_shell".to_string()]);
+    let first = resolve_desktop_package_registry(
+        &known_good,
+        assembler.assemble_tool_registry(known_good.clone()),
+        Some("package-generation-a"),
+        None,
+    );
+    let last_known_good = first
+        .successful_snapshot
+        .as_ref()
+        .expect("successful package filtering should produce a reusable projection");
+
+    let mut current_prefilter = known_good;
+    current_prefilter.register(Box::new(UnownedDesktopTestTool));
+    let failed_assembly = assembler.assemble_tool_registry(current_prefilter.clone());
+    assert!(
+        failed_assembly.is_err(),
+        "the injected tool must be unowned"
+    );
+
+    let fallback = resolve_desktop_package_registry(
+        &current_prefilter,
+        failed_assembly,
+        Some("package-generation-a"),
+        Some(last_known_good),
+    );
+
+    assert!(fallback.used_last_known_good);
+    assert_eq!(fallback.tools.tool_names(), vec!["run_shell".to_string()]);
+    assert!(!fallback.tools.contains("unowned_desktop_test_tool"));
+    assert_ne!(fallback.tools.tool_names(), current_prefilter.tool_names());
 }
 
 #[test]

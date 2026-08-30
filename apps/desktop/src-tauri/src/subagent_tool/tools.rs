@@ -25,7 +25,6 @@ impl Tool for SubagentTool {
             conversation_id,
             turn_id,
             activity_runtime,
-            event_tx,
             ..
         } = context;
         let args: SpawnSubagentArgs = serde_json::from_str(arguments).map_err(|e| {
@@ -44,7 +43,6 @@ impl Tool for SubagentTool {
             task_run_id: self.runtime.parent_task_run_id.clone(),
             cancel_token: self.runtime.cancel_token.child_token(),
             activity_runtime: activity_runtime.cloned().unwrap_or_default(),
-            event_tx: event_tx.map(|sender| sender.downgrade()),
         })?;
         if let Err(error) = launch_detached_subagent(
             self.runtime.clone(),
@@ -117,7 +115,6 @@ impl Tool for SubagentBatchTool {
             conversation_id,
             turn_id,
             activity_runtime,
-            event_tx,
             ..
         } = context;
         let mut args: SpawnSubagentBatchArgs = serde_json::from_str(arguments).map_err(|e| {
@@ -189,7 +186,6 @@ impl Tool for SubagentBatchTool {
         let parent_conversation_id = conversation_id.map(str::to_string);
         let parent_turn_id = turn_id.map(str::to_string);
         let activity_runtime = activity_runtime.cloned().unwrap_or_default();
-        let event_tx = event_tx.map(|sender| sender.downgrade());
         let batch_parallel_group = parallel_group.clone();
         let worker_count = normalized_tasks.len();
         let batch_id = format!(
@@ -234,7 +230,6 @@ impl Tool for SubagentBatchTool {
                 task_run_id: self.runtime.parent_task_run_id.clone(),
                 cancel_token: worker_cancel,
                 activity_runtime: activity_runtime.clone(),
-                event_tx: event_tx.clone(),
             })?;
             lifecycle_workers.push(serde_json::json!({
                 "agentId": &lifecycle_agent_id,

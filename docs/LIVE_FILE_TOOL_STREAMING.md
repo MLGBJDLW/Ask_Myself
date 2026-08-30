@@ -176,6 +176,4 @@ dropped.
 
 ## Prompt ownership
 
-The active runtime prompt is composed from the core kernel, route scaffolding, skills, and enabled tool definitions. Long-write instructions belong in the `create_file` tool definition because that schema is injected only when the capability is available and stays synchronized with executable parameters.
-
-The older standalone `crates/core/prompts/system.md` contains broader historical routing text and is not the default prompt kernel. Treat differences there as prompt-documentation drift rather than relying on it to define executable file-tool behavior.
+The active runtime prompt is composed from the core kernel, authoritative turn-capability requirements, route scaffolding, skills, and enabled tool definitions. Long-write instructions belong in the `create_file` tool definition because that schema is injected only when the capability is available and stays synchronized with executable parameters. Do not add a second standalone prompt copy: executable routing and completion rules must remain beside the runtime policy that enforces them.

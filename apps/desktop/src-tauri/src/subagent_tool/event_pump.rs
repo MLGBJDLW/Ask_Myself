@@ -217,60 +217,6 @@ impl SubagentEventPump {
                 last_delta_flush = Instant::now();
             }
             match event {
-                AgentEvent::ToolCallStart {
-                    call_id,
-                    tool_name,
-                    arguments,
-                } => {
-                    let capture_detail = serde_json::json!({
-                        "phase": "start",
-                        "callId": &call_id,
-                        "toolName": &tool_name,
-                        "arguments": &arguments,
-                    });
-                    capture.tool_events.push(capture_detail);
-                    emit_subagent_lifecycle_event(
-                        lifecycle_capture.as_ref(),
-                        SubagentLifecycleEventKind::ToolStarted,
-                        serde_json::json!({
-                            "phase": "start",
-                            "callId": call_id,
-                            "toolName": tool_name,
-                            "argsBytes": arguments.len(),
-                        }),
-                    )
-                    .await;
-                }
-                AgentEvent::ToolCallResult {
-                    call_id,
-                    tool_name,
-                    content,
-                    is_error,
-                    artifacts,
-                } => {
-                    let capture_detail = serde_json::json!({
-                        "phase": "result",
-                        "callId": &call_id,
-                        "toolName": &tool_name,
-                        "content": &content,
-                        "isError": is_error,
-                        "artifacts": &artifacts,
-                    });
-                    capture.tool_events.push(capture_detail);
-                    emit_subagent_lifecycle_event(
-                        lifecycle_capture.as_ref(),
-                        SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({
-                            "phase": "result",
-                            "callId": call_id,
-                            "toolName": tool_name,
-                            "contentBytes": content.len(),
-                            "isError": is_error,
-                            "hasArtifacts": artifacts.is_some(),
-                        }),
-                    )
-                    .await;
-                }
                 AgentEvent::Thinking { content } => {
                     if !content.trim().is_empty() {
                         pending_thinking.push_str(&content);
@@ -384,83 +330,32 @@ impl SubagentEventPump {
                     pending_output.push_str(&delta);
                 }
                 AgentEvent::ToolRunStarted { run } => {
+                    let detail = serde_json::json!({ "phase": "runStarted", "run": run });
+                    capture.tool_events.push(detail.clone());
                     emit_subagent_lifecycle_event(
                         lifecycle_capture.as_ref(),
                         SubagentLifecycleEventKind::ToolStarted,
-                        serde_json::json!({ "phase": "runStarted", "run": run }),
+                        detail,
                     )
                     .await;
                 }
                 AgentEvent::ToolRunUpdated { run } => {
+                    let detail = serde_json::json!({ "phase": "runUpdated", "run": run });
+                    capture.tool_events.push(detail.clone());
                     emit_subagent_lifecycle_event(
                         lifecycle_capture.as_ref(),
                         SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({ "phase": "runUpdated", "run": run }),
+                        detail,
                     )
                     .await;
                 }
                 AgentEvent::ToolRunCompleted { run } => {
+                    let detail = serde_json::json!({ "phase": "runCompleted", "run": run });
+                    capture.tool_events.push(detail.clone());
                     emit_subagent_lifecycle_event(
                         lifecycle_capture.as_ref(),
                         SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({ "phase": "runCompleted", "run": run }),
-                    )
-                    .await;
-                }
-                AgentEvent::ToolCallPreparing {
-                    call_id,
-                    tool_name,
-                    args_bytes,
-                    index,
-                } => {
-                    emit_subagent_lifecycle_event(
-                        lifecycle_capture.as_ref(),
-                        SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({
-                            "phase": "toolPreparing",
-                            "callId": call_id,
-                            "toolName": tool_name,
-                            "argsBytes": args_bytes,
-                            "index": index,
-                        }),
-                    )
-                    .await;
-                }
-                AgentEvent::ToolCallArgsDelta {
-                    call_id,
-                    tool_name,
-                    arguments_delta,
-                    index,
-                } => {
-                    emit_subagent_lifecycle_event(
-                        lifecycle_capture.as_ref(),
-                        SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({
-                            "phase": "toolArgsDelta",
-                            "callId": call_id,
-                            "toolName": tool_name,
-                            "argsBytes": arguments_delta.len(),
-                            "index": index,
-                        }),
-                    )
-                    .await;
-                }
-                AgentEvent::ToolCallProgress {
-                    call_id,
-                    tool_name,
-                    note,
-                    activity,
-                } => {
-                    emit_subagent_lifecycle_event(
-                        lifecycle_capture.as_ref(),
-                        SubagentLifecycleEventKind::Progress,
-                        serde_json::json!({
-                            "phase": "toolProgress",
-                            "callId": call_id,
-                            "toolName": tool_name,
-                            "note": note,
-                            "activity": activity,
-                        }),
+                        detail,
                     )
                     .await;
                 }
@@ -484,6 +379,11 @@ impl SubagentEventPump {
                 AgentEvent::StreamBlockDelta { .. }
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::AutoCompacted { .. }
+                | AgentEvent::ToolCallPreparing { .. }
+                | AgentEvent::ToolCallArgsDelta { .. }
+                | AgentEvent::ToolCallStart { .. }
+                | AgentEvent::ToolCallProgress { .. }
+                | AgentEvent::ToolCallResult { .. }
                 | AgentEvent::ApprovalRequested { .. }
                 | AgentEvent::ApprovalResolved { .. }
                 | AgentEvent::ControllerStatus { .. }
