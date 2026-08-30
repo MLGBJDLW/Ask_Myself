@@ -400,6 +400,11 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const bodyText = document.body?.innerText.slice(0, 30000) || '';
     return `v2|${location.href}|${scrollX}|${scrollY}|${markupLength}|${hashText(bodyText)}|${hashText(interactiveState)}`;
   };
+  const actionVerificationBaseline = () => ({
+    url: location.href,
+    userEpoch: runtime.userEpoch,
+    domFingerprint: domFingerprintOf(),
+  });
   runtime.observe = () => {
     runtime.observationSeq += 1;
     runtime.refs = new Map();
@@ -611,7 +616,10 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     if (!hit || (hit !== el && !el.contains(hit))) {
       throw new Error('Browser pointer target is covered by another element');
     }
-    return { bounds: viewportBoundsOf(el) };
+    return {
+      bounds: viewportBoundsOf(el),
+      verificationBaseline: actionVerificationBaseline(),
+    };
   };
   runtime.prepareTrustedText = (input) => {
     const { el } = validateAction(input);
@@ -632,14 +640,20 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       selection?.removeAllRanges();
       selection?.addRange(range);
     }
-    return { focused: ownerDocument.activeElement === el };
+    return {
+      focused: ownerDocument.activeElement === el,
+      verificationBaseline: actionVerificationBaseline(),
+    };
   };
   runtime.prepareTrustedKey = (input) => {
     const { el } = validateAction(input);
     const ownerDocument = el?.ownerDocument || document;
     const target = el || ownerDocument.activeElement || ownerDocument.body;
     target?.focus?.();
-    return { focused: ownerDocument.activeElement === target };
+    return {
+      focused: ownerDocument.activeElement === target,
+      verificationBaseline: actionVerificationBaseline(),
+    };
   };
   runtime.act = (input) => {
     const { el, end } = validateAction(input);

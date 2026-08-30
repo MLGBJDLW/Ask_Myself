@@ -135,6 +135,34 @@ test('Agent pointer preparation scrolls targets into view and rejects covered el
     .rejects.toThrow(/covered by another element/);
 });
 
+test('pointer preparation establishes the post-scroll baseline for noop effect verification', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.setContent('<!doctype html><button id="target" style="margin-top:1800px">Far target</button>');
+  await page.addScriptTag({ content: runtimeSource });
+
+  const beforePreparation = await observe(page);
+  const targetRef = beforePreparation.elements.find(element => element.name === 'Far target')!.ref;
+  const prepared = await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareNativePointer(value), actionInput(beforePreparation, 'hover', targetRef));
+  const afterPreparation = await observe(page);
+
+  expect(afterPreparation.domFingerprint).not.toBe(beforePreparation.domFingerprint);
+  expect(prepared.verificationBaseline).toEqual({
+    url: afterPreparation.url,
+    domFingerprint: afterPreparation.domFingerprint,
+    userEpoch: afterPreparation.userEpoch,
+  });
+
+  const bounds = await page.locator('#target').boundingBox();
+  if (!bounds) throw new Error('Expected prepared browser target bounds');
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.locator('#target').evaluate(element => (element as HTMLButtonElement).click());
+  const afterNoopActions = await observe(page);
+
+  expect(snapshotChanged(prepared.verificationBaseline, afterNoopActions)).toBe(false);
+});
+
 test('same-length interactive attribute changes invalidate an observation', async ({ page }) => {
   await page.setContent('<!doctype html><a id="target" href="https://example.com/a">Open details</a>');
   await page.addScriptTag({ content: runtimeSource });
@@ -347,9 +375,16 @@ interface BrowserElement {
 }
 
 interface BrowserObservation {
+  url: string;
   userEpoch: number;
   domFingerprint: string;
   elements: BrowserElement[];
+}
+
+interface BrowserVerificationBaseline {
+  url: string;
+  userEpoch: number;
+  domFingerprint: string;
 }
 
 interface BrowserActionInput {
@@ -367,11 +402,29 @@ interface BrowserActionInput {
 interface BrowserBridge {
   observe(): BrowserObservation;
   previewAction(input: BrowserActionInput): { durationMs: number };
-  prepareNativePointer(input: BrowserActionInput): { bounds: { x: number; y: number; width: number; height: number } };
-  prepareTrustedText(input: BrowserActionInput): { focused: boolean };
-  prepareTrustedKey(input: BrowserActionInput): { focused: boolean };
+  prepareNativePointer(input: BrowserActionInput): {
+    bounds: { x: number; y: number; width: number; height: number };
+    verificationBaseline: BrowserVerificationBaseline;
+  };
+  prepareTrustedText(input: BrowserActionInput): {
+    focused: boolean;
+    verificationBaseline: BrowserVerificationBaseline;
+  };
+  prepareTrustedKey(input: BrowserActionInput): {
+    focused: boolean;
+    verificationBaseline: BrowserVerificationBaseline;
+  };
   act(input: BrowserActionInput): boolean;
   invalidateForUserTakeover(): void;
+}
+
+function snapshotChanged(
+  before: BrowserVerificationBaseline,
+  after: BrowserObservation,
+): boolean {
+  return before.url !== after.url
+    || before.domFingerprint !== after.domFingerprint
+    || before.userEpoch !== after.userEpoch;
 }
 
 interface TrustedInputGuard {

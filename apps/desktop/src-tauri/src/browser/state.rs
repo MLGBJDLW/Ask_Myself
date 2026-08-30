@@ -152,6 +152,27 @@ struct StoredObservation {
     claimed_for_action: bool,
 }
 
+/// Page signature captured after preparation side effects and before the
+/// agent's committed input. Settle must never compare against the older
+/// claimed observation when preparation can scroll or focus the page.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionVerificationBaseline {
+    url: String,
+    dom_fingerprint: String,
+    user_epoch: u64,
+}
+
+impl StoredObservation {
+    fn verification_baseline(&self) -> ActionVerificationBaseline {
+        ActionVerificationBaseline {
+            url: self.url.clone(),
+            dom_fingerprint: self.dom_fingerprint.clone(),
+            user_epoch: self.user_epoch,
+        }
+    }
+}
+
 pub type BrowserTabInfo = CoreBrowserTab;
 pub type BrowserSessionInfo = CoreBrowserSession;
 
@@ -1802,6 +1823,8 @@ impl BrowserState {
                 .map_err(|error| {
                     format!("Browser pointer preparation returned invalid bounds: {error}")
                 })?;
+            let verification_baseline =
+                action_verification_baseline_from_preparation(&prepared, "pointer")?;
             self.require_visible_focused_host_window()?;
             self.move_native_pointer_to_target(
                 request.session_id,
@@ -1818,7 +1841,7 @@ impl BrowserState {
                     request.session_id,
                     request.tab_id,
                     request.call_id,
-                    &observation,
+                    &verification_baseline,
                 )
                 .await?;
             let fresh_observation = self
@@ -1874,7 +1897,7 @@ impl BrowserState {
         );
         #[cfg(windows)]
         if matches!(request.action, "click" | "double_click" | "type" | "press") {
-            if let Err(error) = self
+            let verification_baseline = match self
                 .commit_trusted_webview_action(
                     &request,
                     &observation,
@@ -1884,22 +1907,25 @@ impl BrowserState {
                 )
                 .await
             {
-                if let Some((target, form_navigation)) = navigation_approval.as_ref() {
-                    self.revoke_agent_action_url(
-                        request.session_id,
-                        request.tab_id,
-                        target,
-                        *form_navigation,
-                    );
+                Ok(verification_baseline) => verification_baseline,
+                Err(error) => {
+                    if let Some((target, form_navigation)) = navigation_approval.as_ref() {
+                        self.revoke_agent_action_url(
+                            request.session_id,
+                            request.tab_id,
+                            target,
+                            *form_navigation,
+                        );
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
             let effect_observed = self
                 .settle_after_agent_action(
                     request.session_id,
                     request.tab_id,
                     request.call_id,
-                    &observation,
+                    &verification_baseline,
                 )
                 .await?;
             let fresh_observation = self
@@ -1960,7 +1986,7 @@ impl BrowserState {
                 request.session_id,
                 request.tab_id,
                 request.call_id,
-                &observation,
+                &observation.verification_baseline(),
             )
             .await?;
         let fresh_observation = self
@@ -1992,7 +2018,7 @@ impl BrowserState {
         expected: Option<&BrowserElement>,
         action_input: &str,
         commit_tracker: &BrowserActCommitTracker,
-    ) -> Result<(), String> {
+    ) -> Result<ActionVerificationBaseline, String> {
         let (preparation_method, preparation_label) = match request.action {
             "click" | "double_click" => ("prepareNativePointer", "pointer"),
             "type" => ("prepareTrustedText", "text"),
@@ -2015,6 +2041,8 @@ impl BrowserState {
         let prepared = preparation.resolve().await.map_err(|error| {
             format!("Trusted browser {preparation_label} preparation failed: {error}")
         })?;
+        let verification_baseline =
+            action_verification_baseline_from_preparation(&prepared, preparation_label)?;
         let pointer_bounds = if matches!(request.action, "click" | "double_click") {
             Some(
                 serde_json::from_value::<BrowserElementBounds>(
@@ -2134,7 +2162,7 @@ impl BrowserState {
         };
         let disarm_result = armed_guard.disarm().await;
         match (dispatch_result, disarm_result) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Ok(())) => Ok(verification_baseline),
             (Err(dispatch_error), Ok(())) => Err(format!(
                 "Trusted browser {} dispatch failed at its commit boundary; effect is uncertain and a fresh observation is required: {dispatch_error}",
                 request.action
@@ -2155,7 +2183,7 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         call_id: &str,
-        before: &StoredObservation,
+        before: &ActionVerificationBaseline,
     ) -> Result<bool, String> {
         const SETTLE_LIMIT: Duration = Duration::from_millis(1_500);
         const CHANGE_QUIET_WINDOW: Duration = Duration::from_millis(150);
@@ -2809,6 +2837,23 @@ pub(super) fn visibility_request_is_satisfied(
     incoming_revision: u64,
 ) -> bool {
     visible && outstanding_request.is_some_and(|required| incoming_revision >= required)
+}
+
+fn action_verification_baseline_from_preparation(
+    prepared: &serde_json::Value,
+    preparation_label: &str,
+) -> Result<ActionVerificationBaseline, String> {
+    serde_json::from_value(
+        prepared
+            .get("verificationBaseline")
+            .cloned()
+            .ok_or_else(|| {
+                format!("Browser {preparation_label} preparation returned no verification baseline")
+            })?,
+    )
+    .map_err(|error| {
+        format!("Browser {preparation_label} preparation returned an invalid baseline: {error}")
+    })
 }
 
 pub(super) fn action_snapshot_changed(
