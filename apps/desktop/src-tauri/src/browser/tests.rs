@@ -11,9 +11,11 @@ use super::state::{
     accept_visibility_revision, action_snapshot_changed, agent_tab_surface_is_valid,
     browser_history_target_expression, browser_host_window_allows_agent_action,
     browser_tab_open_allowed, browser_target_screen_point, dispatch_browser_navigation,
-    next_visibility_request_revision, trusted_action_budget, visibility_request_is_satisfied,
-    with_agent_navigation_approval, BrowserActCommitTracker, BrowserActFailurePhase,
-    BrowserControlOwner, BrowserHistoryDirection, ControlLease,
+    dispatch_terminal_browser_mutation, next_active_tab_for_terminal_close,
+    next_visibility_request_revision, trusted_action_budget, validated_temporary_profile_dir,
+    visibility_request_is_satisfied, with_agent_navigation_approval, BrowserActCommitTracker,
+    BrowserActFailurePhase, BrowserControlOwner, BrowserHistoryDirection, BrowserSessionPhase,
+    ControlLease,
 };
 use super::webview_host::TrustedInputEventBudget;
 use nexa_core::browser_runtime::{
@@ -248,6 +250,76 @@ fn agent_navigation_commit_tracker_changes_only_after_successful_webview_dispatc
     let committed_tracker = BrowserActCommitTracker::default();
     dispatch_browser_navigation(Some(&committed_tracker), || Ok(())).unwrap();
     assert!(committed_tracker.effect_may_have_occurred());
+}
+
+#[test]
+fn terminal_browser_dispatch_marks_uncertainty_before_native_close_returns() {
+    let tracker = BrowserActCommitTracker::default();
+    let rejected: Result<(), String> = dispatch_terminal_browser_mutation(Some(&tracker), || {
+        Err("native close returned an error after dispatch".to_string())
+    });
+
+    assert!(rejected.is_err());
+    assert_eq!(
+        tracker.failure("close failed".to_string()).phase,
+        BrowserActFailurePhase::EffectMayHaveOccurred
+    );
+}
+
+#[test]
+fn terminal_session_close_follows_the_active_tab_across_three_tabs() {
+    let mut remaining = vec![
+        "tab-a".to_string(),
+        "tab-b".to_string(),
+        "tab-c".to_string(),
+    ];
+    let mut active = Some("tab-b".to_string());
+    let mut close_order = Vec::new();
+
+    loop {
+        let next = next_active_tab_for_terminal_close(active.as_deref(), &remaining)
+            .expect("active tab state must remain closable");
+        let Some(next) = next else {
+            break;
+        };
+        close_order.push(next.clone());
+        remaining.retain(|tab_id| tab_id != &next);
+        active = remaining.first().cloned();
+    }
+
+    assert_eq!(close_order, vec!["tab-b", "tab-a", "tab-c"]);
+    assert!(remaining.is_empty());
+    assert!(next_active_tab_for_terminal_close(Some("stale"), &remaining).is_err());
+}
+
+#[test]
+fn temporary_profile_cleanup_path_cannot_escape_its_absolute_root() {
+    let root = std::env::temp_dir().join("nexa-browser-profile-root");
+    assert_eq!(
+        validated_temporary_profile_dir(&root, "profile-123").unwrap(),
+        root.join("profile-123")
+    );
+    for profile_id in ["../escape", "nested/profile", "/absolute", ""] {
+        assert!(
+            validated_temporary_profile_dir(&root, profile_id).is_err(),
+            "unsafe profile id must be rejected: {profile_id}"
+        );
+    }
+}
+
+#[test]
+fn terminal_close_phase_excludes_in_flight_and_new_tab_opening() {
+    assert!(BrowserSessionPhase::Active.accepts_new_tabs());
+    assert!(BrowserSessionPhase::Active.begin_close(1).is_err());
+
+    let closing = BrowserSessionPhase::Active.begin_close(0).unwrap();
+    assert_eq!(closing, BrowserSessionPhase::Closing);
+    assert!(!closing.accepts_new_tabs());
+    assert!(!BrowserSessionPhase::CleanupPending.accepts_new_tabs());
+    assert_eq!(
+        BrowserSessionPhase::CleanupPending.begin_close(0).unwrap(),
+        BrowserSessionPhase::Closing
+    );
 }
 
 #[test]

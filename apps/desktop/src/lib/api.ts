@@ -458,6 +458,7 @@ export interface BrowserSessionInfo {
   tabs: BrowserTabInfo[];
   controlOwner: BrowserControlOwner;
   workspaceVisible: boolean;
+  cleanupPending: boolean;
   visibilityRevision: number;
   visibilityRequested: boolean;
   visibilityRequestRevision?: number | null;

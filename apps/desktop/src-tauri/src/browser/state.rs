@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -25,10 +25,10 @@ use super::policy::{
 };
 use super::scripts::OBSERVE_EXPRESSION;
 use super::webview_host::{
-    capture_webview_png, create_child_webview, dispatch_eval_json, dispatch_trusted_key,
+    capture_webview_image, create_child_webview, dispatch_eval_json, dispatch_trusted_key,
     dispatch_trusted_pointer_click, eval_json, insert_trusted_text, trusted_key_input_match,
-    BrowserChildWebview, BrowserTrustedInputGuard, PendingEvalJson, TrustedInputEventBudget,
-    TrustedInputMatch,
+    BrowserCapturePlan, BrowserChildWebview, BrowserSurfaceFlight, BrowserSurfaceGate,
+    BrowserTrustedInputGuard, PendingEvalJson, TrustedInputEventBudget, TrustedInputMatch,
 };
 
 pub const BROWSER_EVENT: &str = "browser:event";
@@ -190,6 +190,29 @@ struct BrowserTab {
     trusted_input_guard: BrowserTrustedInputGuard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BrowserSessionPhase {
+    Active,
+    Closing,
+    CleanupPending,
+}
+
+impl BrowserSessionPhase {
+    pub(super) fn accepts_new_tabs(self) -> bool {
+        self == Self::Active
+    }
+
+    pub(super) fn begin_close(self, opening_tabs: usize) -> Result<Self, String> {
+        if opening_tabs != 0 {
+            return Err(
+                "A browser tab is still opening; wait for it to finish before closing the session"
+                    .to_string(),
+            );
+        }
+        Ok(Self::Closing)
+    }
+}
+
 struct BrowserSession {
     id: String,
     conversation_id: Option<String>,
@@ -205,6 +228,8 @@ struct BrowserSession {
     visibility_requested: bool,
     visibility_request_revision: Option<u64>,
     opening_tabs: usize,
+    phase: BrowserSessionPhase,
+    surface_gate: BrowserSurfaceGate,
 }
 
 struct BrowserRuntimeState {
@@ -460,6 +485,19 @@ impl BrowserState {
         };
         if let Some(conversation_id) = conversation_id.as_deref() {
             if let Some(existing) = self.active_session(conversation_id)? {
+                let accepts_new_tabs = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Browser runtime is unavailable".to_string())?
+                    .sessions
+                    .get(&existing.id)
+                    .is_some_and(|session| session.phase.accepts_new_tabs());
+                if !accepts_new_tabs {
+                    return Err(
+                        "Browser session is closing or awaiting cleanup; retry close_session before creating or opening another tab"
+                            .to_string(),
+                    );
+                }
                 if open_initial_url_on_reuse {
                     if let Some(initial_url) = initial_url {
                         self.open_tab(&existing.id, initial_url, actor, bounds)
@@ -516,6 +554,8 @@ impl BrowserState {
                     visibility_requested: false,
                     visibility_request_revision: None,
                     opening_tabs: 0,
+                    phase: BrowserSessionPhase::Active,
+                    surface_gate: BrowserSurfaceGate::default(),
                 },
             );
         }
@@ -566,6 +606,22 @@ impl BrowserState {
         } else {
             normalize_browser_url(input, actor)?
         };
+        {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if !session.phase.accepts_new_tabs() {
+                return Err(
+                    "Browser session is closing; retry close_session before opening another tab"
+                        .to_string(),
+                );
+            }
+        }
         if actor != NavigationActor::Agent {
             self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
@@ -578,6 +634,12 @@ impl BrowserState {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            if !session.phase.accepts_new_tabs() {
+                return Err(
+                    "Browser session is closing; retry close_session before opening another tab"
+                        .to_string(),
+                );
+            }
             if actor == NavigationActor::Agent
                 && matches!(session.control_lease.owner(), BrowserControlOwner::User)
             {
@@ -1002,7 +1064,7 @@ impl BrowserState {
         Ok(info)
     }
 
-    pub fn set_bounds(
+    pub async fn set_bounds(
         &self,
         session_id: &str,
         bounds: BrowserBounds,
@@ -1010,6 +1072,19 @@ impl BrowserState {
         visibility_revision: u64,
     ) -> Result<(), String> {
         let bounds = bounds.sanitized();
+        let surface_gate = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?
+                .surface_gate
+                .clone()
+        };
+        let _surface_flight = surface_gate.acquire().await?;
         let mut runtime = self
             .inner
             .lock()
@@ -1488,6 +1563,7 @@ impl BrowserState {
         self.acquire_agent_control(session_id, call_id)?;
         self.wait_until_workspace_visible(session_id, tab_id)
             .await?;
+        self.require_visible_focused_host_window()?;
         let lease_generation = self.agent_lease_generation(session_id, tab_id, call_id)?;
         let webview = self.webview(session_id, tab_id)?;
         let current_url = webview
@@ -1519,17 +1595,18 @@ impl BrowserState {
         self.prepare_agent_network_access(session_id, tab_id, &snapshot_url)
             .await?;
         self.revalidate_agent_lease(session_id, tab_id, call_id, lease_generation)?;
-        let screenshot = capture_webview_png(&webview).await?.map(|capture| {
-            let content_hash = blake3::hash(&capture.png_bytes).to_hex().to_string();
-            BrowserScreenshot {
-                mime_type: "image/png".to_string(),
-                content_hash,
-                width: capture.width,
-                height: capture.height,
-                byte_length: capture.png_bytes.len(),
-                png_bytes: capture.png_bytes,
-            }
-        });
+        self.require_visible_focused_host_window()?;
+        let (capture_plan, surface_flight) = self.capture_context(session_id, tab_id)?;
+        let capture = capture_webview_image(&webview, capture_plan, surface_flight).await?;
+        self.require_visible_focused_host_window()?;
+        let screenshot = BrowserScreenshot {
+            mime_type: capture.mime_type,
+            content_hash: blake3::hash(&capture.image_bytes).to_hex().to_string(),
+            width: capture.width,
+            height: capture.height,
+            byte_length: capture.image_bytes.len(),
+            image_bytes: capture.image_bytes,
+        };
         self.revalidate_agent_lease(session_id, tab_id, call_id, lease_generation)?;
         let confirmation: BrowserPageSnapshot =
             serde_json::from_value(eval_json(&webview, OBSERVE_EXPRESSION).await.map_err(
@@ -1545,6 +1622,7 @@ impl BrowserState {
                     .to_string(),
             );
         }
+        self.require_visible_focused_host_window()?;
         self.revalidate_agent_lease(session_id, tab_id, call_id, lease_generation)?;
         let content_hash = blake3::hash(snapshot.dom_fingerprint.as_bytes())
             .to_hex()
@@ -1617,7 +1695,7 @@ impl BrowserState {
             elements: snapshot.elements.clone(),
             accessibility_tree: snapshot.elements,
             control_owner: owner,
-            screenshot,
+            screenshot: Some(screenshot),
         })
     }
 
@@ -2350,7 +2428,7 @@ impl BrowserState {
     }
 
     pub fn close_tab(&self, session_id: &str, tab_id: &str) -> Result<BrowserSessionInfo, String> {
-        self.close_tab_checked(session_id, tab_id, None)
+        self.close_tab_checked(session_id, tab_id, None, None)
     }
 
     pub fn close_tab_as_agent(
@@ -2358,8 +2436,9 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
     ) -> Result<BrowserSessionInfo, String> {
-        self.close_tab_checked(session_id, tab_id, Some(call_id))
+        self.close_tab_checked(session_id, tab_id, Some(call_id), Some(commit_tracker))
     }
 
     fn close_tab_checked(
@@ -2367,6 +2446,7 @@ impl BrowserState {
         session_id: &str,
         tab_id: &str,
         agent_call_id: Option<&str>,
+        commit_tracker: Option<&BrowserActCommitTracker>,
     ) -> Result<BrowserSessionInfo, String> {
         let mut runtime = self
             .inner
@@ -2389,10 +2469,19 @@ impl BrowserState {
         }
         let tab = session
             .tabs
-            .remove(tab_id)
+            .get(tab_id)
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
+        dispatch_terminal_browser_mutation(commit_tracker, || {
+            tab.webview
+                .close()
+                .map_err(|error| format!("Could not close browser tab: {error}"))
+        })?;
+        let tab = session
+            .tabs
+            .remove(tab_id)
+            .expect("successfully closed browser tab must remain registered until commit");
         tab.network_proxy.shutdown();
-        let _ = tab.webview.close();
+        let mut show_result = Ok(());
         if session.active_tab_id.as_deref() == Some(tab_id) {
             session.active_tab_id = session.tabs.keys().next().cloned();
             if let Some(active) = session
@@ -2401,7 +2490,10 @@ impl BrowserState {
                 .and_then(|id| session.tabs.get(id))
             {
                 if session.workspace_visible {
-                    let _ = active.webview.show();
+                    show_result = active
+                        .webview
+                        .show()
+                        .map_err(|error| format!("Could not show the next browser tab: {error}"));
                 }
             }
         }
@@ -2414,6 +2506,7 @@ impl BrowserState {
             "tabClosed",
             serde_json::json!({ "sessionId": session_id, "tabId": tab_id }),
         );
+        show_result?;
         Ok(info)
     }
 
@@ -2421,58 +2514,221 @@ impl BrowserState {
         self.close_session_checked(session_id, None)
     }
 
-    pub fn close_session_as_agent(&self, session_id: &str, call_id: &str) -> Result<(), String> {
-        self.close_session_checked(session_id, Some(call_id))
+    pub fn close_session_as_agent(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
+    ) -> Result<(), String> {
+        self.close_session_checked(session_id, Some((call_id, commit_tracker)))
     }
 
     fn close_session_checked(
         &self,
         session_id: &str,
-        agent_call_id: Option<&str>,
+        agent_context: Option<(&str, &BrowserActCommitTracker)>,
     ) -> Result<(), String> {
-        let session = {
-            let mut runtime = self
-                .inner
-                .lock()
-                .map_err(|_| "Browser runtime is unavailable".to_string())?;
-            let session = runtime
-                .sessions
-                .get(session_id)
-                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
-            if agent_call_id.is_some_and(|call_id| {
-                !matches!(
+        if let Some((call_id, commit_tracker)) = agent_context {
+            return self.close_session_for_agent(session_id, call_id, commit_tracker);
+        }
+        self.close_session_for_user(session_id)
+    }
+
+    fn close_session_for_user(&self, session_id: &str) -> Result<(), String> {
+        self.begin_session_close(session_id, None, None)?;
+        loop {
+            let active_tab_id = {
+                let runtime = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Browser runtime is unavailable".to_string())?;
+                let session = runtime
+                    .sessions
+                    .get(session_id)
+                    .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+                let tab_ids = session.tabs.keys().cloned().collect::<Vec<_>>();
+                let active_tab_id =
+                    next_active_tab_for_terminal_close(session.active_tab_id.as_deref(), &tab_ids)?;
+                if session.temporary_profile {
+                    if let Some(active_tab_id) = active_tab_id.as_deref() {
+                        let tab = session
+                            .tabs
+                            .get(active_tab_id)
+                            .expect("validated active browser tab must remain registered");
+                        tab.webview.clear_all_browsing_data().map_err(|error| {
+                            format!(
+                                "Could not clear temporary browser data before closing: {error}"
+                            )
+                        })?;
+                    }
+                }
+                active_tab_id
+            };
+            let Some(tab_id) = active_tab_id else {
+                break;
+            };
+            self.close_tab_checked(session_id, &tab_id, None, None)?;
+        }
+        self.finalize_empty_session_close(session_id, None, None)
+    }
+
+    fn close_session_for_agent(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        commit_tracker: &BrowserActCommitTracker,
+    ) -> Result<(), String> {
+        let temporary_profile =
+            self.begin_session_close(session_id, Some(call_id), Some(commit_tracker))?;
+
+        loop {
+            let active_tab_id = {
+                let runtime = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "Browser runtime is unavailable".to_string())?;
+                let session = runtime
+                    .sessions
+                    .get(session_id)
+                    .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+                if !matches!(
                     session.control_lease.owner(),
                     BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
-                )
-            }) {
-                return Err(
-                    "Browser control changed before the Agent could close the session".to_string(),
-                );
-            }
-            if agent_call_id.is_some() {
-                let active_tab_id = session.active_tab_id.as_deref().ok_or_else(|| {
-                    "Browser Workspace has no active tab to authorize Agent closure".to_string()
-                })?;
-                require_agent_tab_surface(session, active_tab_id)?;
-            }
+                ) {
+                    return Err(
+                        "Browser control changed before temporary browser data could be cleared"
+                            .to_string(),
+                    );
+                }
+                let tab_ids = session.tabs.keys().cloned().collect::<Vec<_>>();
+                let active_tab_id =
+                    next_active_tab_for_terminal_close(session.active_tab_id.as_deref(), &tab_ids)?;
+                if let Some(active_tab_id) = active_tab_id.as_deref() {
+                    let tab = require_agent_tab_surface(session, active_tab_id)?;
+                    if temporary_profile {
+                        dispatch_terminal_browser_mutation(Some(commit_tracker), || {
+                            tab.webview.clear_all_browsing_data().map_err(|error| {
+                                format!(
+                                    "Could not clear temporary browser data before closing: {error}"
+                                )
+                            })
+                        })?;
+                    }
+                }
+                active_tab_id
+            };
+            let Some(tab_id) = active_tab_id else {
+                break;
+            };
+            self.close_tab_checked(session_id, &tab_id, Some(call_id), Some(commit_tracker))?;
+        }
+
+        self.finalize_empty_session_close(session_id, Some(call_id), Some(commit_tracker))
+    }
+
+    fn begin_session_close(
+        &self,
+        session_id: &str,
+        agent_call_id: Option<&str>,
+        commit_tracker: Option<&BrowserActCommitTracker>,
+    ) -> Result<bool, String> {
+        let mut runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if agent_call_id.is_some_and(|call_id| {
+            !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        }) {
+            return Err(
+                "Browser control changed before the Agent could close the session".to_string(),
+            );
+        }
+        session.phase = session.phase.begin_close(session.opening_tabs)?;
+        if let Some(commit_tracker) = commit_tracker {
+            commit_tracker.mark_committed();
+        }
+        Ok(session.temporary_profile)
+    }
+
+    fn finalize_empty_session_close(
+        &self,
+        session_id: &str,
+        agent_call_id: Option<&str>,
+        commit_tracker: Option<&BrowserActCommitTracker>,
+    ) -> Result<(), String> {
+        let mut runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        let session = runtime
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+        if agent_call_id.is_some_and(|call_id| {
+            !matches!(
+                session.control_lease.owner(),
+                BrowserControlOwner::Agent { call_id: owner_call_id } if owner_call_id == call_id
+            )
+        }) {
+            return Err(
+                "Browser control changed before the session close could be finalized".to_string(),
+            );
+        }
+        if !session.tabs.is_empty() {
+            return Err(
+                "Browser tabs changed while the session was closing; inspect the remaining tabs before retrying"
+                    .to_string(),
+            );
+        }
+        if session.opening_tabs != 0 {
+            return Err(
+                "A browser tab began opening while the session was closing; retry after it finishes"
+                    .to_string(),
+            );
+        }
+        if session.phase != BrowserSessionPhase::Closing {
+            return Err(
+                "Browser session close lost its terminal state before cleanup; retry close_session"
+                    .to_string(),
+            );
+        }
+        let temporary_profile = session.temporary_profile;
+        let profile_id = session.profile_id.clone();
+        session.surface_gate.close();
+        if temporary_profile {
             runtime
                 .sessions
-                .remove(session_id)
-                .expect("validated browser session must still exist")
-        };
-        for tab in session.tabs.into_values() {
-            tab.network_proxy.shutdown();
-            if session.temporary_profile {
-                let _ = tab.webview.clear_all_browsing_data();
-            }
-            let _ = tab.webview.close();
+                .get_mut(session_id)
+                .expect("validated empty browser session must remain registered")
+                .phase = BrowserSessionPhase::CleanupPending;
+            let profile_dir =
+                validated_temporary_profile_dir(self.profile_root.as_path(), profile_id.as_str())?;
+            dispatch_terminal_browser_mutation(commit_tracker, || {
+                match std::fs::remove_dir_all(&profile_dir) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(format!(
+                        "Temporary browser profile cleanup failed for '{}': {error}; the empty session remains available for retry",
+                        profile_dir.display()
+                    )),
+                }
+            })?;
         }
-        if session.temporary_profile {
-            let profile_dir = self.profile_root.join(&session.profile_id);
-            if profile_dir.starts_with(self.profile_root.as_path()) {
-                let _ = std::fs::remove_dir_all(profile_dir);
-            }
+        if let Some(commit_tracker) = commit_tracker {
+            commit_tracker.mark_committed();
         }
+        runtime
+            .sessions
+            .remove(session_id)
+            .expect("validated empty browser session must remain registered until commit");
+        drop(runtime);
         self.emit(
             "sessionClosed",
             serde_json::json!({ "sessionId": session_id }),
@@ -2790,6 +3046,34 @@ impl BrowserState {
             .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))
     }
 
+    fn capture_context(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<(BrowserCapturePlan, BrowserSurfaceFlight), String> {
+        let (bounds, surface_flight) = {
+            let runtime = self
+                .inner
+                .lock()
+                .map_err(|_| "Browser runtime is unavailable".to_string())?;
+            let session = runtime
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
+            let tab = require_agent_tab_surface(session, tab_id)?;
+            let surface_flight = session.surface_gate.try_acquire()?;
+            (tab.bounds, surface_flight)
+        };
+        let scale_factor = self
+            .app
+            .get_window("main")
+            .ok_or_else(|| "Main application window is unavailable".to_string())?
+            .scale_factor()
+            .map_err(|error| format!("Could not read main window scale: {error}"))?;
+        let plan = BrowserCapturePlan::new(bounds, scale_factor)?;
+        Ok((plan, surface_flight))
+    }
+
     pub fn app(&self) -> &AppHandle {
         &self.app
     }
@@ -2974,6 +3258,46 @@ pub(super) fn browser_tab_open_allowed(
     below_limit && (workspace_visible || initial_tab)
 }
 
+pub(super) fn next_active_tab_for_terminal_close(
+    active_tab_id: Option<&str>,
+    tab_ids: &[String],
+) -> Result<Option<String>, String> {
+    if tab_ids.is_empty() {
+        return if active_tab_id.is_none() {
+            Ok(None)
+        } else {
+            Err("Browser session retained an active tab id after all tabs were closed".to_string())
+        };
+    }
+    let active_tab_id = active_tab_id
+        .ok_or_else(|| "Browser session has tabs but no active tab to close safely".to_string())?;
+    if !tab_ids.iter().any(|tab_id| tab_id == active_tab_id) {
+        return Err("Browser session active tab is not registered".to_string());
+    }
+    Ok(Some(active_tab_id.to_string()))
+}
+
+pub(super) fn validated_temporary_profile_dir(
+    profile_root: &Path,
+    profile_id: &str,
+) -> Result<PathBuf, String> {
+    if !profile_root.is_absolute() {
+        return Err("Browser profile root must be absolute".to_string());
+    }
+    let mut components = Path::new(profile_id).components();
+    let Some(Component::Normal(profile_name)) = components.next() else {
+        return Err("Temporary browser profile id is not a safe path segment".to_string());
+    };
+    if components.next().is_some() {
+        return Err("Temporary browser profile id must be one safe path segment".to_string());
+    }
+    let profile_dir = profile_root.join(profile_name);
+    if profile_dir == profile_root || !profile_dir.starts_with(profile_root) {
+        return Err("Temporary browser profile escaped its configured root".to_string());
+    }
+    Ok(profile_dir)
+}
+
 fn require_agent_tab_surface<'a>(
     session: &'a BrowserSession,
     tab_id: &str,
@@ -3100,6 +3424,16 @@ pub(super) fn dispatch_browser_navigation<T>(
     result
 }
 
+pub(super) fn dispatch_terminal_browser_mutation<T>(
+    commit_tracker: Option<&BrowserActCommitTracker>,
+    mutate: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if let Some(commit_tracker) = commit_tracker {
+        commit_tracker.mark_committed();
+    }
+    mutate()
+}
+
 fn session_info(session: &BrowserSession) -> BrowserSessionInfo {
     let mut tabs: Vec<_> = session
         .tabs
@@ -3123,6 +3457,7 @@ fn session_info(session: &BrowserSession) -> BrowserSessionInfo {
         tabs,
         control_owner: session.control_lease.owner().clone(),
         workspace_visible: session.workspace_visible,
+        cleanup_pending: session.phase == BrowserSessionPhase::CleanupPending,
         visibility_revision: session.visibility_revision,
         visibility_requested: session.visibility_requested,
         visibility_request_revision: session.visibility_request_revision,

@@ -77,7 +77,7 @@ pub struct BrowserScreenshot {
     pub height: u32,
     pub byte_length: usize,
     #[serde(skip, default)]
-    pub png_bytes: Vec<u8>,
+    pub image_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -120,9 +120,32 @@ pub struct BrowserSession {
     pub control_owner: BrowserControlOwner,
     pub workspace_visible: bool,
     #[serde(default)]
+    pub cleanup_pending: bool,
+    #[serde(default)]
     pub visibility_revision: u64,
     #[serde(default)]
     pub visibility_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_request_revision: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserSession;
+
+    #[test]
+    fn legacy_browser_session_json_defaults_cleanup_state_to_active() {
+        let session: BrowserSession = serde_json::from_value(serde_json::json!({
+            "id": "browser-1",
+            "conversationId": "conversation-1",
+            "profileId": "profile-1",
+            "activeTabId": null,
+            "tabs": [],
+            "controlOwner": { "type": "none" },
+            "workspaceVisible": false
+        }))
+        .unwrap();
+
+        assert!(!session.cleanup_pending);
+    }
 }

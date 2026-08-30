@@ -672,7 +672,7 @@ export function BrowserDock({
 
   const addTab = useCallback(async () => {
     const targetConversationId = conversationId;
-    if (!targetConversationId) return;
+    if (!targetConversationId || session?.cleanupPending) return;
     try {
       const current = await ensureSession();
       if (!current || conversationIdRef.current !== targetConversationId) return;
@@ -697,6 +697,7 @@ export function BrowserDock({
     refresh,
     reportError,
     sessionScopeOwnsCurrent,
+    session?.cleanupPending,
     t,
   ]);
 
@@ -723,11 +724,21 @@ export function BrowserDock({
           return;
         }
         if (latest.id !== session.id) return;
-        await api.closeBrowserSession(session.id);
-        if (sessionScopeOwnsCurrent(verificationScope)) {
-          sessionRef.current = null;
-          sessionIdRef.current = undefined;
-          setSession(null);
+        if (!commitSession(verificationScope, latest)) return;
+        try {
+          await api.closeBrowserSession(session.id);
+          commitSession(verificationScope, null);
+        } catch (error) {
+          try {
+            const retained = await api.activeBrowserSession(conversationId);
+            if (retained?.id === session.id) {
+              commitSession(verificationScope, retained);
+            }
+          } catch {
+            // Preserve the close failure as the primary user-facing error. A
+            // later browser event/refresh can still reconcile the session.
+          }
+          throw error;
         }
       } else {
         commitSession(scope, next);
@@ -742,6 +753,38 @@ export function BrowserDock({
     reportScopeError,
     session,
     sessionScopeCanCommit,
+    sessionScopeOwnsCurrent,
+    t,
+  ]);
+
+  const retryCloseSession = useCallback(async () => {
+    if (!conversationId || !session || session.tabs.length !== 0 || busy) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
+    const busyGeneration = busyGenerationRef.current + 1;
+    busyGenerationRef.current = busyGeneration;
+    setBusy(true);
+    setLastError(null);
+    try {
+      await api.closeBrowserSession(session.id);
+      if (commitSession(scope, null)) {
+        toast.success(t('browser.cleanupCompleted'));
+      }
+    } catch (error) {
+      reportScopeError(scope, t('browser.actionFailed'), error);
+    } finally {
+      if (
+        busyGenerationRef.current === busyGeneration
+        && sessionScopeOwnsCurrent(scope)
+      ) setBusy(false);
+    }
+  }, [
+    beginSessionRequest,
+    busy,
+    commitSession,
+    conversationId,
+    reportScopeError,
+    session,
     sessionScopeOwnsCurrent,
     t,
   ]);
@@ -960,7 +1003,7 @@ export function BrowserDock({
               <button type="button" onClick={() => void closeTab(tab.id)} className="opacity-0 transition-opacity group-hover:opacity-100" aria-label={t('browser.closeTab')}><X size={11} /></button>
             </div>
           ))}
-          <button type="button" onClick={() => void addTab()} className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-tertiary hover:bg-surface-3 hover:text-text-primary" aria-label={t('browser.newTab')}><Plus size={13} /></button>
+          <button type="button" disabled={busy || session?.cleanupPending} onClick={() => void addTab()} className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-tertiary hover:bg-surface-3 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40" aria-label={t('browser.newTab')}><Plus size={13} /></button>
         </div>
 
         {onSendArtifactToAgent && (
@@ -978,7 +1021,21 @@ export function BrowserDock({
           <div className="absolute inset-0 grid place-items-center px-8 text-center">
             <div>
               <Globe2 className="mx-auto h-8 w-8 text-cyan-300/60" />
-              <p className="mt-3 text-xs font-medium text-text-secondary">{t('browser.empty')}</p>
+              <p className="mt-3 text-xs font-medium text-text-secondary">
+                {session?.cleanupPending ? t('browser.cleanupPending') : t('browser.empty')}
+              </p>
+              {session?.cleanupPending && (
+                <button
+                  type="button"
+                  data-testid="browser-retry-close-session"
+                  disabled={busy}
+                  onClick={() => void retryCloseSession()}
+                  className="browser-action-chip mx-auto mt-3"
+                >
+                  {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                  {t('browser.retryCleanup')}
+                </button>
+              )}
             </div>
           </div>
         )}

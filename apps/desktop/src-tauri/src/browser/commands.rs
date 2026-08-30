@@ -97,14 +97,16 @@ pub fn browser_activate_tab_cmd(
 }
 
 #[tauri::command]
-pub fn browser_set_bounds_cmd(
+pub async fn browser_set_bounds_cmd(
     state: State<'_, BrowserState>,
     session_id: String,
     bounds: BrowserBounds,
     visible: bool,
     visibility_revision: u64,
 ) -> Result<(), String> {
-    state.set_bounds(&session_id, bounds, visible, visibility_revision)
+    state
+        .set_bounds(&session_id, bounds, visible, visibility_revision)
+        .await
 }
 
 #[tauri::command]

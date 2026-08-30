@@ -137,6 +137,32 @@ test('Agent Browser Workspace sessions become visible and every observation carr
   assert(dock.includes('onOpenChange(true)'), 'Agent visibility requests must open the shared Browser Dock');
 });
 
+test('last-tab cleanup failure exposes authoritative retry state instead of a false empty workspace', () => {
+  const dock = source('src/features/browser/BrowserDock.tsx');
+  const api = source('src/lib/api.ts');
+  const closeTab = dock.slice(
+    dock.indexOf('const closeTab = useCallback'),
+    dock.indexOf('const retryCloseSession = useCallback'),
+  );
+
+  assert(api.includes('cleanupPending: boolean'), 'session snapshots must expose typed cleanup state');
+  assert(
+    closeTab.includes('await api.closeBrowserSession(session.id)')
+      && closeTab.includes('const retained = await api.activeBrowserSession(conversationId)')
+      && closeTab.includes('commitSession(verificationScope, retained)'),
+    'a failed final close must read and commit the retained CleanupPending session',
+  );
+  assert(
+    dock.includes("session?.cleanupPending ? t('browser.cleanupPending') : t('browser.empty')")
+      && dock.includes('data-testid="browser-retry-close-session"'),
+    'only authoritative CleanupPending sessions should render the retry state',
+  );
+  assert(
+    dock.includes('disabled={busy || session?.cleanupPending}'),
+    'the new-tab control must stay disabled while terminal cleanup is pending',
+  );
+});
+
 test('HTTP links have one in-app destination and the duplicate web preview is removed', () => {
   const preview = source('src/features/preview/FilePreviewProvider.tsx');
   const previewApi = source('src/lib/api.ts');

@@ -29,6 +29,9 @@
   "sendText": "发送文字",
   "sharedSession": "实时共享会话",
   "empty": "打开网页，开始与 Agent 共享浏览。",
+  "cleanupPending": "会话清理尚未完成，请重试以移除临时浏览数据。",
+  "retryCleanup": "重试清理",
+  "cleanupCompleted": "浏览器会话已清理",
   "pickElementHint": "移动到网页元素并点击以指出它，按 Escape 取消。",
   "pickRegionHint": "拖动以附加页面坐标（当前不捕获像素），按 Escape 取消。"
 }

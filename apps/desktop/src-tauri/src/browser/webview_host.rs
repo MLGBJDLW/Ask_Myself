@@ -8,7 +8,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{Manager, Webview, WebviewUrl};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
 use super::policy::navigation_preapproved;
@@ -16,11 +16,9 @@ use super::scripts::{browser_init_script, browser_takeover_script};
 use super::state::{BrowserBounds, BrowserState};
 
 const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-// Keep one capture small enough for both the current-turn visual model path
-// and the ephemeral tool-card preview. A capture that cannot reach every
-// advertised consumer fails explicitly instead of being silently discarded.
-const MAX_SCREENSHOT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SCREENSHOT_BASE64_BYTES: usize = MAX_SCREENSHOT_BYTES.div_ceil(3) * 4;
+#[cfg(windows)]
+const MAX_NATIVE_CAPTURE_BASE64_BYTES: usize =
+    nexa_core::media::MAX_BROWSER_NATIVE_CAPTURE_BYTES.div_ceil(3) * 4;
 const TRUSTED_INPUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_TRUSTED_TEXT_BYTES: usize = 256 * 1024;
 
@@ -459,9 +457,132 @@ pub async fn dispatch_trusted_key(
 }
 
 pub struct CapturedWebviewScreenshot {
-    pub png_bytes: Vec<u8>,
+    pub image_bytes: Vec<u8>,
+    pub mime_type: String,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrowserCapturePlan {
+    native_width: u32,
+    native_height: u32,
+    macos_snapshot_width_points: Option<f64>,
+}
+
+impl BrowserCapturePlan {
+    pub fn new(bounds: BrowserBounds, scale_factor: f64) -> Result<Self, String> {
+        if !bounds.width.is_finite()
+            || !bounds.height.is_finite()
+            || bounds.width <= 0.0
+            || bounds.height <= 0.0
+            || !scale_factor.is_finite()
+            || scale_factor <= 0.0
+        {
+            return Err("Browser capture bounds and scale must be finite and positive".to_string());
+        }
+        let native_axis = |logical: f64, label: &str| -> Result<u32, String> {
+            let physical = logical * scale_factor;
+            if !physical.is_finite() || physical > f64::from(u32::MAX) {
+                return Err(format!("Browser capture {label} overflowed native pixels"));
+            }
+            let physical = physical.ceil() as u32;
+            if physical == 0 {
+                return Err(format!("Browser capture {label} rounded to zero pixels"));
+            }
+            Ok(physical)
+        };
+        let native_width = native_axis(bounds.width, "width")?;
+        let native_height = native_axis(bounds.height, "height")?;
+        nexa_core::media::validate_browser_capture_dimensions(native_width, native_height)
+            .map_err(|error| error.to_string())?;
+        let longest = native_width.max(native_height);
+        let macos_snapshot_width_points = (longest > nexa_core::media::MAX_LLM_IMAGE_DIMENSION)
+            .then(|| {
+                bounds.width * f64::from(nexa_core::media::MAX_LLM_IMAGE_DIMENSION)
+                    / f64::from(longest)
+            });
+        Ok(Self {
+            native_width,
+            native_height,
+            macos_snapshot_width_points,
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_native_capture_allocation(
+    logical_width: i32,
+    logical_height: i32,
+    scale_factor: i32,
+) -> Result<(), String> {
+    if logical_width <= 0 || logical_height <= 0 || scale_factor <= 0 {
+        return Err("Native browser capture allocation and scale must be positive".to_string());
+    }
+    BrowserCapturePlan::new(
+        BrowserBounds {
+            x: 0.0,
+            y: 0.0,
+            width: f64::from(logical_width),
+            height: f64::from(logical_height),
+        },
+        f64::from(scale_factor),
+    )
+    .map(|_| ())
+}
+
+#[derive(Clone)]
+pub struct BrowserSurfaceGate(Arc<Semaphore>);
+
+impl Default for BrowserSurfaceGate {
+    fn default() -> Self {
+        Self(Arc::new(Semaphore::new(1)))
+    }
+}
+
+impl BrowserSurfaceGate {
+    pub(super) fn try_acquire(&self) -> Result<BrowserSurfaceFlight, String> {
+        self.0
+            .clone()
+            .try_acquire_owned()
+            .map(|permit| BrowserSurfaceFlight { _permit: permit })
+            .map_err(|_| "A Browser Workspace surface operation is already in flight".to_string())
+    }
+
+    pub(super) async fn acquire(&self) -> Result<BrowserSurfaceFlight, String> {
+        self.0
+            .clone()
+            .acquire_owned()
+            .await
+            .map(|permit| BrowserSurfaceFlight { _permit: permit })
+            .map_err(|_| "Browser Workspace surface coordinator is unavailable".to_string())
+    }
+
+    pub(super) fn close(&self) {
+        self.0.close();
+    }
+}
+
+pub(super) struct BrowserSurfaceFlight {
+    _permit: OwnedSemaphorePermit,
+}
+
+struct RawNativeCapture {
+    png_bytes: Vec<u8>,
+    flight: BrowserSurfaceFlight,
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "macos"
+))]
+struct NativeCaptureReply {
+    result: Result<Vec<u8>, String>,
+    flight: BrowserSurfaceFlight,
 }
 
 pub struct BrowserChildWebview {
@@ -650,12 +771,19 @@ pub async fn eval_json(webview: &Webview, expression: &str) -> Result<serde_json
 }
 
 #[cfg(windows)]
+struct DevToolsMethodReply {
+    result: Result<String, String>,
+    capture_flight: Option<BrowserSurfaceFlight>,
+}
+
+#[cfg(windows)]
 async fn call_devtools_protocol_method(
     webview: &Webview,
     method: &str,
     parameters: serde_json::Value,
     timeout: std::time::Duration,
-) -> Result<String, String> {
+    capture_flight: Option<BrowserSurfaceFlight>,
+) -> Result<(String, Option<BrowserSurfaceFlight>), String> {
     use webview2_com::{
         CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR,
         Microsoft::Web::WebView2::Win32::ICoreWebView2,
@@ -665,9 +793,11 @@ async fn call_devtools_protocol_method(
     let parameters = serde_json::to_string(&parameters)
         .map_err(|error| format!("Could not encode DevTools parameters for {method}: {error}"))?;
     let method_for_dispatch = method.clone();
-    let (sender, receiver) = oneshot::channel::<Result<String, String>>();
+    let (sender, receiver) = oneshot::channel::<DevToolsMethodReply>();
     let sender = Arc::new(Mutex::new(Some(sender)));
+    let capture_flight = Arc::new(Mutex::new(capture_flight));
     let sender_for_dispatch = Arc::clone(&sender);
+    let flight_for_dispatch = Arc::clone(&capture_flight);
     webview
         .with_webview(move |platform| {
             let dispatch = (|| -> Result<(), String> {
@@ -676,13 +806,14 @@ async fn call_devtools_protocol_method(
                         format!("Could not access Browser Workspace WebView2: {error}")
                     })?;
                 let sender_for_callback = Arc::clone(&sender_for_dispatch);
+                let flight_for_callback = Arc::clone(&flight_for_dispatch);
                 let method_for_callback = method_for_dispatch.clone();
                 let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
                     move |status, payload| {
                         let result = status.map(|_| payload).map_err(|error| {
                             format!("DevTools method {method_for_callback} failed: {error}")
                         });
-                        send_devtools_reply(&sender_for_callback, result);
+                        send_devtools_reply(&sender_for_callback, &flight_for_callback, result);
                         Ok(())
                     },
                 ));
@@ -700,22 +831,46 @@ async fn call_devtools_protocol_method(
                 })
             })();
             if let Err(error) = dispatch {
-                send_devtools_reply(&sender_for_dispatch, Err(error));
+                send_devtools_reply(&sender_for_dispatch, &flight_for_dispatch, Err(error));
             }
         })
         .map_err(|error| format!("Could not access Browser Workspace WebView: {error}"))?;
 
-    tokio::time::timeout(timeout, receiver)
+    let reply = tokio::time::timeout(timeout, receiver)
         .await
         .map_err(|_| format!("DevTools method {method} timed out"))?
-        .map_err(|_| format!("DevTools method {method} response was dropped"))?
+        .map_err(|_| format!("DevTools method {method} response was dropped"))?;
+    reply.result.map(|payload| (payload, reply.capture_flight))
+}
+
+pub(super) async fn capture_webview_image(
+    webview: &Webview,
+    plan: BrowserCapturePlan,
+    flight: BrowserSurfaceFlight,
+) -> Result<CapturedWebviewScreenshot, String> {
+    let raw = capture_native_png(webview, plan, flight).await?;
+    let RawNativeCapture { png_bytes, flight } = raw;
+    let finalized =
+        tokio::task::spawn_blocking(move || nexa_core::media::finalize_browser_capture(png_bytes))
+            .await
+            .map_err(|error| format!("Browser capture finalizer stopped unexpectedly: {error}"))?
+            .map_err(|error| error.to_string())?;
+    drop(flight);
+    Ok(CapturedWebviewScreenshot {
+        image_bytes: finalized.image_bytes,
+        mime_type: finalized.mime_type,
+        width: finalized.width,
+        height: finalized.height,
+    })
 }
 
 #[cfg(windows)]
-pub async fn capture_webview_png(
+async fn capture_native_png(
     webview: &Webview,
-) -> Result<Option<CapturedWebviewScreenshot>, String> {
-    let payload = call_devtools_protocol_method(
+    _plan: BrowserCapturePlan,
+    flight: BrowserSurfaceFlight,
+) -> Result<RawNativeCapture, String> {
+    let (payload, capture_flight) = call_devtools_protocol_method(
         webview,
         "Page.captureScreenshot",
         serde_json::json!({
@@ -724,29 +879,269 @@ pub async fn capture_webview_png(
             "captureBeyondViewport": false,
         }),
         SCREENSHOT_TIMEOUT,
+        Some(flight),
     )
     .await
     .map_err(|error| format!("Browser screenshot capture failed: {error}"))?;
-    decode_cdp_screenshot(&payload).map(Some)
+    let png_bytes = decode_cdp_screenshot(&payload)?;
+    let flight = capture_flight
+        .ok_or_else(|| "Browser screenshot completion lost its single-flight guard".to_string())?;
+    Ok(RawNativeCapture { png_bytes, flight })
 }
 
-#[cfg(not(windows))]
-pub async fn capture_webview_png(
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+async fn capture_native_png(
+    webview: &Webview,
+    _plan: BrowserCapturePlan,
+    flight: BrowserSurfaceFlight,
+) -> Result<RawNativeCapture, String> {
+    use gtk::prelude::WidgetExt;
+    use webkit2gtk::{gio::prelude::CancellableExt, SnapshotOptions, SnapshotRegion, WebViewExt};
+
+    let (sender, receiver) = oneshot::channel::<NativeCaptureReply>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let sender_for_dispatch = Arc::clone(&sender);
+    let cancellable = webkit2gtk::gio::Cancellable::new();
+    let cancellable_for_dispatch = cancellable.clone();
+    webview
+        .with_webview(move |platform| {
+            let sender_for_callback = Arc::clone(&sender_for_dispatch);
+            let native_webview = platform.inner();
+            let allocation = native_webview.allocation();
+            if let Err(error) = validate_native_capture_allocation(
+                allocation.width(),
+                allocation.height(),
+                native_webview.scale_factor(),
+            ) {
+                send_once(
+                    &sender_for_callback,
+                    NativeCaptureReply {
+                        result: Err(format!(
+                            "Browser capture allocation changed beyond its safe native budget before snapshot dispatch: {error}"
+                        )),
+                        flight,
+                    },
+                );
+                return;
+            }
+            native_webview.snapshot(
+                SnapshotRegion::Visible,
+                SnapshotOptions::NONE,
+                Some(&cancellable_for_dispatch),
+                move |result| {
+                    let result = result
+                        .map_err(|error| format!("WebKitGTK snapshot failed: {error}"))
+                        .and_then(encode_webkitgtk_snapshot);
+                    send_once(&sender_for_callback, NativeCaptureReply { result, flight });
+                },
+            );
+        })
+        .map_err(|error| format!("Could not access Browser Workspace WebView: {error}"))?;
+
+    let reply = match tokio::time::timeout(SCREENSHOT_TIMEOUT, receiver).await {
+        Ok(reply) => {
+            reply.map_err(|_| "WebKitGTK browser screenshot response was dropped".to_string())?
+        }
+        Err(_) => {
+            cancellable.cancel();
+            return Err(
+                "WebKitGTK browser screenshot capture timed out and was cancelled".to_string(),
+            );
+        }
+    };
+    let NativeCaptureReply { result, flight } = reply;
+    Ok(RawNativeCapture {
+        png_bytes: result?,
+        flight,
+    })
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn encode_webkitgtk_snapshot(surface: cairo::Surface) -> Result<Vec<u8>, String> {
+    struct BoundedPngWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl std::io::Write for BoundedPngWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.bytes.len().saturating_add(buffer.len())
+                > nexa_core::media::MAX_BROWSER_NATIVE_CAPTURE_BYTES
+            {
+                return Err(std::io::Error::other(
+                    "Browser screenshot exceeded the safe capture limit",
+                ));
+            }
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = BoundedPngWriter { bytes: Vec::new() };
+    surface
+        .write_to_png(&mut writer)
+        .map_err(|error| format!("Could not encode WebKitGTK browser snapshot as PNG: {error}"))?;
+    Ok(writer.bytes)
+}
+
+#[cfg(target_os = "macos")]
+async fn capture_native_png(
+    webview: &Webview,
+    plan: BrowserCapturePlan,
+    flight: BrowserSurfaceFlight,
+) -> Result<RawNativeCapture, String> {
+    use block2::RcBlock;
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::{NSError, NSNumber};
+    use objc2_web_kit::{WKSnapshotConfiguration, WKWebView};
+
+    let (sender, receiver) = oneshot::channel::<NativeCaptureReply>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let flight = Arc::new(Mutex::new(Some(flight)));
+    let sender_for_dispatch = Arc::clone(&sender);
+    let flight_for_dispatch = Arc::clone(&flight);
+    webview
+        .with_webview(move |platform| {
+            let sender_for_callback = Arc::clone(&sender_for_dispatch);
+            let flight_for_callback = Arc::clone(&flight_for_dispatch);
+            let handler = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
+                let result = unsafe { image.as_ref() }
+                    .ok_or_else(|| {
+                        if error.is_null() {
+                            "WKWebView snapshot returned neither an image nor an error".to_string()
+                        } else {
+                            "WKWebView snapshot failed".to_string()
+                        }
+                    })
+                    .and_then(encode_wkwebview_snapshot);
+                send_native_capture_reply(&sender_for_callback, &flight_for_callback, result);
+            });
+            let dispatch = unsafe { (platform.inner() as *mut WKWebView).as_ref() }
+                .ok_or_else(|| "Browser Workspace returned a null WKWebView handle".to_string())
+                .map(|native_webview| unsafe {
+                    let configuration = plan.macos_snapshot_width_points.map(|width| {
+                        let configuration = WKSnapshotConfiguration::new(native_webview.mtm());
+                        let width = NSNumber::numberWithDouble(width);
+                        configuration.setSnapshotWidth(Some(&width));
+                        configuration
+                    });
+                    native_webview.takeSnapshotWithConfiguration_completionHandler(
+                        configuration.as_deref(),
+                        &handler,
+                    );
+                });
+            if let Err(error) = dispatch {
+                send_native_capture_reply(&sender_for_dispatch, &flight_for_dispatch, Err(error));
+            }
+        })
+        .map_err(|error| format!("Could not access Browser Workspace WebView: {error}"))?;
+
+    let reply = tokio::time::timeout(SCREENSHOT_TIMEOUT, receiver)
+        .await
+        .map_err(|_| "WKWebView browser screenshot capture timed out".to_string())?
+        .map_err(|_| "WKWebView browser screenshot response was dropped".to_string())?;
+    let NativeCaptureReply { result, flight } = reply;
+    Ok(RawNativeCapture {
+        png_bytes: result?,
+        flight,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn encode_wkwebview_snapshot(image: &objc2_app_kit::NSImage) -> Result<Vec<u8>, String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey};
+    use objc2_foundation::NSDictionary;
+
+    let tiff = image
+        .TIFFRepresentation()
+        .ok_or_else(|| "WKWebView snapshot could not be encoded as TIFF".to_string())?;
+    let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)
+        .ok_or_else(|| "WKWebView snapshot TIFF could not be decoded".to_string())?;
+    let properties: Retained<NSDictionary<NSBitmapImageRepPropertyKey, AnyObject>> =
+        NSDictionary::init(NSDictionary::alloc());
+    let png = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+    }
+    .ok_or_else(|| "WKWebView snapshot could not be encoded as PNG".to_string())?;
+    if png.len() > nexa_core::media::MAX_BROWSER_NATIVE_CAPTURE_BYTES {
+        return Err("Browser screenshot exceeded the safe capture limit".to_string());
+    }
+    Ok(png.to_vec())
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "macos"
+)))]
+async fn capture_native_png(
     _webview: &Webview,
-) -> Result<Option<CapturedWebviewScreenshot>, String> {
-    Ok(None)
+    _plan: BrowserCapturePlan,
+    _flight: BrowserSurfaceFlight,
+) -> Result<RawNativeCapture, String> {
+    Err("Browser screenshot capture is unavailable on this platform; the visual observation was not completed".to_string())
 }
 
-#[cfg(windows)]
-fn send_devtools_reply(
-    sender: &Arc<Mutex<Option<oneshot::Sender<Result<String, String>>>>>,
-    result: Result<String, String>,
-) {
+fn send_once<T>(sender: &Arc<Mutex<Option<oneshot::Sender<T>>>>, result: T) {
     if let Ok(mut sender) = sender.lock() {
         if let Some(sender) = sender.take() {
             let _ = sender.send(result);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn send_native_capture_reply(
+    sender: &Arc<Mutex<Option<oneshot::Sender<NativeCaptureReply>>>>,
+    flight: &Arc<Mutex<Option<BrowserSurfaceFlight>>>,
+    result: Result<Vec<u8>, String>,
+) {
+    let Some(flight) = flight.lock().ok().and_then(|mut flight| flight.take()) else {
+        return;
+    };
+    send_once(sender, NativeCaptureReply { result, flight });
+}
+
+#[cfg(windows)]
+fn send_devtools_reply(
+    sender: &Arc<Mutex<Option<oneshot::Sender<DevToolsMethodReply>>>>,
+    capture_flight: &Arc<Mutex<Option<BrowserSurfaceFlight>>>,
+    result: Result<String, String>,
+) {
+    let capture_flight = capture_flight
+        .lock()
+        .ok()
+        .and_then(|mut flight| flight.take());
+    send_once(
+        sender,
+        DevToolsMethodReply {
+            result,
+            capture_flight,
+        },
+    );
 }
 
 #[cfg(windows)]
@@ -765,7 +1160,13 @@ async fn dispatch_cdp_sequence(
                     event_count,
                 ));
             }
-            call_devtools_protocol_method(guard.webview(), method, payload, TRUSTED_INPUT_TIMEOUT)
+            call_devtools_protocol_method(
+                guard.webview(),
+                method,
+                payload,
+                TRUSTED_INPUT_TIMEOUT,
+                None,
+            )
                 .await
                 .map_err(|error| {
                     format!(
@@ -804,7 +1205,7 @@ async fn dispatch_cdp_sequence(
 }
 
 #[cfg(windows)]
-fn decode_cdp_screenshot(payload: &str) -> Result<CapturedWebviewScreenshot, String> {
+fn decode_cdp_screenshot(payload: &str) -> Result<Vec<u8>, String> {
     #[derive(Deserialize)]
     struct CaptureEnvelope {
         data: String,
@@ -812,34 +1213,16 @@ fn decode_cdp_screenshot(payload: &str) -> Result<CapturedWebviewScreenshot, Str
 
     let envelope: CaptureEnvelope = serde_json::from_str(payload)
         .map_err(|error| format!("Could not decode browser screenshot response: {error}"))?;
-    if envelope.data.len() > MAX_SCREENSHOT_BASE64_BYTES {
+    if envelope.data.len() > MAX_NATIVE_CAPTURE_BASE64_BYTES {
         return Err("Browser screenshot exceeded the safe capture limit".to_string());
     }
     let png_bytes = STANDARD
         .decode(envelope.data)
         .map_err(|error| format!("Browser screenshot returned invalid base64: {error}"))?;
-    if png_bytes.len() > MAX_SCREENSHOT_BYTES {
+    if png_bytes.len() > nexa_core::media::MAX_BROWSER_NATIVE_CAPTURE_BYTES {
         return Err("Browser screenshot exceeded the safe capture limit".to_string());
     }
-    let (width, height) = png_dimensions(&png_bytes)?;
-    Ok(CapturedWebviewScreenshot {
-        png_bytes,
-        width,
-        height,
-    })
-}
-
-fn png_dimensions(png: &[u8]) -> Result<(u32, u32), String> {
-    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if png.len() < 24 || &png[..8] != PNG_SIGNATURE || &png[12..16] != b"IHDR" {
-        return Err("Browser screenshot was not a valid PNG image".to_string());
-    }
-    let width = u32::from_be_bytes(png[16..20].try_into().expect("validated PNG width"));
-    let height = u32::from_be_bytes(png[20..24].try_into().expect("validated PNG height"));
-    if width == 0 || height == 0 {
-        return Err("Browser screenshot had empty dimensions".to_string());
-    }
-    Ok((width, height))
+    Ok(png_bytes)
 }
 
 fn decode_eval_json(raw: &str) -> Result<serde_json::Value, String> {
@@ -864,18 +1247,150 @@ fn decode_eval_json(raw: &str) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_takeover_script, png_dimensions, trusted_input_guard_expression,
+        browser_takeover_script, send_once, trusted_input_guard_expression,
         trusted_key_input_match, trusted_key_payloads, trusted_pointer_payloads,
-        trusted_text_payload, TrustedInputEventBudget, TrustedInputMatch, MAX_TRUSTED_TEXT_BYTES,
+        trusted_text_payload, validate_native_capture_allocation, BrowserCapturePlan,
+        BrowserSurfaceGate, TrustedInputEventBudget, TrustedInputMatch, MAX_TRUSTED_TEXT_BYTES,
     };
+    use nexa_core::browser_runtime::BrowserBounds;
 
     #[test]
-    fn png_dimensions_reject_non_png_and_read_ihdr() {
-        assert!(png_dimensions(b"not a png").is_err());
-        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
-        png.extend_from_slice(&640_u32.to_be_bytes());
-        png.extend_from_slice(&480_u32.to_be_bytes());
-        assert_eq!(png_dimensions(&png).unwrap(), (640, 480));
+    fn browser_capture_plan_checks_native_pixels_and_shared_output_scale() {
+        let plan = BrowserCapturePlan::new(
+            BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            2.0,
+        )
+        .expect("bounded Retina surface must be accepted");
+        assert_eq!((plan.native_width, plan.native_height), (1_600, 1_200));
+        assert_eq!(plan.macos_snapshot_width_points, Some(784.0));
+
+        for (bounds, scale) in [
+            (
+                BrowserBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::INFINITY,
+                    height: 600.0,
+                },
+                1.0,
+            ),
+            (
+                BrowserBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 5_000.0,
+                    height: 100.0,
+                },
+                2.0,
+            ),
+            (
+                BrowserBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 4_096.0,
+                    height: 4_096.0,
+                },
+                1.0,
+            ),
+        ] {
+            assert!(BrowserCapturePlan::new(bounds, scale).is_err());
+        }
+    }
+
+    #[test]
+    fn native_capture_allocation_is_revalidated_after_a_safe_plan() {
+        BrowserCapturePlan::new(
+            BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            1.0,
+        )
+        .expect("the earlier Browser Workspace plan is safe");
+
+        validate_native_capture_allocation(800, 600, 1)
+            .expect("the unchanged GTK allocation remains safe");
+        let error = validate_native_capture_allocation(5_000, 2_000, 2)
+            .expect_err("a later oversized GTK allocation must fail before snapshot dispatch");
+        assert!(
+            error.contains("native edge limit") || error.contains("pixel budget"),
+            "unexpected allocation error: {error}",
+        );
+    }
+
+    #[test]
+    fn browser_surface_gate_stays_locked_until_the_late_callback_releases_it() {
+        let gate = BrowserSurfaceGate::default();
+        let late_callback_guard = gate.try_acquire().expect("first capture owns the WebView");
+        assert!(gate.try_acquire().is_err(), "overlapping capture must fail");
+
+        let (sender, timed_out_waiter) = tokio::sync::oneshot::channel();
+        drop(timed_out_waiter);
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        send_once(
+            &sender,
+            (Ok::<_, String>(Vec::<u8>::new()), late_callback_guard),
+        );
+        let next = gate
+            .try_acquire()
+            .expect("late callback release must admit the next capture");
+        drop(next);
+    }
+
+    #[tokio::test]
+    async fn browser_surface_gate_queues_layout_until_capture_callback_releases_it() {
+        let gate = BrowserSurfaceGate::default();
+        let capture = gate
+            .try_acquire()
+            .expect("capture owns the workspace surface");
+        let queued_gate = gate.clone();
+        let layout = tokio::spawn(async move { queued_gate.acquire().await });
+        tokio::task::yield_now().await;
+        assert!(
+            !layout.is_finished(),
+            "layout must not overtake a screenshot whose native callback is still pending",
+        );
+
+        drop(capture);
+        let layout = layout
+            .await
+            .expect("layout waiter must remain alive")
+            .expect("layout acquires the released surface");
+        assert!(
+            gate.try_acquire().is_err(),
+            "the queued layout owns the single workspace permit",
+        );
+        drop(layout);
+        assert!(gate.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn browser_surface_gate_wakes_queued_layout_when_session_closes() {
+        let gate = BrowserSurfaceGate::default();
+        let capture = gate
+            .try_acquire()
+            .expect("capture owns the workspace surface");
+        let queued_gate = gate.clone();
+        let layout = tokio::spawn(async move { queued_gate.acquire().await });
+        tokio::task::yield_now().await;
+
+        gate.close();
+        assert!(
+            layout
+                .await
+                .expect("queued layout task remains alive")
+                .is_err(),
+            "session close must not leave a bounds command waiting forever",
+        );
+        drop(capture);
+        assert!(gate.try_acquire().is_err());
     }
 
     #[test]
