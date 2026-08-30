@@ -87,10 +87,19 @@ test('canonical Run Events have no task-event compatibility bridge', () => {
   );
 
   const directDispatch = source('../../crates/core/src/agent/direct_dispatch_runner.rs');
-  assert(
-    !directDispatch.includes('AgentEvent::ToolCallStart'),
-    'direct dispatch must expose one canonical tool lifecycle',
-  );
+  const evalHarness = source('../../crates/core/src/eval_harness.rs');
+  const modelStep = source('../../crates/core/src/agent/model_step.rs');
+  const toolDispatch = source('../../crates/core/src/agent/tool_dispatch.rs');
+  for (const [name, runtime] of [
+    ['direct dispatch', directDispatch],
+    ['eval harness', evalHarness],
+    ['model step', modelStep],
+    ['model tool dispatch', toolDispatch],
+  ] as const) {
+    assert(!runtime.includes('.send(AgentEvent::ToolCall'), `${name} must produce ToolRun events exclusively`);
+    assert(!runtime.includes('AgentEvent::ToolCallStart'), `${name} must not produce the retired ToolCall start lifecycle`);
+    assert(!runtime.includes('AgentEvent::ToolCallResult'), `${name} must not produce the retired ToolCall result lifecycle`);
+  }
 });
 
 test('durable Run reconciliation has one decision owner', () => {
@@ -171,6 +180,19 @@ test('tool approvals use structured permission policies exclusively', () => {
   );
 });
 
+test('desktop approval UI never exposes opaque internal scope hashes as the target', () => {
+  const dialog = source('src/components/chat/ApprovalDialog.tsx');
+  assert(
+    dialog.includes("request.targetKind === 'desktop_action'")
+      && dialog.includes("request.targetKind === 'screen_disclosure'"),
+    'desktop and screenshot approvals must classify their permission target as internal scope',
+  );
+  assert(
+    dialog.includes('request.targetValue && !targetIsInternalScope'),
+    'approval UI must hide internal desktop scope identifiers while the exact human target stays in the reason',
+  );
+});
+
 test('built-in capabilities are described directly as capability packages', () => {
   const packages = source('../../crates/core/src/plugins.rs');
   const api = source('src/lib/api.ts');
@@ -243,6 +265,16 @@ test('sunset compatibility is migrated or versioned before removal', () => {
   assert(
     createFile.includes('compatibility_hit = args.overwrite'),
     'create_file must emit structured telemetry for legacy overwrite hits',
+  );
+});
+
+test('the runtime has one prompt owner instead of a dormant standalone system prompt', () => {
+  const historicalPrompt = join(process.cwd(), '../../crates/core/prompts/system.md');
+  assert(!existsSync(historicalPrompt), 'the unused standalone system prompt must stay deleted');
+  const promptOwnership = source('../../docs/LIVE_FILE_TOOL_STREAMING.md');
+  assert(
+    !promptOwnership.includes('crates/core/prompts/system.md'),
+    'documentation must not direct maintainers to a dormant prompt copy',
   );
 });
 

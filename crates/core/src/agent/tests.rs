@@ -697,6 +697,34 @@ fn test_route_pack_injects_run_shell_contract_only_for_codebase_work() {
 }
 
 #[test]
+fn web_artifact_requirements_drive_route_pack_and_plan_tools() {
+    let query = "帮我用html写一个黑洞演示图";
+    let route = route_user_turn(query, "", false);
+    let plan = build_task_plan(TaskPlanningInput::for_requirements(
+        query,
+        &route.requirements,
+        false,
+        0,
+    ));
+
+    assert!(route
+        .prompt_section
+        .contains("## Interaction Completion Contract"));
+    let planned_tools = plan
+        .steps
+        .iter()
+        .flat_map(|step| step.required_tools.iter())
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for tool in ["run_shell", "browser_evidence_capture"] {
+        assert!(planned_tools.contains(&tool), "missing planned tool {tool}");
+    }
+    assert!(plan
+        .interaction_requirements
+        .requires_visual_observation_after_mutation());
+}
+
+#[test]
 fn test_route_user_turn_prefers_collection_context() {
     let route = route_user_turn(
             "Explain what this saved citation means",
@@ -706,7 +734,7 @@ fn test_route_user_turn_prefers_collection_context() {
 
     assert_eq!(route.kind, AgentRouteKind::CollectionFocused);
     assert!(route
-        .visibility_decision
+        .requirements
         .route_categories
         .contains(&ToolCategory::Knowledge));
 }
@@ -728,7 +756,7 @@ fn test_route_user_turn_prefers_knowledge_retrieval_for_question_with_sources() 
 
     assert_eq!(route.kind, AgentRouteKind::KnowledgeRetrieval);
     assert!(route
-        .visibility_decision
+        .requirements
         .route_categories
         .contains(&ToolCategory::DocumentAnalysis));
 }
@@ -739,7 +767,7 @@ fn test_route_user_turn_treats_office_generation_as_file_operation() {
 
     assert_eq!(route.kind, AgentRouteKind::FileOperation);
     assert!(route
-        .visibility_decision
+        .requirements
         .route_categories
         .contains(&ToolCategory::FileSystem));
 }
@@ -754,7 +782,7 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
 
     assert_eq!(route.kind, AgentRouteKind::CodebaseOperation);
     assert!(route
-        .visibility_decision
+        .requirements
         .route_categories
         .contains(&ToolCategory::FileSystem));
     assert!(route.prompt_section.contains("code_intelligence"));
@@ -4804,7 +4832,7 @@ async fn test_allow_all_tool_approval_does_not_emit_approval_request() {
 }
 
 #[tokio::test]
-async fn test_allow_all_cannot_bypass_computer_control_approval() {
+async fn test_allow_all_cannot_bypass_computer_observation_validation() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(
         crate::tools::computer_use_tool::ComputerControlTool,
@@ -4838,7 +4866,7 @@ async fn test_allow_all_cannot_bypass_computer_control_approval() {
         .run(
             vec![],
             vec![ContentPart::Text {
-                text: "focus an app".to_string(),
+                text: "perform the requested action".to_string(),
             }],
             &db,
             None,
@@ -4850,15 +4878,122 @@ async fn test_allow_all_cannot_bypass_computer_control_approval() {
         .expect("agent should recover from the expected missing observation");
 
     let mut approval_requested = 0;
+    let mut approval_resolved = 0;
+    let mut approval_pending = 0;
+    let mut stale_observation_rejected = false;
+    let mut failure_artifacts = None;
+    let mut failure_content = None;
     while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
         match event {
             Some(AgentEvent::ApprovalRequested { .. }) => approval_requested += 1,
+            Some(AgentEvent::ApprovalResolved { .. }) => approval_resolved += 1,
+            Some(AgentEvent::ToolRunUpdated { run })
+                if run.tool_name == "computer_control"
+                    && run.status == ToolRunStatus::ApprovalPending =>
+            {
+                approval_pending += 1;
+            }
+            Some(AgentEvent::ToolRunCompleted { run }) if run.tool_name == "computer_control" => {
+                stale_observation_rejected = run.status == ToolRunStatus::Failed;
+                failure_artifacts = run.artifacts;
+                failure_content = run.content;
+            }
             Some(AgentEvent::Done { .. }) | None => break,
             Some(_) => {}
         }
     }
-    assert_eq!(approval_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(approval_requested, 1);
+    assert_eq!(approval_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(approval_requested, 0);
+    assert_eq!(approval_resolved, 0);
+    assert_eq!(approval_pending, 0);
+    assert!(stale_observation_rejected);
+    let failure_artifacts = failure_artifacts.expect("typed pre-approval failure");
+    assert_eq!(failure_artifacts["code"], "computer_approval_target_stale");
+    assert_eq!(failure_artifacts["kind"], "toolContractError");
+    assert_eq!(failure_artifacts["retryable"], true);
+    assert_eq!(failure_artifacts["sideEffect"], "not_started");
+    assert!(failure_artifacts.get("effectMayHaveOccurred").is_none());
+    assert!(failure_artifacts.get("failurePhase").is_none());
+    assert!(failure_artifacts["expectedFormat"]
+        .get("sideEffect")
+        .is_none());
+    assert!(!failure_content
+        .as_deref()
+        .unwrap_or_default()
+        .contains("computer_action_uncertain"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(final_msg.text_content(), "final answer");
+}
+
+#[tokio::test]
+async fn legacy_confirmation_callback_rejects_stale_computer_target_before_prompt() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(
+        crate::tools::computer_use_tool::ComputerControlTool,
+    ));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ApprovalRequiredProvider {
+        stream_calls: Arc::clone(&stream_calls),
+        tool_name: "computer_control",
+        arguments: r#"{"action":"focus_window","observation_id":"missing","window_id":42}"#,
+    };
+    let confirmation_calls = Arc::new(AtomicUsize::new(0));
+    let confirmation_calls_for_cb = Arc::clone(&confirmation_calls);
+    let confirmation_cb: ConfirmationCallback = Arc::new(move |_message| {
+        confirmation_calls_for_cb.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { true })
+    });
+    let executor = AgentExecutor::new(
+        Box::new(provider),
+        registry,
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            require_tool_confirmation: true,
+            ..AgentConfig::default()
+        },
+    )
+    .with_confirmation_callback(confirmation_cb);
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let final_msg = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "perform the requested action".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("agent should recover from the pre-commit rejection");
+
+    let mut failure_code = None;
+    while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
+        match event {
+            Some(AgentEvent::ToolRunCompleted { run }) if run.tool_name == "computer_control" => {
+                failure_code = run
+                    .artifacts
+                    .as_ref()
+                    .and_then(|artifacts| artifacts.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+            }
+            Some(AgentEvent::ApprovalRequested { .. }) => {
+                panic!("legacy confirmation path must not emit GUI approval")
+            }
+            Some(AgentEvent::Done { .. }) | None => break,
+            Some(_) => {}
+        }
+    }
+    assert_eq!(confirmation_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        failure_code.as_deref(),
+        Some("computer_approval_target_stale")
+    );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
     assert_eq!(final_msg.text_content(), "final answer");
 }
@@ -4910,14 +5045,10 @@ async fn test_one_tool_round_budget_reserves_a_final_answer_sample() {
         RunStarted,
         RunUpdated,
         RunCompleted,
-        Preparing,
-        Start,
-        ArgsDelta,
-        Result,
     }
 
-    // Drain events and assert the stream exposes a stable lifecycle:
-    // preparing while arguments are incomplete, start only after the final
+    // Drain events and assert the stream exposes one stable ToolRun lifecycle:
+    // preparing while arguments are incomplete, running once the final
     // arguments are available, and no generic partial-arguments deltas.
     let mut lifecycle = Vec::new();
     while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
@@ -4942,33 +5073,13 @@ async fn test_one_tool_round_budget_reserves_a_final_answer_sample() {
                 assert_eq!(run.content.as_deref(), Some("tool-ok"));
                 lifecycle.push(ToolLifecycleEvent::RunCompleted);
             }
-            Some(AgentEvent::ToolCallPreparing {
-                call_id,
-                tool_name,
-                index,
-                ..
-            }) => {
-                assert_eq!(call_id, "call_1");
-                assert_eq!(tool_name, "mock_tool");
-                assert_eq!(index, 0);
-                lifecycle.push(ToolLifecycleEvent::Preparing);
-            }
-            Some(AgentEvent::ToolCallStart {
-                call_id,
-                tool_name,
-                arguments,
-            }) => {
-                assert_eq!(call_id, "call_1");
-                assert_eq!(tool_name, "mock_tool");
-                assert_eq!(arguments, r#"{"value":"ok"}"#);
-                lifecycle.push(ToolLifecycleEvent::Start);
-            }
-            Some(AgentEvent::ToolCallArgsDelta { .. }) => {
-                lifecycle.push(ToolLifecycleEvent::ArgsDelta);
-            }
-            Some(AgentEvent::ToolCallResult { .. }) => {
-                lifecycle.push(ToolLifecycleEvent::Result);
-            }
+            Some(
+                AgentEvent::ToolCallPreparing { .. }
+                | AgentEvent::ToolCallArgsDelta { .. }
+                | AgentEvent::ToolCallStart { .. }
+                | AgentEvent::ToolCallProgress { .. }
+                | AgentEvent::ToolCallResult { .. },
+            ) => panic!("retired ToolCall lifecycle must not be produced"),
             Some(AgentEvent::Done { .. }) => break,
             Some(_) => {}
             None => break,
@@ -4979,10 +5090,7 @@ async fn test_one_tool_round_budget_reserves_a_final_answer_sample() {
         lifecycle,
         vec![
             ToolLifecycleEvent::RunStarted,
-            ToolLifecycleEvent::Preparing,
             ToolLifecycleEvent::RunUpdated,
-            ToolLifecycleEvent::Start,
-            ToolLifecycleEvent::Result,
             ToolLifecycleEvent::RunCompleted,
         ],
     );
@@ -5043,7 +5151,7 @@ async fn test_executes_complete_tool_with_sparse_responses_output_index() {
     while let Ok(event) = rx.try_recv() {
         if matches!(
             event,
-            AgentEvent::ToolCallResult { ref call_id, .. } if call_id == "sparse-call"
+            AgentEvent::ToolRunCompleted { ref run } if run.call_id == "sparse-call"
         ) {
             saw_result = true;
         }
@@ -5098,8 +5206,8 @@ async fn test_parallel_tool_result_streams_when_each_tool_finishes() {
                 biased;
                 maybe_event = rx.recv() => {
                     match maybe_event {
-                        Some(AgentEvent::ToolCallResult { call_id, content, .. }) => {
-                            break (call_id, content);
+                        Some(AgentEvent::ToolRunCompleted { run }) => {
+                            break (run.call_id, run.content.unwrap_or_default());
                         }
                         Some(_) => {}
                         None => panic!("event stream closed before a tool result"),
@@ -5261,8 +5369,8 @@ async fn test_non_concurrency_safe_tool_creates_execution_barrier() {
                 biased;
                 maybe_event = rx.recv() => {
                     match maybe_event {
-                        Some(AgentEvent::ToolCallResult { call_id, content, .. }) => {
-                            break (call_id, content);
+                        Some(AgentEvent::ToolRunCompleted { run }) => {
+                            break (run.call_id, run.content.unwrap_or_default());
                         }
                         Some(_) => {}
                         None => panic!("event stream closed before a tool result"),
@@ -5401,12 +5509,9 @@ async fn request_user_input_defers_every_later_tool_call() {
     assert_eq!(executions.load(Ordering::SeqCst), 0);
     let mut deferred = false;
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(10), rx.recv()).await {
-        if let AgentEvent::ToolCallResult {
-            call_id, artifacts, ..
-        } = event
-        {
-            if call_id == "later-write" {
-                deferred = artifacts.as_ref().is_some_and(|artifact| {
+        if let AgentEvent::ToolRunCompleted { run } = event {
+            if run.call_id == "later-write" {
+                deferred = run.artifacts.as_ref().is_some_and(|artifact| {
                     artifact.get("kind").and_then(serde_json::Value::as_str) == Some("toolDeferred")
                 });
             }
@@ -5595,7 +5700,8 @@ async fn test_cancellable_tool_run_completes_as_cancelled() {
                 tokio::select! {
                     maybe_event = rx.recv() => {
                         match maybe_event {
-                            Some(AgentEvent::ToolCallStart { call_id, .. }) if call_id == "slow_call" => {
+                            Some(AgentEvent::ToolRunUpdated { run })
+                                if run.call_id == "slow_call" && run.status == ToolRunStatus::Running => {
                                 cancel_token.cancel();
                             }
                             Some(AgentEvent::ToolRunCompleted { run }) if run.call_id == "slow_call" => {
@@ -9375,9 +9481,6 @@ async fn test_provider_hosted_tool_is_rendered_without_local_dispatch_or_extra_r
                 assert!(run.provider_executed);
                 assert_eq!(run.call_id, "ws-1");
                 completed += 1;
-            }
-            Some(AgentEvent::ToolCallStart { .. }) => {
-                panic!("provider-hosted tool must not enter local dispatch")
             }
             Some(_) => {}
             None => break,

@@ -29,6 +29,9 @@
   "sendText": "Send text",
   "sharedSession": "Shared live session",
   "empty": "Open a page to start browsing with the Agent.",
+  "cleanupPending": "세션 정리가 보류 중입니다. 임시 브라우징 데이터를 삭제하려면 다시 시도하세요.",
+  "retryCleanup": "정리 다시 시도",
+  "cleanupCompleted": "브라우저 세션 정리가 완료되었습니다",
   "pickElementHint": "Move over the page and click the element you want to point out. Escape cancels.",
   "pickRegionHint": "Drag to attach page coordinates (pixels are not captured). Escape cancels."
 }

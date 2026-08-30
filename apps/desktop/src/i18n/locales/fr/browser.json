@@ -29,6 +29,9 @@
   "sendText": "Send text",
   "sharedSession": "Shared live session",
   "empty": "Open a page to start browsing with the Agent.",
+  "cleanupPending": "Le nettoyage de la session est en attente. Réessayez pour supprimer les données de navigation temporaires.",
+  "retryCleanup": "Réessayer le nettoyage",
+  "cleanupCompleted": "Nettoyage de la session du navigateur terminé",
   "pickElementHint": "Move over the page and click the element you want to point out. Escape cancels.",
   "pickRegionHint": "Drag to attach page coordinates (pixels are not captured). Escape cancels."
 }

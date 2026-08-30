@@ -288,13 +288,12 @@ mod tests {
     #[test]
     fn recitation_is_replaced_not_accumulated() {
         let state = LongTaskState::new();
-        let plan = build_task_plan(TaskPlanningInput {
-            user_query: "compare local notes",
-            route_kind: "FileOperation",
-            has_sources: true,
-            source_scope_count: 2,
-            collection_context: false,
-        });
+        let plan = build_task_plan(TaskPlanningInput::for_route(
+            "compare local notes",
+            "FileOperation",
+            true,
+            2,
+        ));
         let mut messages = vec![Message::text(Role::System, "root system")];
 
         state.refresh_plan_recitation(&mut messages, &plan, 1, 10, false);
@@ -317,13 +316,12 @@ mod tests {
     #[test]
     fn recitation_can_preserve_prefix_by_appending() {
         let state = LongTaskState::new();
-        let plan = build_task_plan(TaskPlanningInput {
-            user_query: "compare local notes",
-            route_kind: "FileOperation",
-            has_sources: true,
-            source_scope_count: 2,
-            collection_context: false,
-        });
+        let plan = build_task_plan(TaskPlanningInput::for_route(
+            "compare local notes",
+            "FileOperation",
+            true,
+            2,
+        ));
         let mut messages = vec![Message::text(Role::System, "root system")];
 
         state.refresh_plan_recitation(&mut messages, &plan, 1, 10, true);
@@ -360,13 +358,12 @@ mod tests {
     #[test]
     fn live_state_carries_plan_and_recent_loop_events() {
         let state = LongTaskState::new();
-        let plan = build_task_plan(TaskPlanningInput {
-            user_query: "audit a codebase",
-            route_kind: "CodebaseOperation",
-            has_sources: false,
-            source_scope_count: 0,
-            collection_context: false,
-        });
+        let plan = build_task_plan(TaskPlanningInput::for_route(
+            "audit a codebase",
+            "CodebaseOperation",
+            false,
+            0,
+        ));
         let mut recorder = TurnLoopRecorder::new(AgentRouteKind::CodebaseOperation, 8);
         recorder.record(TurnLoopEvent::StepStarted {
             iteration: 1,

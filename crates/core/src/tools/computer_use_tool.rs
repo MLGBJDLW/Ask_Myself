@@ -5,8 +5,8 @@
 //! the normal high-risk approval gate and must reference a fresh observation.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -77,16 +77,6 @@ struct ElementBounds {
     y: i32,
     width: u32,
     height: u32,
-}
-
-impl ElementBounds {
-    #[cfg(any(target_os = "windows", test))]
-    fn center(self) -> (i32, i32) {
-        (
-            self.x.saturating_add((self.width / 2) as i32),
-            self.y.saturating_add((self.height / 2) as i32),
-        )
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -413,19 +403,51 @@ fn claim_observed_window(
     Ok(window)
 }
 
-fn observed_window_for_approval(observation_id: &str, window_id: u64) -> Option<ObservedWindow> {
+fn observed_window_for_approval(
+    conversation_id: Option<&str>,
+    observation_id: &str,
+    window_id: u64,
+) -> Result<ObservedWindow, CoreError> {
     let now = Instant::now();
-    let store = observation_store().lock().ok()?;
-    let record = store.iter().find(|record| {
-        record.id == observation_id
-            && !record.claimed_for_control
-            && now.duration_since(record.created_at) <= OBSERVATION_TTL
-    })?;
+    let store = observation_store()
+        .lock()
+        .map_err(|_| CoreError::Internal("Computer observation store is unavailable.".into()))?;
+    let record = store
+        .iter()
+        .find(|record| record.id == observation_id)
+        .ok_or_else(|| {
+            CoreError::InvalidInput(
+                "Unknown computer observation. Capture the target again before approval."
+                    .to_string(),
+            )
+        })?;
+    if now.duration_since(record.created_at) > OBSERVATION_TTL {
+        return Err(CoreError::InvalidInput(
+            "Computer observation expired before approval. Capture the target again.".to_string(),
+        ));
+    }
+    if record.conversation_id.as_deref() != conversation_id {
+        return Err(CoreError::InvalidInput(
+            "Computer observation belongs to a different conversation. Capture the target again in this conversation."
+                .to_string(),
+        ));
+    }
+    if record.claimed_for_control {
+        return Err(CoreError::InvalidInput(
+            "Computer observation was already consumed. Capture the target again before approval."
+                .to_string(),
+        ));
+    }
     record
         .windows
         .iter()
         .find(|window| window.snapshot.id == window_id)
         .cloned()
+        .ok_or_else(|| {
+            CoreError::InvalidInput(format!(
+                "Window {window_id} was not present in observation {observation_id}."
+            ))
+        })
 }
 
 fn approval_label(value: &str) -> String {
@@ -617,6 +639,220 @@ impl ControlAction {
     }
 }
 
+fn exact_observed_window_for_approval(
+    conversation_id: Option<&str>,
+    observation_id: Option<&str>,
+    window_id: Option<u64>,
+) -> Result<ObservedWindow, CoreError> {
+    let observation_id = observation_id.ok_or_else(|| {
+        CoreError::InvalidInput(
+            "Approval requires an exact computer observation_id. Observe the window again."
+                .to_string(),
+        )
+    })?;
+    let window_id = window_id.filter(|id| *id > 0).ok_or_else(|| {
+        CoreError::InvalidInput(
+            "Approval requires an exact observed window_id. Observe the window again.".to_string(),
+        )
+    })?;
+    observed_window_for_approval(conversation_id, observation_id, window_id)
+}
+
+fn computer_observe_approval_message(
+    args: &ObserveArgs,
+    conversation_id: Option<&str>,
+) -> Result<Option<String>, CoreError> {
+    let action = args.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "capture_window" | "wait_for_change") {
+        return Ok(None);
+    }
+    let observed = exact_observed_window_for_approval(
+        conversation_id,
+        args.observation_id.as_deref(),
+        args.window_id,
+    )?;
+    Ok(Some(format!(
+        "Allow a screenshot and accessibility text from verified app '{}' window '{}' (window {}) to enter the configured model context? Screen content may be sensitive.",
+        approval_label(&observed.snapshot.app_name),
+        approval_label(&observed.snapshot.title),
+        observed.snapshot.id,
+    )))
+}
+
+fn redacted_approval_text(label: &str, value: &str) -> String {
+    format!(
+        "{label} is redacted ({} character(s))",
+        value.chars().count()
+    )
+}
+
+fn computer_observe_persistent_approval_message(
+    args: &ObserveArgs,
+    conversation_id: Option<&str>,
+) -> Result<Option<String>, CoreError> {
+    let action = args.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "capture_window" | "wait_for_change") {
+        return Ok(None);
+    }
+    let observed = exact_observed_window_for_approval(
+        conversation_id,
+        args.observation_id.as_deref(),
+        args.window_id,
+    )?;
+    Ok(Some(format!(
+        "Allow a screenshot and accessibility text from verified app '{}' ({}, window {}) to enter the configured model context? Screen content may be sensitive.",
+        approval_label(&observed.snapshot.app_name),
+        redacted_approval_text("window title", &observed.snapshot.title),
+        observed.snapshot.id,
+    )))
+}
+
+fn approval_element_label(
+    observed: &ObservedWindow,
+    element_id: &str,
+) -> Result<String, CoreError> {
+    let element = semantic_element(observed, element_id, "approval")?;
+    let name = if element.name.trim().is_empty() {
+        "unnamed".to_string()
+    } else {
+        format!("'{}'", approval_label(&element.name))
+    };
+    Ok(format!(
+        "{} {} {} at [{}, {}, {}x{}]",
+        element.id,
+        approval_label(&element.role),
+        name,
+        element.bounds.x,
+        element.bounds.y,
+        element.bounds.width,
+        element.bounds.height,
+    ))
+}
+
+fn persistent_approval_element_label(
+    observed: &ObservedWindow,
+    element_id: &str,
+) -> Result<String, CoreError> {
+    let element = semantic_element(observed, element_id, "approval")?;
+    Ok(format!(
+        "{} {} with {} at [{}, {}, {}x{}]",
+        element.id,
+        approval_label(&element.role),
+        redacted_approval_text("element name", &element.name),
+        element.bounds.x,
+        element.bounds.y,
+        element.bounds.width,
+        element.bounds.height,
+    ))
+}
+
+fn computer_control_approval_message(
+    args: &ControlArgs,
+    conversation_id: Option<&str>,
+) -> Result<String, CoreError> {
+    let action = ControlAction::parse(&args.action)?;
+    validate_control_args(args, action)?;
+    let observed = exact_observed_window_for_approval(
+        conversation_id,
+        Some(&args.observation_id),
+        Some(args.window_id),
+    )?;
+    validate_observed_targets(args, action, &observed)?;
+    let mut details = Vec::new();
+    if let Some(element_id) = args.element_id.as_deref() {
+        details.push(format!(
+            "Target element: {}.",
+            approval_element_label(&observed, element_id)?
+        ));
+    } else if let (Some(x), Some(y)) = (args.x, args.y) {
+        details.push(format!(
+            "Target coordinate: ({x}, {y}) in {} space.",
+            approval_label(args.coordinate_space.as_deref().unwrap_or("image_pixels"))
+        ));
+    }
+    if let Some(element_id) = args.to_element_id.as_deref() {
+        details.push(format!(
+            "Destination element: {}.",
+            approval_element_label(&observed, element_id)?
+        ));
+    } else if let (Some(x), Some(y)) = (args.to_x, args.to_y) {
+        details.push(format!("Destination coordinate: ({x}, {y})."));
+    }
+    if let Some(text) = args.text.as_deref() {
+        details.push(format!(
+            "Text content is hidden; {} character(s) would be entered.",
+            text.chars().count()
+        ));
+    }
+    if let Some(sequence) = args.key_sequence.as_deref() {
+        details.push(format!("Key sequence: '{}'.", approval_label(sequence)));
+    }
+    Ok(format!(
+        "Allow one '{}' action in verified app '{}' window '{}' (window {})? After delivery, a fresh screenshot and accessibility observation will enter the configured model context. {}",
+        action.label(),
+        approval_label(&observed.snapshot.app_name),
+        approval_label(&observed.snapshot.title),
+        observed.snapshot.id,
+        details.join(" ")
+    ))
+}
+
+fn computer_control_persistent_approval_message(
+    args: &ControlArgs,
+    conversation_id: Option<&str>,
+) -> Result<String, CoreError> {
+    let action = ControlAction::parse(&args.action)?;
+    validate_control_args(args, action)?;
+    let observed = exact_observed_window_for_approval(
+        conversation_id,
+        Some(&args.observation_id),
+        Some(args.window_id),
+    )?;
+    validate_observed_targets(args, action, &observed)?;
+    let mut details = Vec::new();
+    if let Some(element_id) = args.element_id.as_deref() {
+        details.push(format!(
+            "Target element: {}.",
+            persistent_approval_element_label(&observed, element_id)?
+        ));
+    } else if let (Some(x), Some(y)) = (args.x, args.y) {
+        details.push(format!(
+            "Target coordinate: ({x}, {y}) in {} space.",
+            approval_label(args.coordinate_space.as_deref().unwrap_or("image_pixels"))
+        ));
+    }
+    if let Some(element_id) = args.to_element_id.as_deref() {
+        details.push(format!(
+            "Destination element: {}.",
+            persistent_approval_element_label(&observed, element_id)?
+        ));
+    } else if let (Some(x), Some(y)) = (args.to_x, args.to_y) {
+        details.push(format!("Destination coordinate: ({x}, {y})."));
+    }
+    if let Some(text) = args.text.as_deref() {
+        details.push(format!(
+            "Text content is redacted; {} character(s) would be entered.",
+            text.chars().count()
+        ));
+    }
+    if let Some(sequence) = args.key_sequence.as_deref() {
+        let key_count = sequence
+            .split('+')
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .count();
+        details.push(format!("Key sequence is redacted; {key_count} key(s)."));
+    }
+    Ok(format!(
+        "Allow one '{}' action in verified app '{}' ({}, window {})? After delivery, a fresh screenshot and accessibility observation will enter the configured model context. {}",
+        action.label(),
+        approval_label(&observed.snapshot.app_name),
+        redacted_approval_text("window title", &observed.snapshot.title),
+        observed.snapshot.id,
+        details.join(" ")
+    ))
+}
+
 #[derive(Debug)]
 struct CapturedWindow {
     snapshot: WindowSnapshot,
@@ -654,6 +890,189 @@ struct ControlOutcome {
     route: &'static str,
     delivery: &'static str,
     effect: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlFailurePhase {
+    PreCommit,
+    EffectMayHaveOccurred,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreCommitFailureKind {
+    InvalidAction,
+    ObservationStale,
+    #[cfg(target_os = "windows")]
+    Refused,
+    #[cfg(target_os = "windows")]
+    UserTakeover,
+    Cancelled,
+    RuntimeUnavailable,
+}
+
+impl ControlFailurePhase {
+    fn effect_may_have_occurred(self) -> bool {
+        self == Self::EffectMayHaveOccurred
+    }
+}
+
+#[derive(Debug)]
+struct ControlFailure {
+    phase: ControlFailurePhase,
+    pre_commit_kind: Option<PreCommitFailureKind>,
+    observation_consumed: bool,
+}
+
+impl ControlFailure {
+    fn pre_commit(error: CoreError) -> Self {
+        Self::pre_commit_as(PreCommitFailureKind::InvalidAction, error)
+    }
+
+    fn pre_commit_as(kind: PreCommitFailureKind, _error: CoreError) -> Self {
+        Self {
+            phase: ControlFailurePhase::PreCommit,
+            pre_commit_kind: Some(kind),
+            observation_consumed: false,
+        }
+    }
+
+    fn effect_may_have_occurred(_error: CoreError) -> Self {
+        Self {
+            phase: ControlFailurePhase::EffectMayHaveOccurred,
+            pre_commit_kind: None,
+            observation_consumed: false,
+        }
+    }
+
+    fn with_observation_consumed(mut self) -> Self {
+        self.observation_consumed = true;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ControlCommitTracker {
+    effect_may_have_occurred: Arc<AtomicBool>,
+    observation_consumed: Arc<AtomicBool>,
+}
+
+impl ControlCommitTracker {
+    #[cfg(any(target_os = "windows", test))]
+    fn mark(&self) {
+        self.effect_may_have_occurred
+            .store(true, AtomicOrdering::Release);
+    }
+
+    fn effect_may_have_occurred(&self) -> bool {
+        self.effect_may_have_occurred.load(AtomicOrdering::Acquire)
+    }
+
+    fn mark_observation_consumed(&self) {
+        self.observation_consumed
+            .store(true, AtomicOrdering::Release);
+    }
+
+    fn observation_consumed(&self) -> bool {
+        self.observation_consumed.load(AtomicOrdering::Acquire)
+    }
+
+    fn failure(&self, cause: CoreError) -> ControlFailure {
+        self.failure_as(PreCommitFailureKind::InvalidAction, cause)
+    }
+
+    fn failure_as(&self, kind: PreCommitFailureKind, cause: CoreError) -> ControlFailure {
+        let mut failure = if self.effect_may_have_occurred() {
+            ControlFailure::effect_may_have_occurred(cause)
+        } else {
+            ControlFailure::pre_commit_as(kind, cause)
+        };
+        failure.observation_consumed = self.observation_consumed();
+        failure
+    }
+
+    fn result<T>(&self, result: Result<T, CoreError>) -> Result<T, ControlFailure> {
+        result.map_err(|cause| self.failure(cause))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn result_as<T>(
+        &self,
+        kind: PreCommitFailureKind,
+        result: Result<T, CoreError>,
+    ) -> Result<T, ControlFailure> {
+        result.map_err(|cause| self.failure_as(kind, cause))
+    }
+}
+
+fn before_control_commit<T>(result: Result<T, CoreError>) -> Result<T, ControlFailure> {
+    result.map_err(ControlFailure::pre_commit)
+}
+
+fn before_control_commit_as<T>(
+    kind: PreCommitFailureKind,
+    result: Result<T, CoreError>,
+) -> Result<T, ControlFailure> {
+    result.map_err(|cause| ControlFailure::pre_commit_as(kind, cause))
+}
+
+fn control_failure_contract(failure: &ControlFailure) -> (&'static str, bool) {
+    if failure.phase.effect_may_have_occurred() {
+        ("computer_action_uncertain", false)
+    } else {
+        match failure
+            .pre_commit_kind
+            .unwrap_or(PreCommitFailureKind::RuntimeUnavailable)
+        {
+            PreCommitFailureKind::InvalidAction => ("invalid_computer_action", true),
+            PreCommitFailureKind::ObservationStale => ("computer_observation_stale", true),
+            #[cfg(target_os = "windows")]
+            PreCommitFailureKind::Refused => ("computer_action_refused", false),
+            #[cfg(target_os = "windows")]
+            PreCommitFailureKind::UserTakeover => ("computer_user_takeover", false),
+            PreCommitFailureKind::Cancelled => ("computer_control_cancelled", false),
+            PreCommitFailureKind::RuntimeUnavailable => {
+                ("computer_control_runtime_unavailable", true)
+            }
+        }
+    }
+}
+
+fn control_failure_result(call_id: &str, failure: &ControlFailure) -> ToolResult {
+    let (code, retryable) = control_failure_contract(failure);
+    let message = match code {
+        "computer_action_uncertain" => "Computer action crossed its commit boundary and may have been partially delivered. Inspect fresh state and do not blindly retry.",
+        "computer_observation_stale" => "Computer observation is stale, consumed, or no longer matches the target. Re-observe before acting.",
+        "computer_action_refused" => "Computer action was refused by a protected-target or sensitive-input safety rule before input was sent.",
+        "computer_user_takeover" => "Computer action stopped before commit because physical input or focus takeover was detected.",
+        "computer_control_cancelled" => "Computer action was cancelled before its OS input worker committed a side effect.",
+        "computer_control_runtime_unavailable" => "Computer control runtime or durable action receipts were unavailable before desktop input was sent.",
+        _ => "Computer action arguments or pre-commit conditions were invalid. Review the schema and fresh observation without reusing sensitive values.",
+    };
+    crate::tools::structured_tool_error_result_with_side_effect(
+        call_id,
+        code,
+        message,
+        serde_json::json!({
+            "tool": "computer_control",
+            "arguments": "must match the current computer_control schema and exact conversation-scoped observation",
+            "recovery": if failure.observation_consumed {
+                "capture a fresh observation before any retry because the approved observation token was consumed"
+            } else if failure.phase.effect_may_have_occurred() {
+                "capture fresh visual state or ask the user; never blindly retry the same action"
+            } else if code == "computer_observation_stale" {
+                "re-observe the exact target and retry once with the fresh observation"
+            } else {
+                "repair the precondition or arguments, then retry only if the request still requires this action"
+            }
+        }),
+        retryable,
+        if failure.phase.effect_may_have_occurred() {
+            crate::tools::ToolSideEffect::MayHaveOccurred
+        } else {
+            crate::tools::ToolSideEffect::NotStarted
+        },
+        Some(failure.observation_consumed),
+    )
 }
 
 #[derive(Debug)]
@@ -1309,6 +1728,24 @@ where
         .map_err(|error| CoreError::Internal(format!("Computer use worker failed: {error}")))?
 }
 
+async fn blocking_control<T, F>(
+    tracker: ControlCommitTracker,
+    operation: F,
+) -> Result<T, ControlFailure>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ControlFailure> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            tracker.failure_as(
+                PreCommitFailureKind::RuntimeUnavailable,
+                CoreError::Internal(format!("Computer control worker failed: {error}")),
+            )
+        })?
+}
+
 pub struct ComputerObserveTool;
 
 #[async_trait]
@@ -1343,6 +1780,32 @@ impl Tool for ComputerObserveTool {
             "Allow this window's screenshot and accessibility text to enter the configured model context? Screen content may be sensitive."
                 .to_string()
         })
+    }
+
+    fn confirmation_message_in_context(
+        &self,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        let args: ObserveArgs = serde_json::from_value(args.clone()).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "Invalid computer_observe approval arguments: {error}"
+            ))
+        })?;
+        computer_observe_approval_message(&args, conversation_id)
+    }
+
+    fn confirmation_message_for_persistence_in_context(
+        &self,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        let args: ObserveArgs = serde_json::from_value(args.clone()).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "Invalid computer_observe approval arguments: {error}"
+            ))
+        })?;
+        computer_observe_persistent_approval_message(&args, conversation_id)
     }
 
     async fn execute(
@@ -1647,72 +2110,41 @@ impl Tool for ComputerControlTool {
             .get("window_id")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        let observation_id = args
-            .get("observation_id")
-            .and_then(serde_json::Value::as_str);
-        let trusted_target = observation_id
-            .and_then(|observation_id| observed_window_for_approval(observation_id, window_id));
-        let target = trusted_target
-            .as_ref()
-            .map(|observed| {
-                format!(
-                    "verified app '{}' (PID {}, class '{}', session {}), window {}",
-                    approval_label(&observed.snapshot.app_name),
-                    observed.snapshot.pid,
-                    approval_label(&observed.snapshot.window_class),
-                    observed.snapshot.session_id,
-                    observed.snapshot.id
-                )
-            })
-            .unwrap_or_else(|| format!("unverified or expired observed window {window_id}"));
-        let action_uses_element = matches!(
-            action.trim().to_ascii_lowercase().as_str(),
-            "move_mouse" | "click" | "drag" | "scroll" | "type_text" | "invoke" | "set_value"
-        );
-        let element = action_uses_element
-            .then(|| args.get("element_id"))
-            .flatten()
-            .and_then(serde_json::Value::as_str)
-            .and_then(|element_id| {
-                trusted_target.as_ref().and_then(|observed| {
-                    observed
-                        .elements
-                        .iter()
-                        .find(|element| element.id == element_id)
-                        .map(|element| format!(" Target element: {} {}.", element.id, element.role))
-                })
-            })
-            .unwrap_or_default();
-        let destination = (action.trim().eq_ignore_ascii_case("drag"))
-            .then(|| args.get("to_element_id"))
-            .flatten()
-            .and_then(serde_json::Value::as_str)
-            .and_then(|element_id| {
-                trusted_target.as_ref().and_then(|observed| {
-                    observed
-                        .elements
-                        .iter()
-                        .find(|element| element.id == element_id)
-                        .map(|element| {
-                            format!(" Destination element: {} {}.", element.id, element.role)
-                        })
-                })
-            })
-            .unwrap_or_default();
-        let reason = args
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .filter(|reason| !reason.trim().is_empty())
-            .map(|reason| {
-                format!(
-                    " A reason was supplied ({} characters) and is hidden from durable audit output.",
-                    reason.chars().count()
-                )
-            })
-            .unwrap_or_default();
         Some(format!(
-            "Allow computer action '{action}' in {target} and return a fresh post-action screenshot/accessibility observation to the configured model context?{element}{destination}{reason}"
+            "Allow one '{action}' action in observed window {window_id}? The exact app, title, element or coordinate is verified from the conversation-scoped observation before this prompt is shown."
         ))
+    }
+
+    fn confirmation_message_in_context(
+        &self,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        let args: ControlArgs = serde_json::from_value(args.clone()).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "Invalid computer_control approval arguments: {error}"
+            ))
+        })?;
+        Ok(Some(computer_control_approval_message(
+            &args,
+            conversation_id,
+        )?))
+    }
+
+    fn confirmation_message_for_persistence_in_context(
+        &self,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        let args: ControlArgs = serde_json::from_value(args.clone()).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "Invalid computer_control approval arguments: {error}"
+            ))
+        })?;
+        Ok(Some(computer_control_persistent_approval_message(
+            &args,
+            conversation_id,
+        )?))
     }
 
     fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
@@ -1727,175 +2159,247 @@ impl Tool for ComputerControlTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
-        let crate::tools::ToolExecutionContext {
-            call_id,
-            arguments,
-            db: _db,
-            source_scope: _source_scope,
-            conversation_id,
-            turn_id,
-            activity_runtime,
-            ..
-        } = context;
-        let activity_runtime = match activity_runtime {
-            Some(runtime) if runtime.is_persistent() => Some(runtime),
-            _ => {
-                return Err(CoreError::Internal(
-                    "Computer control requires a persistent action-receipt runtime; no desktop input was sent."
-                        .to_string(),
-                ));
-            }
-        };
-        let args: ControlArgs = serde_json::from_str(arguments).map_err(|error| {
-            CoreError::InvalidInput(format!("Invalid computer_control arguments: {error}"))
-        })?;
-        let action = ControlAction::parse(&args.action)?;
-        validate_control_args(&args, action)?;
-        let capture_options = CaptureOptions::from_control(&args)?;
-        let preflight_observation =
-            observed_window(conversation_id, &args.observation_id, args.window_id)?;
-        validate_observed_targets(&args, action, &preflight_observation)?;
-        // Queueing remains cancellation-safe: if the outer tool deadline
-        // expires while waiting, no worker is spawned and no token is claimed.
-        let control_guard = crate::browser_runtime::acquire_desktop_input_permit().await?;
-        let conversation_id_owned = conversation_id.map(str::to_string);
-        let window_id = args.window_id;
-        let reason_summary = args.reason.as_ref().map(|reason| {
-            serde_json::json!({
-                "redacted": true,
-                "charCount": reason.chars().count()
-            })
-        });
-        let activity_id = activity_runtime.map(|_| {
-            computer_control_activity_id(conversation_id, turn_id, call_id, &args.observation_id)
-        });
-        if let (Some(runtime), Some(activity_id)) = (activity_runtime, activity_id.as_deref()) {
-            let mut spec = crate::activity::ActivitySpec::new(
-                crate::activity::ActivitySurface::Desktop,
-                "computer_control",
-            )
-            .with_activity_id(activity_id)
-            .with_session_id(call_id);
-            if let Some(conversation_id) = conversation_id {
-                spec = spec.with_conversation_id(conversation_id);
-            }
-            if let Some(turn_id) = turn_id {
-                spec = spec.with_turn_id(turn_id);
-            }
-            runtime.start(spec)?;
-        }
-        let worker_activity_runtime = activity_runtime.cloned();
-        let worker_activity_id = activity_id.clone();
-        let action_label = action.label();
-        let worker_state = std::sync::Arc::new(AtomicU8::new(WORKER_PENDING));
-        let mut pending_worker =
-            PendingWorkerCancellation::new(std::sync::Arc::clone(&worker_state));
-        let worker_result = blocking(move || {
-            let claimed_activity_runtime = worker_activity_runtime.clone();
-            let claimed_activity_id = worker_activity_id.clone();
-            let result = (move || {
-                if worker_state
-                    .compare_exchange(
-                        WORKER_PENDING,
-                        WORKER_STARTED,
-                        AtomicOrdering::AcqRel,
-                        AtomicOrdering::Acquire,
-                    )
-                    .is_err()
-                {
-                    return Err(CoreError::Cancelled(
-                        "Computer control was cancelled before its OS worker started.".to_string(),
+        let failure_call_id = context.call_id.to_string();
+        let result: Result<ToolResult, ControlFailure> = async move {
+            let crate::tools::ToolExecutionContext {
+                call_id,
+                arguments,
+                db: _db,
+                source_scope: _source_scope,
+                conversation_id,
+                turn_id,
+                activity_runtime,
+                ..
+            } = context;
+            let activity_runtime = match activity_runtime {
+                Some(runtime) if runtime.is_persistent() => Some(runtime),
+                _ => {
+                    return Err(ControlFailure::pre_commit_as(
+                        PreCommitFailureKind::RuntimeUnavailable,
+                        CoreError::Internal(
+                            "Computer control requires a persistent action-receipt runtime; no desktop input was sent."
+                                .to_string(),
+                        ),
                     ));
                 }
-                // This guard lives inside the non-cancellable OS worker. If the
-                // async caller times out, the actual input worker retains global
-                // ownership until it truly exits, preventing cross-run overlap.
-                let _control_guard = control_guard;
-                let _cross_process_guard =
-                    crate::browser_runtime::try_acquire_cross_process_input()?;
-                if let (Some(runtime), Some(activity_id)) = (
-                    claimed_activity_runtime.as_ref(),
-                    claimed_activity_id.as_deref(),
-                ) {
-                    let _ = runtime.append(
-                        activity_id,
-                        crate::activity::ActivityEventKind::Progress,
-                        serde_json::json!({
-                            "stage": "claimed",
-                            "action": action_label,
-                            "windowId": window_id,
-                        }),
-                    );
-                }
-                let observed = claim_observed_window(
-                    conversation_id_owned.as_deref(),
+            };
+            let args: ControlArgs = before_control_commit(serde_json::from_str(arguments).map_err(|error| {
+                CoreError::InvalidInput(format!("Invalid computer_control arguments: {error}"))
+            }))?;
+            let action = before_control_commit(ControlAction::parse(&args.action))?;
+            before_control_commit(validate_control_args(&args, action))?;
+            let capture_options = before_control_commit(CaptureOptions::from_control(&args))?;
+            let preflight_observation = before_control_commit_as(
+                PreCommitFailureKind::ObservationStale,
+                observed_window(conversation_id, &args.observation_id, args.window_id),
+            )?;
+            before_control_commit(validate_observed_targets(
+                &args,
+                action,
+                &preflight_observation,
+            ))?;
+            // Queueing remains cancellation-safe: if the outer tool deadline
+            // expires while waiting, no worker is spawned and no token is claimed.
+            let control_guard = before_control_commit_as(
+                PreCommitFailureKind::RuntimeUnavailable,
+                crate::browser_runtime::acquire_desktop_input_permit().await,
+            )?;
+            let conversation_id_owned = conversation_id.map(str::to_string);
+            let window_id = args.window_id;
+            let reason_summary = args.reason.as_ref().map(|reason| {
+                serde_json::json!({
+                    "redacted": true,
+                    "charCount": reason.chars().count()
+                })
+            });
+            let activity_id = activity_runtime.map(|_| {
+                computer_control_activity_id(
+                    conversation_id,
+                    turn_id,
+                    call_id,
                     &args.observation_id,
-                    args.window_id,
+                )
+            });
+            if let (Some(runtime), Some(activity_id)) = (activity_runtime, activity_id.as_deref()) {
+                let mut spec = crate::activity::ActivitySpec::new(
+                    crate::activity::ActivitySurface::Desktop,
+                    "computer_control",
+                )
+                .with_activity_id(activity_id)
+                .with_session_id(call_id);
+                if let Some(conversation_id) = conversation_id {
+                    spec = spec.with_conversation_id(conversation_id);
+                }
+                if let Some(turn_id) = turn_id {
+                    spec = spec.with_turn_id(turn_id);
+                }
+                before_control_commit_as(
+                    PreCommitFailureKind::RuntimeUnavailable,
+                    runtime.start(spec),
                 )?;
-                platform::control_window(action, &args, &observed, capture_options)
-            })();
-            if let (Some(runtime), Some(activity_id)) = (
-                worker_activity_runtime.as_ref(),
-                worker_activity_id.as_deref(),
-            ) {
-                match &result {
-                    Ok(outcome) => {
-                        let _ = runtime.append(
-                            activity_id,
-                            crate::activity::ActivityEventKind::DesktopObservation,
-                            serde_json::json!({
-                                "schemaVersion": 2,
-                                "stage": "observed",
-                                "action": action_label,
-                                "windowId": window_id,
-                                "route": outcome.route,
-                                "delivery": outcome.delivery,
-                                "effect": outcome.effect,
-                                "stateChanged": outcome.state_changed,
-                                "screenContentPersistence": "removed"
-                            }),
-                        );
-                        let _ = runtime.transition(
-                            activity_id,
-                            crate::activity::ActivityState::Completed,
-                            serde_json::json!({
-                                "stage": "observed",
-                                "inputDelivered": true,
-                                "stateChanged": outcome.state_changed,
-                            }),
-                        );
+            }
+            let worker_activity_runtime = activity_runtime.cloned();
+            let worker_activity_id = activity_id.clone();
+            let action_label = action.label();
+            let worker_state = std::sync::Arc::new(AtomicU8::new(WORKER_PENDING));
+            let mut pending_worker =
+                PendingWorkerCancellation::new(std::sync::Arc::clone(&worker_state));
+            let commit_tracker = ControlCommitTracker::default();
+            let worker_commit_tracker = commit_tracker.clone();
+            let worker_result = blocking_control(commit_tracker.clone(), move || {
+                let claimed_activity_runtime = worker_activity_runtime.clone();
+                let claimed_activity_id = worker_activity_id.clone();
+                let action_commit_tracker = worker_commit_tracker.clone();
+                let mut result = (move || {
+                    if worker_state
+                        .compare_exchange(
+                            WORKER_PENDING,
+                            WORKER_STARTED,
+                            AtomicOrdering::AcqRel,
+                            AtomicOrdering::Acquire,
+                        )
+                        .is_err()
+                    {
+                        return Err(ControlFailure::pre_commit_as(
+                            PreCommitFailureKind::Cancelled,
+                            CoreError::Cancelled(
+                                "Computer control was cancelled before its OS worker started."
+                                    .to_string(),
+                            ),
+                        ));
                     }
-                    Err(error) => {
-                        // The concrete platform may fail after a partial input
-                        // sequence. Persist an uncertainty marker from the
-                        // worker itself so dropping the async caller cannot
-                        // turn it into a silently resumable action.
-                        let _ = runtime.transition(
-                            activity_id,
-                            crate::activity::ActivityState::Failed,
-                            serde_json::json!({
-                                "stage": "uncertain",
-                                "effectMayHaveOccurred": true,
-                                "error": error.to_string(),
+                    // This guard lives inside the non-cancellable OS worker. If the
+                    // async caller times out, the actual input worker retains global
+                    // ownership until it truly exits, preventing cross-run overlap.
+                    let _control_guard = control_guard;
+                    let _cross_process_guard = before_control_commit_as(
+                        PreCommitFailureKind::RuntimeUnavailable,
+                        crate::browser_runtime::try_acquire_cross_process_input(),
+                    )?;
+                    if let (Some(runtime), Some(activity_id)) = (
+                        claimed_activity_runtime.as_ref(),
+                        claimed_activity_id.as_deref(),
+                    ) {
+                        before_control_commit_as(
+                            PreCommitFailureKind::RuntimeUnavailable,
+                            runtime.append(
+                                activity_id,
+                                crate::activity::ActivityEventKind::Progress,
+                                serde_json::json!({
+                                    "stage": "claimed",
+                                    "action": action_label,
+                                    "windowId": window_id,
+                                }),
+                            ),
+                        )?;
+                    }
+                    let observed = before_control_commit_as(
+                        PreCommitFailureKind::ObservationStale,
+                        claim_observed_window(
+                            conversation_id_owned.as_deref(),
+                            &args.observation_id,
+                            args.window_id,
+                        ),
+                    )?;
+                    action_commit_tracker.mark_observation_consumed();
+                    platform::control_window(
+                        action,
+                        &args,
+                        &observed,
+                        capture_options,
+                        &action_commit_tracker,
+                    )
+                    .map_err(ControlFailure::with_observation_consumed)
+                })();
+                if let (Some(runtime), Some(activity_id)) = (
+                    worker_activity_runtime.as_ref(),
+                    worker_activity_id.as_deref(),
+                ) {
+                    let observation_consumed = match &result {
+                        Ok(_) => true,
+                        Err(failure) => failure.observation_consumed,
+                    };
+                    let receipt_result = match &result {
+                        Ok(outcome) => runtime
+                            .append(
+                                activity_id,
+                                crate::activity::ActivityEventKind::DesktopObservation,
+                                serde_json::json!({
+                                    "schemaVersion": 2,
+                                    "stage": "observed",
+                                    "action": action_label,
+                                    "windowId": window_id,
+                                    "route": outcome.route,
+                                    "delivery": outcome.delivery,
+                                    "effect": outcome.effect,
+                                    "stateChanged": outcome.state_changed,
+                                    "screenContentPersistence": "removed"
+                                }),
+                            )
+                            .and_then(|_| {
+                                runtime.transition(
+                                    activity_id,
+                                    crate::activity::ActivityState::Completed,
+                                    serde_json::json!({
+                                        "stage": "observed",
+                                        "inputDelivered": true,
+                                        "effectMayHaveOccurred": true,
+                                        "stateChanged": outcome.state_changed,
+                                    }),
+                                )
                             }),
+                        Err(failure) => {
+                            let effect_may_have_occurred =
+                                failure.phase.effect_may_have_occurred();
+                            let (failure_code, _) = control_failure_contract(failure);
+                            runtime.transition(
+                                activity_id,
+                                crate::activity::ActivityState::Failed,
+                                serde_json::json!({
+                                    "stage": if effect_may_have_occurred {
+                                        "uncertain"
+                                    } else {
+                                        "precommit_rejected"
+                                    },
+                                    "inputDelivered": if effect_may_have_occurred {
+                                        serde_json::Value::Null
+                                    } else {
+                                        serde_json::Value::Bool(false)
+                                    },
+                                    "effectMayHaveOccurred": effect_may_have_occurred,
+                                    "observationConsumed": failure.observation_consumed,
+                                    "failureCode": failure_code,
+                                }),
+                            )
+                        }
+                    };
+                    if let Err(error) = receipt_result {
+                        tracing::warn!(
+                            activity_id,
+                            effect_may_have_occurred = worker_commit_tracker
+                                .effect_may_have_occurred(),
+                            "computer control receipt persistence failed: {error}"
                         );
+                        let mut receipt_failure = worker_commit_tracker.failure_as(
+                            PreCommitFailureKind::RuntimeUnavailable,
+                            CoreError::Internal(
+                                "Computer control action receipt could not be persisted."
+                                    .to_string(),
+                            ),
+                        );
+                        receipt_failure.observation_consumed = observation_consumed;
+                        result = Err(receipt_failure);
                     }
                 }
-            }
-            result
-        })
-        .await;
-        pending_worker.disarm();
-        let outcome = match worker_result {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                return Err(error);
-            }
-        };
+                result
+            })
+            .await;
+            pending_worker.disarm();
+            let outcome = worker_result?;
 
-        let (fresh_observation_id, capture_data_value, attachments) =
-            if let Some(capture) = outcome.capture.as_ref() {
-                let observation_id = remember_observation(
+            let (fresh_observation_id, capture_data_value, attachments) =
+                if let Some(capture) = outcome.capture.as_ref() {
+                    let observation_id = commit_tracker.result(remember_observation(
                     conversation_id,
                     vec![ObservedWindow {
                         snapshot: capture.snapshot.clone(),
@@ -1907,15 +2411,15 @@ impl Tool for ComputerControlTool {
                         screenshot_guard: screenshot_guard(&capture.png),
                         elements: capture.elements.clone(),
                     }],
-                )?;
-                (
-                    Some(observation_id.clone()),
-                    Some(capture_data(&observation_id, capture)),
-                    vec![screenshot_attachment(capture)],
-                )
-            } else {
-                (None, None, Vec::new())
-            };
+                ))?;
+                    (
+                        Some(observation_id.clone()),
+                        Some(capture_data(&observation_id, capture)),
+                        vec![screenshot_attachment(capture)],
+                    )
+                } else {
+                    (None, None, Vec::new())
+                };
 
         let data = serde_json::json!({
             "schemaVersion": 2,
@@ -1930,7 +2434,7 @@ impl Tool for ComputerControlTool {
             "effect": outcome.effect,
             "windowId": window_id,
             "reason": reason_summary,
-            "actionReceiptId": activity_id,
+            "actionReceiptId": activity_id.clone(),
             "observationId": fresh_observation_id,
             "observation": capture_data_value,
             "observationError": outcome.observation_error,
@@ -1960,22 +2464,28 @@ impl Tool for ComputerControlTool {
             llm_content.push_str(&failure);
         }
 
-        Ok(ToolResult::from_output(
-            call_id,
-            false,
-            ToolOutput {
-                llm_content,
-                display_content,
-                data: Some(data),
-                artifacts: Some(serde_json::json!({
-                    "kind": "computerControl",
-                    "activityId": activity_runtime.map(|_| call_id),
-                    "approved": true,
-                    "trustBoundary": desktop_control_trust_boundary()
-                })),
-                attachments,
-            },
-        ))
+            Ok(ToolResult::from_output(
+                call_id,
+                false,
+                ToolOutput {
+                    llm_content,
+                    display_content,
+                    data: Some(data),
+                    artifacts: Some(serde_json::json!({
+                        "kind": "computerControl",
+                        "activityId": activity_id,
+                        "approved": true,
+                        "trustBoundary": desktop_control_trust_boundary()
+                    })),
+                    attachments,
+                },
+            ))
+        }
+        .await;
+        Ok(match result {
+            Ok(result) => result,
+            Err(failure) => control_failure_result(&failure_call_id, &failure),
+        })
     }
 }
 
@@ -2049,14 +2559,19 @@ mod platform {
     use windows_capture::window::Window;
 
     use super::{
-        screenshot_difference, screenshot_guard, screenshot_guard_patch_matches,
-        screenshot_signature, screenshot_signatures_match, CaptureMode, CaptureOptions,
-        CapturedWindow, ControlAction, ControlArgs, ControlOutcome, CoordinateSpace, CoreError,
-        ElementBounds, ObservedWindow, UiElementSnapshot, VisualVerification, WaitOutcome,
-        WindowSnapshot,
+        before_control_commit, screenshot_difference, screenshot_guard,
+        screenshot_guard_patch_matches, screenshot_signature, screenshot_signatures_match,
+        CaptureMode, CaptureOptions, CapturedWindow, ControlAction, ControlArgs,
+        ControlCommitTracker, ControlFailure, ControlOutcome, CoordinateSpace, CoreError,
+        ElementBounds, ObservedWindow, PreCommitFailureKind, UiElementSnapshot, VisualVerification,
+        WaitOutcome, WindowSnapshot,
     };
 
-    const MAX_CAPTURE_EDGE: u32 = 1_600;
+    // Coordinate-bearing screenshots must already fit the same pixel envelope
+    // used by the model image normalizer. The dispatcher may re-encode a noisy
+    // PNG to bounded JPEG, but it must never resize pixels after observation
+    // metadata and the single-use control token have been published.
+    const MAX_CAPTURE_EDGE: u32 = crate::media::MAX_LLM_IMAGE_DIMENSION;
     const MAX_NATIVE_CAPTURE_PIXELS: u64 = 16_777_216;
     const MAX_SCREENSHOT_PNG_BYTES: usize = 12 * 1024 * 1024;
     const INPUT_SETTLE: Duration = Duration::from_millis(70);
@@ -2909,9 +3424,15 @@ mod platform {
     }
 
     struct LiveElement {
+        automation: IUIAutomation,
         element: IUIAutomationElement,
         snapshot: UiElementSnapshot,
         _apartment: ComApartment,
+    }
+
+    struct ResolvedPointerTarget {
+        point: (i32, i32),
+        live: Option<LiveElement>,
     }
 
     fn semantic_identity_matches(
@@ -3014,6 +3535,7 @@ mod platform {
             )));
         };
         Ok(LiveElement {
+            automation,
             element,
             snapshot,
             _apartment: apartment,
@@ -3025,11 +3547,15 @@ mod platform {
         window: &WindowSnapshot,
     ) -> Result<(i32, i32), CoreError> {
         let mut clickable = windows::Win32::Foundation::POINT::default();
-        let point = unsafe { live.element.GetClickablePoint(&mut clickable) }
-            .ok()
-            .filter(|available| available.as_bool())
-            .map(|_| (clickable.x, clickable.y))
-            .unwrap_or_else(|| live.snapshot.screen_bounds.center());
+        let available = unsafe { live.element.GetClickablePoint(&mut clickable) }
+            .map_err(|error| platform_error("resolve exact UI Automation click point", error))?;
+        if !available.as_bool() {
+            return Err(invalid(format!(
+                "Element {} has no verified clickable point; refusing to guess its center.",
+                live.snapshot.id
+            )));
+        }
+        let point = (clickable.x, clickable.y);
         let right = i64::from(window.x) + i64::from(window.width);
         let bottom = i64::from(window.y) + i64::from(window.height);
         if i64::from(point.0) < i64::from(window.x)
@@ -3041,15 +3567,54 @@ mod platform {
                 "The live UI Automation click point is outside the approved target window. Capture again.",
             ));
         }
+        ensure_point_matches_live_element(live, point)?;
         Ok(point)
     }
 
-    fn invoke_element(element: &IUIAutomationElement) -> Result<&'static str, CoreError> {
+    fn ensure_point_matches_live_element(
+        live: &LiveElement,
+        point: (i32, i32),
+    ) -> Result<(), CoreError> {
+        let hit = unsafe {
+            live.automation
+                .ElementFromPoint(windows::Win32::Foundation::POINT {
+                    x: point.0,
+                    y: point.1,
+                })
+        }
+        .map_err(|error| platform_error("hit-test UI Automation target", error))?;
+        let walker = unsafe { live.automation.ControlViewWalker() }
+            .map_err(|error| platform_error("create UI Automation target walker", error))?;
+        let mut candidate = Some(hit);
+        for _ in 0..64 {
+            let Some(element) = candidate else {
+                break;
+            };
+            let matches = unsafe { live.automation.CompareElements(&element, &live.element) }
+                .map_err(|error| platform_error("compare UI Automation hit target", error))?;
+            if matches.as_bool() {
+                return Ok(());
+            }
+            candidate = unsafe { walker.GetParentElement(&element) }.ok();
+        }
+        Err(invalid(format!(
+            "The verified click point no longer belongs to element {} or one of its descendants; capture again.",
+            live.snapshot.id
+        )))
+    }
+
+    fn invoke_element(
+        element: &IUIAutomationElement,
+        commit_tracker: &ControlCommitTracker,
+    ) -> Result<&'static str, ControlFailure> {
         if let Ok(pattern) = unsafe {
             element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
         } {
-            unsafe { pattern.Invoke() }
-                .map_err(|error| platform_error("invoke UI Automation element", error))?;
+            commit_tracker.mark();
+            commit_tracker.result(
+                unsafe { pattern.Invoke() }
+                    .map_err(|error| platform_error("invoke UI Automation element", error)),
+            )?;
             return Ok("invoke_pattern");
         }
         if let Ok(pattern) = unsafe {
@@ -3057,15 +3622,21 @@ mod platform {
                 UIA_SelectionItemPatternId,
             )
         } {
-            unsafe { pattern.Select() }
-                .map_err(|error| platform_error("select UI Automation element", error))?;
+            commit_tracker.mark();
+            commit_tracker.result(
+                unsafe { pattern.Select() }
+                    .map_err(|error| platform_error("select UI Automation element", error)),
+            )?;
             return Ok("selection_item_pattern");
         }
         if let Ok(pattern) = unsafe {
             element.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
         } {
-            unsafe { pattern.Toggle() }
-                .map_err(|error| platform_error("toggle UI Automation element", error))?;
+            commit_tracker.mark();
+            commit_tracker.result(
+                unsafe { pattern.Toggle() }
+                    .map_err(|error| platform_error("toggle UI Automation element", error)),
+            )?;
             return Ok("toggle_pattern");
         }
         if let Ok(pattern) = unsafe {
@@ -3073,58 +3644,78 @@ mod platform {
                 UIA_ExpandCollapsePatternId,
             )
         } {
-            let state = unsafe { pattern.CurrentExpandCollapseState() }
-                .map_err(|error| platform_error("read expand/collapse state", error))?;
+            let state = before_control_commit(
+                unsafe { pattern.CurrentExpandCollapseState() }
+                    .map_err(|error| platform_error("read expand/collapse state", error)),
+            )?;
             if state == ExpandCollapseState_Expanded {
-                unsafe { pattern.Collapse() }
-                    .map_err(|error| platform_error("collapse UI Automation element", error))?;
+                commit_tracker.mark();
+                commit_tracker
+                    .result(unsafe { pattern.Collapse() }.map_err(|error| {
+                        platform_error("collapse UI Automation element", error)
+                    }))?;
                 return Ok("collapse_pattern");
             }
             if state == ExpandCollapseState_Collapsed
                 || state == ExpandCollapseState_PartiallyExpanded
             {
-                unsafe { pattern.Expand() }
-                    .map_err(|error| platform_error("expand UI Automation element", error))?;
+                commit_tracker.mark();
+                commit_tracker.result(
+                    unsafe { pattern.Expand() }
+                        .map_err(|error| platform_error("expand UI Automation element", error)),
+                )?;
                 return Ok("expand_pattern");
             }
         }
-        Err(invalid(
+        Err(ControlFailure::pre_commit(invalid(
             "Target does not expose an invokable UI Automation pattern. Capture again and use click as an approved fallback.",
-        ))
+        )))
     }
 
     fn set_element_value(
         element: &IUIAutomationElement,
         live: &UiElementSnapshot,
         value: &str,
-    ) -> Result<(), CoreError> {
-        let current_is_password = unsafe { element.CurrentIsPassword() }.map_err(|error| {
-            platform_error(
-                "verify UI Automation password state before setting value",
-                error,
-            )
-        })?;
+        commit_tracker: &ControlCommitTracker,
+    ) -> Result<(), ControlFailure> {
+        let current_is_password =
+            before_control_commit(unsafe { element.CurrentIsPassword() }.map_err(|error| {
+                platform_error(
+                    "verify UI Automation password state before setting value",
+                    error,
+                )
+            }))?;
         if live.password || current_is_password.as_bool() {
-            return Err(invalid(
+            return Err(ControlFailure::pre_commit_as(
+                PreCommitFailureKind::Refused,
+                invalid(
                 "Refusing set_value on a password element. Secrets must never enter computer-use tool arguments.",
+                ),
             ));
         }
-        let pattern = unsafe {
+        let pattern = before_control_commit(unsafe {
             element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
         }
         .map_err(|_| {
             invalid(
                 "Target does not expose the UI Automation Value pattern. Use an approved foreground input only if the user explicitly requested it.",
             )
-        })?;
-        if unsafe { pattern.CurrentIsReadOnly() }
-            .map_err(|error| platform_error("read UI Automation value state", error))?
-            .as_bool()
-        {
-            return Err(invalid("Target UI Automation value is read-only."));
+        }))?;
+        let read_only = before_control_commit(
+            unsafe { pattern.CurrentIsReadOnly() }
+                .map_err(|error| platform_error("read UI Automation value state", error)),
+        )?;
+        if read_only.as_bool() {
+            return Err(ControlFailure::pre_commit_as(
+                PreCommitFailureKind::Refused,
+                invalid("Target UI Automation value is read-only."),
+            ));
         }
-        unsafe { pattern.SetValue(&BSTR::from(value)) }
-            .map_err(|error| platform_error("set UI Automation value", error))
+        commit_tracker.mark();
+        commit_tracker.result(
+            unsafe { pattern.SetValue(&BSTR::from(value)) }
+                .map_err(|error| platform_error("set UI Automation value", error)),
+        )
     }
 
     fn ensure_focused_target_is_not_password(window: &WindowSnapshot) -> Result<(), CoreError> {
@@ -3178,21 +3769,28 @@ mod platform {
         HWND(window_id as usize as *mut c_void)
     }
 
-    fn focus_window(window: &WindowSnapshot) -> Result<(), CoreError> {
+    fn focus_window(
+        window: &WindowSnapshot,
+        commit_tracker: &ControlCommitTracker,
+    ) -> Result<(), CoreError> {
         let handle = hwnd(window.id);
         unsafe {
             if !IsWindow(Some(handle)).as_bool() {
                 return Err(invalid(format!("Window {} is no longer valid.", window.id)));
             }
             if IsIconic(handle).as_bool() {
+                commit_tracker.mark();
                 let _ = ShowWindow(handle, SW_RESTORE);
                 thread::sleep(INPUT_SETTLE);
             }
-            if GetForegroundWindow() != handle && !SetForegroundWindow(handle).as_bool() {
-                return Err(invalid(format!(
-                    "Windows refused to focus window {}. Bring it to the foreground and retry.",
-                    window.id
-                )));
+            if GetForegroundWindow() != handle {
+                commit_tracker.mark();
+                if !SetForegroundWindow(handle).as_bool() {
+                    return Err(invalid(format!(
+                        "Windows refused to focus window {}. Bring it to the foreground and retry.",
+                        window.id
+                    )));
+                }
             }
         }
         thread::sleep(INPUT_SETTLE);
@@ -3414,7 +4012,7 @@ mod platform {
         Ok((current.x + local_x, current.y + local_y))
     }
 
-    fn target_point(
+    fn resolve_pointer_target(
         element_id: Option<&str>,
         x: Option<f64>,
         y: Option<f64>,
@@ -3422,7 +4020,7 @@ mod platform {
         observed: &ObservedWindow,
         current: &WindowSnapshot,
         label: &str,
-    ) -> Result<(i32, i32), CoreError> {
+    ) -> Result<ResolvedPointerTarget, CoreError> {
         if let Some(element_id) = element_id {
             let element = super::semantic_element(observed, element_id, label)?;
             if !element.enabled {
@@ -3431,9 +4029,16 @@ mod platform {
                 )));
             }
             let live = resolve_live_element(current, observed, element)?;
-            return live_element_point(&live, current);
+            let point = live_element_point(&live, current)?;
+            return Ok(ResolvedPointerTarget {
+                point,
+                live: Some(live),
+            });
         }
-        image_point(x, y, coordinate_space, observed, current, label)
+        Ok(ResolvedPointerTarget {
+            point: image_point(x, y, coordinate_space, observed, current, label)?,
+            live: None,
+        })
     }
 
     #[derive(Clone, Copy)]
@@ -3831,12 +4436,17 @@ mod platform {
         from: (i32, i32),
         to: (i32, i32),
         window: &WindowSnapshot,
+        from_live: Option<&LiveElement>,
+        to_live: Option<&LiveElement>,
     ) -> Result<(), CoreError> {
         move_cursor(from, "move to drag start")?;
         thread::sleep(INPUT_SETTLE);
         ensure_target_foreground(window)?;
         ensure_cursor_at(from, "drag preparation")?;
         ensure_point_targets_window(from, window)?;
+        if let Some(live) = from_live {
+            ensure_point_matches_live_element(live, from)?;
+        }
         ensure_mouse_button_not_physically_pressed(MouseButton::Left)?;
         send_mouse_button(MouseButton::Left, true)?;
         let mut movement_error = None;
@@ -3880,6 +4490,15 @@ mod platform {
             }
             previous = next;
             thread::sleep(Duration::from_millis(16));
+        }
+        if movement_error.is_none() {
+            if let Some(live) = to_live {
+                if let Err(error) = ensure_point_matches_live_element(live, to) {
+                    movement_error = Some(CoreError::Internal(format!(
+                        "The semantic drag destination changed after button press; action effect is uncertain: {error}"
+                    )));
+                }
+            }
         }
         let mut release = send_mouse_button(MouseButton::Left, false);
         if release.is_err() {
@@ -3955,18 +4574,25 @@ mod platform {
         args: &ControlArgs,
         observed: &ObservedWindow,
         final_capture_options: CaptureOptions,
-    ) -> Result<ControlOutcome, CoreError> {
-        let (_, mut current) = current_window(&observed.snapshot)?;
+        commit_tracker: &ControlCommitTracker,
+    ) -> Result<ControlOutcome, ControlFailure> {
+        let (_, mut current) = before_control_commit(current_window(&observed.snapshot))?;
         if current.title != observed.snapshot.title {
-            return Err(invalid(
+            return Err(ControlFailure::pre_commit_as(
+                PreCommitFailureKind::ObservationStale,
+                invalid(
                 "Desktop observation is stale because the target window title changed. Observe it again before acting.",
+                ),
             ));
         }
 
         let requires_captured_state = action != ControlAction::FocusWindow;
         if requires_captured_state && observed.screenshot_signature.is_none() {
-            return Err(invalid(
+            return Err(ControlFailure::pre_commit_as(
+                PreCommitFailureKind::ObservationStale,
+                invalid(
                 "This action requires capture_window first. list_windows observations can only be used with focus_window.",
+                ),
             ));
         }
         if requires_captured_state
@@ -3975,20 +4601,29 @@ mod platform {
                 || current.x != observed.snapshot.x
                 || current.y != observed.snapshot.y)
         {
-            return Err(invalid(
+            return Err(ControlFailure::pre_commit_as(
+                PreCommitFailureKind::ObservationStale,
+                invalid(
                 "Desktop observation is stale because the target window moved or resized. Observe it again before acting.",
+                ),
             ));
         }
 
         let pre_action_capture = if current.minimized {
             if requires_captured_state {
-                return Err(invalid(
+                return Err(ControlFailure::pre_commit_as(
+                    PreCommitFailureKind::ObservationStale,
+                    invalid(
                     "Target window is minimized. Use focus_window with a fresh list_windows observation to restore it, then capture it before acting.",
+                    ),
                 ));
             }
             None
         } else {
-            Some(capture_window(&current, CaptureOptions::pixels_only())?)
+            Some(before_control_commit(capture_window(
+                &current,
+                CaptureOptions::pixels_only(),
+            ))?)
         };
         if let (Some(expected), Some(capture)) = (
             observed.screenshot_signature.as_ref(),
@@ -3997,8 +4632,11 @@ mod platform {
             let screenshot_changed = screenshot_signature(&capture.png)
                 .is_none_or(|signature| !screenshot_signatures_match(expected, &signature));
             if screenshot_changed {
-                return Err(invalid(
+                return Err(ControlFailure::pre_commit_as(
+                    PreCommitFailureKind::ObservationStale,
+                    invalid(
                     "Desktop observation is stale because the target window changed materially. Observe it again before acting.",
+                    ),
                 ));
             }
         }
@@ -4010,23 +4648,26 @@ mod platform {
         let pre_action_signature = pre_action_capture
             .as_ref()
             .and_then(|capture| screenshot_signature(&capture.png));
-        let coordinate_space = CoordinateSpace::parse(args.coordinate_space.as_deref())?;
+        let coordinate_space =
+            before_control_commit(CoordinateSpace::parse(args.coordinate_space.as_deref()))?;
         let mut route = "global_input";
         let mut delivery = "foreground";
 
         let summary = match action {
             ControlAction::FocusWindow => {
                 route = "window_focus";
-                focus_window(&current)?;
-                current = current_window(&current)?.1;
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                current = commit_tracker.result(current_window(&current))?.1;
                 format!("Focused and restored window {}.", current.id)
             }
             ControlAction::Invoke => {
                 delivery = "background";
                 let element_id = args.element_id.as_deref().expect("validated element_id");
-                let expected = super::semantic_element(observed, element_id, "invoke")?;
-                let live = resolve_live_element(&current, observed, expected)?;
-                route = invoke_element(&live.element)?;
+                let expected =
+                    before_control_commit(super::semantic_element(observed, element_id, "invoke"))?;
+                let live =
+                    before_control_commit(resolve_live_element(&current, observed, expected))?;
+                route = invoke_element(&live.element, commit_tracker)?;
                 format!(
                     "Invoked semantic element {element_id} in window {}.",
                     current.id
@@ -4036,10 +4677,15 @@ mod platform {
                 route = "value_pattern";
                 delivery = "background";
                 let element_id = args.element_id.as_deref().expect("validated element_id");
-                let expected = super::semantic_element(observed, element_id, "set_value")?;
-                let live = resolve_live_element(&current, observed, expected)?;
+                let expected = before_control_commit(super::semantic_element(
+                    observed,
+                    element_id,
+                    "set_value",
+                ))?;
+                let live =
+                    before_control_commit(resolve_live_element(&current, observed, expected))?;
                 let text = args.text.as_deref().expect("validated text");
-                set_element_value(&live.element, &live.snapshot, text)?;
+                set_element_value(&live.element, &live.snapshot, text, commit_tracker)?;
                 format!(
                     "Set {} character(s) on semantic element {element_id} in window {}.",
                     text.chars().count(),
@@ -4047,9 +4693,9 @@ mod platform {
                 )
             }
             ControlAction::MoveMouse => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                let point = target_point(
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                let target = commit_tracker.result(resolve_pointer_target(
                     args.element_id.as_deref(),
                     args.x,
                     args.y,
@@ -4057,17 +4703,26 @@ mod platform {
                     observed,
                     &current,
                     "move_mouse",
-                )?;
-                ensure_target_foreground(&current)?;
-                ensure_point_targets_window(point, &current)?;
-                move_cursor(point, "move mouse")?;
-                ensure_point_targets_window(point, &current)?;
+                ))?;
+                commit_tracker.result(ensure_target_patch_fresh(
+                    observed,
+                    &current,
+                    target.point,
+                ))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.result(ensure_point_targets_window(target.point, &current))?;
+                commit_tracker.mark();
+                commit_tracker.result(move_cursor(target.point, "move mouse"))?;
+                commit_tracker.result(ensure_point_targets_window(target.point, &current))?;
+                if let Some(live) = target.live.as_ref() {
+                    commit_tracker.result(ensure_point_matches_live_element(live, target.point))?;
+                }
                 format!("Moved the cursor inside window {}.", current.id)
             }
             ControlAction::Click => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                let point = target_point(
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                let target = commit_tracker.result(resolve_pointer_target(
                     args.element_id.as_deref(),
                     args.x,
                     args.y,
@@ -4075,57 +4730,72 @@ mod platform {
                     observed,
                     &current,
                     "click",
-                )?;
-                let button = mouse_button(args.button.as_deref())?;
+                ))?;
+                let button = commit_tracker.result(mouse_button(args.button.as_deref()))?;
                 let count = args.click_count.unwrap_or(1);
-                if args.element_id.is_none() {
-                    ensure_target_patch_fresh(observed, &current, point)?;
-                }
-                ensure_target_foreground(&current)?;
-                ensure_mouse_button_not_physically_pressed(button)?;
-                move_cursor(point, "move mouse before click")?;
+                commit_tracker.result(ensure_target_patch_fresh(
+                    observed,
+                    &current,
+                    target.point,
+                ))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.result_as(
+                    PreCommitFailureKind::UserTakeover,
+                    ensure_mouse_button_not_physically_pressed(button),
+                )?;
+                commit_tracker.mark();
+                commit_tracker.result(move_cursor(target.point, "move mouse before click"))?;
                 thread::sleep(INPUT_SETTLE);
-                ensure_target_foreground(&current)?;
-                ensure_cursor_at(point, "click preparation")?;
-                ensure_point_targets_window(point, &current)?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.result_as(
+                    PreCommitFailureKind::UserTakeover,
+                    ensure_cursor_at(target.point, "click preparation"),
+                )?;
+                commit_tracker.result(ensure_point_targets_window(target.point, &current))?;
+                if let Some(live) = target.live.as_ref() {
+                    commit_tracker.result(ensure_point_matches_live_element(live, target.point))?;
+                }
                 for index in 0..count {
                     if let Err(error) = ensure_mouse_button_not_physically_pressed(button) {
                         if index > 0 {
-                            return Err(CoreError::Internal(format!(
+                            return Err(ControlFailure::effect_may_have_occurred(
+                                CoreError::Internal(format!(
                                 "User mouse input appeared after a partial multi-click; action effect is uncertain: {error}"
-                            )));
+                            ))));
                         }
-                        return Err(error);
+                        return Err(ControlFailure::effect_may_have_occurred(error));
                     }
-                    if let Err(error) = ensure_point_targets_window(point, &current) {
+                    if let Err(error) = ensure_point_targets_window(target.point, &current) {
                         if index > 0 {
-                            return Err(CoreError::Internal(format!(
+                            return Err(ControlFailure::effect_may_have_occurred(
+                                CoreError::Internal(format!(
                                 "Another surface appeared after a partial multi-click; action effect is uncertain: {error}"
-                            )));
+                            ))));
                         }
-                        return Err(error);
+                        return Err(ControlFailure::effect_may_have_occurred(error));
                     }
-                    send_mouse_click(button)?;
+                    commit_tracker.mark();
+                    commit_tracker.result(send_mouse_click(button))?;
                     if index + 1 < count {
                         thread::sleep(Duration::from_millis(75));
-                        ensure_target_foreground(&current).map_err(|error| {
+                        commit_tracker.result(ensure_target_foreground(&current).map_err(|error| {
                             CoreError::Internal(format!(
                                 "Focus changed after a partial multi-click; action effect is uncertain: {error}"
                             ))
-                        })?;
-                        ensure_cursor_at(point, "multi-click").map_err(|error| {
+                        }))?;
+                        commit_tracker.result_as(PreCommitFailureKind::UserTakeover, ensure_cursor_at(target.point, "multi-click").map_err(|error| {
                             CoreError::Internal(format!(
                                 "Cursor moved after a partial multi-click; action effect is uncertain: {error}"
                             ))
-                        })?;
+                        }))?;
                     }
                 }
                 format!("Clicked {count} time(s) inside window {}.", current.id)
             }
             ControlAction::Drag => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                let from = target_point(
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                let from = commit_tracker.result(resolve_pointer_target(
                     args.element_id.as_deref(),
                     args.x,
                     args.y,
@@ -4133,8 +4803,8 @@ mod platform {
                     observed,
                     &current,
                     "drag source",
-                )?;
-                let to = target_point(
+                ))?;
+                let to = commit_tracker.result(resolve_pointer_target(
                     args.to_element_id.as_deref(),
                     args.to_x,
                     args.to_y,
@@ -4142,21 +4812,24 @@ mod platform {
                     observed,
                     &current,
                     "drag destination",
-                )?;
-                if args.element_id.is_none() {
-                    ensure_target_patch_fresh(observed, &current, from)?;
-                }
-                if args.to_element_id.is_none() {
-                    ensure_target_patch_fresh(observed, &current, to)?;
-                }
-                ensure_target_foreground(&current)?;
-                drag_mouse(from, to, &current)?;
+                ))?;
+                commit_tracker.result(ensure_target_patch_fresh(observed, &current, from.point))?;
+                commit_tracker.result(ensure_target_patch_fresh(observed, &current, to.point))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.mark();
+                commit_tracker.result(drag_mouse(
+                    from.point,
+                    to.point,
+                    &current,
+                    from.live.as_ref(),
+                    to.live.as_ref(),
+                ))?;
                 format!("Dragged inside window {}.", current.id)
             }
             ControlAction::Scroll => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                let point = target_point(
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                let target = commit_tracker.result(resolve_pointer_target(
                     args.element_id.as_deref(),
                     args.x,
                     args.y,
@@ -4164,67 +4837,104 @@ mod platform {
                     observed,
                     &current,
                     "scroll",
-                )?;
+                ))?;
                 let scroll_x = args.scroll_x.unwrap_or(0);
                 let scroll_y = args.scroll_y.unwrap_or(0);
-                if args.element_id.is_none() {
-                    ensure_target_patch_fresh(observed, &current, point)?;
-                }
-                ensure_target_foreground(&current)?;
-                move_cursor(point, "move mouse before scroll")?;
+                commit_tracker.result(ensure_target_patch_fresh(
+                    observed,
+                    &current,
+                    target.point,
+                ))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.mark();
+                commit_tracker.result(move_cursor(target.point, "move mouse before scroll"))?;
                 thread::sleep(INPUT_SETTLE);
-                ensure_target_foreground(&current)?;
-                ensure_cursor_at(point, "scroll preparation")?;
-                ensure_point_targets_window(point, &current)?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.result_as(
+                    PreCommitFailureKind::UserTakeover,
+                    ensure_cursor_at(target.point, "scroll preparation"),
+                )?;
+                commit_tracker.result(ensure_point_targets_window(target.point, &current))?;
+                if let Some(live) = target.live.as_ref() {
+                    commit_tracker.result(ensure_point_matches_live_element(live, target.point))?;
+                }
                 if scroll_y != 0 {
-                    send_scroll_steps(false, scroll_y)?;
+                    commit_tracker.mark();
+                    commit_tracker.result(send_scroll_steps(false, scroll_y))?;
                 }
                 if scroll_x != 0 {
                     if scroll_y != 0 {
-                        ensure_target_foreground(&current).map_err(|error| {
+                        commit_tracker.result(ensure_target_foreground(&current).map_err(|error| {
                             CoreError::Internal(format!(
                                 "Focus changed after partial scrolling; action effect is uncertain: {error}"
                             ))
-                        })?;
-                        ensure_cursor_at(point, "horizontal scroll").map_err(|error| {
+                        }))?;
+                        commit_tracker.result_as(PreCommitFailureKind::UserTakeover, ensure_cursor_at(target.point, "horizontal scroll").map_err(|error| {
                             CoreError::Internal(format!(
                                 "Cursor moved after partial scrolling; action effect is uncertain: {error}"
                             ))
-                        })?;
-                        ensure_point_targets_window(point, &current).map_err(|error| {
+                        }))?;
+                        commit_tracker.result(ensure_point_targets_window(target.point, &current).map_err(|error| {
                             CoreError::Internal(format!(
                                 "Another surface appeared after partial scrolling; action effect is uncertain: {error}"
                             ))
-                        })?;
+                        }))?;
+                        if let Some(live) = target.live.as_ref() {
+                            commit_tracker.result(ensure_point_matches_live_element(live, target.point).map_err(|error| {
+                                CoreError::Internal(format!(
+                                    "The semantic scroll target changed after partial scrolling; action effect is uncertain: {error}"
+                                ))
+                            }))?;
+                        }
                     }
-                    send_scroll_steps(true, scroll_x)?;
+                    commit_tracker.mark();
+                    commit_tracker.result(send_scroll_steps(true, scroll_x))?;
                 }
                 format!("Scrolled inside window {}.", current.id)
             }
             ControlAction::TypeText => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                ensure_target_foreground(&current)?;
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
                 let targeted_element = if let Some(element_id) = args.element_id.as_deref() {
-                    let expected = super::semantic_element(observed, element_id, "type_text")?;
-                    let live = resolve_live_element(&current, observed, expected)?;
-                    let password =
-                        unsafe { live.element.CurrentIsPassword() }.map_err(|error| {
-                            platform_error("verify target password state before text input", error)
-                        })?;
+                    let expected = commit_tracker.result(super::semantic_element(
+                        observed,
+                        element_id,
+                        "type_text",
+                    ))?;
+                    let live = commit_tracker
+                        .result(resolve_live_element(&current, observed, expected))?;
+                    let password = unsafe { live.element.CurrentIsPassword() }.map_err(|error| {
+                        platform_error("verify target password state before text input", error)
+                    });
+                    let password = commit_tracker.result(password)?;
                     if live.snapshot.password || password.as_bool() {
-                        return Err(invalid("Password elements are protected from text input."));
+                        return Err(commit_tracker.failure_as(
+                            PreCommitFailureKind::Refused,
+                            invalid("Password elements are protected from text input."),
+                        ));
                     }
-                    unsafe { live.element.SetFocus() }
-                        .map_err(|error| platform_error("focus semantic text target", error))?;
+                    commit_tracker.mark();
+                    commit_tracker
+                        .result(unsafe { live.element.SetFocus() }.map_err(|error| {
+                            platform_error("focus semantic text target", error)
+                        }))?;
                     thread::sleep(INPUT_SETTLE);
                     Some(live)
                 } else {
                     None
                 };
-                ensure_focused_target_is_not_password(&current)?;
+                commit_tracker.result_as(
+                    PreCommitFailureKind::Refused,
+                    ensure_focused_target_is_not_password(&current),
+                )?;
                 let text = args.text.as_deref().expect("validated text");
-                type_text_checked(text, &current, targeted_element.as_ref())?;
+                commit_tracker.mark();
+                commit_tracker.result(type_text_checked(
+                    text,
+                    &current,
+                    targeted_element.as_ref(),
+                ))?;
                 drop(targeted_element);
                 format!(
                     "Typed {} character(s) into window {}.",
@@ -4233,15 +4943,19 @@ mod platform {
                 )
             }
             ControlAction::Key => {
-                focus_window(&current)?;
-                ensure_observation_fresh_after_focus(observed, &current)?;
-                ensure_target_foreground(&current)?;
-                ensure_focused_target_is_not_password(&current)?;
+                commit_tracker.result(focus_window(&current, commit_tracker))?;
+                commit_tracker.result(ensure_observation_fresh_after_focus(observed, &current))?;
+                commit_tracker.result(ensure_target_foreground(&current))?;
+                commit_tracker.result_as(
+                    PreCommitFailureKind::Refused,
+                    ensure_focused_target_is_not_password(&current),
+                )?;
                 let sequence = args
                     .key_sequence
                     .as_deref()
                     .expect("validated key_sequence");
-                send_key_sequence(sequence)?;
+                commit_tracker.mark();
+                commit_tracker.result(send_key_sequence(sequence))?;
                 format!("Sent an approved key sequence to window {}.", current.id)
             }
         };
@@ -4341,6 +5055,74 @@ mod platform {
         use super::*;
 
         #[test]
+        fn captured_frames_fit_the_model_image_dimension_envelope() {
+            let image = RgbaImage::new(2_000, 1_000);
+            let (_png, image_width, image_height, native_width, native_height) =
+                resized_png(image).expect("bounded capture");
+
+            assert_eq!(MAX_CAPTURE_EDGE, crate::media::MAX_LLM_IMAGE_DIMENSION);
+            assert_eq!((native_width, native_height), (2_000, 1_000));
+            assert_eq!(
+                (image_width, image_height),
+                (
+                    crate::media::MAX_LLM_IMAGE_DIMENSION,
+                    crate::media::MAX_LLM_IMAGE_DIMENSION / 2,
+                )
+            );
+        }
+
+        #[test]
+        fn model_image_pixel_endpoints_map_to_native_window_endpoints() {
+            let model_width = crate::media::MAX_LLM_IMAGE_DIMENSION;
+            let model_height = model_width / 2;
+            let current = WindowSnapshot {
+                id: 42,
+                pid: 7,
+                process_started_at_100ns: 123,
+                executable_path_hash: "exe-hash".to_string(),
+                window_class: "EditorWindow".to_string(),
+                session_id: 1,
+                app_name: "Editor".to_string(),
+                title: "Document".to_string(),
+                x: 100,
+                y: 200,
+                width: model_width * 2,
+                height: model_height * 2,
+                minimized: false,
+                maximized: false,
+                focused: true,
+            };
+            let observed = ObservedWindow {
+                snapshot: current.clone(),
+                image_width: Some(model_width),
+                image_height: Some(model_height),
+                native_image_width: Some(current.width),
+                native_image_height: Some(current.height),
+                screenshot_signature: None,
+                screenshot_guard: None,
+                elements: Vec::new(),
+            };
+
+            let point = image_point(
+                Some(f64::from(model_width - 1)),
+                Some(f64::from(model_height - 1)),
+                CoordinateSpace::CapturedImagePixels,
+                &observed,
+                &current,
+                "click",
+            )
+            .expect("coordinate mapping");
+
+            assert_eq!(
+                point,
+                (
+                    current.x + current.width as i32 - 1,
+                    current.y + current.height as i32 - 1,
+                )
+            );
+        }
+
+        #[test]
         fn text_input_normalizes_crlf_and_never_duplicates_control_characters() {
             let operations = text_input_operations("a\r\nb\n\tc");
             assert_eq!(operations.len(), 6);
@@ -4368,8 +5150,8 @@ mod platform {
 #[cfg(not(target_os = "windows"))]
 mod platform {
     use super::{
-        CaptureOptions, CapturedWindow, ControlAction, ControlArgs, ControlOutcome, CoreError,
-        ObservedWindow, WaitOutcome, WindowSnapshot,
+        CaptureOptions, CapturedWindow, ControlAction, ControlArgs, ControlCommitTracker,
+        ControlFailure, ControlOutcome, CoreError, ObservedWindow, WaitOutcome, WindowSnapshot,
     };
     use std::time::Duration;
 
@@ -4409,8 +5191,9 @@ mod platform {
         _args: &ControlArgs,
         _observed: &ObservedWindow,
         _final_capture_options: CaptureOptions,
-    ) -> Result<ControlOutcome, CoreError> {
-        unsupported()
+        _commit_tracker: &ControlCommitTracker,
+    ) -> Result<ControlOutcome, ControlFailure> {
+        unsupported().map_err(ControlFailure::pre_commit)
     }
 }
 
@@ -4423,14 +5206,62 @@ mod tests {
         let db = crate::db::Database::open_memory().unwrap();
         let runtime = crate::activity::ActivityRuntime::new();
         let source_scope = Vec::new();
-        let error = ComputerControlTool
+        let result = ComputerControlTool
             .execute(
                 crate::tools::ToolExecutionContext::new("call", "{}", &db, &source_scope)
                     .with_activity_runtime(&runtime),
             )
             .await
-            .expect_err("ephemeral receipts must block desktop input");
-        assert!(error.to_string().contains("persistent action-receipt"));
+            .expect("pre-commit rejection is a structured tool result");
+        assert!(result.is_error);
+        let artifacts = result.artifacts.expect("typed failure artifacts");
+        assert_eq!(artifacts["code"], "computer_control_runtime_unavailable");
+        assert_eq!(artifacts["sideEffect"], "not_started");
+        assert!(artifacts.get("effectMayHaveOccurred").is_none());
+        assert!(artifacts.get("failurePhase").is_none());
+        assert_eq!(artifacts["observationConsumed"], false);
+    }
+
+    #[test]
+    fn control_commit_phase_is_explicit_monotonic_and_independent_of_error_text() {
+        let tracker = ControlCommitTracker::default();
+        let before = tracker.failure_as(
+            PreCommitFailureKind::RuntimeUnavailable,
+            CoreError::Internal("effect is uncertain but no input was sent".to_string()),
+        );
+        let before_result = control_failure_result("before", &before);
+        let before_artifacts = before_result.artifacts.expect("pre-commit artifacts");
+        assert_eq!(
+            before_artifacts["code"],
+            "computer_control_runtime_unavailable"
+        );
+        assert_eq!(before_artifacts["sideEffect"], "not_started");
+
+        tracker.mark_observation_consumed();
+        let consumed = tracker.failure_as(
+            PreCommitFailureKind::RuntimeUnavailable,
+            CoreError::Internal("worker stopped before OS input".to_string()),
+        );
+        let consumed_artifacts = control_failure_result("consumed", &consumed)
+            .artifacts
+            .expect("consumed observation artifacts");
+        assert_eq!(consumed_artifacts["sideEffect"], "not_started");
+        assert_eq!(consumed_artifacts["observationConsumed"], true);
+
+        tracker.mark();
+        let after = tracker.failure_as(
+            PreCommitFailureKind::InvalidAction,
+            CoreError::InvalidInput("no input was sent".to_string()),
+        );
+        let after_result = control_failure_result("after", &after);
+        let after_artifacts = after_result.artifacts.expect("post-commit artifacts");
+        assert_eq!(after_artifacts["code"], "computer_action_uncertain");
+        assert_eq!(after_artifacts["sideEffect"], "may_have_occurred");
+        assert!(after_artifacts.get("effectMayHaveOccurred").is_none());
+        assert!(after_artifacts.get("failurePhase").is_none());
+
+        tracker.mark();
+        assert!(tracker.effect_may_have_occurred());
     }
 
     #[test]
@@ -4492,6 +5323,126 @@ mod tests {
         );
         assert!(observed_window(Some("conversation-1"), &observation_id, 99).is_err());
         assert!(observed_window(Some("conversation-2"), &observation_id, snapshot.id).is_err());
+    }
+
+    #[test]
+    fn approval_preview_is_exact_conversation_scoped_and_hides_typed_text() {
+        let snapshot = WindowSnapshot {
+            id: 420,
+            pid: 7,
+            process_started_at_100ns: 123,
+            executable_path_hash: "exe-hash".to_string(),
+            window_class: "EditorWindow".to_string(),
+            session_id: 1,
+            app_name: "Editor".to_string(),
+            title: "Quarterly plan".to_string(),
+            x: 10,
+            y: 20,
+            width: 800,
+            height: 600,
+            minimized: false,
+            maximized: false,
+            focused: true,
+        };
+        let observation_id = remember_observation(
+            Some("approval-conversation"),
+            vec![ObservedWindow {
+                snapshot: snapshot.clone(),
+                image_width: Some(800),
+                image_height: Some(600),
+                native_image_width: Some(800),
+                native_image_height: Some(600),
+                screenshot_signature: Some(vec![0; 256]),
+                screenshot_guard: None,
+                elements: vec![UiElementSnapshot {
+                    id: "e1".to_string(),
+                    role: "textbox".to_string(),
+                    name: "Plan title".to_string(),
+                    automation_id: "title".to_string(),
+                    bounds: ElementBounds {
+                        x: 40,
+                        y: 50,
+                        width: 240,
+                        height: 32,
+                    },
+                    enabled: true,
+                    focused: false,
+                    keyboard_focusable: true,
+                    interactive: true,
+                    password: false,
+                    actions: vec!["type_text".to_string()],
+                    screen_bounds: ElementBounds {
+                        x: 50,
+                        y: 70,
+                        width: 240,
+                        height: 32,
+                    },
+                }],
+            }],
+        )
+        .unwrap();
+        let control_args = serde_json::json!({
+            "action": "type_text",
+            "observation_id": observation_id,
+            "window_id": snapshot.id,
+            "element_id": "e1",
+            "text": "secret"
+        });
+        let message = ComputerControlTool
+            .confirmation_message_in_context(&control_args, Some("approval-conversation"))
+            .unwrap()
+            .unwrap();
+        for expected in [
+            "Editor",
+            "Quarterly plan",
+            "Plan title",
+            "[40, 50, 240x32]",
+            "6 character(s)",
+        ] {
+            assert!(message.contains(expected), "missing {expected}: {message}");
+        }
+        assert!(!message.contains("secret"));
+        let durable_message = ComputerControlTool
+            .confirmation_message_for_persistence_in_context(
+                &control_args,
+                Some("approval-conversation"),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(durable_message.contains("Editor"));
+        assert!(durable_message.contains("window title is redacted"));
+        assert!(durable_message.contains("element name is redacted"));
+        assert!(durable_message.contains("[40, 50, 240x32]"));
+        assert!(durable_message.contains("6 character(s)"));
+        assert!(!durable_message.contains("Quarterly plan"));
+        assert!(!durable_message.contains("Plan title"));
+        assert!(!durable_message.contains("secret"));
+        assert!(ComputerControlTool
+            .confirmation_message_in_context(&control_args, Some("other-conversation"))
+            .is_err());
+
+        let invalid_click = serde_json::json!({
+            "action": "click",
+            "observation_id": control_args["observation_id"],
+            "window_id": snapshot.id,
+            "element_id": "e1"
+        });
+        let error = ComputerControlTool
+            .confirmation_message_in_context(&invalid_click, Some("approval-conversation"))
+            .expect_err("unadvertised semantic action must fail before approval");
+        assert!(error.to_string().contains("did not advertise 'click'"));
+
+        let observe_args = serde_json::json!({
+            "action": "capture_window",
+            "observation_id": control_args["observation_id"],
+            "window_id": snapshot.id
+        });
+        let capture_message = ComputerObserveTool
+            .confirmation_message_in_context(&observe_args, Some("approval-conversation"))
+            .unwrap()
+            .unwrap();
+        assert!(capture_message.contains("Editor"));
+        assert!(capture_message.contains("Quarterly plan"));
     }
 
     #[test]
@@ -4714,6 +5665,291 @@ mod tests {
         assert!(noncanonical_profile.needs_approval);
         assert!(noncanonical_profile.can_access_network);
         assert!(tool.confirmation_message(&noncanonical_capture).is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn windows_computer_control_helper_window() {
+        if std::env::var_os("NEXA_COMPUTER_USE_HELPER").is_none() {
+            return;
+        }
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DispatchMessageW, GetMessageW, SetForegroundWindow, ShowWindow,
+            TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOW, WINDOW_EX_STYLE, WS_BORDER, WS_CHILD,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+
+        fn wide(value: &str) -> Vec<u16> {
+            value.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        let title = wide(
+            &std::env::var("NEXA_COMPUTER_USE_HELPER_TITLE")
+                .expect("helper title must be supplied"),
+        );
+        let static_class = wide("STATIC");
+        let edit_class = wide("EDIT");
+        let initial = wide("Initial text");
+        let window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(static_class.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                640,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create isolated computer-use smoke window");
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(edit_class.as_ptr()),
+                PCWSTR(initial.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_BORDER,
+                32,
+                64,
+                560,
+                40,
+                Some(window),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create isolated editable target");
+        let _ = unsafe { ShowWindow(window, SW_SHOW) };
+        let _ = unsafe { SetForegroundWindow(window) };
+        let mut message = MSG::default();
+        while unsafe { GetMessageW(&mut message, None, 0, 0) }.as_bool() {
+            let _ = unsafe { TranslateMessage(&message) };
+            unsafe { DispatchMessageW(&message) };
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an interactive Windows desktop and sends input to an isolated helper"]
+    fn windows_capture_control_recapture_smoke_test() {
+        use std::process::{Command, Stdio};
+        use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+            MOUSEINPUT,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetCursorPos, PostMessageW, SetCursorPos, WM_CLOSE,
+        };
+
+        fn activate_isolated_window(target: &WindowSnapshot) -> Result<POINT, String> {
+            let mut original = POINT::default();
+            unsafe { GetCursorPos(&mut original) }
+                .map_err(|error| format!("read original cursor position: {error}"))?;
+            let point = (
+                target.x.saturating_add((target.width / 2) as i32),
+                target.y.saturating_add(16),
+            );
+            unsafe { SetCursorPos(point.0, point.1) }
+                .map_err(|error| format!("move cursor to isolated helper: {error}"))?;
+            let inputs = [
+                INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dwFlags: MOUSEEVENTF_LEFTDOWN,
+                            ..Default::default()
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dwFlags: MOUSEEVENTF_LEFTUP,
+                            ..Default::default()
+                        },
+                    },
+                },
+            ];
+            let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+            if sent != inputs.len() as u32 {
+                return Err(format!(
+                    "Windows delivered {sent}/{} helper activation inputs",
+                    inputs.len()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            Ok(original)
+        }
+
+        let helper_dir = tempfile::tempdir().expect("create helper directory");
+        let helper_path = helper_dir.path().join("nexa-cua-smoke-helper.exe");
+        let current_exe = std::env::current_exe().expect("resolve test executable");
+        std::fs::copy(&current_exe, &helper_path).expect("copy isolated helper executable");
+        let helper_title = format!("Nexa Computer Use Smoke {}", uuid::Uuid::new_v4().simple());
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let helper_path_env = std::env::join_paths(
+            std::iter::once(
+                current_exe
+                    .parent()
+                    .expect("test executable has a parent")
+                    .to_path_buf(),
+            )
+            .chain(std::env::split_paths(&original_path)),
+        )
+        .expect("build helper PATH");
+        let mut child = Command::new(&helper_path)
+            .args([
+                "--ignored",
+                "--exact",
+                "tools::computer_use_tool::tests::windows_computer_control_helper_window",
+                "--nocapture",
+            ])
+            .env("NEXA_COMPUTER_USE_HELPER", "1")
+            .env("NEXA_COMPUTER_USE_HELPER_TITLE", &helper_title)
+            .env("PATH", helper_path_env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("launch isolated helper window");
+
+        let mut original_cursor = None;
+        let result = (|| -> Result<(u64, ControlOutcome), String> {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let target = loop {
+                if let Some(target) = platform::list_windows()
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|window| window.title == helper_title)
+                {
+                    break target;
+                }
+                if Instant::now() >= deadline {
+                    return Err("isolated helper window did not become visible".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            original_cursor = Some(activate_isolated_window(&target)?);
+            let capture = platform::capture_window(
+                &target,
+                CaptureOptions {
+                    include_elements: true,
+                    max_elements: 120,
+                    mode: CaptureMode::SetOfMarks,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let element = capture
+                .elements
+                .iter()
+                .find(|element| element.keyboard_focusable && element.role == "edit")
+                .ok_or_else(|| {
+                    format!(
+                        "isolated editable UI Automation target was not captured; observed {:?}",
+                        capture
+                            .elements
+                            .iter()
+                            .map(|element| (
+                                element.id.as_str(),
+                                element.role.as_str(),
+                                element.name.as_str(),
+                                element.keyboard_focusable,
+                                element.actions.as_slice(),
+                            ))
+                            .collect::<Vec<_>>()
+                    )
+                })?
+                .id
+                .clone();
+            let observed = ObservedWindow {
+                snapshot: capture.snapshot.clone(),
+                image_width: Some(capture.image_width),
+                image_height: Some(capture.image_height),
+                native_image_width: Some(capture.native_image_width),
+                native_image_height: Some(capture.native_image_height),
+                screenshot_signature: screenshot_signature(&capture.png),
+                screenshot_guard: screenshot_guard(&capture.png),
+                elements: capture.elements.clone(),
+            };
+            let args = ControlArgs {
+                action: "type_text".to_string(),
+                observation_id: uuid::Uuid::new_v4().to_string(),
+                window_id: target.id,
+                element_id: Some(element),
+                to_element_id: None,
+                coordinate_space: None,
+                x: None,
+                y: None,
+                to_x: None,
+                to_y: None,
+                button: None,
+                click_count: None,
+                scroll_x: None,
+                scroll_y: None,
+                text: Some(" - operated by Nexa".to_string()),
+                key_sequence: None,
+                reason: Some("interactive smoke test".to_string()),
+                include_elements: Some(true),
+                max_elements: Some(120),
+                capture_mode: Some("som".to_string()),
+                wait_for_previous: None,
+            };
+            validate_control_args(&args, ControlAction::TypeText)
+                .map_err(|error| error.to_string())?;
+            let commit_tracker = ControlCommitTracker::default();
+            let outcome = platform::control_window(
+                ControlAction::TypeText,
+                &args,
+                &observed,
+                CaptureOptions::from_control(&args).map_err(|error| error.to_string())?,
+                &commit_tracker,
+            )
+            .map_err(|error| format!("{error:?}"))?;
+            if outcome.capture.is_none() || outcome.verification.after_hash.is_none() {
+                return Err("post-action capture was not returned".to_string());
+            }
+            Ok((target.id, outcome))
+        })();
+
+        if let Ok((window_id, _)) = &result {
+            let _ = unsafe {
+                PostMessageW(
+                    Some(windows::Win32::Foundation::HWND(
+                        *window_id as usize as *mut _,
+                    )),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            };
+        }
+        let exit_deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < exit_deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(original) = original_cursor {
+            let _ = unsafe { SetCursorPos(original.x, original.y) };
+        }
+        let (_, outcome) = result.expect("capture-control-recapture must succeed");
+        assert!(outcome.target_verified);
+        assert!(outcome.capture.is_some());
+        assert!(outcome.verification.sampled_frames > 0);
     }
 
     #[cfg(target_os = "windows")]

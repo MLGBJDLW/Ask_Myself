@@ -107,26 +107,108 @@ fn awaiting_user_input_interaction_id(
     })
 }
 
-fn successful_action_reconciliation_observation(
-    calls: &[ToolCallRequest],
-    summaries: &[tool_dispatch::ToolDispatchSummary],
-) -> bool {
-    calls.iter().any(|call| {
-        let action = serde_json::from_str::<serde_json::Value>(&call.arguments)
-            .ok()
-            .and_then(|args| {
-                args.get("action")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|action| action.trim().to_ascii_lowercase())
-            });
-        let is_observation = call.name == "computer_observe"
-            || (call.name == "browser_session" && action.as_deref() == Some("observe"));
-        is_observation
-            && summaries
-                .iter()
-                .find(|summary| summary.call_id == call.id)
-                .is_some_and(|summary| !summary.is_error)
-    })
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ActionReconciliationFence {
+    computer: bool,
+    browser: bool,
+    unknown: bool,
+}
+
+impl ActionReconciliationFence {
+    fn from_resume_prompt(prompt: &str) -> Self {
+        const MARKER: &str = "Checkpoint reason: user_stop_requires_action_reconciliation:";
+        let Some(receipts) = prompt.split_once(MARKER).map(|(_, receipts)| receipts) else {
+            return Self::default();
+        };
+        let computer = receipts.contains("computer_control:");
+        let browser = receipts.contains("browser_action:") || receipts.contains("browser_session:");
+        Self {
+            computer,
+            browser,
+            unknown: !computer && !browser,
+        }
+    }
+
+    fn blocks_interactive_input(self) -> bool {
+        self.computer || self.browser || self.unknown
+    }
+
+    fn observe_tool_results(
+        &mut self,
+        calls: &[ToolCallRequest],
+        summaries: &[tool_dispatch::ToolDispatchSummary],
+    ) {
+        for call in calls {
+            let Some(summary) = summaries.iter().find(|summary| summary.call_id == call.id) else {
+                continue;
+            };
+            let code = summary
+                .artifacts
+                .as_ref()
+                .and_then(|artifacts| artifacts.get("code"))
+                .and_then(serde_json::Value::as_str);
+            let effect = summary
+                .artifacts
+                .as_ref()
+                .and_then(|artifacts| {
+                    artifacts
+                        .pointer("/data/effect")
+                        .or_else(|| artifacts.pointer("/toolOutput/data/effect"))
+                })
+                .and_then(serde_json::Value::as_str);
+            let action = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .ok()
+                .and_then(|arguments| {
+                    arguments
+                        .get("action")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|action| action.trim().to_ascii_lowercase())
+                });
+            if call.name == "computer_control"
+                && (crate::workflow_ir::tool_result_effect_may_have_occurred(
+                    summary.artifacts.as_ref(),
+                ) || matches!(
+                    code,
+                    Some("computer_action_uncertain" | "computer_action_timeout_uncertain")
+                ) || effect == Some("unverifiable"))
+            {
+                self.computer = true;
+            }
+            if call.name == "browser_session"
+                && matches!(
+                    code,
+                    Some("browser_action_uncertain" | "browser_action_timeout_uncertain")
+                )
+            {
+                self.browser = true;
+            }
+            if !summary.is_error
+                && call.name == "computer_observe"
+                && matches!(
+                    action.as_deref(),
+                    Some("capture_window" | "wait_for_change")
+                )
+                && crate::workflow_ir::is_verified_desktop_observation(
+                    Some(&call.arguments),
+                    summary.artifacts.as_ref(),
+                )
+            {
+                self.computer = false;
+                self.unknown = false;
+            }
+            if !summary.is_error
+                && call.name == "browser_session"
+                && action.as_deref() == Some("observe")
+                && crate::workflow_ir::is_verified_browser_visual_observation(
+                    "browser_session",
+                    summary.artifacts.as_ref(),
+                )
+            {
+                self.browser = false;
+                self.unknown = false;
+            }
+        }
+    }
 }
 
 fn successful_executable_action(
@@ -420,8 +502,8 @@ impl AgentExecutor {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let mut pending_action_reconciliation = user_query_text_for_tools
-            .contains("Checkpoint reason: user_stop_requires_action_reconciliation:");
+        let mut action_reconciliation =
+            ActionReconciliationFence::from_resume_prompt(&user_query_text_for_tools);
 
         let skills = self.skills_override.clone().unwrap_or_else(|| {
             crate::skills::get_available_skills_for_query(db, &user_query_text_for_tools)
@@ -465,13 +547,12 @@ impl AgentExecutor {
             has_sources,
         );
         let mut loop_recorder = TurnLoopRecorder::new(route_plan.kind, self.config.max_iterations);
-        let mut task_plan = build_task_plan(TaskPlanningInput {
-            user_query: &user_query_text_for_tools,
-            route_kind: route_plan.kind.as_str(),
+        let mut task_plan = build_task_plan(TaskPlanningInput::for_requirements(
+            &user_query_text_for_tools,
+            &route_plan.requirements,
             has_sources,
-            source_scope_count: source_scope.len(),
-            collection_context: system_prompt_has_collection_context(&self.config.system_prompt),
-        });
+            source_scope.len(),
+        ));
         let orchestration_policy = resolve_orchestration_profile(OrchestrationProfileInput {
             profile: self.config.orchestration_profile,
             custom: self.config.custom_orchestration.clone(),
@@ -481,18 +562,21 @@ impl AgentExecutor {
             delegated_token_budget: self.config.subagent_token_budget,
             verification_reserve_percent: self.config.subagent_verification_reserve_percent,
         });
-        let mut workflow_ir = compile_workflow_ir(
+        let requires_workspace_isolation = self.config.request_kind.requires_workspace_isolation();
+        let mut workflow_ir = crate::workflow_ir::compile_turn_workflow_ir(
             &task_plan,
             &orchestration_policy,
             self.config.power_mode.is_nexus(),
+            requires_workspace_isolation,
         )
         .map_err(CoreError::InvalidInput)?;
         if self.config.execution_mode.is_plan() {
-            workflow_ir.configure_for_plan_mode();
-        } else {
-            if self.config.request_kind.requires_workspace_isolation() {
-                workflow_ir.configure_for_scheduled_isolated_patch();
+            if let Some(workflow) = workflow_ir.as_mut() {
+                workflow.configure_for_plan_mode();
             }
+        } else if workflow_ir.as_ref().is_some_and(|workflow| {
+            workflow.completion_contract.require_verification_gates || requires_workspace_isolation
+        }) {
             let verification_roots = if source_scope.is_empty() {
                 let sources = db.list_sources()?;
                 if sources.len() == 1 {
@@ -512,13 +596,17 @@ impl AgentExecutor {
                     })
                     .collect::<Result<Vec<_>, _>>()?
             };
-            workflow_ir.configure_project_verification_support(
-                crate::workflow_ir::detect_project_verification_support(&verification_roots),
-            );
+            if let Some(workflow) = workflow_ir.as_mut() {
+                workflow.configure_project_verification_support(
+                    crate::workflow_ir::detect_project_verification_support(&verification_roots),
+                );
+            }
         }
         let mut workspace_isolation = if !self.config.execution_mode.is_plan()
-            && (workflow_ir.requires_runtime_write_isolation()
-                || self.config.request_kind.requires_workspace_isolation())
+            && (workflow_ir
+                .as_ref()
+                .is_some_and(|workflow| workflow.requires_runtime_write_isolation())
+                || requires_workspace_isolation)
         {
             Some(WorkspaceIsolationRuntime::prepare(
                 db,
@@ -536,9 +624,16 @@ impl AgentExecutor {
         } else {
             source_scope.clone()
         };
-        let task_plan_value = workflow_ir.task_plan_checkpoint(&task_plan);
-        let workflow_ir_value = serde_json::to_value(&workflow_ir)
-            .unwrap_or_else(|_| serde_json::json!({ "error": "serializeWorkflowIr" }));
+        let task_plan_value = workflow_ir
+            .as_ref()
+            .map(|workflow| workflow.task_plan_checkpoint(&task_plan))
+            .unwrap_or_else(|| {
+                serde_json::to_value(&task_plan)
+                    .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }))
+            });
+        let workflow_ir_value = workflow_ir
+            .as_ref()
+            .and_then(|workflow| serde_json::to_value(workflow).ok());
         let _ = tx
             .send(AgentEvent::ControllerStatus {
                 code: "route_selected".to_string(),
@@ -547,18 +642,20 @@ impl AgentExecutor {
             })
             .await;
         emit_task_plan_update(&tx, &task_plan, "planning", "Typed task plan created").await;
-        let _ = tx
-            .send(AgentEvent::ControllerStatus {
-                code: "workflow_compiled".to_string(),
-                content: format!(
-                    "Workflow IR v{} compiled: {} nodes, {} verification gates",
-                    workflow_ir.version,
-                    workflow_ir.nodes.len(),
-                    workflow_ir.verification_gates.len()
-                ),
-                tone: Some("muted".to_string()),
-            })
-            .await;
+        if let Some(workflow) = workflow_ir.as_ref() {
+            let _ = tx
+                .send(AgentEvent::ControllerStatus {
+                    code: "workflow_compiled".to_string(),
+                    content: format!(
+                        "Workflow IR v{} compiled: {} nodes, {} verification gates",
+                        workflow.version,
+                        workflow.nodes.len(),
+                        workflow.verification_gates.len()
+                    ),
+                    tone: Some("muted".to_string()),
+                })
+                .await;
+        }
         if let Some(tid) = turn_id {
             let route_label = format!("{:?}", route_plan.kind);
             let _ = db.update_conversation_turn_progress(tid, Some(&route_label), None);
@@ -619,7 +716,7 @@ impl AgentExecutor {
             );
             surface.definitions
         } else if effective_dynamic_tool_visibility {
-            model_tool_registry.select_tools_for_decision(&route_plan.visibility_decision)
+            model_tool_registry.select_tools_for_decision(&route_plan.requirements)
         } else {
             model_tool_registry.definitions()
         };
@@ -644,10 +741,10 @@ impl AgentExecutor {
             t.tools_offered = tool_defs.len() as u32;
             t.route_kind = Some(route_plan.kind.as_str().to_string());
             t.task_plan = Some(task_plan_value.clone());
-            t.workflow_ir = Some(workflow_ir_value);
+            t.workflow_ir = workflow_ir_value;
             t.orchestration_profile = Some(self.config.orchestration_profile.as_str().to_string());
             t.collaboration_mode = Some(self.config.collaboration_mode.as_str().to_string());
-            t.tool_visibility_decision = Some(route_plan.visibility_decision.clone());
+            t.tool_visibility_decision = Some(route_plan.requirements.clone());
         }
         let volatile_system_sections = self
             .config
@@ -667,8 +764,10 @@ impl AgentExecutor {
         if let Some(isolation) = workspace_isolation.as_ref() {
             controller_state_sections_owned.push(isolation.prompt_section());
         }
-        if self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra() {
-            controller_state_sections_owned.push(workflow_ir.to_prompt_section());
+        let expose_workflow_ir =
+            self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra();
+        if let Some(workflow) = workflow_ir.as_ref().filter(|_| expose_workflow_ir) {
+            controller_state_sections_owned.push(workflow.to_prompt_section());
         }
         let controller_state_sections = controller_state_sections_owned
             .iter()
@@ -740,10 +839,7 @@ impl AgentExecutor {
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
-        append_persisted_trace_visibility(
-            &mut persisted_trace_items,
-            &route_plan.visibility_decision,
-        );
+        append_persisted_trace_visibility(&mut persisted_trace_items, &route_plan.requirements);
         append_persisted_trace_loaded_skills(&mut persisted_trace_items, &auto_loaded_skills);
         self.seed_prompt_cache_from_previous_turn(db, conversation_id, turn_id);
 
@@ -814,7 +910,7 @@ impl AgentExecutor {
                     warn!("Agent execution cancelled by user");
                     let live_state = $long_task_state.checkpoint_live_state(
                         &$task_plan,
-                        Some(&workflow_ir),
+                        workflow_ir.as_ref(),
                         $iteration,
                         self.config.max_iterations,
                         &loop_recorder,
@@ -921,6 +1017,9 @@ impl AgentExecutor {
             )
             && self.tools.contains("spawn_subagent_batch");
         if automatic_reconnaissance {
+            let workflow_ir = workflow_ir
+                .as_mut()
+                .expect("Nexus or Ultra reconnaissance requires compiled Workflow IR");
             while turn_budget.can_dispatch_tool_round() {
                 let Some(arguments) =
                     workflow_ir.reconnaissance_batch_arguments(&task_plan.objective)
@@ -1016,7 +1115,6 @@ impl AgentExecutor {
                     .await;
 
                 turn_state.transition_to(TurnPhase::ToolDispatch);
-                let mut started_call_ids = HashSet::new();
                 let mut tool_run_started_ids = HashSet::new();
                 let dispatch_outcome = match self
                     .dispatch_tool_calls(
@@ -1038,11 +1136,11 @@ impl AgentExecutor {
                             loop_guard: &mut loop_guard,
                             trace: &mut trace,
                             sort_order: &mut sort_order,
-                            pending_action_reconciliation,
+                            pending_action_reconciliation: action_reconciliation
+                                .blocks_interactive_input(),
                         },
                         &verified_call,
                         None,
-                        &mut started_call_ids,
                         &mut tool_run_started_ids,
                     )
                     .await
@@ -1408,7 +1506,6 @@ impl AgentExecutor {
                 answer_delta_seen,
                 thinking_delta_seen,
                 finish_reason: step_finish_reason,
-                mut started_call_ids,
                 mut tool_run_started_ids,
                 prompt_cache_observation,
                 request_latency_ms,
@@ -2180,7 +2277,10 @@ impl AgentExecutor {
                     next_step_purpose = TurnStepPurpose::Recovery;
                     continue 'react_loop;
                 }
-                if workflow_ir.completion_contract.require_verification_gates {
+                if let Some(workflow_ir) = workflow_ir
+                    .as_mut()
+                    .filter(|workflow| workflow.requires_completion_audit())
+                {
                     workflow_ir.sync_from_task_plan(&task_plan);
                     let final_audit = audit_final_answer(
                         &task_plan,
@@ -2250,7 +2350,7 @@ impl AgentExecutor {
                         }
                     }
                     if let Some(ref mut agent_trace) = trace {
-                        agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
+                        agent_trace.workflow_ir = serde_json::to_value(&*workflow_ir).ok();
                     }
                     if !workflow_ir.completion_allowed() {
                         let blockers = workflow_ir.completion_blockers();
@@ -2281,8 +2381,9 @@ impl AgentExecutor {
                         }
                         workflow_gate_repair_rounds = workflow_gate_repair_rounds.saturating_add(1);
                         if let Some(message) = prompt_ir::controller_state_message(format!(
-                            "Workflow IR refused finalization. Resolve these blockers with concrete tool calls before answering again: {}. Run the required checks, record their exact passed/failed outcomes with record_verification, and use an independent reviewer when that gate is listed. Do not merely claim completion.",
-                            blockers.join(", ")
+                            "Workflow IR refused finalization because of: {}. {}",
+                            blockers.join(", "),
+                            workflow_ir.completion_repair_guidance(),
                         )) {
                             messages.push(message);
                         }
@@ -2451,11 +2552,11 @@ impl AgentExecutor {
                         loop_guard: &mut loop_guard,
                         trace: &mut trace,
                         sort_order: &mut sort_order,
-                        pending_action_reconciliation,
+                        pending_action_reconciliation: action_reconciliation
+                            .blocks_interactive_input(),
                     },
                     &verified_tool_calls,
                     tool_dispatch_block,
-                    &mut started_call_ids,
                     &mut tool_run_started_ids,
                 )
                 .await
@@ -2499,10 +2600,9 @@ impl AgentExecutor {
                 return Err(CoreError::Agent(trace_message));
             }
             model_action_observed |= successful_executable_action(&tool_calls, &dispatch_summaries);
-            if pending_action_reconciliation
-                && successful_action_reconciliation_observation(&tool_calls, &dispatch_summaries)
-            {
-                pending_action_reconciliation = false;
+            let reconciliation_was_pending = action_reconciliation.blocks_interactive_input();
+            action_reconciliation.observe_tool_results(&tool_calls, &dispatch_summaries);
+            if reconciliation_was_pending && !action_reconciliation.blocks_interactive_input() {
                 let status = "Fresh interactive state was observed after the stop checkpoint. The reconciliation fence is cleared; re-plan from this observation and request one-shot approval before any new input.";
                 append_developer_persisted_trace_status(
                     &mut persisted_trace_items,
@@ -2521,38 +2621,69 @@ impl AgentExecutor {
                 }
             }
             for call in &tool_calls {
-                if let Some(summary) = dispatch_summaries
+                let Some(summary) = dispatch_summaries
                     .iter()
                     .find(|summary| summary.call_id == call.id)
-                {
-                    workflow_ir.observe_tool_result(
-                        &call.id,
-                        &call.name,
-                        summary.is_error,
-                        summary.artifacts.as_ref(),
-                        &summary.content,
-                    );
+                else {
+                    continue;
+                };
+                if crate::workflow_ir::tool_result_requires_desktop_observation(
+                    &call.name,
+                    summary.is_error,
+                    summary.artifacts.as_ref(),
+                ) {
+                    crate::workflow_ir::ensure_runtime_desktop_observation_gate(
+                        &mut workflow_ir,
+                        &task_plan,
+                        &orchestration_policy,
+                        self.config.power_mode.is_nexus(),
+                    )
+                    .map_err(CoreError::InvalidInput)?;
+                }
+            }
+            if let Some(workflow) = workflow_ir.as_mut() {
+                for call in &tool_calls {
+                    if let Some(summary) = dispatch_summaries
+                        .iter()
+                        .find(|summary| summary.call_id == call.id)
+                    {
+                        workflow.observe_tool_result_with_arguments(
+                            &call.id,
+                            &call.name,
+                            Some(&call.arguments),
+                            summary.is_error,
+                            summary.artifacts.as_ref(),
+                            &summary.content,
+                        );
+                    }
+                }
+                workflow.sync_from_task_plan(&task_plan);
+                if let Some(ref mut agent_trace) = trace {
+                    agent_trace.workflow_ir = serde_json::to_value(&*workflow).ok();
                 }
             }
             let awaiting_interaction_id = awaiting_user_input_interaction_id(&dispatch_summaries);
-            workflow_ir.sync_from_task_plan(&task_plan);
-            if let Some(ref mut agent_trace) = trace {
-                agent_trace.workflow_ir = serde_json::to_value(&workflow_ir).ok();
-            }
             if let Some(tid) = turn_id {
                 if let Ok(Some(task_run)) = db.get_agent_task_run_by_turn(tid) {
-                    let checkpoint = workflow_ir.task_plan_checkpoint(&task_plan);
+                    let checkpoint = workflow_ir
+                        .as_ref()
+                        .map(|workflow| workflow.task_plan_checkpoint(&task_plan))
+                        .unwrap_or_else(|| {
+                            serde_json::to_value(&task_plan).unwrap_or_else(
+                                |_| serde_json::json!({ "error": "serializeTaskPlan" }),
+                            )
+                        });
                     let (status, phase, summary) = if awaiting_interaction_id.is_some() {
                         (
                             "awaiting_user_input",
                             "awaiting_user_input",
-                            "Workflow checkpoint saved while waiting for user input",
+                            "Task checkpoint saved while waiting for user input",
                         )
                     } else {
                         (
                             "running",
                             "tooling",
-                            "Workflow IR checkpoint updated after tool dispatch",
+                            "Task checkpoint updated after tool dispatch",
                         )
                     };
                     let _ = db.update_agent_task_run_progress(
@@ -2569,7 +2700,7 @@ impl AgentExecutor {
             if let Some(interaction_id) = awaiting_interaction_id {
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
-                    Some(&workflow_ir),
+                    workflow_ir.as_ref(),
                     turn_budget.tool_rounds_used(),
                     self.config.max_iterations,
                     &loop_recorder,
@@ -2614,7 +2745,7 @@ impl AgentExecutor {
                 let reason = format!("auto_tool_round_{}", turn_budget.tool_rounds_used());
                 let live_state = long_task_state.checkpoint_live_state(
                     &task_plan,
-                    Some(&workflow_ir),
+                    workflow_ir.as_ref(),
                     turn_budget.tool_rounds_used(),
                     self.config.max_iterations,
                     &loop_recorder,
@@ -2661,7 +2792,7 @@ impl AgentExecutor {
         turn_state.transition_to(TurnPhase::Finalizing);
         let live_state = long_task_state.checkpoint_live_state(
             &task_plan,
-            Some(&workflow_ir),
+            workflow_ir.as_ref(),
             turn_budget.tool_rounds_used(),
             self.config.max_iterations,
             &loop_recorder,
@@ -2769,6 +2900,164 @@ mod awaiting_user_input_tests {
             cumulative_run_step_output_budget(8_192, None, 999_999, 999_999),
             Some(8_192)
         );
+    }
+}
+
+#[cfg(test)]
+mod action_reconciliation_tests {
+    use super::*;
+
+    fn call(id: &str, name: &str, action: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({ "action": action }).to_string(),
+            thought_signature: None,
+        }
+    }
+
+    #[test]
+    fn browser_action_receipts_restore_the_browser_reconciliation_fence() {
+        let fence = ActionReconciliationFence::from_resume_prompt(
+            "Checkpoint reason: user_stop_requires_action_reconciliation:browser_action:turn:call:obs",
+        );
+
+        assert!(fence.browser);
+        assert!(!fence.computer);
+        assert!(!fence.unknown);
+        assert!(fence.blocks_interactive_input());
+    }
+
+    fn summary(
+        call_id: &str,
+        is_error: bool,
+        artifacts: serde_json::Value,
+    ) -> tool_dispatch::ToolDispatchSummary {
+        tool_dispatch::ToolDispatchSummary {
+            call_id: call_id.to_string(),
+            content: String::new(),
+            is_error,
+            artifacts: Some(artifacts),
+        }
+    }
+
+    #[test]
+    fn uncertain_computer_action_blocks_blind_retry_in_the_same_turn() {
+        for artifacts in [
+            serde_json::json!({
+                "kind": "toolContractError",
+                "code": "computer_action_uncertain",
+            }),
+            serde_json::json!({
+                "kind": "toolContractError",
+                "code": "computer_action_timeout_uncertain",
+            }),
+            serde_json::json!({
+                "kind": "toolContractError",
+                "code": "invalid_computer_action",
+                "sideEffect": "may_have_occurred",
+            }),
+        ] {
+            let mut fence = ActionReconciliationFence::default();
+            fence.observe_tool_results(
+                &[call("control", "computer_control", "click")],
+                &[summary("control", true, artifacts)],
+            );
+            assert!(fence.blocks_interactive_input());
+        }
+
+        let mut fence = ActionReconciliationFence::default();
+        fence.observe_tool_results(
+            &[call("control", "computer_control", "click")],
+            &[summary(
+                "control",
+                false,
+                serde_json::json!({
+                    "data": {
+                        "kind": "computerControlReceipt",
+                        "effect": "unverifiable",
+                    }
+                }),
+            )],
+        );
+        assert!(fence.blocks_interactive_input());
+    }
+
+    #[test]
+    fn only_screenshot_bearing_observation_clears_its_reconciliation_surface() {
+        let mut fence = ActionReconciliationFence {
+            computer: true,
+            browser: true,
+            unknown: false,
+        };
+        for action in ["list_windows", "cursor_position"] {
+            fence.observe_tool_results(
+                &[call("observe", "computer_observe", action)],
+                &[summary(
+                    "observe",
+                    false,
+                    serde_json::json!({
+                        "data": {
+                            "kind": "computerObservationReceipt",
+                            "screenshotHash": "must-not-clear-for-non-capture-action"
+                        }
+                    }),
+                )],
+            );
+            assert!(
+                fence.computer,
+                "{action} must not clear desktop reconciliation"
+            );
+        }
+
+        fence.observe_tool_results(
+            &[call("observe", "computer_observe", "capture_window")],
+            &[summary(
+                "observe",
+                false,
+                serde_json::json!({
+                    "data": {
+                        "kind": "computerObservationReceipt",
+                        "screenshotHash": ""
+                    }
+                }),
+            )],
+        );
+        assert!(fence.computer, "an empty screenshot hash is not evidence");
+
+        fence.observe_tool_results(
+            &[call("observe", "computer_observe", "capture_window")],
+            &[summary(
+                "observe",
+                false,
+                serde_json::json!({
+                    "data": {
+                        "kind": "computerObservationReceipt",
+                        "screenshotHash": "desktop-shot"
+                    }
+                }),
+            )],
+        );
+        assert!(!fence.computer);
+        assert!(
+            fence.browser,
+            "desktop evidence must not clear browser reconciliation"
+        );
+
+        fence.observe_tool_results(
+            &[call("observe", "browser_session", "observe")],
+            &[summary(
+                "observe",
+                false,
+                serde_json::json!({
+                    "artifacts": {
+                        "kind": "browserObservation",
+                        "observation": { "screenshotHash": "browser-shot" }
+                    }
+                }),
+            )],
+        );
+        assert!(!fence.blocks_interactive_input());
     }
 }
 

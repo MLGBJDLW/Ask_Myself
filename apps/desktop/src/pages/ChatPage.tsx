@@ -238,15 +238,16 @@ function buildTerminalSelectionPrompt(selection: TerminalAgentSelection): string
 }
 
 function buildBrowserArtifactPrompt(artifact: BrowserAgentArtifact): string {
-  const summary = artifact.kind === 'element'
-    ? `${artifact.role || artifact.tag} “${artifact.name || artifact.ref}”`
-    : artifact.kind === 'region'
-      ? `coordinate region ${Math.round(artifact.bounds.width)}×${Math.round(artifact.bounds.height)} (no pixel capture)`
-      : `selected text (${artifact.text.length} characters)`;
+  const selection = artifact.selection;
+  const summary = selection.kind === 'element'
+    ? `${selection.role || selection.tag} “${selection.name || selection.ref}”`
+    : selection.kind === 'region'
+      ? `coordinate region ${Math.round(selection.bounds.width)}×${Math.round(selection.bounds.height)} (no pixel capture)`
+      : `selected text (${selection.text.length} characters)`;
   return [
     'Please use the Browser Workspace linked to this chat to work with the page context I selected.',
-    `Page: ${artifact.title || artifact.url}`,
-    `URL: ${artifact.url}`,
+    `Page: ${selection.title || selection.url}`,
+    `URL: ${selection.url}`,
     `Selection: ${summary}`,
     'The artifact is observation-scoped. Re-observe the shared browser tab before acting if the page or control owner changed.',
     '',
@@ -1347,6 +1348,8 @@ export function ChatPage() {
 
   const [prefillText, setPrefillText] = useState<string>('');
   const [prefillKey, setPrefillKey] = useState(0);
+  const activeConversationIdRef = useRef(chat.activeId);
+  activeConversationIdRef.current = chat.activeId;
   const handleSuggestionClick = useCallback((text: string) => {
     setPrefillText(text);
     setPrefillKey((current) => current + 1);
@@ -1355,6 +1358,7 @@ export function ChatPage() {
     handleSuggestionClick(buildTerminalSelectionPrompt(selection));
   }, [handleSuggestionClick]);
   const handleBrowserArtifact = useCallback((artifact: BrowserAgentArtifact) => {
+    if (artifact.conversationId !== activeConversationIdRef.current) return;
     handleSuggestionClick(buildBrowserArtifactPrompt(artifact));
   }, [handleSuggestionClick]);
 

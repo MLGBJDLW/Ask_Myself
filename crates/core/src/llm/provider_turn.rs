@@ -746,12 +746,61 @@ impl ProviderTurnEnvelope {
         ledger_sensitive || payload_sensitive
     }
 
+    pub fn contains_sensitive_interaction_input(&self) -> bool {
+        if self.contains_sensitive_computer_control() {
+            return true;
+        }
+        let ledger_sensitive = self.tool_calls.iter().any(|call| {
+            crate::tool_argument_projection::tool_call_contains_sensitive_input(
+                &call.name,
+                &call.arguments,
+            )
+        });
+        let payload_sensitive = match &self.replay_payload {
+            ProviderReplayPayload::DeepSeekResponseItems(payload)
+            | ProviderReplayPayload::OpenAiResponseItems(payload) => {
+                payload.items.iter().any(|item| {
+                    if item.get("type").and_then(serde_json::Value::as_str) != Some("function_call")
+                    {
+                        return false;
+                    }
+                    let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+                        return false;
+                    };
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    crate::tool_argument_projection::tool_call_contains_sensitive_input(
+                        name, arguments,
+                    )
+                })
+            }
+            ProviderReplayPayload::GeminiThoughtSignatures(payload) => {
+                payload.content_parts.iter().any(|part| {
+                    let Some(call) = part.get("functionCall") else {
+                        return false;
+                    };
+                    let Some(name) = call.get("name").and_then(serde_json::Value::as_str) else {
+                        return false;
+                    };
+                    crate::tool_argument_projection::tool_arguments_contain_sensitive_input(
+                        name,
+                        call.get("args").unwrap_or(&serde_json::Value::Null),
+                    )
+                })
+            }
+            _ => false,
+        };
+        ledger_sensitive || payload_sensitive
+    }
+
     /// Produce a privacy-safe envelope for durable storage without raw
     /// computer-control text, reasons, unknown fields, or thought signatures
     /// that can embed those arguments. Signed or encrypted provider parts are
     /// never rewritten: every sensitive unit becomes explicitly non-replayable.
     pub fn audit_safe_for_persistence(&self) -> Self {
-        if !self.contains_sensitive_computer_control() {
+        if !self.contains_sensitive_interaction_input() {
             return self.clone();
         }
         let mut tool_calls =
@@ -767,7 +816,7 @@ impl ProviderTurnEnvelope {
         let replay_payload = ProviderReplayPayload::None;
         let provider_items = Vec::new();
         let visible_content =
-            "[Sensitive computer-control assistant text omitted from persistence]".to_string();
+            "[Sensitive interaction assistant text omitted from persistence]".to_string();
         let digest_input = serde_json::json!({
             "route": &self.route,
             "visibleContent": &visible_content,
@@ -1304,6 +1353,71 @@ mod tests {
         let serialized = serde_json::to_string(&projected).unwrap();
         assert!(!serialized.contains(sentinel));
         assert!(serialized.contains("charCount"));
+        assert!(matches!(
+            projected.replay_payload,
+            ProviderReplayPayload::None
+        ));
+        assert_eq!(projected.capture_status, ReasoningCaptureStatus::Redacted);
+        assert!(!projected.authorizes_tool_dispatch());
+    }
+
+    #[test]
+    fn responses_persistence_projection_redacts_browser_input_and_drops_replay() {
+        let sentinel = "browser-provider-envelope-secret-83d1";
+        let arguments = serde_json::json!({
+            "action": "type",
+            "sessionId": "browser-a",
+            "observationId": "observation-a",
+            "targetRef": "e7",
+            "text": sentinel,
+            "key": format!("Control+{sentinel}")
+        })
+        .to_string();
+        let payload = ResponsesReplayPayload {
+            response_status: "completed".to_string(),
+            items: vec![
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs-browser-sensitive",
+                    "status": "completed",
+                    "encrypted_content": format!("opaque-{sentinel}")
+                }),
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": "fc-browser-sensitive",
+                    "status": "completed",
+                    "call_id": "call-browser-sensitive",
+                    "name": "browser_session",
+                    "arguments": arguments
+                }),
+            ],
+        };
+        let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+            "responses-item-browser-sensitive",
+            "responses-sample-browser-sensitive",
+            RouteSnapshot {
+                replay_policy: ReasoningReplayPolicy::RequiredOnToolCall,
+                ..route(ReasoningApiStyle::OpenAiResponses, "openai")
+            },
+            format!("typed {sentinel}"),
+            None,
+            None,
+            vec![ToolCallRequest {
+                id: "call-browser-sensitive".to_string(),
+                name: "browser_session".to_string(),
+                arguments,
+                thought_signature: Some(format!("embedded-{sentinel}")),
+            }],
+            true,
+            Some(ProviderReplayPayload::OpenAiResponseItems(payload)),
+        );
+
+        assert!(envelope.contains_sensitive_interaction_input());
+        let projected = envelope.audit_safe_for_persistence();
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(serialized.contains("charCount"));
+        assert!(serialized.contains("keyCount"));
         assert!(matches!(
             projected.replay_payload,
             ProviderReplayPayload::None

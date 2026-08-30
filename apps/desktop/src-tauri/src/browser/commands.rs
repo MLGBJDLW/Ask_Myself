@@ -82,7 +82,7 @@ pub async fn browser_navigate_cmd(
     url: String,
 ) -> Result<BrowserTabInfo, String> {
     state
-        .navigate(&session_id, &tab_id, &url, NavigationActor::User)
+        .navigate(&session_id, &tab_id, &url, NavigationActor::User, None)
         .await
 }
 
@@ -97,13 +97,16 @@ pub fn browser_activate_tab_cmd(
 }
 
 #[tauri::command]
-pub fn browser_set_bounds_cmd(
+pub async fn browser_set_bounds_cmd(
     state: State<'_, BrowserState>,
     session_id: String,
     bounds: BrowserBounds,
     visible: bool,
+    visibility_revision: u64,
 ) -> Result<(), String> {
-    state.set_bounds(&session_id, bounds, visible)
+    state
+        .set_bounds(&session_id, bounds, visible, visibility_revision)
+        .await
 }
 
 #[tauri::command]

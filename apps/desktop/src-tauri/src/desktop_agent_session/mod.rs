@@ -16,7 +16,8 @@ use nexa_core::agent::power_mode::{
 };
 use nexa_core::agent::{
     build_system_prompt, AgentConfig, AgentEvent, AgentExecutionMode, AgentExecutor,
-    AgentRequestKind, AgentSteeringMessage, CancellationToken,
+    AgentRequestKind, AgentSteeringMessage, CancellationToken, ToolVisualInterpretationRequest,
+    ToolVisualInterpreter, ToolVisualObservation,
 };
 use nexa_core::agent_run::{
     AgentRunDisplayKind, AgentRunEvent, AgentRunEventImportance, AgentRunEventKind,
@@ -27,7 +28,7 @@ use nexa_core::approval::{
     ApprovalCallback, ApprovalDecision, ApprovalRequest, SessionApprovalStore, ToolApprovalMode,
     ToolPermissionKey,
 };
-use nexa_core::capability_registry::RuntimeCapabilityResolution;
+use nexa_core::capability_registry::{RegistryScope, RuntimeCapabilityResolution};
 use nexa_core::context_pack::{
     ContextAssembler, ContextItemRole, ContextItemStability, ContextPack, ContextPackItem,
     ContextTrustLevel,
@@ -46,7 +47,9 @@ use nexa_core::llm::{
 use nexa_core::mcp::{McpManager, McpServer};
 use nexa_core::mixture_of_agents::{AgentCollaborationMode, MoaPresetId};
 use nexa_core::ocr::extract_text_from_image;
-use nexa_core::package_host::{BuiltinPackageHost, PackageRuntimeAssembler};
+use nexa_core::package_host::{
+    BuiltinPackageHost, PackageHostContractError, PackageRuntimeAssembler, RuntimeCapabilitySet,
+};
 #[cfg(test)]
 use nexa_core::project::{CreateProjectInput, UpdateProjectInput};
 use nexa_core::provider_catalog::resolve_endpoint_model_context_window;
@@ -218,12 +221,29 @@ pub struct DesktopAgentVisionUserContentRequest<'a> {
     pub primary_native_vision_allowed: bool,
     pub turn_override: Option<VisionTurnOverride>,
     pub cancellation: &'a CancellationToken,
+    /// User attachments may reuse structured observation cache entries;
+    /// current-turn tool screenshots must always set this to false.
+    pub allow_observation_cache: bool,
 }
 
 pub struct DesktopAgentVisionUserContentResult {
     pub parts: Vec<ContentPart>,
     pub attachments: Vec<ImageAttachment>,
     pub llm_context_content: String,
+}
+
+#[derive(Clone)]
+pub struct DesktopToolVisualInterpreterRequest {
+    pub db: Arc<Database>,
+    pub provider_config: ProviderConfig,
+    pub db_config: DbAgentConfig,
+    pub registry_scope: RegistryScope,
+    pub task_run_id: String,
+    pub user_prompt: String,
+    pub primary_egress_id: String,
+    pub primary_routes_local: bool,
+    pub turn_override: Option<VisionTurnOverride>,
+    pub cancellation: CancellationToken,
 }
 
 struct DesktopVisionProviderRoute {
@@ -321,6 +341,7 @@ pub struct DesktopAgentTurnRequest {
     pub steering_rx: mpsc::UnboundedReceiver<AgentSteeringMessage>,
     pub approval_runtime: DesktopAgentApprovalRuntime,
     pub summarization_provider: Option<Box<dyn LlmProvider>>,
+    pub tool_visual_interpreter: ToolVisualInterpreter,
     pub history: Vec<Message>,
     pub user_parts: Vec<ContentPart>,
     pub db: Arc<Database>,

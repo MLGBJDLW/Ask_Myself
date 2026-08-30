@@ -457,6 +457,11 @@ export interface BrowserSessionInfo {
   activeTabId?: string | null;
   tabs: BrowserTabInfo[];
   controlOwner: BrowserControlOwner;
+  workspaceVisible: boolean;
+  cleanupPending: boolean;
+  visibilityRevision: number;
+  visibilityRequested: boolean;
+  visibilityRequestRevision?: number | null;
 }
 
 export interface BrowserCreateInput {
@@ -528,8 +533,17 @@ export const navigateBrowserTab = (sessionId: string, tabId: string, url: string
 export const activateBrowserTab = (sessionId: string, tabId: string) =>
   invoke<BrowserSessionInfo>('browser_activate_tab_cmd', { sessionId, tabId });
 
-export const setBrowserBounds = (sessionId: string, bounds: BrowserBounds, visible: boolean) =>
-  invoke<void>('browser_set_bounds_cmd', { sessionId, bounds, visible });
+export const setBrowserBounds = (
+  sessionId: string,
+  bounds: BrowserBounds,
+  visible: boolean,
+  visibilityRevision: number,
+) => invoke<void>('browser_set_bounds_cmd', {
+  sessionId,
+  bounds,
+  visible,
+  visibilityRevision,
+});
 
 export const goBackBrowserTab = (sessionId: string, tabId: string) =>
   invoke<void>('browser_go_back_cmd', { sessionId, tabId });

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::intelligence::{AgentTaskPlan, DelegationMode, EvidenceMode, PlanStepStatus};
 use crate::quality_profile::{OrchestrationProfile, ResolvedOrchestrationProfile};
+use crate::tool_visibility_policy::BrowserTerminalClosureRequirement;
 
 pub const WORKFLOW_IR_VERSION: u8 = 1;
 
@@ -47,6 +48,22 @@ pub enum VerificationGateKind {
     Build,
     WriteIsolation,
     IndependentReview,
+    BrowserVisualObservation,
+    BrowserSessionObservation,
+    BrowserTerminalClosure,
+    DesktopObservation,
+}
+
+impl VerificationGateKind {
+    fn is_interaction_observation(&self) -> bool {
+        matches!(
+            self,
+            Self::BrowserVisualObservation
+                | Self::BrowserSessionObservation
+                | Self::BrowserTerminalClosure
+                | Self::DesktopObservation
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +144,13 @@ pub struct WorkflowCompletionContract {
     pub require_all_nodes_succeeded: bool,
     pub require_verification_gates: bool,
     pub require_evidence_ledger: bool,
+    #[serde(default)]
+    pub require_interaction_gates: bool,
+    /// Only an explicitly requested browser-close workflow may use a bound
+    /// terminal closure receipt instead of pixels from a target that no longer
+    /// exists. Ordinary browser mutations still require a fresh observation.
+    #[serde(default)]
+    pub browser_terminal_closure_evidence: BrowserTerminalClosureRequirement,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -155,6 +179,17 @@ pub struct WorkflowIr {
 }
 
 impl WorkflowIr {
+    fn require_fresh_desktop_observation(&mut self, detail: &str) {
+        self.completion_contract.require_interaction_gates = true;
+        ensure_required_gate(
+            &mut self.verification_gates,
+            "desktop-observation",
+            VerificationGateKind::DesktopObservation,
+            detail,
+        );
+        self.refresh_checkpoint();
+    }
+
     pub fn task_plan_checkpoint(&self, plan: &AgentTaskPlan) -> serde_json::Value {
         let mut value = serde_json::to_value(plan)
             .unwrap_or_else(|_| serde_json::json!({ "error": "serializeTaskPlan" }));
@@ -448,8 +483,22 @@ impl WorkflowIr {
 
     pub fn observe_tool_result(
         &mut self,
+        call_id: &str,
+        tool_name: &str,
+        is_error: bool,
+        artifacts: Option<&serde_json::Value>,
+        content: &str,
+    ) {
+        self.observe_tool_result_with_arguments(
+            call_id, tool_name, None, is_error, artifacts, content,
+        );
+    }
+
+    pub(crate) fn observe_tool_result_with_arguments(
+        &mut self,
         _call_id: &str,
         tool_name: &str,
+        tool_arguments: Option<&str>,
         is_error: bool,
         artifacts: Option<&serde_json::Value>,
         content: &str,
@@ -457,9 +506,108 @@ impl WorkflowIr {
         if tool_name == "run_shell" {
             self.record_executed_verification(is_error, artifacts);
         }
+        let requires_desktop_observation =
+            tool_result_requires_desktop_observation(tool_name, is_error, artifacts);
+        if requires_desktop_observation {
+            self.require_fresh_desktop_observation(if is_error {
+                "Computer control may have crossed its commit boundary; a fresh computer_observe screenshot is required before completion."
+            } else {
+                "Successful computer_control requires a fresh computer_observe screenshot before completion."
+            });
+        }
         if is_error {
+            let browser_error_may_have_changed_state = tool_name == "browser_session"
+                && browser_session_action_invalidates_observation(tool_arguments)
+                && (tool_result_effect_may_have_occurred(artifacts)
+                    || matches!(
+                        artifacts
+                            .and_then(|artifacts| artifacts.get("code"))
+                            .and_then(serde_json::Value::as_str),
+                        Some(
+                            "browser_action_uncertain"
+                                | "browser_action_timeout_uncertain"
+                                | "browser_cleanup_pending"
+                        )
+                    ));
+            if browser_error_may_have_changed_state {
+                self.record_gate(
+                    "browser-visual-observation",
+                    false,
+                    "Browser mutation failed after its state may have changed; previous rendered evidence is stale.",
+                );
+                self.record_gate(
+                    "browser-session-observation",
+                    false,
+                    "Browser mutation did not reach a verified terminal receipt; previous session evidence is stale.",
+                );
+            }
             self.refresh_checkpoint();
             return;
+        }
+        if tool_may_mutate_workspace(tool_name)
+            || (tool_name == "browser_session"
+                && browser_session_action_invalidates_observation(tool_arguments))
+        {
+            self.record_gate(
+                "browser-visual-observation",
+                false,
+                format!(
+                    "Successful `{tool_name}` invalidated the previous rendered visual observation."
+                ),
+            );
+            self.record_gate(
+                "browser-session-observation",
+                false,
+                format!(
+                    "Successful `{tool_name}` invalidated the previous browser-session observation."
+                ),
+            );
+        }
+        let verified_browser_visual_observation =
+            is_verified_browser_visual_observation(tool_name, artifacts)
+                && (tool_name != "browser_session"
+                    || normalized_tool_action(tool_arguments).as_deref() == Some("observe"));
+        if verified_browser_visual_observation {
+            self.record_gate(
+                "browser-visual-observation",
+                true,
+                format!("Fresh rendered visual observation returned by `{tool_name}`."),
+            );
+            if tool_name == "browser_session" {
+                self.record_gate(
+                    "browser-session-observation",
+                    true,
+                    "Fresh pixel-bearing observation returned by browser_session.",
+                );
+            }
+        }
+        let terminal_closure_requirement =
+            self.completion_contract.browser_terminal_closure_evidence;
+        if terminal_closure_requirement.is_required() {
+            if let Some(closure) = verified_browser_terminal_closure_receipt(
+                terminal_closure_requirement,
+                tool_name,
+                tool_arguments,
+                artifacts,
+            ) {
+                self.record_gate("browser-terminal-closure", true, closure.detail());
+                if closure.removes_final_renderable_target() {
+                    self.record_gate(
+                        "browser-session-observation",
+                        true,
+                        closure.terminal_observation_detail(),
+                    );
+                }
+            }
+        }
+        if tool_name == "computer_observe"
+            && is_verified_desktop_observation(tool_arguments, artifacts)
+        {
+            self.record_gate(
+                "desktop-observation",
+                true,
+                "Fresh desktop observation returned by computer_observe.",
+            );
         }
         if matches!(
             tool_name,
@@ -550,16 +698,19 @@ impl WorkflowIr {
     }
 
     pub fn completion_blockers(&self) -> Vec<String> {
-        let mut blockers = self
-            .nodes
-            .iter()
-            .filter(|node| node.status != WorkflowNodeStatus::Succeeded)
-            .map(|node| format!("node:{}:{:?}", node.id, node.status))
-            .collect::<Vec<_>>();
+        let mut blockers = if self.completion_contract.require_all_nodes_succeeded {
+            self.nodes
+                .iter()
+                .filter(|node| node.status != WorkflowNodeStatus::Succeeded)
+                .map(|node| format!("node:{}:{:?}", node.id, node.status))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         blockers.extend(
             self.verification_gates
                 .iter()
-                .filter(|gate| gate.required && gate.passed != Some(true))
+                .filter(|gate| self.completion_gate_is_enforced(gate) && gate.passed != Some(true))
                 .map(|gate| format!("gate:{}:{:?}", gate.id, gate.passed)),
         );
         if self.completion_contract.require_evidence_ledger
@@ -802,12 +953,11 @@ impl WorkflowIr {
                 .nodes
                 .iter()
                 .all(|node| node.status == WorkflowNodeStatus::Succeeded);
-        let gates_pass = !self.completion_contract.require_verification_gates
-            || self
-                .verification_gates
-                .iter()
-                .filter(|gate| gate.required)
-                .all(|gate| gate.passed == Some(true));
+        let gates_pass = self
+            .verification_gates
+            .iter()
+            .filter(|gate| self.completion_gate_is_enforced(gate))
+            .all(|gate| gate.passed == Some(true));
         let evidence_pass = !self.completion_contract.require_evidence_ledger
             || self
                 .evidence_ledger
@@ -818,6 +968,82 @@ impl WorkflowIr {
                 .len()
                 >= usize::from(self.min_evidence_sources.max(1));
         nodes_pass && gates_pass && evidence_pass
+    }
+
+    fn completion_gate_is_enforced(&self, gate: &VerificationGate) -> bool {
+        gate.required
+            && (self.completion_contract.require_verification_gates
+                || (self.completion_contract.require_interaction_gates
+                    && gate.kind.is_interaction_observation()))
+    }
+
+    pub fn requires_completion_audit(&self) -> bool {
+        self.completion_contract.require_verification_gates
+            || self.completion_contract.require_interaction_gates
+            || self.completion_contract.require_evidence_ledger
+    }
+
+    pub fn completion_repair_guidance(&self) -> String {
+        let mut actions = Vec::new();
+        if self.verification_gates.iter().any(|gate| {
+            self.completion_gate_is_enforced(gate)
+                && gate.kind == VerificationGateKind::BrowserVisualObservation
+                && gate.passed != Some(true)
+        }) {
+            actions.push(
+                "serve or render the artifact and call browser_evidence_capture after the last file or process mutation",
+            );
+        }
+        if self.verification_gates.iter().any(|gate| {
+            self.completion_gate_is_enforced(gate)
+                && gate.kind == VerificationGateKind::BrowserSessionObservation
+                && gate.passed != Some(true)
+        }) {
+            actions.push(if self
+                .completion_contract
+                .browser_terminal_closure_evidence
+                .is_required()
+            {
+                "perform the explicitly requested browser closure and retain its target-bound terminal receipt; if a renderable tab remains, obtain a fresh screenshot-bearing browser_session observation"
+            } else {
+                "call browser_session for the requested navigation or interaction and obtain its fresh screenshot-bearing observation"
+            });
+        }
+        if self.verification_gates.iter().any(|gate| {
+            self.completion_gate_is_enforced(gate)
+                && gate.kind == VerificationGateKind::BrowserTerminalClosure
+                && gate.passed != Some(true)
+        }) {
+            actions.push(match self
+                .completion_contract
+                .browser_terminal_closure_evidence
+            {
+                BrowserTerminalClosureRequirement::AllTabs => {
+                    "continue closing explicitly targeted tabs until a typed close_tab receipt reports remainingTabCount 0"
+                }
+                _ => {
+                    "perform the explicitly requested close_tab or close_session against its exact target and retain the typed successful closure receipt"
+                }
+            });
+        }
+        if self.verification_gates.iter().any(|gate| {
+            self.completion_gate_is_enforced(gate)
+                && gate.kind == VerificationGateKind::DesktopObservation
+                && gate.passed != Some(true)
+        }) {
+            actions.push(
+                "call computer_observe now; every successful computer_control requires another fresh computer_observe before completion",
+            );
+        }
+        if actions.is_empty() {
+            actions.push(
+                "run the required checks, record exact passed or failed outcomes, and use an independent reviewer when required",
+            );
+        }
+        format!(
+            "Resolve the enforced completion contract with concrete tool results: {}. A pending, claimed, or skipped check is not success.",
+            actions.join("; ")
+        )
     }
 
     pub fn requires_runtime_write_isolation(&self) -> bool {
@@ -924,6 +1150,8 @@ impl WorkflowIr {
             require_all_nodes_succeeded: false,
             require_verification_gates: false,
             require_evidence_ledger: false,
+            require_interaction_gates: false,
+            browser_terminal_closure_evidence: BrowserTerminalClosureRequirement::NotRequired,
         };
         self.refresh_checkpoint();
     }
@@ -1017,6 +1245,282 @@ impl WorkflowIr {
             .map(|node| node.id.clone())
             .collect();
     }
+}
+
+pub(crate) fn is_verified_browser_visual_observation(
+    tool_name: &str,
+    artifacts: Option<&serde_json::Value>,
+) -> bool {
+    let Some(artifacts) = artifacts else {
+        return false;
+    };
+    let nested_kind = artifacts
+        .pointer("/artifacts/kind")
+        .or_else(|| artifacts.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    match tool_name {
+        "browser_evidence_capture" => {
+            nested_kind == Some("browserEvidenceCapture")
+                && (artifacts
+                    .pointer("/artifacts/visual/screenshotAttached")
+                    .or_else(|| artifacts.pointer("/visual/screenshotAttached"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    || has_nonempty_string_at(
+                        artifacts,
+                        &[
+                            "/data/screenshotHash",
+                            "/data/screenshot/hash",
+                            "/artifacts/capture/screenshotHash",
+                        ],
+                    ))
+        }
+        "browser_session" => {
+            nested_kind == Some("browserObservation")
+                && has_nonempty_string_at(
+                    artifacts,
+                    &[
+                        "/data/screenshotHash",
+                        "/data/screenshot/contentHash",
+                        "/artifacts/observation/screenshotHash",
+                        "/artifacts/observation/screenshot/contentHash",
+                    ],
+                )
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_verified_desktop_observation(
+    tool_arguments: Option<&str>,
+    artifacts: Option<&serde_json::Value>,
+) -> bool {
+    let Some(artifacts) = artifacts else {
+        return false;
+    };
+    let action = normalized_tool_action(tool_arguments);
+    let nested_kind = artifacts
+        .pointer("/artifacts/kind")
+        .or_else(|| artifacts.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    let receipt_kind = artifacts
+        .pointer("/data/kind")
+        .and_then(serde_json::Value::as_str);
+    matches!(
+        action.as_deref(),
+        Some("capture_window" | "wait_for_change")
+    ) && (nested_kind == Some("computerObservation")
+        || receipt_kind == Some("computerObservationReceipt"))
+        && has_nonempty_string_at(
+            artifacts,
+            &[
+                "/data/screenshotHash",
+                "/data/observation/screenshotHash",
+                "/screenshotHash",
+                "/observation/screenshotHash",
+            ],
+        )
+}
+
+fn normalized_tool_action(tool_arguments: Option<&str>) -> Option<String> {
+    tool_arguments
+        .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
+        .and_then(|arguments| {
+            arguments
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .map(|action| action.trim().to_ascii_lowercase())
+        })
+}
+
+fn browser_session_action_invalidates_observation(tool_arguments: Option<&str>) -> bool {
+    match normalized_tool_action(tool_arguments).as_deref() {
+        // Inventory calls do not change the shared page, and observe is the
+        // only action authorized to establish a fresh pixel completion gate.
+        Some("list_sessions" | "list_tabs" | "observe") | None => false,
+        // Every other successful browser_session action either changes the
+        // session/tab/page or advances visible interaction state. Treat future
+        // actions fail-closed so a newly added mutation cannot reuse old pixels.
+        Some(_) => true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedBrowserTerminalClosure {
+    Session,
+    Tab { remaining_tab_count: u64 },
+}
+
+impl VerifiedBrowserTerminalClosure {
+    fn detail(self) -> &'static str {
+        match self {
+            Self::Session => {
+                "Typed browser-session closure receipt proves the requested session close was performed."
+            }
+            Self::Tab { .. } => {
+                "Typed browser-tab closure receipt proves the requested tab close was performed."
+            }
+        }
+    }
+
+    fn removes_final_renderable_target(self) -> bool {
+        matches!(
+            self,
+            Self::Session
+                | Self::Tab {
+                    remaining_tab_count: 0
+                }
+        )
+    }
+
+    fn terminal_observation_detail(self) -> &'static str {
+        match self {
+            Self::Session => {
+                "Typed browser-session closure receipt confirms no renderable session target remains."
+            }
+            Self::Tab {
+                remaining_tab_count: 0,
+            } => {
+                "Typed final-tab closure receipt confirms no renderable tab remains in the session."
+            }
+            Self::Tab { .. } => {
+                "A remaining browser tab still requires a fresh screenshot-bearing observation."
+            }
+        }
+    }
+}
+
+fn verified_browser_terminal_closure_receipt(
+    requirement: BrowserTerminalClosureRequirement,
+    tool_name: &str,
+    tool_arguments: Option<&str>,
+    artifacts: Option<&serde_json::Value>,
+) -> Option<VerifiedBrowserTerminalClosure> {
+    if tool_name != "browser_session" {
+        return None;
+    }
+    let arguments = tool_arguments
+        .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())?;
+    let action = arguments
+        .get("action")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_ascii_lowercase();
+    let artifacts = artifacts?;
+    let receipt = [
+        artifacts.get("artifacts"),
+        artifacts.get("data"),
+        Some(artifacts),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| value.get("kind").is_some())?;
+
+    let identity_matches = |field: &str| {
+        let Some(expected) = arguments
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return false;
+        };
+        let Some(actual) = receipt
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return false;
+        };
+        expected == actual
+    };
+
+    match action.as_str() {
+        "close_session"
+            if requirement.allows_session()
+                && receipt.get("kind").and_then(serde_json::Value::as_str)
+                    == Some("browserSessionClosed")
+                && receipt
+                    .get("sessionClosed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && identity_matches("sessionId") =>
+        {
+            Some(VerifiedBrowserTerminalClosure::Session)
+        }
+        "close_tab"
+            if receipt.get("kind").and_then(serde_json::Value::as_str)
+                == Some("browserTabClosed")
+                && receipt
+                    .get("tabClosed")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && identity_matches("sessionId")
+                && identity_matches("tabId") =>
+        {
+            let remaining_tab_count = receipt
+                .get("remainingTabCount")
+                .and_then(serde_json::Value::as_u64)?;
+            requirement
+                .accepts_tab_receipt(remaining_tab_count)
+                .then_some(VerifiedBrowserTerminalClosure::Tab {
+                    remaining_tab_count,
+                })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn tool_result_requires_desktop_observation(
+    tool_name: &str,
+    is_error: bool,
+    artifacts: Option<&serde_json::Value>,
+) -> bool {
+    if tool_name != "computer_control" {
+        return false;
+    }
+    if !is_error {
+        return true;
+    }
+    if tool_result_effect_may_have_occurred(artifacts) {
+        return true;
+    }
+    matches!(
+        artifacts
+            .and_then(|artifacts| artifacts.get("code"))
+            .and_then(serde_json::Value::as_str),
+        Some("computer_action_uncertain" | "computer_action_timeout_uncertain")
+    )
+}
+
+pub(crate) fn tool_result_effect_may_have_occurred(artifacts: Option<&serde_json::Value>) -> bool {
+    artifacts.is_some_and(|artifacts| {
+        match artifacts
+            .get("sideEffect")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("may_have_occurred") => true,
+            Some("not_started") => false,
+            _ => {
+                // Compatibility only for persisted artifacts produced before
+                // sideEffect became the authoritative typed field.
+                artifacts
+                    .get("effectMayHaveOccurred")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            }
+        }
+    })
+}
+
+fn has_nonempty_string_at(value: &serde_json::Value, pointers: &[&str]) -> bool {
+    pointers.iter().any(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|candidate| !candidate.trim().is_empty())
+    })
 }
 
 fn ensure_required_gate(
@@ -1296,6 +1800,72 @@ pub fn compile_workflow_ir(
             detail: None,
         });
     }
+    if plan
+        .interaction_requirements
+        .requires_visual_observation_after_mutation()
+        && !plan.interaction_requirements.browser_observation
+    {
+        verification_gates.push(VerificationGate {
+            id: "browser-visual-observation".to_string(),
+            kind: VerificationGateKind::BrowserVisualObservation,
+            required: true,
+            passed: None,
+            detail: Some(
+                "A rendered visual observation is required after the last mutation.".to_string(),
+            ),
+        });
+    }
+    if plan.interaction_requirements.browser_observation {
+        verification_gates.push(VerificationGate {
+            id: "browser-session-observation".to_string(),
+            kind: VerificationGateKind::BrowserSessionObservation,
+            required: true,
+            passed: None,
+            detail: Some(if plan
+                .interaction_requirements
+                .browser_terminal_closure
+                .is_required()
+            {
+                "A target-bound terminal closure receipt is required when the requested close removes the final renderable browser target; otherwise a real screenshot-bearing browser_session observation is required."
+                    .to_string()
+            } else {
+                "A real screenshot-bearing browser_session observation is required for the requested browser operation."
+                    .to_string()
+            }),
+        });
+    }
+    if plan
+        .interaction_requirements
+        .browser_terminal_closure
+        .is_required()
+    {
+        let terminal_detail = if plan.interaction_requirements.browser_terminal_closure
+            == BrowserTerminalClosureRequirement::AllTabs
+        {
+            "Closing all browser tabs requires target-bound successful close_tab receipts through the final receipt with remainingTabCount 0. Closing only one tab cannot satisfy this gate."
+        } else {
+            "The requested browser tab/session close requires a matching target-bound successful closure receipt. Pre-close pixels do not prove the close occurred."
+        };
+        verification_gates.push(VerificationGate {
+            id: "browser-terminal-closure".to_string(),
+            kind: VerificationGateKind::BrowserTerminalClosure,
+            required: true,
+            passed: None,
+            detail: Some(terminal_detail.to_string()),
+        });
+    }
+    if plan.interaction_requirements.requires_desktop_observation() {
+        verification_gates.push(VerificationGate {
+            id: "desktop-observation".to_string(),
+            kind: VerificationGateKind::DesktopObservation,
+            required: true,
+            passed: None,
+            detail: Some(
+                "computer_observe is required before control and again after the last successful control."
+                    .to_string(),
+            ),
+        });
+    }
 
     let mut workflow = WorkflowIr {
         version: WORKFLOW_IR_VERSION,
@@ -1328,11 +1898,58 @@ pub fn compile_workflow_ir(
                 || profile.profile != OrchestrationProfile::Balanced,
             require_verification_gates: nexus_enabled || profile.require_independent_verifier,
             require_evidence_ledger: plan.evidence_policy.mode == EvidenceMode::Required,
+            require_interaction_gates: plan.interaction_requirements.requires_completion_gate(),
+            browser_terminal_closure_evidence: plan
+                .interaction_requirements
+                .browser_terminal_closure,
         },
     };
     workflow.refresh_checkpoint();
     workflow.validate()?;
     Ok(workflow)
+}
+
+/// Compile the heavyweight workflow only when a turn has an execution
+/// contract that can enforce it. Balanced direct answers intentionally return
+/// `None`; callers must not synthesize a placeholder workflow artifact or scan
+/// project manifests for that lane.
+pub fn compile_turn_workflow_ir(
+    plan: &AgentTaskPlan,
+    profile: &ResolvedOrchestrationProfile,
+    nexus_enabled: bool,
+    requires_workspace_isolation: bool,
+) -> Result<Option<WorkflowIr>, String> {
+    let requires_workflow = nexus_enabled
+        || profile.profile != OrchestrationProfile::Balanced
+        || requires_workspace_isolation
+        || plan.interaction_requirements.requires_completion_gate();
+    if !requires_workflow {
+        return Ok(None);
+    }
+
+    let mut workflow = compile_workflow_ir(plan, profile, nexus_enabled)?;
+    if requires_workspace_isolation {
+        workflow.configure_for_scheduled_isolated_patch();
+    }
+    Ok(Some(workflow))
+}
+
+pub(crate) fn ensure_runtime_desktop_observation_gate(
+    workflow: &mut Option<WorkflowIr>,
+    plan: &AgentTaskPlan,
+    profile: &ResolvedOrchestrationProfile,
+    nexus_enabled: bool,
+) -> Result<(), String> {
+    if workflow.is_none() {
+        *workflow = Some(compile_workflow_ir(plan, profile, nexus_enabled)?);
+    }
+    workflow
+        .as_mut()
+        .expect("runtime desktop workflow was initialized")
+        .require_fresh_desktop_observation(
+            "Runtime computer_control requires a fresh computer_observe screenshot before completion.",
+        );
+    Ok(())
 }
 
 fn tool_may_mutate_workspace(tool: &str) -> bool {
@@ -1415,15 +2032,31 @@ mod tests {
     use crate::quality_profile::{
         resolve_orchestration_profile, OrchestrationProfile, OrchestrationProfileInput,
     };
+    use crate::tool_visibility_policy::{
+        resolve_turn_capability_requirements, ToolVisibilityInput,
+    };
 
     fn plan() -> AgentTaskPlan {
-        build_task_plan(TaskPlanningInput {
-            user_query: "Research and implement the change, then test it",
-            route_kind: "CodebaseOperation",
+        build_task_plan(TaskPlanningInput::for_route(
+            "Research and implement the change, then test it",
+            "CodebaseOperation",
+            false,
+            0,
+        ))
+    }
+
+    fn interaction_plan(query: &str) -> AgentTaskPlan {
+        let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
+            query,
+            system_prompt: "",
             has_sources: false,
-            source_scope_count: 0,
-            collection_context: false,
-        })
+        });
+        build_task_plan(TaskPlanningInput::for_requirements(
+            query,
+            &requirements,
+            false,
+            0,
+        ))
     }
 
     fn profile() -> ResolvedOrchestrationProfile {
@@ -1479,6 +2112,24 @@ mod tests {
                 .iter()
                 .any(|tool| tool == "run_shell" || tool == "edit_file")
         }));
+    }
+
+    #[test]
+    fn legacy_completion_contract_defaults_terminal_closure_evidence_to_none() {
+        let legacy = serde_json::json!({
+            "requireAllNodesSucceeded": false,
+            "requireVerificationGates": false,
+            "requireEvidenceLedger": false,
+            "requireInteractionGates": true
+        });
+
+        let contract: WorkflowCompletionContract = serde_json::from_value(legacy)
+            .expect("legacy workflow completion contract must deserialize");
+
+        assert_eq!(
+            contract.browser_terminal_closure_evidence,
+            BrowserTerminalClosureRequirement::NotRequired
+        );
     }
 
     #[test]
@@ -1704,13 +2355,12 @@ mod tests {
 
     #[test]
     fn simple_optional_tasks_do_not_fan_out() {
-        let simple = build_task_plan(TaskPlanningInput {
-            user_query: "Rename one file",
-            route_kind: "FileOperation",
-            has_sources: false,
-            source_scope_count: 0,
-            collection_context: false,
-        });
+        let simple = build_task_plan(TaskPlanningInput::for_route(
+            "Rename one file",
+            "FileOperation",
+            false,
+            0,
+        ));
         let workflow = compile_workflow_ir(&simple, &profile(), true).unwrap();
         assert_eq!(workflow.ready_node_ids().len(), 1);
         assert!(workflow
@@ -1720,13 +2370,12 @@ mod tests {
 
     #[test]
     fn balanced_task_plan_is_advisory_unless_an_evidence_gate_applies() {
-        let file_plan = build_task_plan(TaskPlanningInput {
-            user_query: "Create the requested file",
-            route_kind: "FileOperation",
-            has_sources: false,
-            source_scope_count: 0,
-            collection_context: false,
-        });
+        let file_plan = build_task_plan(TaskPlanningInput::for_route(
+            "Create the requested file",
+            "FileOperation",
+            false,
+            0,
+        ));
         let workflow = compile_workflow_ir(&file_plan, &balanced_profile(), false).unwrap();
 
         assert!(!workflow.completion_contract.require_all_nodes_succeeded);
@@ -1736,6 +2385,879 @@ mod tests {
             .nodes
             .iter()
             .any(|node| { node.status != WorkflowNodeStatus::Succeeded }));
+    }
+
+    #[test]
+    fn balanced_direct_turn_skips_workflow_while_interaction_contracts_compile_one() {
+        let direct = build_task_plan(TaskPlanningInput::for_route(
+            "What is the capital of France?",
+            "DirectResponse",
+            false,
+            0,
+        ));
+        assert!(
+            compile_turn_workflow_ir(&direct, &balanced_profile(), false, false)
+                .expect("workflow policy")
+                .is_none(),
+            "ordinary Balanced answers must not carry an unused workflow artifact"
+        );
+
+        for query in [
+            "帮我用html写一个黑洞演示图",
+            "打开浏览器访问 example.com 并点击 More information",
+            "Capture this app window, click Save, then verify it",
+        ] {
+            let plan = interaction_plan(query);
+            let workflow = compile_turn_workflow_ir(&plan, &balanced_profile(), false, false)
+                .expect("workflow policy")
+                .expect("interaction completion contract must compile a workflow gate");
+            assert!(workflow.completion_contract.require_interaction_gates);
+        }
+    }
+
+    #[test]
+    fn late_computer_control_dynamically_establishes_a_desktop_completion_gate() {
+        let direct = build_task_plan(TaskPlanningInput::for_route(
+            "在微信里点击发送按钮",
+            "DirectResponse",
+            false,
+            0,
+        ));
+        let profile = balanced_profile();
+        let mut workflow =
+            compile_turn_workflow_ir(&direct, &profile, false, false).expect("workflow policy");
+        assert!(workflow.is_none());
+
+        ensure_runtime_desktop_observation_gate(&mut workflow, &direct, &profile, false)
+            .expect("late desktop gate");
+        let workflow = workflow.as_mut().expect("runtime workflow");
+        workflow.observe_tool_result(
+            "control",
+            "computer_control",
+            false,
+            Some(&serde_json::json!({
+                "data": {
+                    "kind": "computerControlReceipt",
+                    "effect": "unverifiable"
+                }
+            })),
+            "Input was delivered but no screenshot was available.",
+        );
+        assert!(workflow.completion_contract.require_interaction_gates);
+        assert!(!workflow.completion_allowed());
+
+        workflow.observe_tool_result_with_arguments(
+            "observe",
+            "computer_observe",
+            Some(r#"{"action":"capture_window"}"#),
+            false,
+            Some(&serde_json::json!({
+                "data": {
+                    "kind": "computerObservationReceipt",
+                    "screenshotHash": "fresh-desktop-shot"
+                }
+            })),
+            "Fresh window capture.",
+        );
+        assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn only_uncertain_computer_control_errors_require_a_fresh_observation() {
+        for code in [
+            "computer_action_uncertain",
+            "computer_action_timeout_uncertain",
+        ] {
+            let artifacts = serde_json::json!({
+                "kind": "toolContractError",
+                "code": code
+            });
+            assert!(tool_result_requires_desktop_observation(
+                "computer_control",
+                true,
+                Some(&artifacts),
+            ));
+        }
+
+        for artifacts in [
+            serde_json::json!({
+                "kind": "toolContractError",
+                "code": "invalid_computer_action",
+                "effectMayHaveOccurred": true,
+            }),
+            serde_json::json!({
+                "kind": "toolContractError",
+                "code": "invalid_computer_action",
+                "sideEffect": "may_have_occurred",
+            }),
+        ] {
+            assert!(tool_result_requires_desktop_observation(
+                "computer_control",
+                true,
+                Some(&artifacts),
+            ));
+        }
+
+        assert!(
+            !tool_result_effect_may_have_occurred(Some(&serde_json::json!({
+                "sideEffect": "not_started",
+                "effectMayHaveOccurred": true,
+            }))),
+            "the typed sideEffect field must override a conflicting legacy boolean"
+        );
+
+        for code in [
+            "computer_observation_stale",
+            "computer_action_refused",
+            "computer_user_takeover",
+            "invalid_computer_action",
+        ] {
+            let artifacts = serde_json::json!({
+                "kind": "toolContractError",
+                "code": code
+            });
+            assert!(
+                !tool_result_requires_desktop_observation(
+                    "computer_control",
+                    true,
+                    Some(&artifacts),
+                ),
+                "{code} did not cross an uncertain commit boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn skipped_visual_check_cannot_complete_html_artifact_after_mutation() {
+        let plan = interaction_plan("帮我用html写一个黑洞演示图");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("visual workflow");
+
+        workflow.observe_tool_result("write", "create_file", false, None, "created index.html");
+        workflow.observe_tool_result(
+            "claimed",
+            "record_verification",
+            false,
+            Some(&serde_json::json!({
+                "kind": "verification",
+                "overallStatus": "passed",
+                "checks": [{ "name": "Rendered visual check", "status": "skipped" }]
+            })),
+            "Verification recorded: passed. 0 passed, 0 failed, 0 pending, 1 skipped.",
+        );
+        assert!(!workflow.completion_allowed());
+
+        workflow.observe_tool_result(
+            "list",
+            "browser_session",
+            false,
+            Some(&serde_json::json!({
+                "artifacts": { "kind": "browserSessionList" },
+                "data": { "sessions": [] }
+            })),
+            "Listed browser sessions.",
+        );
+        assert!(!workflow.completion_allowed());
+        workflow.observe_tool_result(
+            "capture",
+            "browser_evidence_capture",
+            false,
+            Some(&serde_json::json!({
+                "artifacts": {
+                    "kind": "browserEvidenceCapture",
+                    "visual": { "screenshotAttached": true }
+                }
+            })),
+            "Rendered screenshot captured.",
+        );
+        assert!(workflow.completion_allowed());
+
+        workflow.observe_tool_result("edit", "edit_file", false, None, "updated canvas.js");
+        assert!(
+            !workflow.completion_allowed(),
+            "a later mutation must invalidate the older visual observation"
+        );
+    }
+
+    #[test]
+    fn explicit_browser_operation_requires_screenshot_bearing_session_observation() {
+        let plan = interaction_plan("打开浏览器访问 example.com 并点击 More information");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+
+        workflow.observe_tool_result(
+            "list",
+            "browser_session",
+            false,
+            Some(&serde_json::json!({
+                "artifacts": { "kind": "browserSessionList" },
+                "data": { "sessions": [] }
+            })),
+            "Listed browser sessions.",
+        );
+        assert!(!workflow.completion_allowed());
+        workflow.observe_tool_result(
+            "other-capture",
+            "browser_evidence_capture",
+            false,
+            Some(&serde_json::json!({
+                "artifacts": {
+                    "kind": "browserEvidenceCapture",
+                    "visual": { "screenshotAttached": true }
+                }
+            })),
+            "Captured a separate browser surface.",
+        );
+        assert!(!workflow.completion_allowed());
+        let session_observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "session-shot" }
+            },
+            "data": { "screenshotHash": "session-shot" }
+        });
+        workflow.observe_tool_result_with_arguments(
+            "session-click",
+            "browser_session",
+            Some(r#"{"action":"click"}"#),
+            false,
+            Some(&session_observation),
+            "Clicked in the browser session.",
+        );
+        assert!(
+            !workflow.completion_allowed(),
+            "only an explicit browser observe may satisfy the session gate"
+        );
+        workflow.observe_tool_result_with_arguments(
+            "session-observe",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&session_observation),
+            "Observed the interacted browser tab.",
+        );
+        assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn successful_browser_state_changes_invalidate_the_previous_session_observation() {
+        let session_observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "fresh-session-shot" }
+            },
+            "data": { "screenshotHash": "fresh-session-shot" }
+        });
+
+        for action in [
+            "create_session",
+            "open_tab",
+            "activate_tab",
+            "close_tab",
+            "close_session",
+            "navigate",
+            "go_back",
+            "go_forward",
+            "reload",
+            "click",
+            "double_click",
+            "drag",
+            "type",
+            "select",
+            "press",
+            "scroll",
+            "move",
+            "hover",
+            "wait_for",
+        ] {
+            let plan =
+                interaction_plan("Open the browser, visit https://example.com, and click More");
+            let mut workflow =
+                compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-before",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&session_observation),
+                "Observed the browser tab.",
+            );
+            assert!(workflow.completion_allowed(), "setup failed for {action}");
+
+            workflow.observe_tool_result_with_arguments(
+                "browser-action",
+                "browser_session",
+                Some(&format!(r#"{{"action":"{action}"}}"#)),
+                false,
+                Some(&session_observation),
+                "Browser action completed.",
+            );
+            assert!(
+                !workflow.completion_allowed(),
+                "successful browser action `{action}` must invalidate the previous observation even when its result embeds a screenshot"
+            );
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-without-pixels",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&serde_json::json!({
+                    "artifacts": { "kind": "browserObservation" },
+                    "data": {}
+                })),
+                "Observed without a screenshot.",
+            );
+            assert!(
+                !workflow.completion_allowed(),
+                "a screenshot-free observe must not repair `{action}`"
+            );
+
+            workflow.observe_tool_result_with_arguments(
+                "observe-after",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&session_observation),
+                "Observed the changed browser tab.",
+            );
+            assert!(
+                workflow.completion_allowed(),
+                "a fresh screenshot-bearing observe must repair `{action}`"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_terminal_browser_closure_receipts_complete_without_an_impossible_observe() {
+        let session_observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "fresh-session-shot" }
+            },
+            "data": { "screenshotHash": "fresh-session-shot" }
+        });
+        let terminal_closures = [
+            (
+                "Close the browser session",
+                r#"{"action":"close_session","sessionId":"browser-1"}"#,
+                serde_json::json!({
+                    "kind": "browserSessionClosed",
+                    "sessionId": "browser-1",
+                    "sessionClosed": true
+                }),
+            ),
+            (
+                "Close the current browser tab",
+                r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#,
+                serde_json::json!({
+                    "kind": "browserTabClosed",
+                    "sessionId": "browser-1",
+                    "tabId": "tab-1",
+                    "tabClosed": true,
+                    "remainingTabCount": 0
+                }),
+            ),
+        ];
+
+        for (query, arguments, closure_receipt) in terminal_closures {
+            let plan = interaction_plan(query);
+            assert!(
+                plan.interaction_requirements.browser_observation,
+                "an explicit browser-close request must compile an interaction completion gate: {query}"
+            );
+            let mut workflow =
+                compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+            workflow.observe_tool_result_with_arguments(
+                "observe-before",
+                "browser_session",
+                Some(r#"{"action":"observe"}"#),
+                false,
+                Some(&session_observation),
+                "Observed the browser tab before closing it.",
+            );
+            assert!(
+                !workflow.completion_allowed(),
+                "pre-close observation cannot prove the requested close was performed"
+            );
+
+            workflow.observe_tool_result_with_arguments(
+                "close",
+                "browser_session",
+                Some(arguments),
+                false,
+                Some(&closure_receipt),
+                "Closed the requested browser target.",
+            );
+
+            assert!(
+                workflow.completion_allowed(),
+                "a typed terminal closure receipt must be attainable evidence after the renderable target is gone: {arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_pending_invalidates_pre_close_pixels_until_terminal_retry_succeeds() {
+        let plan = interaction_plan("Close the browser session");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser close workflow");
+        let session_observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "pre-close-shot" }
+            },
+            "data": { "screenshotHash": "pre-close-shot" }
+        });
+        let close_arguments = r#"{"action":"close_session","sessionId":"browser-1"}"#;
+        workflow.observe_tool_result_with_arguments(
+            "observe-before",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&session_observation),
+            "Observed before closing.",
+        );
+        assert!(!workflow.completion_allowed());
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::BrowserSessionObservation)
+                .and_then(|gate| gate.passed),
+            Some(true),
+            "pre-close pixels satisfy only the observation gate, not closure-performed"
+        );
+
+        workflow.observe_tool_result_with_arguments(
+            "cleanup-pending",
+            "browser_session",
+            Some(close_arguments),
+            true,
+            Some(&serde_json::json!({
+                "kind": "toolContractError",
+                "code": "browser_cleanup_pending",
+                "sideEffect": "may_have_occurred",
+                "retryable": true
+            })),
+            "Temporary profile cleanup is pending.",
+        );
+        assert!(
+            !workflow.completion_allowed(),
+            "pre-close pixels cannot prove a cleanup-pending terminal state"
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::BrowserSessionObservation)
+                .and_then(|gate| gate.passed),
+            Some(false),
+            "cleanup-pending must invalidate the pre-close screenshot"
+        );
+
+        workflow.observe_tool_result_with_arguments(
+            "cleanup-retry",
+            "browser_session",
+            Some(close_arguments),
+            false,
+            Some(&serde_json::json!({
+                "kind": "browserSessionClosed",
+                "sessionId": "browser-1",
+                "sessionClosed": true
+            })),
+            "Closed the retained empty session after cleanup succeeded.",
+        );
+        assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn nonfinal_tab_close_requires_post_close_pixels_after_the_closure_receipt() {
+        let plan = interaction_plan("Close the current browser tab");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser close workflow");
+        let observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "session-shot" }
+            },
+            "data": { "screenshotHash": "session-shot" }
+        });
+        workflow.observe_tool_result_with_arguments(
+            "observe-before",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&observation),
+            "Observed before closing one tab.",
+        );
+        assert!(!workflow.completion_allowed());
+
+        workflow.observe_tool_result_with_arguments(
+            "close-tab",
+            "browser_session",
+            Some(r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#),
+            false,
+            Some(&serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "tab-1",
+                "tabClosed": true,
+                "remainingTabCount": 1
+            })),
+            "Closed one tab; another tab remains.",
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::BrowserTerminalClosure)
+                .and_then(|gate| gate.passed),
+            Some(true)
+        );
+        assert!(
+            !workflow.completion_allowed(),
+            "a remaining tab must be observed after the close"
+        );
+
+        workflow.observe_tool_result_with_arguments(
+            "open-follow-up-tab",
+            "browser_session",
+            Some(r#"{"action":"open_tab","sessionId":"browser-1","url":"https://example.com"}"#),
+            false,
+            None,
+            "Opened a follow-up tab requested after the target close.",
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::BrowserTerminalClosure)
+                .and_then(|gate| gate.passed),
+            Some(true),
+            "a target-bound close receipt is a monotonic action fact"
+        );
+        assert!(!workflow.completion_allowed());
+
+        workflow.observe_tool_result_with_arguments(
+            "observe-after",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&observation),
+            "Observed the remaining tab after closing the target.",
+        );
+        assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn all_tabs_requirement_completes_only_after_the_final_tab_receipt() {
+        let plan = interaction_plan("Close all browser tabs");
+        assert_eq!(
+            plan.interaction_requirements.browser_terminal_closure,
+            BrowserTerminalClosureRequirement::AllTabs
+        );
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("all-tabs workflow");
+        let observation = serde_json::json!({
+            "artifacts": {
+                "kind": "browserObservation",
+                "observation": { "screenshotHash": "remaining-tab-shot" }
+            },
+            "data": { "screenshotHash": "remaining-tab-shot" }
+        });
+
+        workflow.observe_tool_result_with_arguments(
+            "close-first",
+            "browser_session",
+            Some(r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#),
+            false,
+            Some(&serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "tab-1",
+                "tabClosed": true,
+                "remainingTabCount": 1
+            })),
+            "Closed only one of two tabs.",
+        );
+        workflow.observe_tool_result_with_arguments(
+            "observe-remaining",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&observation),
+            "Observed the remaining tab.",
+        );
+        assert!(
+            !workflow.completion_allowed(),
+            "a non-final tab receipt plus fresh pixels must not satisfy close-all"
+        );
+        assert_eq!(
+            workflow
+                .verification_gates
+                .iter()
+                .find(|gate| gate.kind == VerificationGateKind::BrowserTerminalClosure)
+                .and_then(|gate| gate.passed),
+            None
+        );
+
+        workflow.observe_tool_result_with_arguments(
+            "close-final",
+            "browser_session",
+            Some(r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-2"}"#),
+            false,
+            Some(&serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "tab-2",
+                "tabClosed": true,
+                "remainingTabCount": 0
+            })),
+            "Closed the final tab.",
+        );
+        assert!(workflow.completion_allowed());
+    }
+
+    #[test]
+    fn terminal_closure_evidence_is_intent_bound_and_final_tab_only() {
+        let close_tab_arguments =
+            r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#;
+        let final_tab_receipt = serde_json::json!({
+            "kind": "browserTabClosed",
+            "sessionId": "browser-1",
+            "tabId": "tab-1",
+            "tabClosed": true,
+            "remainingTabCount": 0
+        });
+
+        let mut ordinary_workflow = compile_workflow_ir(
+            &interaction_plan("Open the browser and click More information"),
+            &balanced_profile(),
+            false,
+        )
+        .expect("ordinary browser workflow");
+        ordinary_workflow.observe_tool_result_with_arguments(
+            "close",
+            "browser_session",
+            Some(close_tab_arguments),
+            false,
+            Some(&final_tab_receipt),
+            "Closed a tab instead of performing the requested interaction.",
+        );
+        assert!(
+            !ordinary_workflow.completion_allowed(),
+            "terminal closure evidence must not satisfy a non-closure browser objective"
+        );
+
+        for (query, arguments, mismatched_receipt) in [
+            (
+                "Close the current browser tab",
+                r#"{"action":"close_session","sessionId":"browser-1"}"#,
+                serde_json::json!({
+                    "kind": "browserSessionClosed",
+                    "sessionId": "browser-1",
+                    "sessionClosed": true
+                }),
+            ),
+            (
+                "Close the browser session",
+                close_tab_arguments,
+                final_tab_receipt.clone(),
+            ),
+        ] {
+            let mut scoped_workflow =
+                compile_workflow_ir(&interaction_plan(query), &balanced_profile(), false)
+                    .expect("scoped browser close workflow");
+            scoped_workflow.observe_tool_result_with_arguments(
+                "wrong-close-kind",
+                "browser_session",
+                Some(arguments),
+                false,
+                Some(&mismatched_receipt),
+                "Closed the wrong kind of browser target.",
+            );
+            assert!(
+                !scoped_workflow.completion_allowed(),
+                "terminal evidence must match the requested tab/session closure scope: {query}"
+            );
+        }
+
+        for invalid_receipt in [
+            serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "tab-1",
+                "tabClosed": true,
+                "remainingTabCount": 1
+            }),
+            serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "different-tab",
+                "tabClosed": true,
+                "remainingTabCount": 0
+            }),
+            serde_json::json!({
+                "kind": "browserTabClosed",
+                "sessionId": "browser-1",
+                "tabId": "tab-1",
+                "remainingTabCount": 0
+            }),
+        ] {
+            let mut close_workflow = compile_workflow_ir(
+                &interaction_plan("Close the current browser tab"),
+                &balanced_profile(),
+                false,
+            )
+            .expect("browser close workflow");
+            close_workflow.observe_tool_result_with_arguments(
+                "close",
+                "browser_session",
+                Some(close_tab_arguments),
+                false,
+                Some(&invalid_receipt),
+                "Browser close returned incomplete terminal evidence.",
+            );
+            assert!(
+                !close_workflow.completion_allowed(),
+                "non-final, mismatched, or incomplete closure receipts must not bypass fresh observation: {invalid_receipt}"
+            );
+        }
+
+        for arguments_without_target in [
+            r#"{"action":"close_tab","sessionId":"browser-1"}"#,
+            r#"{"action":"close_tab","tabId":"tab-1"}"#,
+        ] {
+            let mut close_workflow = compile_workflow_ir(
+                &interaction_plan("Close the current browser tab"),
+                &balanced_profile(),
+                false,
+            )
+            .expect("browser close workflow");
+            close_workflow.observe_tool_result_with_arguments(
+                "close",
+                "browser_session",
+                Some(arguments_without_target),
+                false,
+                Some(&final_tab_receipt),
+                "Browser close omitted its canonical target.",
+            );
+            assert!(
+                !close_workflow.completion_allowed(),
+                "terminal evidence must bind both sessionId and tabId: {arguments_without_target}"
+            );
+        }
+
+        let compound_plan =
+            interaction_plan("Open example.com, close the tab, then close the browser session");
+        assert_eq!(
+            compound_plan
+                .interaction_requirements
+                .browser_terminal_closure,
+            BrowserTerminalClosureRequirement::Session,
+            "the last terminal clause owns the requested end state"
+        );
+        let mut compound_workflow = compile_workflow_ir(&compound_plan, &balanced_profile(), false)
+            .expect("compound browser close workflow");
+        compound_workflow.observe_tool_result_with_arguments(
+            "close-only-tab",
+            "browser_session",
+            Some(close_tab_arguments),
+            false,
+            Some(&final_tab_receipt),
+            "Closed only the earlier tab clause.",
+        );
+        assert!(
+            !compound_workflow.completion_allowed(),
+            "an earlier tab closure cannot satisfy a later session-close end state"
+        );
+    }
+
+    #[test]
+    fn browser_inventory_reads_preserve_a_fresh_session_observation() {
+        let plan = interaction_plan("Open the browser, visit https://example.com, and click More");
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("browser workflow");
+        let session_observation = serde_json::json!({
+            "artifacts": { "kind": "browserObservation" },
+            "data": { "screenshotHash": "fresh-session-shot" }
+        });
+        workflow.observe_tool_result_with_arguments(
+            "observe",
+            "browser_session",
+            Some(r#"{"action":"observe"}"#),
+            false,
+            Some(&session_observation),
+            "Observed the browser tab.",
+        );
+        assert!(workflow.completion_allowed());
+
+        for action in ["list_sessions", "list_tabs"] {
+            workflow.observe_tool_result_with_arguments(
+                "inventory",
+                "browser_session",
+                Some(&format!(r#"{{"action":"{action}"}}"#)),
+                false,
+                None,
+                "Listed browser state.",
+            );
+            assert!(
+                workflow.completion_allowed(),
+                "read-only browser action `{action}` must not invalidate a fresh observation"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_control_requires_fresh_computer_observation_before_completion() {
+        let plan = interaction_plan(
+            "Capture this app window, click the Save button with the mouse, then verify it",
+        );
+        let mut workflow =
+            compile_workflow_ir(&plan, &balanced_profile(), false).expect("desktop workflow");
+
+        assert!(!workflow.completion_allowed());
+        workflow.observe_tool_result_with_arguments(
+            "list-before",
+            "computer_observe",
+            Some(r#"{"action":"list_windows"}"#),
+            false,
+            Some(&serde_json::json!({
+                "artifacts": { "kind": "computerObservation" },
+                "data": {
+                    "windows": [],
+                    "screenshotHash": "forged-or-stale-list-thumbnail"
+                }
+            })),
+            "Listed windows.",
+        );
+        assert!(!workflow.completion_allowed());
+        let captured_window = serde_json::json!({
+            "artifacts": { "kind": "computerObservation" },
+            "data": { "screenshotHash": "capture-hash" }
+        });
+        workflow.observe_tool_result_with_arguments(
+            "observe-before",
+            "computer_observe",
+            Some(r#"{"action":"capture_window"}"#),
+            false,
+            Some(&captured_window),
+            "Window captured.",
+        );
+        assert!(workflow.completion_allowed());
+        workflow.observe_tool_result("control", "computer_control", false, None, "Save clicked.");
+        assert!(!workflow.completion_allowed());
+        workflow.observe_tool_result_with_arguments(
+            "observe-after",
+            "computer_observe",
+            Some(r#"{"action":"capture_window"}"#),
+            false,
+            Some(&captured_window),
+            "Fresh window capture shows the saved state.",
+        );
+        assert!(workflow.completion_allowed());
     }
 
     #[test]
@@ -1905,13 +3427,12 @@ mod tests {
 
     #[test]
     fn reconnaissance_nodes_never_replace_file_mutation_steps() {
-        let file_plan = build_task_plan(TaskPlanningInput {
-            user_query: "Investigate multiple file constraints, implement the requested edits, and verify every output across the project",
-            route_kind: "FileOperation",
-            has_sources: true,
-            source_scope_count: 1,
-            collection_context: false,
-        });
+        let file_plan = build_task_plan(TaskPlanningInput::for_route(
+            "Investigate multiple file constraints, implement the requested edits, and verify every output across the project",
+            "FileOperation",
+            true,
+            1,
+        ));
         let mut workflow = compile_workflow_ir(&file_plan, &profile(), true).unwrap();
         let ready = workflow.ready_node_ids();
         assert_eq!(ready.len(), 2);

@@ -29,6 +29,9 @@
   "sendText": "Send text",
   "sharedSession": "Shared live session",
   "empty": "Open a page to start browsing with the Agent.",
+  "cleanupPending": "工作階段清理尚未完成，請重試以移除暫存瀏覽資料。",
+  "retryCleanup": "重試清理",
+  "cleanupCompleted": "瀏覽器工作階段已清理",
   "pickElementHint": "Move over the page and click the element you want to point out. Escape cancels.",
   "pickRegionHint": "拖曳以附加頁面座標（目前不擷取像素），按 Escape 取消。"
 }

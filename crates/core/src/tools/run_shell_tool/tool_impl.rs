@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::activity::{
@@ -33,12 +34,152 @@ use super::shell_adapter::{
 
 pub struct RunShellTool;
 
+/// A conversation-scoped, process-liveness-checked permission for a managed
+/// local HTTP service. Consumers must treat this as an ephemeral snapshot and
+/// replace previously installed permissions when they refresh it.
+#[derive(Debug, Clone)]
+pub struct ManagedLoopbackPermit {
+    pub service_id: String,
+    pub origin: String,
+    pub host: String,
+    pub port: u16,
+    pub process_id: Option<u32>,
+    service_instance_id: String,
+    lease: Arc<ManagedLoopbackLeaseState>,
+}
+
+impl ManagedLoopbackPermit {
+    pub fn service_instance_id(&self) -> &str {
+        &self.service_instance_id
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.lease.is_live()
+    }
+}
+
+impl PartialEq for ManagedLoopbackPermit {
+    fn eq(&self, other: &Self) -> bool {
+        self.service_id == other.service_id
+            && self.service_instance_id == other.service_instance_id
+            && self.origin == other.origin
+            && self.host == other.host
+            && self.port == other.port
+            && self.process_id == other.process_id
+    }
+}
+
+impl Eq for ManagedLoopbackPermit {}
+
+impl std::hash::Hash for ManagedLoopbackPermit {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.service_id.hash(state);
+        self.service_instance_id.hash(state);
+        self.origin.hash(state);
+        self.host.hash(state);
+        self.port.hash(state);
+        self.process_id.hash(state);
+    }
+}
+
+#[derive(Debug)]
+struct ManagedLoopbackLeaseState {
+    live: AtomicBool,
+    expires_at: StdMutex<Instant>,
+    ttl: Duration,
+}
+
+impl ManagedLoopbackLeaseState {
+    fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+            && self
+                .expires_at
+                .lock()
+                .map(|expires_at| Instant::now() <= *expires_at)
+                .unwrap_or(false)
+    }
+
+    fn refresh(&self) {
+        if self.live.load(Ordering::Acquire) {
+            if let Ok(mut expires_at) = self.expires_at.lock() {
+                *expires_at = Instant::now() + self.ttl;
+            }
+        }
+    }
+
+    fn revoke(&self) {
+        self.live.store(false, Ordering::Release);
+    }
+}
+
+/// The managed process owns this issuer; browser consumers receive only
+/// cloned permits sharing its renewable liveness lease.
+#[derive(Debug, Clone)]
+pub struct ManagedLoopbackPermitIssuer {
+    service_id: String,
+    service_instance_id: String,
+    process_id: Option<u32>,
+    lease: Arc<ManagedLoopbackLeaseState>,
+}
+
+impl ManagedLoopbackPermitIssuer {
+    pub fn new(service_id: impl Into<String>, process_id: Option<u32>) -> Self {
+        Self::new_with_ttl(service_id, process_id, MANAGED_LOOPBACK_LEASE_TTL)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_ttl(
+        service_id: impl Into<String>,
+        process_id: Option<u32>,
+        ttl: Duration,
+    ) -> Self {
+        let ttl = ttl.max(Duration::from_millis(1));
+        Self {
+            service_id: service_id.into(),
+            service_instance_id: uuid::Uuid::new_v4().to_string(),
+            process_id,
+            lease: Arc::new(ManagedLoopbackLeaseState {
+                live: AtomicBool::new(true),
+                expires_at: StdMutex::new(Instant::now() + ttl),
+                ttl,
+            }),
+        }
+    }
+
+    pub fn issue(
+        &self,
+        origin: impl Into<String>,
+        host: impl Into<String>,
+        port: u16,
+    ) -> ManagedLoopbackPermit {
+        self.refresh();
+        ManagedLoopbackPermit {
+            service_id: self.service_id.clone(),
+            origin: origin.into(),
+            host: host.into(),
+            port,
+            process_id: self.process_id,
+            service_instance_id: self.service_instance_id.clone(),
+            lease: Arc::clone(&self.lease),
+        }
+    }
+
+    pub fn refresh(&self) {
+        self.lease.refresh();
+    }
+
+    pub fn revoke(&self) {
+        self.lease.revoke();
+    }
+}
+
 const AUTO_SERVICE_SETTLE_MS: u64 = 1_500;
 const MAX_SERVICE_LOG_BYTES: usize = 32 * 1024;
 const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SERVICE_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 3;
 const MAX_WAIT_TIMEOUT_SECS: u64 = 3;
+const MANAGED_LOOPBACK_LEASE_TTL: Duration = Duration::from_secs(3);
 
 pub(super) fn managed_wait_budget_secs(requested: Option<u64>) -> u64 {
     match requested {
@@ -71,6 +212,7 @@ struct ManagedService {
     conversation_id: Option<String>,
     stdout_task: Option<tokio::task::JoinHandle<()>>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
+    loopback_permit_issuer: ManagedLoopbackPermitIssuer,
 }
 
 fn new_process_activity_id() -> String {
@@ -98,6 +240,40 @@ static READINESS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 fn managed_services() -> &'static tokio::sync::Mutex<HashMap<String, ManagedService>> {
     MANAGED_SERVICES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+/// Return exact loopback endpoints owned by `conversation_id` whose managed
+/// process is still running and has reached a discoverable ready URL.
+///
+/// The snapshot deliberately excludes unowned, exited, errored and not-yet-
+/// ready services. Callers should refresh and replace their prior snapshot
+/// rather than accumulating permissions.
+pub async fn managed_loopback_permits(conversation_id: &str) -> Vec<ManagedLoopbackPermit> {
+    if conversation_id.is_empty() {
+        return Vec::new();
+    }
+
+    let mut services = managed_services().lock().await;
+    let mut permits = services
+        .iter_mut()
+        .filter_map(|(_service_id, service)| {
+            if service.conversation_id.as_deref() != Some(conversation_id) {
+                return None;
+            }
+            if !matches!(service.child.try_wait(), Ok(None)) {
+                service.loopback_permit_issuer.revoke();
+                return None;
+            }
+            let ready_url = service.ready_url.as_ref()?;
+            Some(service.loopback_permit_issuer.issue(
+                ready_url.origin().ascii_serialization(),
+                ready_url.host_str()?.to_string(),
+                ready_url.port_or_known_default()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    permits.sort_unstable_by(|left, right| left.service_id.cmp(&right.service_id));
+    permits
 }
 
 fn completed_services() -> &'static tokio::sync::Mutex<HashMap<String, CompletedService>> {
@@ -196,6 +372,7 @@ fn spawn_service_monitor(service_id: String) {
                 let Some(service) = services.get_mut(&service_id) else {
                     return;
                 };
+                service.loopback_permit_issuer.refresh();
                 service.child.try_wait()
             };
             match status {
@@ -203,6 +380,7 @@ fn spawn_service_monitor(service_id: String) {
                     let service = services
                         .remove(&service_id)
                         .expect("managed service disappeared while locked");
+                    service.loopback_permit_issuer.revoke();
                     mark_service_finalizing(&service_id, &service).await;
                     drop(services);
                     let _ =
@@ -214,6 +392,7 @@ fn spawn_service_monitor(service_id: String) {
                     let service = services
                         .remove(&service_id)
                         .expect("managed service disappeared while locked");
+                    service.loopback_permit_issuer.revoke();
                     mark_service_finalizing(&service_id, &service).await;
                     drop(services);
                     service.process_tree.terminate();
@@ -509,6 +688,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
     };
     let logs = Arc::new(tokio::sync::Mutex::new(ManagedServiceLogs::default()));
     let process_id = child.id();
+    let loopback_permit_issuer = ManagedLoopbackPermitIssuer::new(call_id, process_id);
     let _ = activity_runtime.append(
         &activity_id,
         ActivityEventKind::CommandStarted,
@@ -563,6 +743,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     conversation_id: conversation_id.map(str::to_string),
                     stdout_task: None,
                     stderr_task: None,
+                    loopback_permit_issuer,
                 };
                 return exited_service_result(call_id, call_id, &service, status, &log_snapshot)
                     .await;
@@ -617,6 +798,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                         conversation_id: conversation_id.map(str::to_string),
                         stdout_task,
                         stderr_task,
+                        loopback_permit_issuer,
                     },
                 );
                 spawn_service_monitor(call_id.to_string());
@@ -665,6 +847,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     conversation_id: conversation_id.map(str::to_string),
                     stdout_task,
                     stderr_task,
+                    loopback_permit_issuer,
                 },
             );
             spawn_service_monitor(call_id.to_string());
@@ -723,20 +906,25 @@ async fn status_service(
             "managed service belongs to a different conversation",
         );
     }
+    service.loopback_permit_issuer.refresh();
     let process_status = service.child.try_wait();
     match process_status {
         Ok(Some(status)) => {
             let service = registry
                 .remove(service_id)
                 .expect("managed service disappeared while locked");
+            service.loopback_permit_issuer.revoke();
             mark_service_finalizing(service_id, &service).await;
             drop(registry);
             finalize_exited_service(call_id, service_id, service, status).await
         }
-        Err(error) => error_result(
-            call_id,
-            format!("failed to inspect service {service_id}: {error}"),
-        ),
+        Err(error) => {
+            service.loopback_permit_issuer.revoke();
+            error_result(
+                call_id,
+                format!("failed to inspect service {service_id}: {error}"),
+            )
+        }
         Ok(None) => {
             let log_snapshot = service_log_snapshot(&service.logs).await;
             if service.ready_url.is_none() {
@@ -827,6 +1015,7 @@ async fn manage_service(
             "managed service belongs to a different conversation",
         );
     }
+    service.loopback_permit_issuer.revoke();
     mark_service_finalizing(service_id, &service).await;
     drop(registry);
 
@@ -1040,14 +1229,17 @@ async fn wait_for_service(
                             "managed service belongs to a different conversation",
                         );
                     }
+                    service.loopback_permit_issuer.refresh();
                     match service.child.try_wait() {
                         Ok(Some(status)) => {
+                            service.loopback_permit_issuer.revoke();
                             mark_service_finalizing(service_id, &service).await;
                             drop(registry);
                             return finalize_exited_service(call_id, service_id, service, status)
                                 .await;
                         }
                         Err(error) => {
+                            service.loopback_permit_issuer.revoke();
                             registry.insert(service_id.to_string(), service);
                             return error_result(
                                 call_id,

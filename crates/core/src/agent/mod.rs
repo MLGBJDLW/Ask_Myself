@@ -53,7 +53,6 @@ use crate::tools::{
     MAX_TOOL_CALL_ARGUMENT_BYTES,
 };
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
-use crate::workflow_ir::compile_workflow_ir;
 
 mod answer_cache;
 mod assistant_turn;
@@ -102,7 +101,7 @@ use self::long_task::{
 };
 use self::loop_guard::{AgentLoopGuard, LoopGuardAction};
 use self::prompt_cache::PromptCacheTracker;
-use self::route::{route_user_turn, system_prompt_has_collection_context, AgentRouteKind};
+use self::route::{route_user_turn, AgentRouteKind};
 pub use self::sampling::llm_streaming_disabled_by_env;
 use self::stream_recovery::{ContextOverflowRecoveryDecision, StreamRecoveryPolicy};
 use self::tool_protocol::VerifiedToolCallBatch;
@@ -619,16 +618,6 @@ fn default_system_prompt() -> String {
     DEFAULT_SYSTEM_PROMPT_KERNEL.trim().to_string()
 }
 
-pub fn route_name_for_behavioral_eval(
-    query: &str,
-    system_prompt: &str,
-    has_sources: bool,
-) -> &'static str {
-    route_user_turn(query, system_prompt, has_sources)
-        .kind
-        .as_str()
-}
-
 fn merge_tool_definitions(
     primary: Vec<crate::llm::ToolDefinition>,
     secondary: Vec<crate::llm::ToolDefinition>,
@@ -661,6 +650,86 @@ fn merge_tool_definitions(
 pub type ConfirmationCallback =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
+pub const TOOL_VISUAL_OBSERVATION_SCHEMA_VERSION: u16 = 1;
+
+/// Current-turn-only pixels emitted by a tool and offered to a host visual
+/// interpreter when the primary model cannot accept image parts.
+#[derive(Debug, Clone)]
+pub struct ToolVisualInterpretationRequest {
+    pub tool_name: String,
+    pub attachments: Vec<ToolOutputAttachment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolVisualObservationStatus {
+    Interpreted,
+    Unavailable,
+    Failed,
+}
+
+/// Structured text projection of ephemeral tool pixels. The observation is
+/// inserted only into the immediately following model step and is never added
+/// to durable tool artifacts, traces, or conversation rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolVisualObservation {
+    pub schema_version: u16,
+    pub status: ToolVisualObservationStatus,
+    pub processor: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+impl ToolVisualObservation {
+    pub fn interpreted(processor: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            schema_version: TOOL_VISUAL_OBSERVATION_SCHEMA_VERSION,
+            status: ToolVisualObservationStatus::Interpreted,
+            processor: processor.into(),
+            text: text.into(),
+            reason_code: None,
+        }
+    }
+
+    pub fn unavailable(
+        processor: impl Into<String>,
+        reason_code: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version: TOOL_VISUAL_OBSERVATION_SCHEMA_VERSION,
+            status: ToolVisualObservationStatus::Unavailable,
+            processor: processor.into(),
+            text: text.into(),
+            reason_code: Some(reason_code.into()),
+        }
+    }
+
+    pub fn failed(
+        processor: impl Into<String>,
+        reason_code: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version: TOOL_VISUAL_OBSERVATION_SCHEMA_VERSION,
+            status: ToolVisualObservationStatus::Failed,
+            processor: processor.into(),
+            text: text.into(),
+            reason_code: Some(reason_code.into()),
+        }
+    }
+}
+
+pub type ToolVisualInterpreter = Arc<
+    dyn Fn(
+            ToolVisualInterpretationRequest,
+        ) -> Pin<Box<dyn Future<Output = ToolVisualObservation> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct AgentExecutor {
     provider: Box<dyn LlmProvider>,
     /// Optional separate provider for summarization (cheaper model).
@@ -673,6 +742,7 @@ pub struct AgentExecutor {
     steering_rx: Option<Arc<TokioMutex<mpsc::UnboundedReceiver<AgentSteeringMessage>>>>,
     confirmation_callback: Option<ConfirmationCallback>,
     approval_callback: Option<ApprovalCallback>,
+    tool_visual_interpreter: Option<ToolVisualInterpreter>,
     prompt_cache_tracker: StdMutex<PromptCacheTracker>,
     /// Separates invocation ids for short-lived executors that do not have a
     /// persisted conversation turn (notably detached subagents).
@@ -696,6 +766,7 @@ impl AgentExecutor {
             steering_rx: None,
             confirmation_callback: None,
             approval_callback: None,
+            tool_visual_interpreter: None,
             prompt_cache_tracker: StdMutex::new(PromptCacheTracker::default()),
             usage_scope_id: Uuid::new_v4().to_string(),
             usage_run_id: None,
@@ -762,6 +833,14 @@ impl AgentExecutor {
     /// populated [`ApprovalRequest`] and returns an approval decision.
     pub fn with_approval_callback(mut self, cb: ApprovalCallback) -> Self {
         self.approval_callback = Some(cb);
+        self
+    }
+
+    /// Attach the host adapter that understands ephemeral screenshots for a
+    /// text-only primary model. Vision-capable primary models bypass it and
+    /// receive the current-turn image parts directly.
+    pub fn with_tool_visual_interpreter(mut self, interpreter: ToolVisualInterpreter) -> Self {
+        self.tool_visual_interpreter = Some(interpreter);
         self
     }
 

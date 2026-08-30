@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use nexa_core::agent::{AgentEvent, ToolRunStatus};
-use nexa_core::agent_run::{AgentRunEventPersistence, AgentRunPhase};
+use nexa_core::agent_run::{AgentRunEvent, AgentRunEventPersistence, AgentRunPhase};
 use nexa_core::runtime::{AgentRunEventOutbox, TurnLaunchStage};
 use tokio::sync::mpsc;
 
@@ -15,6 +15,16 @@ use crate::tool_preview_journal::ToolPreviewJournal;
 // Text rendering stays frame-responsive. Cumulative tool-input previews are
 // independently sampled by ToolPreviewJournal and never enter SQLite.
 const STREAM_FLUSH_INTERVAL_MS: u64 = 50;
+
+fn is_current_turn_visual_evidence(run: &nexa_core::agent::ToolRunItem) -> bool {
+    run.artifacts.as_ref().is_some_and(|artifacts| {
+        artifacts.get("kind").and_then(serde_json::Value::as_str) == Some("toolVisualEvidence")
+            && artifacts
+                .get("persistence")
+                .and_then(serde_json::Value::as_str)
+                == Some("currentTurnOnly")
+    })
+}
 
 pub(crate) struct AgentStreamForwarder {
     conversation_id: String,
@@ -138,6 +148,23 @@ impl AgentStreamForwarder {
                                         AgentEvent::ToolRunUpdated { run },
                                         Instant::now(),
                                     );
+                                }
+                                AgentEvent::ToolRunUpdated { run }
+                                    if is_current_turn_visual_evidence(&run) =>
+                                {
+                                    if self.event_outbox.is_closed_for_submission() {
+                                        continue;
+                                    }
+                                    self.flush_pending(&mut stream_emitter, &mut pending_delta);
+                                    let event = AgentEvent::ToolRunUpdated { run };
+                                    let mut run_event = AgentRunEvent::from_agent_event(&event)
+                                        .with_context(
+                                            Some(&self.task_run_id),
+                                            Some(&self.turn_id),
+                                            Some(0),
+                                        );
+                                    run_event.persistence = AgentRunEventPersistence::Ephemeral;
+                                    stream_emitter.emit_event(&self.conversation_id, run_event);
                                 }
                                 other => {
                                     self.flush_pending(&mut stream_emitter, &mut pending_delta);
@@ -298,7 +325,57 @@ pub(crate) fn event_has_visible_token(event: &AgentEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_core::agent::ToolRunItem;
     use nexa_core::llm::{Message, Role, Usage};
+    use nexa_core::tools::{
+        ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
+    };
+
+    fn visual_run(artifacts: serde_json::Value) -> ToolRunItem {
+        ToolRunItem {
+            call_id: "browser-call".to_string(),
+            tool_name: "browser_session".to_string(),
+            owner: nexa_core::plugins::capability_owner_for_tool("browser_session"),
+            provider_executed: false,
+            status: ToolRunStatus::Completed,
+            arguments: None,
+            render_kind: ToolRenderKind::Generic,
+            capabilities: ToolRunCapabilities {
+                input_streaming: ToolInputStreamingMode::None,
+                render_kind: ToolRenderKind::Generic,
+                read_only: true,
+                destructive: false,
+                concurrency_safe: false,
+                interrupt_behavior: ToolInterruptBehavior::Cancel,
+                resource_keys: Vec::new(),
+            },
+            content: None,
+            is_error: None,
+            artifacts: Some(artifacts),
+            progress_note: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn only_explicit_current_turn_visual_artifacts_cross_the_ephemeral_seam() {
+        assert!(is_current_turn_visual_evidence(&visual_run(
+            serde_json::json!({
+                "kind": "toolVisualEvidence",
+                "persistence": "currentTurnOnly",
+                "evidence": { "mimeType": "image/png", "base64": "aGVsbG8=" }
+            })
+        )));
+        assert!(!is_current_turn_visual_evidence(&visual_run(
+            serde_json::json!({
+                "kind": "toolVisualEvidence",
+                "persistence": "durable"
+            })
+        )));
+        assert!(!is_current_turn_visual_evidence(&visual_run(
+            serde_json::json!({ "kind": "browserObservation" })
+        )));
+    }
 
     #[test]
     fn provider_byte_and_visible_output_contracts_are_distinct() {

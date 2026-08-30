@@ -1,12 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BrowserActor {
-    User,
-    Agent,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum BrowserControlOwner {
@@ -77,6 +70,18 @@ pub struct BrowserElement {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserScreenshot {
+    pub mime_type: String,
+    pub content_hash: String,
+    pub width: u32,
+    pub height: u32,
+    pub byte_length: usize,
+    #[serde(skip, default)]
+    pub image_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserObservation {
     pub observation_id: String,
     pub session_id: String,
@@ -89,6 +94,7 @@ pub struct BrowserObservation {
     pub elements: Vec<BrowserElement>,
     pub accessibility_tree: Vec<BrowserElement>,
     pub control_owner: BrowserControlOwner,
+    pub screenshot: Option<BrowserScreenshot>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -112,62 +118,34 @@ pub struct BrowserSession {
     pub active_tab_id: Option<String>,
     pub tabs: Vec<BrowserTab>,
     pub control_owner: BrowserControlOwner,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBrowserSession {
-    pub conversation_id: Option<String>,
-    pub profile_id: Option<String>,
-    pub initial_url: Option<String>,
-    pub actor: BrowserActor,
-    pub bounds: Option<BrowserBounds>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenBrowserTab {
-    pub session_id: String,
-    pub url: String,
-    pub actor: BrowserActor,
-    pub bounds: Option<BrowserBounds>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NavigateBrowserTab {
-    pub session_id: String,
-    pub tab_id: String,
-    pub url: String,
-    pub actor: BrowserActor,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ObserveBrowserTab {
-    pub session_id: String,
-    pub tab_id: String,
-    pub call_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActInBrowserTab {
-    pub session_id: String,
-    pub tab_id: String,
-    pub observation_id: String,
-    pub call_id: String,
-    pub action: String,
-    pub target_ref: Option<String>,
-    pub end_ref: Option<String>,
-    pub text: Option<String>,
-    pub value: Option<String>,
-    pub key: Option<String>,
-    pub button: Option<String>,
+    pub workspace_visible: bool,
     #[serde(default)]
-    pub modifiers: Vec<String>,
+    pub cleanup_pending: bool,
     #[serde(default)]
-    pub scroll_x: i64,
+    pub visibility_revision: u64,
     #[serde(default)]
-    pub scroll_y: i64,
+    pub visibility_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_request_revision: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserSession;
+
+    #[test]
+    fn legacy_browser_session_json_defaults_cleanup_state_to_active() {
+        let session: BrowserSession = serde_json::from_value(serde_json::json!({
+            "id": "browser-1",
+            "conversationId": "conversation-1",
+            "profileId": "profile-1",
+            "activeTabId": null,
+            "tabs": [],
+            "controlOwner": { "type": "none" },
+            "workspaceVisible": false
+        }))
+        .unwrap();
+
+        assert!(!session.cleanup_pending);
+    }
 }

@@ -453,6 +453,7 @@ pub(super) fn build_task_run_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::default_tool_registry;
 
     fn done_tool(tool_name: &str) -> PersistedTraceItem {
         done_tool_with_artifacts(tool_name, None)
@@ -532,6 +533,38 @@ mod tests {
             panic!("expected provider-hosted tool trace");
         };
         assert_eq!(tool_call.content.as_deref(), Some("authoritative result"));
+    }
+
+    #[test]
+    fn persisted_browser_tool_trace_never_contains_sensitive_input() {
+        let sentinel = "browser-trace-secret-438a";
+        let arguments = serde_json::json!({
+            "action": "select",
+            "sessionId": "browser-a",
+            "observationId": "observation-a",
+            "targetRef": "e7",
+            "value": sentinel,
+            "key": format!("Control+{sentinel}")
+        })
+        .to_string();
+        let mut items = Vec::new();
+
+        append_persisted_trace_tool(
+            &mut items,
+            &default_tool_registry(),
+            "browser_session",
+            &arguments,
+            "browser-sensitive",
+            "done",
+            Some("ok".to_string()),
+            Some(false),
+            None,
+        );
+
+        let serialized = serde_json::to_string(&items).unwrap();
+        assert!(!serialized.contains(sentinel));
+        assert!(serialized.contains("charCount"));
+        assert!(serialized.contains("keyCount"));
     }
 
     fn test_skill(id: &str, name: &str, display_name: &str) -> Skill {

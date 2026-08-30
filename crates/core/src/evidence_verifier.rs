@@ -349,13 +349,12 @@ mod tests {
     use crate::intelligence::{build_task_plan, TaskPlanningInput};
 
     fn knowledge_plan() -> AgentTaskPlan {
-        build_task_plan(TaskPlanningInput {
-            user_query: "What changed in the retry notes?",
-            route_kind: "KnowledgeRetrieval",
-            has_sources: true,
-            source_scope_count: 2,
-            collection_context: false,
-        })
+        build_task_plan(TaskPlanningInput::for_route(
+            "What changed in the retry notes?",
+            "KnowledgeRetrieval",
+            true,
+            2,
+        ))
     }
 
     #[test]
@@ -413,13 +412,12 @@ mod tests {
 
     #[test]
     fn runtime_gate_blocks_fully_verified_mutation_without_artifact() {
-        let mut plan = build_task_plan(TaskPlanningInput {
-            user_query: "Update the parser implementation.",
-            route_kind: "CodebaseOperation",
-            has_sources: true,
-            source_scope_count: 1,
-            collection_context: false,
-        });
+        let mut plan = build_task_plan(TaskPlanningInput::for_route(
+            "Update the parser implementation.",
+            "CodebaseOperation",
+            true,
+            1,
+        ));
         plan.evidence_policy.require_verification = true;
 
         let audit = audit_final_answer(

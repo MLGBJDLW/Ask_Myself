@@ -1,11 +1,10 @@
 //! Turn routing strategy for the agent runtime.
 
 use crate::tool_visibility_policy::{
-    decide_tool_visibility, ToolVisibilityDecision, ToolVisibilityInput, ToolVisibilityRouteKind,
+    resolve_turn_capability_requirements, ToolVisibilityInput, ToolVisibilityRouteKind,
+    TurnCapabilityRequirements,
 };
 use crate::tools::run_shell_contract;
-
-pub(crate) use crate::tool_visibility_policy::system_prompt_has_collection_context;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentRouteKind {
@@ -16,6 +15,7 @@ pub(crate) enum AgentRouteKind {
     CodebaseOperation,
     FileOperation,
     WebLookup,
+    InteractionOperation,
     SourceManagement,
 }
 
@@ -30,6 +30,7 @@ impl AgentRouteKind {
             AgentRouteKind::ConversationRecall => "ConversationRecall",
             AgentRouteKind::CodebaseOperation => "CodebaseOperation",
             AgentRouteKind::WebLookup => "WebLookup",
+            AgentRouteKind::InteractionOperation => "InteractionOperation",
         }
     }
 }
@@ -44,6 +45,7 @@ impl From<ToolVisibilityRouteKind> for AgentRouteKind {
             ToolVisibilityRouteKind::CodebaseOperation => Self::CodebaseOperation,
             ToolVisibilityRouteKind::FileOperation => Self::FileOperation,
             ToolVisibilityRouteKind::WebLookup => Self::WebLookup,
+            ToolVisibilityRouteKind::InteractionOperation => Self::InteractionOperation,
             ToolVisibilityRouteKind::SourceManagement => Self::SourceManagement,
         }
     }
@@ -53,7 +55,7 @@ impl From<ToolVisibilityRouteKind> for AgentRouteKind {
 pub(crate) struct AgentRoutePlan {
     pub(crate) kind: AgentRouteKind,
     pub(crate) prompt_section: String,
-    pub(crate) visibility_decision: ToolVisibilityDecision,
+    pub(crate) requirements: TurnCapabilityRequirements,
 }
 
 pub(crate) fn route_user_turn(
@@ -61,22 +63,25 @@ pub(crate) fn route_user_turn(
     system_prompt: &str,
     has_sources: bool,
 ) -> AgentRoutePlan {
-    let visibility_decision = decide_tool_visibility(ToolVisibilityInput {
+    let requirements = resolve_turn_capability_requirements(ToolVisibilityInput {
         query,
         system_prompt,
         has_sources,
     });
-    let kind = AgentRouteKind::from(visibility_decision.route);
-    let prompt_section = prompt_section_for_route(kind);
+    let kind = AgentRouteKind::from(requirements.route);
+    let prompt_section = prompt_section_for_requirements(kind, &requirements);
 
     AgentRoutePlan {
         kind,
         prompt_section,
-        visibility_decision,
+        requirements,
     }
 }
 
-fn prompt_section_for_route(kind: AgentRouteKind) -> String {
+fn prompt_section_for_requirements(
+    kind: AgentRouteKind,
+    requirements: &TurnCapabilityRequirements,
+) -> String {
     let plan = match kind {
         AgentRouteKind::CollectionFocused => "## Active Routing Plan\nUse the current collection and its saved evidence as your primary working set. Stay anchored to that collection first, and only widen beyond it if the collection is clearly insufficient. If you widen scope, explain why.".to_string(),
         AgentRouteKind::SourceManagement => "## Active Routing Plan\nThis is a source/index management request. Prefer direct, operational handling over exploratory retrieval, and avoid unnecessary long-form analysis.".to_string(),
@@ -87,16 +92,31 @@ fn prompt_section_for_route(kind: AgentRouteKind) -> String {
         AgentRouteKind::FileOperation => "## Active Routing Plan\nThis request is file-centric. Prefer reading, comparing, generating, or editing the relevant files directly before broad knowledge-base search. For DOCX/XLSX/PPTX work, use the office_artifact candidate lifecycle for typed creation, modification, validation, evidence, publication, and restore; pair it with docx-document-design, pptx-presentation-design, or xlsx-workbook-design. Use run_shell + doc-script-editor for PDF work, compatibility operations, rendering/conversion, or low-level OOXML escape hatches.".to_string(),
         AgentRouteKind::ConversationRecall => "## Active Routing Plan\nThe user is asking about the current conversation context. Check the conversation history and already-available evidence first before widening to new retrieval.".to_string(),
         AgentRouteKind::WebLookup => "## Active Routing Plan\nThis request likely needs web or URL inspection. Prefer targeted fetch or MCP/web tools instead of broad local retrieval.".to_string(),
+        AgentRouteKind::InteractionOperation => "## Active Routing Plan\nThis is a native desktop interaction request. Observe the target window before input, use observation-scoped control arguments, and obtain a fresh computer observation after every successful control before reporting the result.".to_string(),
         AgentRouteKind::KnowledgeRetrieval => "## Active Routing Plan\nThis is a knowledge retrieval turn. Prefer grounded retrieval, comparison, and evidence synthesis before answering. Stop once the evidence is sufficient instead of over-searching.".to_string(),
         AgentRouteKind::DirectResponse => "## Active Routing Plan\nAnswer the user's question directly when no specialized route applies. For factual questions about the user's indexed documents, notes, projects, memories, or knowledge base, search first using search_knowledge_base. For codebase, file, shell/tool, current-conversation, URL, or web inspection tasks, use the route-appropriate tools instead of forcing knowledge-base retrieval. Use tools whenever they would improve answer accuracy or completeness.".to_string(),
     };
 
     let pack = route_pack_for_route(kind);
-    if pack.trim().is_empty() {
-        plan
-    } else {
-        format!("{plan}\n\n{pack}")
+    let mut sections = vec![plan];
+    if !pack.trim().is_empty() {
+        sections.push(pack);
     }
+    if requirements.requires_visual_observation_after_mutation() {
+        sections.push(
+            "## Interaction Completion Contract\n\
+             This turn requires real rendered browser evidence. For a generated web artifact, use process tooling to serve or render it and observe it after the last workspace mutation. For requested navigation or interaction, use browser_session and rely only on its fresh pixel-bearing observation. A file write, command, session listing, or claimed/skipped check is not visual evidence. Do not claim completion while the visual gate is pending."
+                .to_string(),
+        );
+    }
+    if requirements.interaction.requires_desktop_observation() {
+        sections.push(
+            "## Desktop Observation Contract\n\
+             Call computer_observe before any computer_control. A successful control invalidates the previous observation for completion, so obtain a fresh computer_observe result and verify the visible effect before answering. A claimed or skipped verification check is not a desktop observation."
+                .to_string(),
+        );
+    }
+    sections.join("\n\n")
 }
 
 fn route_pack_for_route(kind: AgentRouteKind) -> String {
@@ -136,6 +156,12 @@ fn route_pack_for_route(kind: AgentRouteKind) -> String {
              - Prefer authoritative sources and fetch full pages before citing; do not cite search snippets as evidence.\n\
              - Use the user's language for queries when appropriate, and use 1 focused query for simple lookups or 2-3 distinct angles for broad research.\n\
              - Cite fetched web evidence with real URL identifiers and distinguish web evidence from local knowledge-base evidence."
+            .to_string(),
+        AgentRouteKind::InteractionOperation => "## Route Pack: Native Interaction\n\
+             - Start with computer_observe and bind every control to the returned window and observation identity.\n\
+             - Never call computer_control before a successful observation. After every successful control, use computer_observe again and verify the visible effect.\n\
+             - A claimed, pending, or skipped record_verification check cannot replace the fresh desktop observation.\n\
+             - Report a precise typed availability or permission failure instead of saying that no browser or computer capability exists."
             .to_string(),
         AgentRouteKind::SourceManagement => "## Route Pack: Source Management\n\
              - Prefer direct source/index operations over exploratory retrieval.\n\

@@ -1171,19 +1171,6 @@ pub struct CompactConversationResult {
     pub evicted_messages: usize,
 }
 
-fn estimate_conversation_message_tokens(messages: &[ConversationMessage]) -> u32 {
-    messages
-        .iter()
-        .map(|message| {
-            if message.token_count > 0 {
-                message.token_count
-            } else {
-                estimate_tokens(&message.content)
-            }
-        })
-        .sum()
-}
-
 #[tauri::command]
 pub async fn get_conversation_stats_cmd(
     state: tauri::State<'_, AppState>,

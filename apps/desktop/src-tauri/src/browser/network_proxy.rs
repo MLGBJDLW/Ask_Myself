@@ -1,18 +1,124 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use nexa_core::tools::run_shell_tool::ManagedLoopbackPermit;
 use url::Url;
 
 use super::policy::private_or_special_ip;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const COPY_INTERRUPT_POLL: Duration = Duration::from_millis(100);
+const MAX_GLOBAL_PROXY_CONNECTIONS: usize = 128;
+
+#[derive(Clone)]
+struct ConnectionBudget {
+    active: Arc<AtomicUsize>,
+    maximum: usize,
+}
+
+impl ConnectionBudget {
+    fn new(maximum: usize) -> Self {
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            maximum,
+        }
+    }
+
+    fn try_acquire(&self) -> Option<ConnectionBudgetPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.maximum).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| ConnectionBudgetPermit {
+                active: Arc::clone(&self.active),
+            })
+    }
+}
+
+struct ConnectionBudgetPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionBudgetPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn global_proxy_connection_budget() -> &'static ConnectionBudget {
+    static BUDGET: OnceLock<ConnectionBudget> = OnceLock::new();
+    BUDGET.get_or_init(|| ConnectionBudget::new(MAX_GLOBAL_PROXY_CONNECTIONS))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AgentLoopbackEndpoint {
+    permit: ManagedLoopbackPermit,
+    origin: String,
+    host: String,
+    port: u16,
+}
+
+impl AgentLoopbackEndpoint {
+    fn from_managed_permit(permit: ManagedLoopbackPermit) -> Option<Self> {
+        if permit.service_id.is_empty() || !permit.is_live() {
+            return None;
+        }
+        let origin = Url::parse(&permit.origin).ok()?;
+        if !matches!(origin.scheme(), "http" | "https")
+            || origin.origin().ascii_serialization() != permit.origin
+            || origin.port_or_known_default() != Some(permit.port)
+        {
+            return None;
+        }
+        let origin_host = normalize_target_host(origin.host_str()?);
+        let permit_host = normalize_target_host(&permit.host);
+        if origin_host != permit_host || !is_loopback_host(&permit_host) {
+            return None;
+        }
+        let permit_origin = permit.origin.clone();
+        let permit_port = permit.port;
+        Some(Self {
+            permit,
+            origin: permit_origin,
+            host: permit_host,
+            port: permit_port,
+        })
+    }
+
+    fn matches_target(&self, target: &Target) -> bool {
+        if !self.permit.is_live() {
+            return false;
+        }
+        match target {
+            Target::Ip(ip, port) => self.port == *port && self.host == ip.to_string(),
+            Target::Domain(host, port) => {
+                self.port == *port && self.host == normalize_target_host(host)
+            }
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        self.permit.is_live()
+    }
+}
+
+fn normalize_target_host(host: &str) -> String {
+    host.to_ascii_lowercase()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
 
 /// A loopback-only SOCKS5 proxy that enforces the agent's network boundary for
 /// every WebView connection, including fetches, images, scripts and iframes.
@@ -21,6 +127,7 @@ pub struct BrowserNetworkProxy {
     address: SocketAddr,
     running: Arc<AtomicBool>,
     agent_restricted: Arc<AtomicBool>,
+    agent_loopback_permits: Arc<Mutex<HashSet<AgentLoopbackEndpoint>>>,
     restriction_generation: Arc<AtomicU64>,
     active_connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
 }
@@ -38,12 +145,14 @@ impl BrowserNetworkProxy {
         let url = Url::parse(&format!("socks5://{address}"))
             .map_err(|error| format!("Could not create browser network policy URL: {error}"))?;
         let running = Arc::new(AtomicBool::new(true));
+        let agent_loopback_permits = Arc::new(Mutex::new(HashSet::new()));
         let restriction_generation = Arc::new(AtomicU64::new(0));
         let active_connections = Arc::new(Mutex::new(HashMap::new()));
         let next_connection_id = Arc::new(AtomicU64::new(1));
 
         let running_for_thread = Arc::clone(&running);
         let restriction_for_thread = Arc::clone(&agent_restricted);
+        let loopback_permits_for_thread = Arc::clone(&agent_loopback_permits);
         let restriction_generation_for_thread = Arc::clone(&restriction_generation);
         let connections_for_thread = Arc::clone(&active_connections);
         std::thread::Builder::new()
@@ -55,7 +164,14 @@ impl BrowserNetworkProxy {
                             if !running_for_thread.load(Ordering::Acquire) {
                                 break;
                             }
+                            let Some(connection_budget_permit) =
+                                global_proxy_connection_budget().try_acquire()
+                            else {
+                                let _ = client.shutdown(Shutdown::Both);
+                                continue;
+                            };
                             let restriction = Arc::clone(&restriction_for_thread);
+                            let loopback_permits = Arc::clone(&loopback_permits_for_thread);
                             let restriction_generation =
                                 Arc::clone(&restriction_generation_for_thread);
                             let connections = Arc::clone(&connections_for_thread);
@@ -63,10 +179,12 @@ impl BrowserNetworkProxy {
                             let _ = std::thread::Builder::new()
                                 .name("nexa-browser-network-request".to_string())
                                 .spawn(move || {
+                                    let _connection_budget_permit = connection_budget_permit;
                                     let _ = handle_client(
                                         client,
                                         connection_id,
                                         restriction,
+                                        loopback_permits,
                                         restriction_generation,
                                         connections,
                                     );
@@ -86,6 +204,7 @@ impl BrowserNetworkProxy {
             address,
             running,
             agent_restricted,
+            agent_loopback_permits,
             restriction_generation,
             active_connections,
         })
@@ -97,7 +216,70 @@ impl BrowserNetworkProxy {
 
     pub fn set_agent_restricted(&self, restricted: bool) {
         let was_restricted = self.agent_restricted.swap(restricted, Ordering::AcqRel);
-        if restricted && !was_restricted {
+        if restricted != was_restricted {
+            self.restriction_generation.fetch_add(1, Ordering::AcqRel);
+            self.close_active_connections();
+        }
+    }
+
+    /// Atomically replace the exact managed-service endpoints available while
+    /// the browser is agent restricted. Invalid or non-loopback permissions are
+    /// discarded. Any change revokes existing connections immediately.
+    pub fn replace_agent_loopback_permits(&self, permits: Vec<ManagedLoopbackPermit>) {
+        let replacement = permits
+            .into_iter()
+            .filter_map(AgentLoopbackEndpoint::from_managed_permit)
+            .collect::<HashSet<_>>();
+        let changed = match self.agent_loopback_permits.lock() {
+            Ok(mut current) => {
+                if *current == replacement {
+                    false
+                } else {
+                    *current = replacement;
+                    true
+                }
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = HashSet::new();
+                true
+            }
+        };
+        if changed {
+            self.restriction_generation.fetch_add(1, Ordering::AcqRel);
+            self.close_active_connections();
+        }
+    }
+
+    /// Revoke all Agent-only network authority and interrupt every connection
+    /// created under the previous browser lifecycle state. This is deliberately
+    /// stronger than replacing an already-empty permit set: public connections
+    /// must also stop when the workspace is hidden or control changes hands.
+    pub fn revoke_agent_network_access(&self) {
+        match self.agent_loopback_permits.lock() {
+            Ok(mut current) => current.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        self.restriction_generation.fetch_add(1, Ordering::AcqRel);
+        self.close_active_connections();
+    }
+
+    /// Keep a permit only when the in-flight load still targets its exact
+    /// origin. Redirects and unrelated loads revoke it and interrupt existing
+    /// connections before the new page can issue subresource requests.
+    pub fn retain_agent_loopback_permit_for_url(&self, url: &Url) {
+        let origin = url.origin().ascii_serialization();
+        let changed = match self.agent_loopback_permits.lock() {
+            Ok(mut current) => {
+                let before = current.len();
+                current.retain(|permit| permit.origin == origin && permit.is_live());
+                current.len() != before
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().clear();
+                true
+            }
+        };
+        if changed {
             self.restriction_generation.fetch_add(1, Ordering::AcqRel);
             self.close_active_connections();
         }
@@ -180,6 +362,7 @@ fn handle_client(
     mut client: TcpStream,
     connection_id: u64,
     agent_restricted: Arc<AtomicBool>,
+    agent_loopback_permits: Arc<Mutex<HashSet<AgentLoopbackEndpoint>>>,
     restriction_generation: Arc<AtomicU64>,
     active_connections: Arc<Mutex<HashMap<u64, Vec<TcpStream>>>>,
 ) -> io::Result<()> {
@@ -214,11 +397,30 @@ fn handle_client(
     }
     let target = read_target(&mut client, request[3])?;
     let addresses = resolve_target(&target)?;
+    let restricted = agent_restricted.load(Ordering::Acquire);
+    let loopback_permit = restricted
+        .then(|| {
+            agent_loopback_permits.lock().ok().and_then(|permits| {
+                permits
+                    .iter()
+                    .find(|permit| permit.matches_target(&target))
+                    .cloned()
+            })
+        })
+        .flatten();
+    let loopback_permitted = loopback_permit.is_some();
     if addresses.is_empty()
-        || (agent_restricted.load(Ordering::Acquire)
+        || (restricted
+            && !loopback_permitted
             && addresses
                 .iter()
                 .any(|address| private_or_special_ip(address.ip())))
+        || !connection_authorization_is_current(
+            restriction_generation.as_ref(),
+            connection_generation,
+            agent_loopback_permits.as_ref(),
+            loopback_permit.as_ref(),
+        )
     {
         send_reply(&mut client, 2, None)?;
         finish_rejection(&mut client);
@@ -227,8 +429,14 @@ fn handle_client(
 
     let mut upstream = None;
     for address in addresses {
-        if agent_restricted.load(Ordering::Acquire) && private_or_special_ip(address.ip()) {
-            continue;
+        if restricted {
+            if loopback_permitted {
+                if !address.ip().is_loopback() {
+                    continue;
+                }
+            } else if private_or_special_ip(address.ip()) {
+                continue;
+            }
         }
         if let Ok(stream) = TcpStream::connect_timeout(&address, IO_TIMEOUT) {
             upstream = Some(stream);
@@ -241,10 +449,21 @@ fn handle_client(
         return Ok(());
     };
     _active.register_peer(&upstream)?;
-    if agent_restricted.load(Ordering::Acquire)
-        && upstream
-            .peer_addr()
-            .is_ok_and(|address| private_or_special_ip(address.ip()))
+    let peer_is_allowed = !restricted
+        || upstream.peer_addr().is_ok_and(|address| {
+            if loopback_permitted {
+                address.ip().is_loopback() && address.port() == target.port()
+            } else {
+                !private_or_special_ip(address.ip())
+            }
+        });
+    if !peer_is_allowed
+        || !connection_authorization_is_current(
+            restriction_generation.as_ref(),
+            connection_generation,
+            agent_loopback_permits.as_ref(),
+            loopback_permit.as_ref(),
+        )
     {
         send_reply(&mut client, 2, None)?;
         finish_rejection(&mut client);
@@ -260,35 +479,48 @@ fn handle_client(
     let mut client_reader = client.try_clone()?;
     let mut upstream_writer = upstream.try_clone()?;
     let reverse_generation = Arc::clone(&restriction_generation);
+    let reverse_permits = Arc::clone(&agent_loopback_permits);
+    let reverse_loopback_permit = loopback_permit.clone();
     let reverse = std::thread::spawn(move || {
-        let _ = copy_until_generation_changes(
+        let _ = copy_until_authorization_changes(
             &mut client_reader,
             &mut upstream_writer,
             reverse_generation.as_ref(),
             connection_generation,
+            reverse_permits.as_ref(),
+            reverse_loopback_permit.as_ref(),
         );
         let _ = upstream_writer.shutdown(Shutdown::Write);
     });
-    let _ = copy_until_generation_changes(
+    let _ = copy_until_authorization_changes(
         &mut upstream,
         &mut client,
         restriction_generation.as_ref(),
         connection_generation,
+        agent_loopback_permits.as_ref(),
+        loopback_permit.as_ref(),
     );
     let _ = client.shutdown(Shutdown::Write);
     let _ = reverse.join();
     Ok(())
 }
 
-fn copy_until_generation_changes(
+fn copy_until_authorization_changes(
     reader: &mut TcpStream,
     writer: &mut TcpStream,
     restriction_generation: &AtomicU64,
     connection_generation: u64,
+    permits: &Mutex<HashSet<AgentLoopbackEndpoint>>,
+    loopback_permit: Option<&AgentLoopbackEndpoint>,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; 16 * 1024];
     loop {
-        if restriction_generation.load(Ordering::Acquire) != connection_generation {
+        if !connection_authorization_is_current(
+            restriction_generation,
+            connection_generation,
+            permits,
+            loopback_permit,
+        ) {
             return Ok(());
         }
         match reader.read(&mut buffer) {
@@ -306,6 +538,25 @@ fn copy_until_generation_changes(
     }
 }
 
+fn connection_authorization_is_current(
+    restriction_generation: &AtomicU64,
+    connection_generation: u64,
+    permits: &Mutex<HashSet<AgentLoopbackEndpoint>>,
+    loopback_permit: Option<&AgentLoopbackEndpoint>,
+) -> bool {
+    if restriction_generation.load(Ordering::Acquire) != connection_generation {
+        return false;
+    }
+    let Some(loopback_permit) = loopback_permit else {
+        return true;
+    };
+    loopback_permit.is_live()
+        && permits
+            .lock()
+            .map(|current| current.contains(loopback_permit))
+            .unwrap_or(false)
+}
+
 fn finish_rejection(client: &mut TcpStream) {
     let _ = client.flush();
     let _ = client.shutdown(Shutdown::Write);
@@ -314,6 +565,14 @@ fn finish_rejection(client: &mut TcpStream) {
 enum Target {
     Ip(IpAddr, u16),
     Domain(String, u16),
+}
+
+impl Target {
+    fn port(&self) -> u16 {
+        match self {
+            Self::Ip(_, port) | Self::Domain(_, port) => *port,
+        }
+    }
 }
 
 fn read_target(client: &mut TcpStream, address_type: u8) -> io::Result<Target> {
@@ -393,6 +652,15 @@ fn send_reply(client: &mut TcpStream, status: u8, address: Option<SocketAddr>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_core::tools::run_shell_tool::{ManagedLoopbackPermit, ManagedLoopbackPermitIssuer};
+
+    fn loopback_permit(service_id: &str, host: &str, port: u16) -> ManagedLoopbackPermit {
+        ManagedLoopbackPermitIssuer::new(service_id, None).issue(
+            format!("http://{host}:{port}"),
+            host,
+            port,
+        )
+    }
 
     fn connect_request(proxy: &BrowserNetworkProxy, address: SocketAddr) -> TcpStream {
         let mut stream = TcpStream::connect(proxy.address).expect("connect to proxy");
@@ -418,6 +686,24 @@ mod tests {
     }
 
     #[test]
+    fn connection_budget_is_shared_and_released_before_spawning_workers() {
+        let budget = ConnectionBudget::new(2);
+        let first = budget.try_acquire().expect("first permit");
+        let second = budget.try_acquire().expect("second permit");
+        assert!(
+            budget.try_acquire().is_none(),
+            "budget must be hard bounded"
+        );
+
+        drop(first);
+        let replacement = budget.try_acquire().expect("released permit is reusable");
+        assert!(budget.try_acquire().is_none());
+        drop(second);
+        drop(replacement);
+        assert!(budget.try_acquire().is_some());
+    }
+
+    #[test]
     fn restricted_proxy_blocks_loopback_subresources() {
         let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -425,6 +711,211 @@ mod tests {
         let mut reply = [0_u8; 4];
         stream.read_exact(&mut reply).unwrap();
         assert_eq!(reply[1], 2);
+    }
+
+    #[test]
+    fn restricted_proxy_allows_exact_managed_loopback_endpoint_for_subresources() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        proxy.replace_agent_loopback_permits(vec![loopback_permit(
+            "managed-service",
+            &address.ip().to_string(),
+            address.port(),
+        )]);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).unwrap();
+            stream.write_all(&byte).unwrap();
+        });
+
+        let mut stream = connect_request(&proxy, address);
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[1], 0);
+        let address_length = if header[3] == 1 { 6 } else { 18 };
+        let mut bound_address = vec![0_u8; address_length];
+        stream.read_exact(&mut bound_address).unwrap();
+        stream.write_all(&[42]).unwrap();
+        let mut response = [0_u8; 1];
+        stream.read_exact(&mut response).unwrap();
+        assert_eq!(response, [42]);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn managed_loopback_permit_isolated_to_one_tab_proxy() {
+        let permitted_tab_proxy =
+            BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let other_tab_proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        permitted_tab_proxy.replace_agent_loopback_permits(vec![loopback_permit(
+            "managed-service",
+            &address.ip().to_string(),
+            address.port(),
+        )]);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).unwrap();
+            stream.write_all(&byte).unwrap();
+        });
+
+        let mut permitted = connect_request(&permitted_tab_proxy, address);
+        let mut header = [0_u8; 4];
+        permitted.read_exact(&mut header).unwrap();
+        assert_eq!(header[1], 0);
+        let address_length = if header[3] == 1 { 6 } else { 18 };
+        let mut bound_address = vec![0_u8; address_length];
+        permitted.read_exact(&mut bound_address).unwrap();
+        permitted.write_all(&[42]).unwrap();
+        let mut response = [0_u8; 1];
+        permitted.read_exact(&mut response).unwrap();
+        assert_eq!(response, [42]);
+
+        let mut rejected = connect_request(&other_tab_proxy, address);
+        let mut reply = [0_u8; 4];
+        rejected.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[1], 2);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn restricted_proxy_rejects_unpermitted_port_on_permitted_loopback_host() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        let other_port = if address.port() == u16::MAX {
+            address.port() - 1
+        } else {
+            address.port() + 1
+        };
+        proxy.replace_agent_loopback_permits(vec![loopback_permit(
+            "managed-service",
+            &address.ip().to_string(),
+            other_port,
+        )]);
+
+        let mut stream = connect_request(&proxy, address);
+        let mut reply = [0_u8; 4];
+        stream.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[1], 2);
+    }
+
+    #[test]
+    fn restricted_proxy_rejects_loopback_alias_not_named_by_permit() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        proxy.replace_agent_loopback_permits(vec![loopback_permit(
+            "managed-service",
+            "localhost",
+            address.port(),
+        )]);
+
+        let mut stream = connect_request(&proxy, address);
+        let mut reply = [0_u8; 4];
+        stream.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[1], 2);
+    }
+
+    #[test]
+    fn replacing_agent_loopback_permits_closes_existing_connections() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        proxy.replace_agent_loopback_permits(vec![loopback_permit(
+            "managed-service",
+            &address.ip().to_string(),
+            address.port(),
+        )]);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut byte = [0_u8; 1];
+            let _ = stream.read_exact(&mut byte);
+        });
+        let mut stream = connect_request(&proxy, address);
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[1], 0);
+        let address_length = if header[3] == 1 { 6 } else { 18 };
+        let mut bound_address = vec![0_u8; address_length];
+        stream.read_exact(&mut bound_address).unwrap();
+
+        proxy.replace_agent_loopback_permits(Vec::new());
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        assert_ne!(stream.read(&mut byte).unwrap_or(0), 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn workspace_revocation_closes_connections_even_without_a_loopback_permit() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(false))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut byte = [0_u8; 1];
+            let _ = stream.read_exact(&mut byte);
+        });
+        let mut stream = connect_request(&proxy, address);
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[1], 0);
+        let address_length = if header[3] == 1 { 6 } else { 18 };
+        let mut bound_address = vec![0_u8; address_length];
+        stream.read_exact(&mut bound_address).unwrap();
+
+        proxy.revoke_agent_network_access();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        assert_ne!(stream.read(&mut byte).unwrap_or(0), 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn dead_managed_service_identity_rejects_new_requests_and_closes_existing_connections() {
+        let proxy = BrowserNetworkProxy::start(Arc::new(AtomicBool::new(true))).unwrap();
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = target.local_addr().unwrap();
+        let issuer = ManagedLoopbackPermitIssuer::new("managed-service", Some(42));
+        proxy.replace_agent_loopback_permits(vec![issuer.issue(
+            format!("http://{}:{}", address.ip(), address.port()),
+            address.ip().to_string(),
+            address.port(),
+        )]);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut byte = [0_u8; 1];
+            let _ = stream.read_exact(&mut byte);
+        });
+        let mut stream = connect_request(&proxy, address);
+        let mut header = [0_u8; 4];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[1], 0);
+        let address_length = if header[3] == 1 { 6 } else { 18 };
+        let mut bound_address = vec![0_u8; address_length];
+        stream.read_exact(&mut bound_address).unwrap();
+
+        issuer.revoke();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        assert_ne!(stream.read(&mut byte).unwrap_or(0), 1);
+
+        let mut rejected = connect_request(&proxy, address);
+        let mut reply = [0_u8; 4];
+        rejected.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[1], 2);
+        server.join().unwrap();
     }
 
     #[test]

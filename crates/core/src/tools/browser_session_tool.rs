@@ -519,6 +519,38 @@ pub struct BrowserSessionTool {
     sessions: BrowserSessionRegistry,
 }
 
+pub fn browser_session_action_schema_variants(
+    actions: &[&str],
+    session_optional_actions: &[&str],
+) -> serde_json::Value {
+    let optional_actions = actions
+        .iter()
+        .copied()
+        .filter(|action| session_optional_actions.contains(action))
+        .collect::<Vec<_>>();
+    let session_required_actions = actions
+        .iter()
+        .copied()
+        .filter(|action| !session_optional_actions.contains(action) && *action != "close_tab")
+        .collect::<Vec<_>>();
+    serde_json::json!([
+        {
+            "type": "object",
+            "properties": { "action": { "enum": optional_actions } }
+        },
+        {
+            "type": "object",
+            "properties": { "action": { "enum": session_required_actions } },
+            "required": ["sessionId"]
+        },
+        {
+            "type": "object",
+            "properties": { "action": { "enum": ["close_tab"] } },
+            "required": ["sessionId", "tabId"]
+        }
+    ])
+}
+
 #[async_trait]
 impl Tool for BrowserSessionTool {
     fn name(&self) -> &str {
@@ -530,12 +562,29 @@ impl Tool for BrowserSessionTool {
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
+        let actions = [
+            "create_session",
+            "list_tabs",
+            "open_tab",
+            "activate_tab",
+            "navigate",
+            "observe",
+            "click",
+            "type",
+            "select",
+            "press",
+            "scroll",
+            "wait_for",
+            "close_tab",
+            "close_session",
+        ];
+        let action_variants = browser_session_action_schema_variants(&actions, &["create_session"]);
         serde_json::json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["create_session", "list_tabs", "open_tab", "activate_tab", "navigate", "observe", "click", "type", "select", "press", "scroll", "wait_for", "close_tab", "close_session"] },
-                "sessionId": { "type": "string" },
-                "tabId": { "type": "string" },
+                "action": { "type": "string", "enum": actions },
+                "sessionId": { "type": "string", "description": "Explicit session target. Required for close_session and close_tab so terminal receipts bind the exact requested target." },
+                "tabId": { "type": "string", "description": "Explicit tab target. Required for close_tab so a final-tab receipt binds the exact requested target." },
                 "url": { "type": "string" },
                 "observationId": { "type": "string" },
                 "targetRef": { "type": "string" },
@@ -549,12 +598,17 @@ impl Tool for BrowserSessionTool {
                 "timeoutMs": { "type": "integer", "minimum": 1, "maximum": MAX_WAIT_MS, "default": 15000 }
             },
             "required": ["action"],
+            "oneOf": action_variants,
             "additionalProperties": false
         })
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::BrowserRead, ToolCategory::BrowserInteract]
+        &[
+            ToolCategory::BrowserRead,
+            ToolCategory::VisualObservation,
+            ToolCategory::BrowserInteract,
+        ]
     }
 
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {
@@ -636,9 +690,11 @@ impl Tool for BrowserSessionTool {
                 call_id: call_id.to_string(),
                 content: format!("Closed browser session {session_id}."),
                 is_error: false,
-                artifacts: Some(
-                    serde_json::json!({ "kind": "browserSessionClosed", "sessionId": session_id }),
-                ),
+                artifacts: Some(serde_json::json!({
+                    "kind": "browserSessionClosed",
+                    "sessionId": session_id,
+                    "sessionClosed": true
+                })),
             });
         }
         let session = session_by_id(&self.sessions, &session_id, conversation_id)?;
@@ -706,13 +762,17 @@ impl Tool for BrowserSessionTool {
             });
         }
 
-        let tab_id = args.tab_id.clone().unwrap_or_else(|| {
-            session
-                .lock()
-                .ok()
-                .map(|session| session.active_tab_id.clone())
-                .unwrap_or_default()
-        });
+        let tab_id = if action == "close_tab" {
+            required(args.tab_id.as_deref(), "tabId")?.to_string()
+        } else {
+            args.tab_id.clone().unwrap_or_else(|| {
+                session
+                    .lock()
+                    .ok()
+                    .map(|session| session.active_tab_id.clone())
+                    .unwrap_or_default()
+            })
+        };
         let tab_id = required(Some(&tab_id), "tabId")?.to_string();
 
         if action == "activate_tab" {
@@ -840,26 +900,44 @@ impl Tool for BrowserSessionTool {
         if action == "close_tab" {
             let session_for_worker = Arc::clone(&session);
             let tab_id_for_worker = tab_id.clone();
-            blocking(move || {
+            let remaining_tab_count = blocking(move || {
                 let mut session = session_for_worker
                     .lock()
                     .map_err(|_| "browser session is unavailable".to_string())?;
                 let tab = session
                     .tabs
-                    .remove(&tab_id_for_worker)
+                    .get(&tab_id_for_worker)
                     .ok_or_else(|| format!("Unknown browser tab '{tab_id_for_worker}'"))?;
-                let _ = tab.tab.close_target();
+                let closed = tab
+                    .tab
+                    .close_target()
+                    .map_err(|error| format!("failed to close browser tab: {error}"))?;
+                if !closed {
+                    return Err(
+                        "browser target rejected close; the tab remains registered".to_string()
+                    );
+                }
+                session
+                    .tabs
+                    .remove(&tab_id_for_worker)
+                    .expect("successfully closed browser tab must remain registered until commit");
                 if session.active_tab_id == tab_id_for_worker {
                     session.active_tab_id = session.tabs.keys().next().cloned().unwrap_or_default();
                 }
-                Ok(())
+                Ok(session.tabs.len())
             })
             .await?;
             return Ok(ToolResult {
                 call_id: call_id.to_string(),
                 content: format!("Closed browser tab {tab_id}."),
                 is_error: false,
-                artifacts: None,
+                artifacts: Some(serde_json::json!({
+                    "kind": "browserTabClosed",
+                    "sessionId": session_id,
+                    "tabId": tab_id,
+                    "tabClosed": true,
+                    "remainingTabCount": remaining_tab_count
+                })),
             });
         }
 
@@ -973,6 +1051,41 @@ mod tests {
             assert!(actions.iter().any(|value| value == action));
         }
         assert_eq!(schema["properties"]["timeoutMs"]["maximum"], MAX_WAIT_MS);
+
+        let variants = schema["oneOf"]
+            .as_array()
+            .expect("browser close targets must be represented in the provider schema");
+        let close_session = variants
+            .iter()
+            .find(|variant| {
+                variant["properties"]["action"]["enum"]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|action| action == "close_session"))
+            })
+            .expect("close_session schema variant");
+        assert_eq!(close_session["required"], serde_json::json!(["sessionId"]));
+        assert!(close_session["properties"]["action"]["enum"]
+            .as_array()
+            .is_some_and(|actions| actions.iter().any(|action| action == "observe")));
+        let close_tab = variants
+            .iter()
+            .find(|variant| {
+                variant["properties"]["action"]["enum"] == serde_json::json!(["close_tab"])
+            })
+            .expect("close_tab schema variant");
+        assert_eq!(
+            close_tab["required"],
+            serde_json::json!(["sessionId", "tabId"])
+        );
+        let create_session = variants
+            .iter()
+            .find(|variant| {
+                variant["properties"]["action"]["enum"]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|action| action == "create_session"))
+            })
+            .expect("create_session schema variant");
+        assert!(create_session.get("required").is_none());
     }
 
     #[test]

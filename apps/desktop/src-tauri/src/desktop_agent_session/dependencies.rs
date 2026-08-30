@@ -19,6 +19,64 @@ pub(crate) struct DesktopToolRegistrySnapshot {
 static DESKTOP_TOOL_REGISTRY_SNAPSHOT: OnceLock<TokioMutex<Option<DesktopToolRegistrySnapshot>>> =
     OnceLock::new();
 
+#[derive(Clone)]
+pub(crate) struct DesktopPackageRegistrySnapshot {
+    generation: String,
+    allowed_tool_names: Vec<String>,
+}
+
+pub(crate) struct DesktopPackageRegistryResolution {
+    pub(crate) tools: ToolRegistry,
+    pub(crate) successful_snapshot: Option<DesktopPackageRegistrySnapshot>,
+    pub(crate) used_last_known_good: bool,
+    error: Option<String>,
+}
+
+static DESKTOP_PACKAGE_REGISTRY_SNAPSHOT: OnceLock<
+    TokioMutex<Option<DesktopPackageRegistrySnapshot>>,
+> = OnceLock::new();
+
+/// Applies Package Host policy to the final per-turn desktop registry.
+///
+/// A failed assembly may reuse only the allowed-name projection from the
+/// previous successful pass for the same package/MCP generation. Reusing the
+/// current pre-filter registry would bypass disabled packages and ownership
+/// validation, so a missing or stale projection fails closed.
+pub(crate) fn resolve_desktop_package_registry(
+    current_prefilter: &ToolRegistry,
+    assembled: Result<RuntimeCapabilitySet, PackageHostContractError>,
+    generation: Option<&str>,
+    last_known_good: Option<&DesktopPackageRegistrySnapshot>,
+) -> DesktopPackageRegistryResolution {
+    match assembled {
+        Ok(capabilities) => {
+            let successful_snapshot = generation.map(|generation| DesktopPackageRegistrySnapshot {
+                generation: generation.to_string(),
+                allowed_tool_names: capabilities.tools.tool_names(),
+            });
+            DesktopPackageRegistryResolution {
+                tools: capabilities.tools,
+                successful_snapshot,
+                used_last_known_good: false,
+                error: None,
+            }
+        }
+        Err(error) => {
+            let fallback = generation.and_then(|generation| {
+                last_known_good.filter(|snapshot| snapshot.generation == generation)
+            });
+            DesktopPackageRegistryResolution {
+                tools: fallback
+                    .map(|snapshot| current_prefilter.filtered(&snapshot.allowed_tool_names))
+                    .unwrap_or_default(),
+                successful_snapshot: None,
+                used_last_known_good: fallback.is_some(),
+                error: Some(error.to_string()),
+            }
+        }
+    }
+}
+
 pub(crate) fn desktop_tool_registry_generation(
     assembler: &PackageRuntimeAssembler,
     enabled_servers: &[McpServer],
@@ -124,6 +182,7 @@ pub async fn build_desktop_agent_session_dependencies(
             .filter(|snapshot| snapshot.generation == *generation)
             .map(|snapshot| snapshot.tools.clone())
     });
+    let mut active_generation = cached_tools.as_ref().and(generation.clone());
     let (mut tools, mcp_sync_ms) = if let Some(tools) = cached_tools {
         (tools, 0)
     } else {
@@ -170,6 +229,7 @@ pub async fn build_desktop_agent_session_dependencies(
                     "{mcp_manager:p}:{configuration_generation}:{}",
                     manager.connection_generation()
                 );
+                active_generation = Some(generation.clone());
                 *snapshot_guard = Some(DesktopToolRegistrySnapshot {
                     generation,
                     tools: tools.clone(),
@@ -212,35 +272,48 @@ pub async fn build_desktop_agent_session_dependencies(
     tools = tools.without_names(&["browser_session"]);
     tools.register(Box::new(NativeBrowserSessionTool::new(browser_state)));
     let before_package_filter_count = tools.tool_names().len();
-    let last_known_good_tools = tools.clone();
-    tools = match package_assembler.and_then(|assembler| assembler.assemble_tool_registry(tools)) {
-        Ok(capabilities) => {
-            let after_package_filter_count = capabilities.tools.tool_names().len();
-            if before_package_filter_count != after_package_filter_count {
-                info!(
-                    "Package Runtime Assembler resolved tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
-                );
-            }
-            let missing_core_tools = missing_core_runtime_tools(&capabilities.tools);
-            if missing_core_tools.is_empty() {
-                info!(
-                    "RegistryHealth status=healthy tool_count={after_package_filter_count} missing_core_tools=[]"
-                );
-                capabilities.tools
-            } else {
-                warn!(
-                    "RegistryHealth status=degraded tool_count={after_package_filter_count} missing_core_tools={missing_core_tools:?}; retaining last-known-good registry"
-                );
-                last_known_good_tools.clone()
-            }
-        }
-        Err(error) => {
+    let current_prefilter = tools.clone();
+    let assembled = package_assembler.and_then(|assembler| assembler.assemble_tool_registry(tools));
+    let package_snapshot_cache =
+        DESKTOP_PACKAGE_REGISTRY_SNAPSHOT.get_or_init(|| TokioMutex::new(None));
+    let mut package_snapshot_guard = package_snapshot_cache.lock().await;
+    let resolution = resolve_desktop_package_registry(
+        &current_prefilter,
+        assembled,
+        active_generation.as_deref(),
+        package_snapshot_guard.as_ref(),
+    );
+    if let Some(snapshot) = resolution.successful_snapshot.clone() {
+        *package_snapshot_guard = Some(snapshot);
+    }
+    drop(package_snapshot_guard);
+    tools = resolution.tools;
+    let after_package_filter_count = tools.tool_names().len();
+    if before_package_filter_count != after_package_filter_count {
+        info!(
+            "Package Runtime Assembler resolved tool registry from {before_package_filter_count} to {after_package_filter_count} tools"
+        );
+    }
+    let missing_core_tools = missing_core_runtime_tools(&tools);
+    if let Some(error) = resolution.error {
+        if resolution.used_last_known_good {
             warn!(
-                "Failed to filter tool registry through Package Host for task run {task_run_id}: {error}"
+                "Failed to filter tool registry through Package Host for task run {task_run_id}: {error}; retaining the previous successfully filtered registry projection for this generation"
             );
-            last_known_good_tools
+        } else {
+            warn!(
+                "Failed to filter tool registry through Package Host for task run {task_run_id}: {error}; no matching successful projection exists, so the registry is failing closed"
+            );
         }
-    };
+    } else if missing_core_tools.is_empty() {
+        info!(
+            "RegistryHealth status=healthy tool_count={after_package_filter_count} missing_core_tools=[]"
+        );
+    } else {
+        warn!(
+            "RegistryHealth status=degraded tool_count={after_package_filter_count} missing_core_tools={missing_core_tools:?}; Package Host filtering remains authoritative"
+        );
+    }
     if plan_mode {
         let before_count = tools.tool_names().len();
         tools = tools.plan_mode_filtered();

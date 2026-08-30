@@ -11,7 +11,7 @@ use chrono::Utc;
 use nexa_core::activity::{
     ActivityEvent, ActivityEventKind, ActivityRuntime, ActivitySpec, ActivityState, ActivitySurface,
 };
-use nexa_core::agent::{AgentEvent, AgentSteeringMessage, CancellationToken};
+use nexa_core::agent::{AgentSteeringMessage, CancellationToken};
 use nexa_core::error::CoreError;
 use serde::Serialize;
 use tokio::sync::{mpsc, Notify};
@@ -20,9 +20,7 @@ use tokio::sync::{mpsc, Notify};
 #[serde(rename_all = "camelCase")]
 pub enum SubagentLifecycleStatus {
     Queued,
-    Connected,
     Running,
-    WaitingInput,
     Cancelling,
     Completed,
     Failed,
@@ -110,7 +108,6 @@ pub struct RegisterSubagentRequest {
     pub task_run_id: Option<String>,
     pub cancel_token: CancellationToken,
     pub activity_runtime: ActivityRuntime,
-    pub event_tx: Option<mpsc::WeakSender<AgentEvent>>,
 }
 
 pub struct SubagentWorkerRegistration {
@@ -134,7 +131,6 @@ struct SubagentWorkerState {
     cancel_token: CancellationToken,
     steering_tx: mpsc::UnboundedSender<AgentSteeringMessage>,
     activity_runtime: ActivityRuntime,
-    event_tx: Option<mpsc::WeakSender<AgentEvent>>,
     conversation_id: Option<String>,
     turn_id: Option<String>,
     task_run_id: Option<String>,
@@ -159,7 +155,6 @@ impl SubagentWorkerState {
     fn bridge(&self) -> SubagentEventBridge {
         SubagentEventBridge {
             agent_id: self.agent_id.clone(),
-            parent_call_id: self.parent_call_id.clone(),
             task: self.task.clone(),
             role_id: self.role_id.clone(),
             role: self.role.clone(),
@@ -167,7 +162,6 @@ impl SubagentWorkerState {
             turn_id: self.turn_id.clone(),
             task_run_id: self.task_run_id.clone(),
             activity_runtime: self.activity_runtime.clone(),
-            event_tx: self.event_tx.clone(),
         }
     }
 }
@@ -220,7 +214,6 @@ impl SubagentLifecycleRuntime {
             cancel_token: request.cancel_token.clone(),
             steering_tx,
             activity_runtime: request.activity_runtime,
-            event_tx: request.event_tx,
             conversation_id: request.conversation_id,
             turn_id: request.turn_id,
             task_run_id: request.task_run_id,
@@ -265,13 +258,6 @@ impl SubagentLifecycleRuntime {
             return Err(CoreError::NotFound(format!("Subagent {agent_id}")));
         }
         Ok(())
-    }
-
-    pub fn bridge(&self, agent_id: &str) -> Result<SubagentEventBridge, CoreError> {
-        self.workers()?
-            .get(agent_id)
-            .map(SubagentWorkerState::bridge)
-            .ok_or_else(|| CoreError::NotFound(format!("Subagent {agent_id}")))
     }
 
     pub fn set_status(
@@ -490,7 +476,6 @@ impl SubagentLifecycleRuntime {
 #[derive(Clone)]
 pub struct SubagentEventBridge {
     agent_id: String,
-    parent_call_id: String,
     task: String,
     role_id: Option<String>,
     role: Option<String>,
@@ -498,7 +483,6 @@ pub struct SubagentEventBridge {
     turn_id: Option<String>,
     task_run_id: Option<String>,
     activity_runtime: ActivityRuntime,
-    event_tx: Option<mpsc::WeakSender<AgentEvent>>,
 }
 
 impl SubagentEventBridge {
@@ -551,7 +535,6 @@ impl SubagentEventBridge {
         })
         .await
         .map_err(|error| CoreError::Internal(format!("subagent event join: {error}")))??;
-        self.forward(kind, event.clone()).await;
         Ok(event)
     }
 
@@ -572,26 +555,7 @@ impl SubagentEventBridge {
             tokio::task::spawn_blocking(move || runtime.transition(&activity_id, state, payload))
                 .await
                 .map_err(|error| CoreError::Internal(format!("subagent finish join: {error}")))??;
-        self.forward(kind, event.clone()).await;
         Ok(event)
-    }
-
-    async fn forward(&self, kind: SubagentLifecycleEventKind, event: ActivityEvent) {
-        // Detached workers must not keep the parent turn's event stream open.
-        // Upgrade only while the parent owns a strong sender; durable Activity
-        // events remain observable after the live stream closes.
-        let Some(event_tx) = self.event_tx.as_ref().and_then(mpsc::WeakSender::upgrade) else {
-            return;
-        };
-        let note = format!("Subagent {}: {:?}", self.agent_id, kind);
-        let _ = event_tx
-            .send(AgentEvent::ToolCallProgress {
-                call_id: self.parent_call_id.clone(),
-                tool_name: "spawn_subagent".to_string(),
-                note,
-                activity: Some(event),
-            })
-            .await;
     }
 }
 
@@ -629,7 +593,6 @@ mod tests {
             task_run_id: None,
             cancel_token: CancellationToken::new(),
             activity_runtime: runtime,
-            event_tx: None,
         }
     }
 
@@ -649,7 +612,7 @@ mod tests {
 
         registration.events.start().await.unwrap();
         lifecycle
-            .set_status("agent-1", SubagentLifecycleStatus::Connected)
+            .set_status("agent-1", SubagentLifecycleStatus::Running)
             .unwrap();
         registration
             .events
@@ -725,24 +688,6 @@ mod tests {
             .events
             .iter()
             .any(|event| { event.payload["subagentEvent"] == serde_json::json!("spawned") }));
-    }
-
-    #[tokio::test]
-    async fn detached_lifecycle_does_not_keep_parent_event_stream_open() {
-        let lifecycle = SubagentLifecycleRuntime::default();
-        let (event_tx, mut event_rx) = mpsc::channel(1);
-        let mut request = request(ActivityRuntime::new());
-        request.event_tx = Some(event_tx.downgrade());
-
-        let registration = lifecycle.register(request).unwrap();
-        drop(event_tx);
-
-        assert!(event_rx.recv().await.is_none());
-        assert_eq!(
-            lifecycle.snapshot("agent-1").unwrap().status,
-            SubagentLifecycleStatus::Queued
-        );
-        drop(registration);
     }
 
     #[test]

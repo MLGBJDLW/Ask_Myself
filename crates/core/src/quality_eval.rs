@@ -265,27 +265,24 @@ fn behavioral_routing_suite() -> (BehavioralEvalReport, QualityEvalSuiteReport) 
 }
 
 fn evidence_policy_suite() -> QualityEvalSuiteReport {
-    let knowledge = build_task_plan(TaskPlanningInput {
-        user_query: "What changed in my retry notes and why?",
-        route_kind: "KnowledgeRetrieval",
-        has_sources: true,
-        source_scope_count: 2,
-        collection_context: false,
-    });
-    let web = build_task_plan(TaskPlanningInput {
-        user_query: "Fetch https://example.com and summarize the page.",
-        route_kind: "WebLookup",
-        has_sources: false,
-        source_scope_count: 0,
-        collection_context: false,
-    });
-    let direct = build_task_plan(TaskPlanningInput {
-        user_query: "Say hello in one sentence.",
-        route_kind: "DirectResponse",
-        has_sources: false,
-        source_scope_count: 0,
-        collection_context: false,
-    });
+    let knowledge = build_task_plan(TaskPlanningInput::for_route(
+        "What changed in my retry notes and why?",
+        "KnowledgeRetrieval",
+        true,
+        2,
+    ));
+    let web = build_task_plan(TaskPlanningInput::for_route(
+        "Fetch https://example.com and summarize the page.",
+        "WebLookup",
+        false,
+        0,
+    ));
+    let direct = build_task_plan(TaskPlanningInput::for_route(
+        "Say hello in one sentence.",
+        "DirectResponse",
+        false,
+        0,
+    ));
 
     eval_suite(
         "evidence_policy",
@@ -726,14 +723,12 @@ fn checkpoint_recovery_suite() -> QualityEvalSuiteReport {
 }
 
 fn orchestration_runtime_suite() -> QualityEvalSuiteReport {
-    let plan = build_task_plan(TaskPlanningInput {
-        user_query:
-            "Research a cross-module defect, implement the fix, run tests, and verify regressions",
-        route_kind: "CodebaseOperation",
-        has_sources: false,
-        source_scope_count: 0,
-        collection_context: false,
-    });
+    let plan = build_task_plan(TaskPlanningInput::for_route(
+        "Research a cross-module defect, implement the fix, run tests, and verify regressions",
+        "CodebaseOperation",
+        false,
+        0,
+    ));
     let code_ultra = resolve_orchestration_profile(OrchestrationProfileInput {
         profile: OrchestrationProfile::CodeUltra,
         custom: None,

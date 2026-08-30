@@ -7,7 +7,11 @@ const CACHE_STABLE_TOOL_BUDGET_DIVISOR: u32 = 4;
 const RESIDENT_DISCOVERY_TOOL_NAME: &str = "tool_search";
 const CACHE_STABLE_RESIDENT_TOOL_NAMES: &[&str] = &[
     "activity_observe",
+    "browser_evidence_capture",
+    "browser_session",
     "code_intelligence",
+    "computer_control",
+    "computer_observe",
     "create_file",
     "edit_file",
     "glob_files",
@@ -188,10 +192,14 @@ fn uses_stable_prefix_cache(provider_type: Option<ProviderType>, model: Option<&
                 | ProviderType::Qwen
                 | ProviderType::OpenRouter
                 | ProviderType::DeepSeek
+                | ProviderType::Zhipu
         )
     ) || is_alibaba_qwen
         || model
-            .map(|model| model.to_ascii_lowercase().contains("deepseek"))
+            .map(|model| {
+                let model = model.to_ascii_lowercase();
+                model.contains("deepseek") || model.contains("glm-")
+            })
             .unwrap_or(false)
 }
 
@@ -277,13 +285,12 @@ mod tests {
     }
 
     fn plan() -> AgentTaskPlan {
-        build_task_plan(TaskPlanningInput {
-            user_query: "audit cache behavior",
-            route_kind: "CodebaseOperation",
-            has_sources: false,
-            source_scope_count: 0,
-            collection_context: false,
-        })
+        build_task_plan(TaskPlanningInput::for_route(
+            "audit cache behavior",
+            "CodebaseOperation",
+            false,
+            0,
+        ))
     }
 
     #[test]
@@ -514,5 +521,58 @@ mod tests {
             context::estimate_tool_tokens_for_model("deepseek-v4-pro", &surface.definitions)
                 <= MAX_CACHE_STABLE_TOOL_TOKENS
         );
+    }
+
+    #[test]
+    fn deepseek_and_glm_cache_stable_surfaces_include_platform_available_interaction_tools() {
+        let registry = crate::tools::default_tool_registry();
+        for (provider, model) in [
+            (ProviderType::DeepSeek, "deepseek-chat"),
+            (ProviderType::Zhipu, "glm-5.3"),
+        ] {
+            let layout = PromptLayout::for_request(Some(provider), Some(model));
+            assert!(
+                !layout.allow_dynamic_tool_visibility,
+                "{provider:?}/{model} must use the production cache-stable surface"
+            );
+            let surface =
+                select_cache_stable_tool_surface(&registry, model, Some(1_000_000), 16_384)
+                    .expect("interaction-capable stable surface should fit");
+            let names = surface
+                .definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>();
+            for required in ["run_shell", "browser_evidence_capture", "browser_session"] {
+                assert!(
+                    names.contains(&required),
+                    "{provider:?}/{model} is missing first-request tool {required}"
+                );
+            }
+
+            #[cfg(target_os = "windows")]
+            for required in ["computer_observe", "computer_control"] {
+                assert!(
+                    registry.contains(required),
+                    "the Windows default registry is missing executable tool {required}"
+                );
+                assert!(
+                    names.contains(&required),
+                    "{provider:?}/{model} is missing first-request tool {required}"
+                );
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            for unavailable in ["computer_observe", "computer_control"] {
+                assert!(
+                    !registry.contains(unavailable),
+                    "the non-Windows default registry must not expose unavailable tool {unavailable}"
+                );
+                assert!(
+                    !names.contains(&unavailable),
+                    "{provider:?}/{model} leaked unavailable tool {unavailable} into the first-request surface"
+                );
+            }
+        }
     }
 }

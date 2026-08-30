@@ -42,6 +42,7 @@ import { streamStore } from '../src/lib/streamStore';
 import { ConversationFrameBatcher } from '../src/lib/streaming/frameBatcher';
 import { parseAgentFrontendEvent } from '../src/lib/streaming/runEventWire';
 import { applyStreamBlockDelta } from '../src/lib/streaming/blockProjection';
+import { applyToolRunEvent } from '../src/lib/streaming/toolProjection';
 import { createDefaultState } from '../src/lib/streaming/state';
 import { takeAuthoritativeRunEventSuffix } from '../src/lib/streaming/ordering';
 import { upsertBoundedConversationCache } from '../src/lib/boundedConversationCache';
@@ -462,12 +463,14 @@ function taskRun(status: string): AgentTaskRun {
 function toolRun(input: {
   callId: string;
   status: ToolRunItem['status'];
+  toolName?: string;
   content?: string;
   progressNote?: string;
+  artifacts?: ToolRunItem['artifacts'];
 }): ToolRunItem {
   return {
     callId: input.callId,
-    toolName: 'search_knowledge_base',
+    toolName: input.toolName ?? 'search_knowledge_base',
     owner: {
       id: 'knowledge',
       name: 'Knowledge',
@@ -487,11 +490,47 @@ function toolRun(input: {
       resourceKeys: ['source:notes'],
     },
     content: input.content,
+    artifacts: input.artifacts,
     isError: input.status === 'failed',
     progressNote: input.progressNote,
     durationMs: input.status === 'completed' ? 42 : undefined,
   };
 }
+
+test('current-turn visual evidence augments the live tool card without replacing durable artifacts', () => {
+  const state = createDefaultState();
+  applyToolRunEvent(state, toolRun({
+    callId: 'browser-1',
+    toolName: 'browser_session',
+    status: 'completed',
+    content: 'Observed https://example.test',
+    artifacts: {
+      kind: 'browserObservation',
+      url: 'https://example.test',
+      fingerprint: 'dom-1',
+    },
+  }));
+  applyToolRunEvent(state, toolRun({
+    callId: 'browser-1',
+    toolName: 'browser_session',
+    status: 'completed',
+    artifacts: {
+      kind: 'toolVisualEvidence',
+      persistence: 'currentTurnOnly',
+      evidence: {
+        name: 'browser.png',
+        mimeType: 'image/png',
+        base64: 'aGVsbG8=',
+        contentHash: 'hash-1',
+      },
+    },
+  }));
+
+  const artifacts = state.toolCalls[0]?.artifacts as Record<string, unknown> | undefined;
+  assertEqual(artifacts?.kind, 'browserObservation', 'durable observation artifact should remain');
+  const visualEvidence = artifacts?.visualEvidence as Record<string, unknown> | undefined;
+  assertEqual(visualEvidence?.persistence, 'currentTurnOnly', 'visual evidence stays live-only');
+});
 
 function approvalRequest(id = 'approval-1'): ApprovalRequest {
   return {

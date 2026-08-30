@@ -434,6 +434,17 @@ pub struct ToolContractError {
     pub expected_format: serde_json::Value,
     pub retryable: bool,
     pub trust_boundary: TrustBoundary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effect: Option<ToolSideEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_consumed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSideEffect {
+    NotStarted,
+    MayHaveOccurred,
 }
 
 pub(crate) fn structured_tool_error_result(
@@ -443,8 +454,46 @@ pub(crate) fn structured_tool_error_result(
     expected_format: serde_json::Value,
     retryable: bool,
 ) -> ToolResult {
-    let code = code.into();
-    let message = message.into();
+    build_structured_tool_error_result(
+        call_id,
+        code.into(),
+        message.into(),
+        expected_format,
+        retryable,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn structured_tool_error_result_with_side_effect(
+    call_id: &str,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    expected_format: serde_json::Value,
+    retryable: bool,
+    side_effect: ToolSideEffect,
+    observation_consumed: Option<bool>,
+) -> ToolResult {
+    build_structured_tool_error_result(
+        call_id,
+        code.into(),
+        message.into(),
+        expected_format,
+        retryable,
+        Some(side_effect),
+        observation_consumed,
+    )
+}
+
+fn build_structured_tool_error_result(
+    call_id: &str,
+    code: String,
+    message: String,
+    expected_format: serde_json::Value,
+    retryable: bool,
+    side_effect: Option<ToolSideEffect>,
+    observation_consumed: Option<bool>,
+) -> ToolResult {
     let error = ToolContractError {
         kind: "toolContractError".to_string(),
         code: code.clone(),
@@ -452,6 +501,8 @@ pub(crate) fn structured_tool_error_result(
         expected_format,
         retryable,
         trust_boundary: TrustBoundary::tool_error(),
+        side_effect,
+        observation_consumed,
     };
     let content = format!(
         "Error: {message}\n\nCode: {code}\nRetryable: {retryable}\nUse the expected JSON shape shown in artifacts.expectedFormat before calling the tool again."
@@ -582,6 +633,28 @@ pub trait Tool: Send + Sync {
     /// can describe the specific action.
     fn confirmation_message(&self, _args: &serde_json::Value) -> Option<String> {
         None
+    }
+
+    /// Build an approval explanation against the exact conversation-scoped
+    /// observation that will authorize execution. Tools without ephemeral
+    /// observation state inherit the ordinary argument-only explanation.
+    fn confirmation_message_in_context(
+        &self,
+        args: &serde_json::Value,
+        _conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(self.confirmation_message(args))
+    }
+
+    /// Optional audit-safe counterpart to the live approval explanation.
+    /// The live callback keeps the human-readable target, while durable Run
+    /// Events use this projection to avoid storing transient screen text.
+    fn confirmation_message_for_persistence_in_context(
+        &self,
+        _args: &serde_json::Value,
+        _conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(None)
     }
 
     /// Preferred frontend renderer family for this tool.
@@ -767,6 +840,30 @@ impl ToolRegistry {
     /// Get the confirmation message for a tool with the given arguments.
     pub fn confirmation_message(&self, name: &str, args: &serde_json::Value) -> Option<String> {
         self.get(name).and_then(|t| t.confirmation_message(args))
+    }
+
+    pub fn confirmation_message_in_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        self.get(name)
+            .map(|tool| tool.confirmation_message_in_context(args, conversation_id))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub fn confirmation_message_for_persistence_in_context(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        conversation_id: Option<&str>,
+    ) -> Result<Option<String>, CoreError> {
+        self.get(name)
+            .map(|tool| tool.confirmation_message_for_persistence_in_context(args, conversation_id))
+            .transpose()
+            .map(Option::flatten)
     }
 
     pub fn run_capabilities(&self, name: &str, args: &serde_json::Value) -> ToolRunCapabilities {
@@ -1186,6 +1283,98 @@ fn json_value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
     }
 }
 
+fn schema_required_fields(schema: &serde_json::Value) -> Vec<&str> {
+    schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+
+fn object_matches_schema_properties(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+) -> bool {
+    if let Some(expected) = schema.get("type").and_then(serde_json::Value::as_str) {
+        if expected != "object" {
+            return false;
+        }
+    }
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return true;
+    };
+    properties.iter().all(|(field, field_schema)| {
+        let Some(value) = object.get(field) else {
+            return true;
+        };
+        field_schema
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|expected| json_value_matches_type(value, expected))
+            && field_schema
+                .get("enum")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|allowed| allowed.contains(value))
+            && field_schema
+                .get("const")
+                .is_none_or(|expected| expected == value)
+    })
+}
+
+fn object_matches_schema_branch(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+) -> bool {
+    schema_required_fields(schema)
+        .iter()
+        .all(|field| object.contains_key(*field))
+        && object_matches_schema_properties(object, schema)
+}
+
+fn schema_branch_is_locally_decidable(schema: &serde_json::Value) -> bool {
+    let Some(branch) = schema.as_object() else {
+        return false;
+    };
+    if !branch
+        .keys()
+        .all(|key| matches!(key.as_str(), "type" | "properties" | "required"))
+    {
+        return false;
+    }
+    if let Some(branch_type) = branch.get("type") {
+        if branch_type.as_str() != Some("object") {
+            return false;
+        }
+    }
+    if branch.get("required").is_some_and(|required| {
+        required
+            .as_array()
+            .is_none_or(|fields| fields.iter().any(|field| !field.is_string()))
+    }) {
+        return false;
+    }
+    branch.get("properties").is_none_or(|properties| {
+        properties.as_object().is_some_and(|properties| {
+            properties.values().all(|property| {
+                property.as_object().is_some_and(|property| {
+                    property
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "type" | "enum" | "const"))
+                        && property
+                            .get("type")
+                            .is_none_or(serde_json::Value::is_string)
+                        && property.get("enum").is_none_or(serde_json::Value::is_array)
+                })
+            })
+        })
+    })
+}
+
 fn top_level_argument_issue(
     value: &serde_json::Value,
     schema: &serde_json::Value,
@@ -1236,6 +1425,47 @@ fn top_level_argument_issue(
                 ));
             }
         }
+    }
+
+    if let Some(variants) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
+        if variants.is_empty() || !variants.iter().all(schema_branch_is_locally_decidable) {
+            return None;
+        }
+        let matching = variants
+            .iter()
+            .filter(|variant| object_matches_schema_branch(object, variant))
+            .count();
+        if matching == 1 {
+            return None;
+        }
+        if matching == 0 {
+            let property_candidates = variants
+                .iter()
+                .filter(|variant| object_matches_schema_properties(object, variant))
+                .collect::<Vec<_>>();
+            if property_candidates.len() == 1 {
+                let missing = schema_required_fields(property_candidates[0])
+                    .into_iter()
+                    .filter(|field| !object.contains_key(*field))
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Some((
+                        "missing_required_arguments",
+                        format!("Missing required tool argument(s): {}", missing.join(", ")),
+                    ));
+                }
+            }
+            return Some((
+                "invalid_arguments_shape",
+                "Tool arguments must match exactly one supported argument shape.".to_string(),
+            ));
+        }
+        return Some((
+            "invalid_arguments_shape",
+            format!(
+                "Tool arguments matched {matching} mutually exclusive argument shapes; expected exactly one."
+            ),
+        ));
     }
     None
 }
@@ -1346,45 +1576,23 @@ fn core_error_contract(error: &CoreError) -> (&'static str, bool) {
     }
 }
 
-fn computer_control_error_contract(error: &CoreError) -> (&'static str, bool) {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("already used")
-        || message.contains("observation expired")
-        || message.contains("unknown computer observation")
-        || message.contains("observation is stale")
-        || message.contains("observe it again")
-        || message.contains("capture the window again")
-        || message.contains("moved or resized")
-        || message.contains("changed materially")
-    {
-        return ("computer_observation_stale", true);
-    }
-    if message.contains("protected from computer control")
-        || message.contains("password element")
-        || message.contains("secrets must never")
-    {
-        return ("computer_action_refused", false);
-    }
-    if message.contains("user takeover")
-        || message.contains("cursor moved during")
-        || message.contains("keyboard focus left")
-    {
-        return ("computer_user_takeover", false);
-    }
-    if message.contains("effect is uncertain")
-        || matches!(error, CoreError::Internal(_) | CoreError::Io(_))
-        || message.contains("click mouse")
-        || message.contains("drag mouse")
-        || message.contains("scroll vertically")
-        || message.contains("scroll horizontally")
-        || message.contains("type text")
-        || message.contains("send key")
-        || message.contains("ui automation value")
-        || message.contains("invoke ui automation")
-    {
-        return ("computer_action_uncertain", false);
-    }
-    ("invalid_computer_action", true)
+fn conservative_unstructured_computer_failure(
+    call_id: &str,
+    schema: serde_json::Value,
+) -> ToolResult {
+    structured_tool_error_result_with_side_effect(
+        call_id,
+        "computer_action_uncertain",
+        "Computer control violated its typed failure contract. Effect may have occurred; sensitive details were omitted and the action must not be blindly retried.",
+        serde_json::json!({
+            "tool": "computer_control",
+            "arguments": schema,
+            "recovery": "inspect fresh visual state or ask the user; do not blindly retry"
+        }),
+        false,
+        ToolSideEffect::MayHaveOccurred,
+        None,
+    )
 }
 
 fn normalize_tool_execution_result(
@@ -1395,21 +1603,18 @@ fn normalize_tool_execution_result(
 ) -> ToolResult {
     match result {
         Ok(result) if result.is_error && result.artifacts.is_none() => {
-            let computer_control_error = tool_name == "computer_control";
-            let (code, retryable) = if computer_control_error {
-                ("computer_action_uncertain", false)
-            } else {
-                classify_tool_result_error(&result.content)
-            };
+            if tool_name == "computer_control" {
+                tracing::error!(
+                    tool = tool_name,
+                    "computer control returned an unstructured failure"
+                );
+                return conservative_unstructured_computer_failure(call_id, schema);
+            }
+            let (code, retryable) = classify_tool_result_error(&result.content);
             structured_tool_error_result(
                 call_id,
                 code,
-                if computer_control_error {
-                    "Computer action returned an unstructured failure. Effect is uncertain; sensitive details were omitted and the action must not be blindly retried."
-                        .to_string()
-                } else {
-                    result.content
-                },
+                result.content,
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
@@ -1424,22 +1629,16 @@ fn normalize_tool_execution_result(
         }
         Ok(result) => result,
         Err(error) => {
-            let (code, retryable) = if tool_name == "computer_control" {
-                computer_control_error_contract(&error)
-            } else {
-                core_error_contract(&error)
-            };
-            let message = if tool_name == "computer_control" {
-                match code {
-                    "computer_observation_stale" => "Computer observation is stale, consumed, or no longer matches the target. Re-observe before acting.".to_string(),
-                    "computer_action_refused" => "Computer action was refused by a protected-target or sensitive-input safety rule.".to_string(),
-                    "computer_user_takeover" => "Computer action stopped because user input or focus takeover was detected.".to_string(),
-                    "computer_action_uncertain" => "Computer action may have been partially delivered. Effect is uncertain; inspect fresh state and do not blindly retry.".to_string(),
-                    _ => "Computer action arguments or preconditions were invalid. Review the schema and fresh observation without reusing sensitive values.".to_string(),
-                }
-            } else {
-                format!("{tool_name} failed: {error}")
-            };
+            if tool_name == "computer_control" {
+                tracing::error!(
+                    tool = tool_name,
+                    error = %error,
+                    "computer control escaped its typed failure projection"
+                );
+                return conservative_unstructured_computer_failure(call_id, schema);
+            }
+            let (code, retryable) = core_error_contract(&error);
+            let message = format!("{tool_name} failed: {error}");
             structured_tool_error_result(
                 call_id,
                 code,
@@ -1447,11 +1646,7 @@ fn normalize_tool_execution_result(
                 serde_json::json!({
                     "tool": tool_name,
                     "arguments": schema,
-                    "recovery": if code == "computer_observation_stale" {
-                        "re-observe the target window and choose a target from the fresh observation; never reuse the consumed or stale token"
-                    } else if code == "computer_action_uncertain" {
-                        "the action may have been partially delivered; inspect fresh state or ask the user, and do not blindly retry"
-                    } else if retryable {
+                    "recovery": if retryable {
                         "inspect the structured code, repair arguments or runtime preconditions, and retry once with a materially corrected call"
                     } else {
                         "stop and wait for user intent or permissions to change"
@@ -1887,6 +2082,37 @@ mod tests {
     }
 
     #[test]
+    fn explicit_browser_interaction_gets_observation_and_session_tools_immediately() {
+        let registry = default_tool_registry();
+        for query in [
+            "Open the browser, visit https://example.com, and click More information",
+            "打开浏览器访问 example.com 并点击 More information",
+        ] {
+            let names = registry
+                .select_tools(query, false)
+                .into_iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>();
+            assert!(names.iter().any(|name| name == "browser_session"));
+            assert!(names.iter().any(|name| name == "browser_evidence_capture"));
+        }
+    }
+
+    #[test]
+    fn implicit_html_artifact_gets_process_and_visual_tools_immediately() {
+        let registry = default_tool_registry();
+        let names = registry
+            .select_tools("帮我用html写一个黑洞演示图", false)
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+
+        for required in ["run_shell", "browser_evidence_capture", "browser_session"] {
+            assert!(names.iter().any(|name| name == required));
+        }
+    }
+
+    #[test]
     fn select_tools_keeps_desktop_automation_for_local_path_handoffs() {
         let registry = default_tool_registry();
         let defs = registry.select_tools("Reveal this file in Explorer", false);
@@ -1978,6 +2204,69 @@ mod tests {
     }
 
     #[test]
+    fn browser_close_one_of_targets_are_validated_before_execution() {
+        let schema = browser_session_tool::BrowserSessionTool::default()
+            .definition()
+            .parameters;
+
+        for (arguments, missing) in [
+            (r#"{"action":"close_session"}"#, "sessionId"),
+            (r#"{"action":"close_tab","sessionId":"browser-1"}"#, "tabId"),
+        ] {
+            let (code, message) = normalize_tool_arguments("browser_session", arguments, &schema)
+                .expect_err("missing terminal targets must fail before tool execution");
+            assert_eq!(code, "missing_required_arguments");
+            assert!(message.contains(missing), "unexpected error: {message}");
+        }
+
+        for arguments in [
+            r#"{"action":"close_session","sessionId":"browser-1"}"#,
+            r#"{"action":"close_tab","sessionId":"browser-1","tabId":"tab-1"}"#,
+            r#"{"action":"observe","sessionId":"browser-1","wait_for_previous":true}"#,
+        ] {
+            normalize_tool_arguments("browser_session", arguments, &schema)
+                .expect("complete close targets and non-close calls must remain valid");
+        }
+
+        let (code, message) = normalize_tool_arguments(
+            "browser_session",
+            r#"{"action":"observe","wait_for_previous":true}"#,
+            &schema,
+        )
+        .expect_err("the headless browser runtime requires an explicit non-create session");
+        assert_eq!(code, "missing_required_arguments");
+        assert!(message.contains("sessionId"), "unexpected error: {message}");
+    }
+
+    #[test]
+    fn complex_remote_one_of_schemas_are_not_partially_evaluated() {
+        let constrained_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": "number" }
+            },
+            "oneOf": [
+                { "properties": { "n": { "type": "number", "minimum": 0 } } },
+                { "properties": { "n": { "type": "number", "maximum": -1 } } }
+            ]
+        });
+
+        normalize_tool_arguments("remote_mcp_tool", r#"{"n":2}"#, &constrained_schema)
+            .expect("unknown oneOf keywords must stay owned by the remote schema/runtime");
+
+        let union_type_schema = serde_json::json!({
+            "type": "object",
+            "properties": { "value": {} },
+            "oneOf": [
+                { "type": ["object", "null"] },
+                { "type": "object", "required": ["value"] }
+            ]
+        });
+        normalize_tool_arguments("remote_mcp_tool", r#"{"value":1}"#, &union_type_schema)
+            .expect("union branch types must remain owned by the remote schema/runtime");
+    }
+
+    #[test]
     fn select_tools_keeps_manage_persona_available_for_direct_turns() {
         let registry = default_tool_registry();
         let defs = registry.select_tools("Say hello briefly.", false);
@@ -2018,6 +2307,7 @@ mod tests {
             route_categories: Vec::new(),
             signals: Vec::new(),
             log: Vec::new(),
+            interaction: Default::default(),
         };
         let defs = registry.select_tools_for_decision(&decision);
         let names: Vec<String> = defs.into_iter().map(|def| def.name).collect();
@@ -2640,26 +2930,7 @@ mod tests {
     }
 
     #[test]
-    fn computer_control_errors_distinguish_reobserve_from_uncertain_delivery() {
-        assert_eq!(
-            computer_control_error_contract(&CoreError::InvalidInput(
-                "Desktop observation is stale; observe it again".to_string()
-            )),
-            ("computer_observation_stale", true)
-        );
-        assert_eq!(
-            computer_control_error_contract(&CoreError::Internal(
-                "click mouse: input driver disconnected".to_string()
-            )),
-            ("computer_action_uncertain", false)
-        );
-        assert_eq!(
-            computer_control_error_contract(&CoreError::InvalidInput(
-                "Cursor moved during click preparation, indicating user takeover".to_string()
-            )),
-            ("computer_user_takeover", false)
-        );
-
+    fn unexpected_computer_control_errors_fail_closed_without_leaking_details() {
         let sentinel = "error-path-secret-73df";
         let projected = normalize_tool_execution_result(
             "call-sensitive",
@@ -2671,6 +2942,11 @@ mod tests {
         );
         let serialized = serde_json::to_string(&projected).unwrap();
         assert!(!serialized.contains(sentinel));
-        assert!(serialized.contains("invalid_computer_action"));
+        assert!(serialized.contains("computer_action_uncertain"));
+        assert!(serialized.contains("may_have_occurred"));
+        let artifacts = projected.artifacts.expect("typed error artifacts");
+        assert_eq!(artifacts["sideEffect"], "may_have_occurred");
+        assert!(artifacts.get("effectMayHaveOccurred").is_none());
+        assert!(artifacts.get("failurePhase").is_none());
     }
 }
