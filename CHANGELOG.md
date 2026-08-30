@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.3...nexa-monorepo-v0.13.4) (2026-08-30)
+
+
+### Bug Fixes
+
+* **agent:** close interaction evidence gaps ([a8098c8](https://github.com/MLGBJDLW/Nexa/commit/a8098c8d17cc0a0ceddcd4db2f176300cf7098e4))
+* **agent:** enforce observable interaction contracts ([83eb3b5](https://github.com/MLGBJDLW/Nexa/commit/83eb3b52901509b6ed97f5f1d85689de44b6243a))
+* **agent:** make browser and computer use observable ([82aefeb](https://github.com/MLGBJDLW/Nexa/commit/82aefebe15747af0dfed6cce6fb5b57108ff1de5))
+* **agent:** verify terminal browser closure ([4e074c5](https://github.com/MLGBJDLW/Nexa/commit/4e074c5d6a492494932ed5f16cd9cbb19eb166ea))
+* **browser:** make native session evidence reliable ([904e421](https://github.com/MLGBJDLW/Nexa/commit/904e421e11dabe30fe111dbabc894e76aa2c8196))
+* **browser:** secure visible browser workspaces ([1afd133](https://github.com/MLGBJDLW/Nexa/commit/1afd1337b4de7f48a0e51fde187c8c253327410a))
+* **browser:** verify actions from prepared state ([a206b85](https://github.com/MLGBJDLW/Nexa/commit/a206b858f10279d5d3e55be9f3c95a1707e99775))
+* **ci:** satisfy cross-platform core lints ([083abc1](https://github.com/MLGBJDLW/Nexa/commit/083abc18cd3e812e8572c30b9fe735812caaa0dc))
+* **computer:** keep screenshot coordinates stable ([567bf02](https://github.com/MLGBJDLW/Nexa/commit/567bf02e5f1827206b18a33254736f49280141a6))
+
 ## [0.13.3](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.2...nexa-monorepo-v0.13.3) (2026-08-29)
 
 
