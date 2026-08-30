@@ -33,6 +33,10 @@ blake3 = "1"
 encoding_rs = "0.8"
 portable-pty = "0.9"
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+windows = { version = "0.62", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
 [features]
 default = ["custom-protocol", "video", "ocr", "local-embeddings"]
 custom-protocol = ["tauri/custom-protocol"]

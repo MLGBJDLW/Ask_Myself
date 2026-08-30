@@ -42,6 +42,12 @@ impl ControlLease {
         true
     }
 
+    /// Invalidate every observation and pending commit tied to the current
+    /// generation without changing who owns control.
+    pub fn invalidate(&mut self) {
+        self.generation = self.generation.saturating_add(1);
+    }
+
     pub fn release(&mut self) {
         self.acquire(BrowserControlOwner::None);
     }
@@ -73,5 +79,22 @@ mod tests {
 
         assert!(!lease.try_acquire_agent("agent-call".into()));
         assert!(matches!(lease.owner(), BrowserControlOwner::User));
+    }
+
+    #[test]
+    fn invalidation_advances_generation_without_changing_owner() {
+        let mut lease = ControlLease::default();
+        lease.acquire(BrowserControlOwner::Agent {
+            call_id: "agent-call".into(),
+        });
+        let generation = lease.generation();
+
+        lease.invalidate();
+
+        assert!(lease.generation() > generation);
+        assert!(matches!(
+            lease.owner(),
+            BrowserControlOwner::Agent { call_id } if call_id == "agent-call"
+        ));
     }
 }

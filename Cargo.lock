@@ -3718,6 +3718,8 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "uuid",
+ "webview2-com",
+ "windows 0.62.2",
 ]
 
 [[package]]

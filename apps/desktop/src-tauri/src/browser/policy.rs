@@ -4,6 +4,7 @@ use std::net::IpAddr;
 pub use nexa_core::browser_runtime::{
     classify_action_risk as classify_agent_action, BrowserActionRisk,
 };
+use nexa_core::tools::run_shell_tool::ManagedLoopbackPermit;
 use url::{Host, Url};
 
 const AGENT_DNS_RESOLUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -70,6 +71,17 @@ fn agent_host_allowed(url: &Url) -> bool {
 }
 
 pub fn normalize_browser_url(input: &str, actor: NavigationActor) -> Result<Url, String> {
+    let url = normalize_browser_url_candidate(input)?;
+    if actor == NavigationActor::Agent && !agent_host_allowed(&url) {
+        return Err(
+            "Agent browser navigation to a local or private network requires a live service started in this conversation with run_shell background:true and ready_url, or explicit user control."
+                .to_string(),
+        );
+    }
+    Ok(url)
+}
+
+pub(super) fn normalize_browser_url_candidate(input: &str) -> Result<Url, String> {
     let input = input.trim();
     if input.is_empty() {
         return Err("Enter a URL or search query".to_string());
@@ -93,12 +105,6 @@ pub fn normalize_browser_url(input: &str, actor: NavigationActor) -> Result<Url,
     if !matches!(url.scheme(), "http" | "https") {
         return Err("Only HTTP and HTTPS pages can open in Nexa Browser".to_string());
     }
-    if actor == NavigationActor::Agent && !agent_host_allowed(&url) {
-        return Err(
-            "Agent browser navigation to local or private networks requires explicit user control"
-                .to_string(),
-        );
-    }
     Ok(url)
 }
 
@@ -121,12 +127,47 @@ fn looks_like_browser_host(input: &str) -> bool {
             .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
 }
 
-pub async fn validate_agent_network_url(url: &Url) -> Result<(), String> {
+pub(super) fn managed_permit_matches_url(permit: &ManagedLoopbackPermit, url: &Url) -> bool {
+    if !permit.is_live() {
+        return false;
+    }
+    let Some(origin) = Url::parse(&permit.origin).ok() else {
+        return false;
+    };
+    matches!(origin.scheme(), "http" | "https")
+        && origin.origin().ascii_serialization() == permit.origin
+        && url.origin() == origin.origin()
+        && url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case(&permit.host))
+        && url.port_or_known_default() == Some(permit.port)
+        && managed_loopback_host(&permit.host)
+}
+
+fn managed_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn resolved_is_loopback(address: IpAddr) -> bool {
+    address.is_loopback()
+        || matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|mapped| mapped.is_loopback()))
+}
+
+pub(super) async fn validate_agent_network_url_with_permit(
+    url: &Url,
+    permit: Option<&ManagedLoopbackPermit>,
+) -> Result<(), String> {
+    let managed_loopback = permit.is_some_and(|permit| managed_permit_matches_url(permit, url));
     if !agent_host_allowed(url) {
-        return Err(
-            "Agent browser navigation to local or private networks requires explicit user control"
-                .to_string(),
-        );
+        if !managed_loopback {
+            return Err(
+                "Agent browser navigation to a local or private network requires a live service started in this conversation with run_shell background:true and ready_url, or explicit user control."
+                    .to_string(),
+            );
+        }
     }
     let host = url
         .host_str()
@@ -142,10 +183,15 @@ pub async fn validate_agent_network_url(url: &Url) -> Result<(), String> {
     let mut resolved_any = false;
     for address in resolved {
         resolved_any = true;
-        if private_or_special_ip(address.ip()) {
-            return Err(
-                "Agent browser navigation resolved to a local or private network".to_string(),
-            );
+        if (managed_loopback && !resolved_is_loopback(address.ip()))
+            || (!managed_loopback && private_or_special_ip(address.ip()))
+        {
+            return Err(if managed_loopback {
+                "Managed browser service resolved outside loopback"
+            } else {
+                "Agent browser navigation resolved to a local or private network"
+            }
+            .to_string());
         }
     }
     if !resolved_any {
@@ -169,8 +215,12 @@ pub fn navigation_preapproved(
     agent_restricted: bool,
     approved_agent_urls: &mut HashSet<String>,
 ) -> bool {
-    navigation_allowed(url, agent_restricted)
-        && (!agent_restricted
-            || approved_agent_urls.remove(url.as_str())
-            || approved_agent_urls.remove(&form_navigation_approval_key(url)))
+    if !agent_restricted {
+        return navigation_allowed(url, false);
+    }
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    approved_agent_urls.remove(url.as_str())
+        || approved_agent_urls.remove(&form_navigation_approval_key(url))
 }

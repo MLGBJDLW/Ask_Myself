@@ -39,12 +39,19 @@ export interface BrowserDockStatus {
   state: 'empty' | 'idle' | 'loading' | 'agent' | 'user' | 'error';
 }
 
-export type BrowserAgentArtifact = api.BrowserPickArtifact | {
+export type BrowserAgentSelection = api.BrowserPickArtifact | {
   kind: 'text';
   url: string;
   title: string;
   text: string;
 };
+
+export interface BrowserAgentArtifact {
+  conversationId: string;
+  sessionId: string;
+  tabId: string;
+  selection: BrowserAgentSelection;
+}
 
 interface BrowserDockProps {
   open: boolean;
@@ -59,6 +66,14 @@ const MIN_WIDTH = 440;
 const MAX_WIDTH = 920;
 const DEFAULT_WIDTH = 620;
 const WIDTH_STORAGE_KEY = 'nexa-browser-dock-width';
+const MAX_BROWSER_TABS_PER_SESSION = 16;
+
+interface BrowserSessionRequestScope {
+  conversationId: string;
+  conversationGeneration: number;
+  requestGeneration: number;
+  expectedSessionId?: string;
+}
 
 function storedWidth(): number {
   const parsed = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
@@ -103,11 +118,38 @@ export function BrowserDock({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const latestBoundsRef = useRef<api.BrowserBounds | null>(null);
   const pickTimerRef = useRef<number | null>(null);
-  const sessionPromiseRef = useRef<Promise<api.BrowserSessionInfo | null> | null>(null);
+  const sessionPromisesRef = useRef(new Map<string, Promise<api.BrowserSessionInfo | null>>());
+  const sessionRequestGenerationRef = useRef(0);
+  const conversationLifecycleRef = useRef({ conversationId, generation: 0 });
+  if (conversationLifecycleRef.current.conversationId !== conversationId) {
+    conversationLifecycleRef.current = {
+      conversationId,
+      generation: conversationLifecycleRef.current.generation + 1,
+    };
+    sessionRequestGenerationRef.current += 1;
+  }
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
   const session = storedSession?.conversationId === conversationId ? storedSession : null;
   const currentTab = useMemo(() => activeTab(session), [session]);
+  const openRef = useRef(open);
+  const sessionRef = useRef(session);
+  const sessionIdRef = useRef(session?.id);
+  const activeTabIdRef = useRef(currentTab?.id);
+  const onOpenChangeRef = useRef(onOpenChange);
+  const translateRef = useRef(t);
+  openRef.current = open;
+  sessionRef.current = session;
+  sessionIdRef.current = session?.id;
+  activeTabIdRef.current = currentTab?.id;
+  onOpenChangeRef.current = onOpenChange;
+  translateRef.current = t;
+  const artifactScopeGenerationRef = useRef(0);
+  const busyGenerationRef = useRef(0);
+  const visibilityGenerationRef = useRef(0);
+  const visibilityRevisionBySessionRef = useRef(new Map<string, number>());
+  const pendingPopupCountBySessionRef = useRef(new Map<string, number>());
+  const popupLimitWarnedSessionsRef = useRef(new Set<string>());
   const effectiveFullScreen = fullScreen || narrowViewport;
 
   useEffect(() => {
@@ -118,21 +160,79 @@ export function BrowserDock({
     return () => query.removeEventListener('change', update);
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!conversationId) {
-      setSession(null);
-      return null;
-    }
-    const next = await api.activeBrowserSession(conversationId);
-    if (conversationIdRef.current === conversationId) setSession(next);
-    return next;
-  }, [conversationId]);
-
   const reportError = useCallback((message: string, error: unknown) => {
     const formatted = formatUserError(message, error);
     setLastError(formatted);
     toast.error(formatted);
   }, []);
+
+  const beginSessionRequest = useCallback((
+    targetConversationId: string,
+    expectedSessionId?: string,
+  ): BrowserSessionRequestScope | null => {
+    const lifecycle = conversationLifecycleRef.current;
+    if (
+      conversationIdRef.current !== targetConversationId
+      || lifecycle.conversationId !== targetConversationId
+    ) return null;
+    const requestGeneration = sessionRequestGenerationRef.current + 1;
+    sessionRequestGenerationRef.current = requestGeneration;
+    return {
+      conversationId: targetConversationId,
+      conversationGeneration: lifecycle.generation,
+      requestGeneration,
+      expectedSessionId,
+    };
+  }, []);
+
+  const sessionScopeOwnsCurrent = useCallback((scope: BrowserSessionRequestScope) => {
+    const lifecycle = conversationLifecycleRef.current;
+    return conversationIdRef.current === scope.conversationId
+      && lifecycle.conversationId === scope.conversationId
+      && lifecycle.generation === scope.conversationGeneration
+      && (
+        scope.expectedSessionId === undefined
+        || sessionIdRef.current === scope.expectedSessionId
+      );
+  }, []);
+
+  const sessionScopeCanCommit = useCallback((scope: BrowserSessionRequestScope) => (
+    sessionScopeOwnsCurrent(scope)
+    && sessionRequestGenerationRef.current === scope.requestGeneration
+  ), [sessionScopeOwnsCurrent]);
+
+  const commitSession = useCallback((
+    scope: BrowserSessionRequestScope,
+    next: api.BrowserSessionInfo | null,
+  ) => {
+    if (!sessionScopeCanCommit(scope)) return false;
+    if (next?.conversationId !== undefined && next?.conversationId !== scope.conversationId) {
+      return false;
+    }
+    if (scope.expectedSessionId !== undefined && next && next.id !== scope.expectedSessionId) {
+      return false;
+    }
+    if (next) {
+      const currentVisibilityRevision = visibilityRevisionBySessionRef.current.get(next.id) ?? 0;
+      visibilityRevisionBySessionRef.current.set(next.id, Math.max(
+        currentVisibilityRevision,
+        next.visibilityRevision,
+        next.visibilityRequestRevision ?? 0,
+      ));
+    }
+    sessionRef.current = next;
+    sessionIdRef.current = next?.id;
+    setSession(next);
+    return true;
+  }, [sessionScopeCanCommit]);
+
+  const reportScopeError = useCallback((
+    scope: BrowserSessionRequestScope,
+    message: string,
+    error: unknown,
+  ) => {
+    if (sessionScopeCanCommit(scope)) reportError(message, error);
+  }, [reportError, sessionScopeCanCommit]);
 
   const bounds = useCallback((): api.BrowserBounds | null => {
     const rect = contentRef.current?.getBoundingClientRect();
@@ -140,87 +240,211 @@ export function BrowserDock({
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   }, []);
 
-  const syncBounds = useCallback(async (visible = open) => {
-    if (!session) return;
+  const nextVisibilityRevision = useCallback((sessionId: string) => {
+    const next = (visibilityRevisionBySessionRef.current.get(sessionId) ?? 0) + 1;
+    visibilityRevisionBySessionRef.current.set(sessionId, next);
+    return next;
+  }, []);
+
+  const recordMinimumVisibilityRevision = useCallback((sessionId: string, minimum: unknown) => {
+    const parsed = Number(minimum);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) return;
+    const current = visibilityRevisionBySessionRef.current.get(sessionId) ?? 0;
+    visibilityRevisionBySessionRef.current.set(sessionId, Math.max(current, parsed));
+  }, []);
+
+  const recoverRequestedVisibility = useCallback((
+    scope: BrowserSessionRequestScope,
+    next: api.BrowserSessionInfo | null,
+  ) => {
+    if (
+      !sessionScopeCanCommit(scope)
+      || !next
+      || next.conversationId !== scope.conversationId
+      || !next.visibilityRequested
+    ) return;
+    recordMinimumVisibilityRevision(next.id, next.visibilityRequestRevision);
+    onOpenChangeRef.current(true);
+  }, [recordMinimumVisibilityRevision, sessionScopeCanCommit]);
+
+  const refresh = useCallback(async () => {
+    const targetConversationId = conversationIdRef.current;
+    if (!targetConversationId) {
+      sessionRef.current = null;
+      sessionIdRef.current = undefined;
+      setSession(null);
+      return null;
+    }
+    const scope = beginSessionRequest(targetConversationId);
+    if (!scope) return null;
+    const next = await api.activeBrowserSession(targetConversationId);
+    if (!commitSession(scope, next)) return null;
+    recoverRequestedVisibility(scope, next);
+    return next;
+  }, [beginSessionRequest, commitSession, recoverRequestedVisibility]);
+
+  const syncBounds = useCallback(async (
+    visible = openRef.current,
+    expectedGeneration?: number,
+    targetSessionId = sessionIdRef.current,
+    targetConversationId = conversationIdRef.current,
+  ) => {
+    if (!targetSessionId) return;
+    if (
+      visible
+      && (
+        (expectedGeneration !== undefined
+          && visibilityGenerationRef.current !== expectedGeneration)
+        || conversationIdRef.current !== targetConversationId
+        || sessionIdRef.current !== targetSessionId
+      )
+    ) return;
     const nextBounds = bounds() ?? latestBoundsRef.current;
     if (!nextBounds) return;
     latestBoundsRef.current = nextBounds;
-    await api.setBrowserBounds(session.id, nextBounds, visible);
-  }, [bounds, open, session]);
+    await api.setBrowserBounds(
+      targetSessionId,
+      nextBounds,
+      visible,
+      nextVisibilityRevision(targetSessionId),
+    );
+  }, [bounds, nextVisibilityRevision]);
 
   const ensureSession = useCallback(async (url?: string) => {
     if (!conversationId) return null;
-    if (sessionPromiseRef.current) {
-      const current = await sessionPromiseRef.current;
+    const scope = beginSessionRequest(conversationId);
+    if (!scope) return null;
+    const existingPromise = sessionPromisesRef.current.get(conversationId);
+    if (existingPromise) {
+      const current = await existingPromise;
+      if (!sessionScopeOwnsCurrent(scope)) return null;
       if (current?.conversationId === conversationId && url) {
-        await api.openBrowserTab(current.id, url, open ? bounds() : null);
+        await api.openBrowserTab(current.id, url, openRef.current ? bounds() : null);
+        if (!sessionScopeOwnsCurrent(scope)) return null;
         const refreshed = await api.activeBrowserSession(conversationId);
-        if (conversationIdRef.current === conversationId) setSession(refreshed);
+        if (commitSession(scope, refreshed)) recoverRequestedVisibility(scope, refreshed);
         return refreshed;
       }
-      if (current?.conversationId === conversationId) return current;
-      sessionPromiseRef.current = null;
+      if (current?.conversationId === conversationId) {
+        if (commitSession(scope, current)) recoverRequestedVisibility(scope, current);
+        return current;
+      }
+      sessionPromisesRef.current.delete(conversationId);
     }
     const pending = (async () => {
-    let current = session?.conversationId === conversationId
-      ? session
-      : await api.activeBrowserSession(conversationId);
-    if (current?.conversationId !== conversationId) current = null;
-    const nextBounds = bounds();
-    if (!current) {
-      current = await api.createBrowserSession({
-        conversationId,
-        url: url || 'https://www.google.com',
-        openInitialUrlOnReuse: Boolean(url),
-        bounds: open ? nextBounds : null,
-      });
-    } else if (url) {
-      await api.openBrowserTab(current.id, url, open ? nextBounds : null);
-      current = await api.activeBrowserSession(conversationId);
-    }
-    if (conversationIdRef.current === conversationId) setSession(current);
-    return current;
+      let current = sessionRef.current?.conversationId === conversationId
+        ? sessionRef.current
+        : await api.activeBrowserSession(conversationId);
+      if (current?.conversationId !== conversationId) current = null;
+      const nextBounds = bounds();
+      if (!current) {
+        current = await api.createBrowserSession({
+          conversationId,
+          url: url || 'https://www.google.com',
+          openInitialUrlOnReuse: Boolean(url),
+          bounds: openRef.current ? nextBounds : null,
+        });
+      } else if (url) {
+        await api.openBrowserTab(current.id, url, openRef.current ? nextBounds : null);
+        current = await api.activeBrowserSession(conversationId);
+      }
+      return current;
     })();
-    sessionPromiseRef.current = pending;
+    sessionPromisesRef.current.set(conversationId, pending);
     try {
-      return await pending;
+      const current = await pending;
+      if (!sessionScopeOwnsCurrent(scope)) return null;
+      if (commitSession(scope, current)) recoverRequestedVisibility(scope, current);
+      return current;
     } finally {
-      if (sessionPromiseRef.current === pending) sessionPromiseRef.current = null;
+      if (sessionPromisesRef.current.get(conversationId) === pending) {
+        sessionPromisesRef.current.delete(conversationId);
+      }
     }
-  }, [bounds, conversationId, open, session]);
+  }, [
+    beginSessionRequest,
+    bounds,
+    commitSession,
+    conversationId,
+    recoverRequestedVisibility,
+    sessionScopeOwnsCurrent,
+  ]);
 
   useEffect(() => {
-    void refresh().catch(() => setSession(null));
-  }, [refresh]);
+    void refresh().catch(() => undefined);
+  }, [conversationId, refresh]);
 
   useEffect(() => {
     if (!open || !conversationId) return;
+    const targetConversationId = conversationId;
     void ensureSession()
-      .then(() => window.requestAnimationFrame(() => void syncBounds(true)))
-      .catch((error) => reportError(t('browser.openFailed'), error));
-  }, [conversationId, ensureSession, open, reportError, syncBounds, t]);
+      .catch((error) => {
+        if (conversationIdRef.current === targetConversationId) {
+          reportError(t('browser.openFailed'), error);
+        }
+      });
+  }, [conversationId, ensureSession, open, reportError, t]);
 
   useEffect(() => {
-    if (!session) return;
+    const scopedSessionId = session?.id;
+    const scopedConversationId = session?.conversationId;
+    if (!scopedSessionId || !scopedConversationId) return;
+    const generation = visibilityGenerationRef.current + 1;
+    visibilityGenerationRef.current = generation;
+    let pendingFrame: number | null = null;
+    const scheduleVisibleBounds = () => {
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = null;
+        if (
+          visibilityGenerationRef.current !== generation
+          || !open
+          || conversationIdRef.current !== session.conversationId
+          || sessionIdRef.current !== session.id
+        ) return;
+        void syncBounds(
+          true,
+          generation,
+          scopedSessionId,
+          scopedConversationId,
+        ).catch(() => undefined);
+      });
+    };
     if (!open) {
-      void syncBounds(false).catch(() => undefined);
-      return;
+      void syncBounds(
+        false,
+        undefined,
+        scopedSessionId,
+        scopedConversationId,
+      ).catch(() => undefined);
+      return () => {
+        if (visibilityGenerationRef.current === generation) {
+          visibilityGenerationRef.current += 1;
+        }
+      };
     }
     const element = contentRef.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => {
-      window.requestAnimationFrame(() => void syncBounds(true).catch(() => undefined));
-    });
-    const handleResize = () => void syncBounds(true).catch(() => undefined);
+    const observer = new ResizeObserver(scheduleVisibleBounds);
+    const handleResize = scheduleVisibleBounds;
     observer.observe(element);
     window.addEventListener('resize', handleResize);
-    void syncBounds(true);
+    scheduleVisibleBounds();
     return () => {
+      if (visibilityGenerationRef.current === generation) {
+        visibilityGenerationRef.current += 1;
+      }
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
       observer.disconnect();
       window.removeEventListener('resize', handleResize);
-      void api.setBrowserBounds(session.id, latestBoundsRef.current ?? { x: 0, y: 0, width: 1, height: 1 }, false).catch(() => undefined);
+      void api.setBrowserBounds(
+        scopedSessionId,
+        latestBoundsRef.current ?? { x: 0, y: 0, width: 1, height: 1 },
+        false,
+        nextVisibilityRevision(scopedSessionId),
+      ).catch(() => undefined);
     };
-  }, [effectiveFullScreen, open, session, syncBounds, width]);
+  }, [nextVisibilityRevision, open, session?.conversationId, session?.id, syncBounds]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -229,7 +453,12 @@ export function BrowserDock({
       event.preventDefault();
       onOpenChange(true);
       if (detail?.url) {
-        void ensureSession(detail.url).catch((error) => reportError(t('browser.openFailed'), error));
+        const targetConversationId = conversationId;
+        void ensureSession(detail.url).catch((error) => {
+          if (conversationIdRef.current === targetConversationId) {
+            reportError(t('browser.openFailed'), error);
+          }
+        });
       }
     };
     window.addEventListener(OPEN_BROWSER_WORKSPACE_EVENT, handler);
@@ -241,19 +470,85 @@ export function BrowserDock({
     let unlisten: (() => void) | undefined;
     void listen<api.BrowserEvent>('browser:event', (event) => {
       if (disposed) return;
+      const payload = event.payload.payload;
+      const eventConversationId = typeof payload.conversationId === 'string'
+        ? payload.conversationId
+        : null;
+      const eventSessionId = typeof payload.sessionId === 'string'
+        ? payload.sessionId
+        : '';
+      const currentConversationId = conversationIdRef.current;
+
+      if (event.payload.kind === 'sessionCreated' || event.payload.kind === 'workspaceVisibilityRequested') {
+        if (!currentConversationId || eventConversationId !== currentConversationId) return;
+        if (eventSessionId) {
+          recordMinimumVisibilityRevision(eventSessionId, payload.minimumVisibilityRevision);
+        }
+        if (Boolean(payload.requestVisible)) onOpenChangeRef.current(true);
+        void refresh().catch(() => undefined);
+        return;
+      }
+
+      const currentSession = sessionRef.current;
+      if (
+        !currentConversationId
+        || !currentSession
+        || currentSession.conversationId !== currentConversationId
+        || !eventSessionId
+        || currentSession.id !== eventSessionId
+      ) return;
+
       if (event.payload.kind === 'downloadRequested') {
-        toast.warning(t('browser.downloadBlocked'));
+        toast.warning(translateRef.current('browser.downloadBlocked'));
+        return;
       }
       if (event.payload.kind === 'newWindowRequested') {
-        const url = String(event.payload.payload.url ?? '');
-        const sessionId = String(event.payload.payload.sessionId ?? '');
-        const sourceTabId = String(event.payload.payload.tabId ?? '');
-        if (url && sessionId && sourceTabId && session?.id === sessionId) {
-          void api.openBrowserPopup(sessionId, sourceTabId, url, open ? bounds() : null)
-            .then(() => refresh())
-            .catch((error) => reportError(t('browser.popupBlocked'), error));
+        const url = typeof payload.url === 'string' ? payload.url : '';
+        const sourceTabId = typeof payload.tabId === 'string' ? payload.tabId : '';
+        if (
+          !openRef.current
+          || !url
+          || !sourceTabId
+          || !currentSession.tabs.some(tab => tab.id === sourceTabId)
+        ) return;
+
+        const pendingCount = pendingPopupCountBySessionRef.current.get(eventSessionId) ?? 0;
+        if (currentSession.tabs.length + pendingCount >= MAX_BROWSER_TABS_PER_SESSION) {
+          if (!popupLimitWarnedSessionsRef.current.has(eventSessionId)) {
+            popupLimitWarnedSessionsRef.current.add(eventSessionId);
+            toast.warning(translateRef.current('browser.popupBlocked'));
+          }
           return;
         }
+
+        const scope = beginSessionRequest(currentConversationId, eventSessionId);
+        if (!scope) return;
+        pendingPopupCountBySessionRef.current.set(eventSessionId, pendingCount + 1);
+        void api.openBrowserPopup(
+          eventSessionId,
+          sourceTabId,
+          url,
+          openRef.current ? bounds() : null,
+        ).then(async () => {
+          if (!sessionScopeOwnsCurrent(scope)) return;
+          try {
+            await refresh();
+          } catch (error) {
+            if (sessionScopeOwnsCurrent(scope)) {
+              reportError(translateRef.current('browser.popupBlocked'), error);
+            }
+          }
+        }).catch((error) => {
+          reportScopeError(scope, translateRef.current('browser.popupBlocked'), error);
+        }).finally(() => {
+          const remaining = Math.max(
+            0,
+            (pendingPopupCountBySessionRef.current.get(eventSessionId) ?? 1) - 1,
+          );
+          if (remaining === 0) pendingPopupCountBySessionRef.current.delete(eventSessionId);
+          else pendingPopupCountBySessionRef.current.set(eventSessionId, remaining);
+        });
+        return;
       }
       void refresh().catch(() => undefined);
     }).then((dispose) => {
@@ -263,7 +558,15 @@ export function BrowserDock({
       disposed = true;
       unlisten?.();
     };
-  }, [bounds, open, refresh, reportError, session?.id, t]);
+  }, [
+    beginSessionRequest,
+    bounds,
+    recordMinimumVisibilityRevision,
+    refresh,
+    reportError,
+    reportScopeError,
+    sessionScopeOwnsCurrent,
+  ]);
 
   useEffect(() => {
     setAddress(currentTab?.url ?? '');
@@ -285,25 +588,81 @@ export function BrowserDock({
     onStatusChange?.({ tabCount: session?.tabs.length ?? 0, state });
   }, [currentTab?.loading, lastError, onStatusChange, session]);
 
-  useEffect(() => () => {
-    if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
-  }, []);
+  useEffect(() => {
+    busyGenerationRef.current += 1;
+    popupLimitWarnedSessionsRef.current.clear();
+    setBusy(false);
+    setLastError(null);
+  }, [conversationId, session?.id]);
+
+  useEffect(() => {
+    artifactScopeGenerationRef.current += 1;
+    if (pickTimerRef.current !== null) {
+      window.clearInterval(pickTimerRef.current);
+      pickTimerRef.current = null;
+    }
+    setPickMode(null);
+    return () => {
+      artifactScopeGenerationRef.current += 1;
+      if (pickTimerRef.current !== null) {
+        window.clearInterval(pickTimerRef.current);
+        pickTimerRef.current = null;
+      }
+    };
+  }, [conversationId, currentTab?.id, session?.id]);
+
+  const artifactScopeIsCurrent = useCallback((scope: {
+    conversationId: string;
+    sessionId: string;
+    tabId: string;
+    generation: number;
+  }) => (
+    artifactScopeGenerationRef.current === scope.generation
+    && conversationIdRef.current === scope.conversationId
+    && sessionIdRef.current === scope.sessionId
+    && activeTabIdRef.current === scope.tabId
+  ), []);
 
   const withCurrentTab = useCallback(async (
     operation: (sessionId: string, tabId: string) => Promise<unknown>,
   ) => {
-    if (!session || !currentTab) return;
+    if (!conversationId || !session || !currentTab) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
+    const busyGeneration = busyGenerationRef.current + 1;
+    busyGenerationRef.current = busyGeneration;
     setBusy(true);
     setLastError(null);
     try {
       await operation(session.id, currentTab.id);
-      await refresh();
+      if (sessionScopeOwnsCurrent(scope)) {
+        try {
+          await refresh();
+        } catch (error) {
+          if (sessionScopeOwnsCurrent(scope)) {
+            reportError(t('browser.actionFailed'), error);
+          }
+        }
+      }
     } catch (error) {
-      reportError(t('browser.actionFailed'), error);
+      reportScopeError(scope, t('browser.actionFailed'), error);
     } finally {
-      setBusy(false);
+      if (
+        busyGenerationRef.current === busyGeneration
+        && sessionScopeOwnsCurrent(scope)
+      ) setBusy(false);
     }
-  }, [currentTab, refresh, reportError, session, t]);
+  }, [
+    beginSessionRequest,
+    conversationId,
+    currentTab,
+    refresh,
+    reportError,
+    reportScopeError,
+    session,
+    sessionScopeOwnsCurrent,
+    t,
+  ]);
 
   const navigate = useCallback(async (event: FormEvent) => {
     event.preventDefault();
@@ -312,47 +671,113 @@ export function BrowserDock({
   }, [address, withCurrentTab]);
 
   const addTab = useCallback(async () => {
+    const targetConversationId = conversationId;
+    if (!targetConversationId) return;
     try {
       const current = await ensureSession();
-      if (!current) return;
-      await api.openBrowserTab(current.id, 'https://www.google.com', open ? bounds() : null);
-      await refresh();
+      if (!current || conversationIdRef.current !== targetConversationId) return;
+      const scope = beginSessionRequest(targetConversationId, current.id);
+      if (!scope) return;
+      await api.openBrowserTab(
+        current.id,
+        'https://www.google.com',
+        openRef.current ? bounds() : null,
+      );
+      if (sessionScopeOwnsCurrent(scope)) await refresh();
     } catch (error) {
-      reportError(t('browser.openFailed'), error);
+      if (conversationIdRef.current === targetConversationId) {
+        reportError(t('browser.openFailed'), error);
+      }
     }
-  }, [bounds, ensureSession, open, refresh, reportError, t]);
+  }, [
+    beginSessionRequest,
+    bounds,
+    conversationId,
+    ensureSession,
+    refresh,
+    reportError,
+    sessionScopeOwnsCurrent,
+    t,
+  ]);
 
   const closeTab = useCallback(async (tabId: string) => {
-    if (!session) return;
+    if (!conversationId || !session) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
+    let operationScope = scope;
     try {
       const next = await api.closeBrowserTab(session.id, tabId);
+      if (!sessionScopeOwnsCurrent(scope)) return;
       if (next.tabs.length === 0) {
+        const verificationScope = beginSessionRequest(conversationId, session.id);
+        if (!verificationScope) return;
+        operationScope = verificationScope;
+        const latest = await api.activeBrowserSession(conversationId);
+        if (!sessionScopeCanCommit(verificationScope)) return;
+        if (latest && latest.id === session.id && latest.tabs.length > 0) {
+          commitSession(verificationScope, latest);
+          return;
+        }
+        if (!latest) {
+          commitSession(verificationScope, null);
+          return;
+        }
+        if (latest.id !== session.id) return;
         await api.closeBrowserSession(session.id);
-        setSession(null);
+        if (sessionScopeOwnsCurrent(verificationScope)) {
+          sessionRef.current = null;
+          sessionIdRef.current = undefined;
+          setSession(null);
+        }
       } else {
-        setSession(next);
+        commitSession(scope, next);
       }
     } catch (error) {
-      reportError(t('browser.actionFailed'), error);
+      reportScopeError(operationScope, t('browser.actionFailed'), error);
     }
-  }, [reportError, session, t]);
+  }, [
+    beginSessionRequest,
+    commitSession,
+    conversationId,
+    reportScopeError,
+    session,
+    sessionScopeCanCommit,
+    sessionScopeOwnsCurrent,
+    t,
+  ]);
 
   const startPick = useCallback(async (mode: 'element' | 'region') => {
-    if (!session || !currentTab || !onSendArtifactToAgent) return;
+    if (!conversationId || !session || !currentTab || !onSendArtifactToAgent) return;
+    const scope = {
+      conversationId,
+      sessionId: session.id,
+      tabId: currentTab.id,
+      generation: artifactScopeGenerationRef.current,
+    };
     setPickMode(mode);
     try {
       if (mode === 'element') await api.beginBrowserElementPick(session.id, currentTab.id);
       else await api.beginBrowserRegionPick(session.id, currentTab.id);
+      if (!artifactScopeIsCurrent(scope)) return;
       if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
       let attempts = 0;
+      let pollInFlight = false;
       pickTimerRef.current = window.setInterval(() => {
+        if (pollInFlight || !artifactScopeIsCurrent(scope)) return;
+        pollInFlight = true;
         attempts += 1;
         void api.takeBrowserPick(session.id, currentTab.id).then((artifact) => {
+          if (!artifactScopeIsCurrent(scope)) return;
           if (artifact) {
             if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
             pickTimerRef.current = null;
             setPickMode(null);
-            onSendArtifactToAgent(artifact);
+            onSendArtifactToAgent({
+              conversationId: scope.conversationId,
+              sessionId: scope.sessionId,
+              tabId: scope.tabId,
+              selection: artifact,
+            });
             toast.success(t('browser.artifactAttached'));
           } else if (attempts >= 120) {
             if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
@@ -360,49 +785,81 @@ export function BrowserDock({
             setPickMode(null);
           }
         }).catch(() => {
+          if (!artifactScopeIsCurrent(scope)) return;
           if (pickTimerRef.current !== null) window.clearInterval(pickTimerRef.current);
           pickTimerRef.current = null;
           setPickMode(null);
+        }).finally(() => {
+          pollInFlight = false;
         });
       }, 250);
     } catch (error) {
-      setPickMode(null);
-      reportError(t('browser.actionFailed'), error);
+      if (artifactScopeIsCurrent(scope)) {
+        setPickMode(null);
+        reportError(t('browser.actionFailed'), error);
+      }
     }
-  }, [currentTab, onSendArtifactToAgent, reportError, session, t]);
+  }, [artifactScopeIsCurrent, conversationId, currentTab, onSendArtifactToAgent, reportError, session, t]);
 
   const sendSelectedText = useCallback(async () => {
-    if (!session || !currentTab || !onSendArtifactToAgent) return;
+    if (!conversationId || !session || !currentTab || !onSendArtifactToAgent) return;
+    const scope = {
+      conversationId,
+      sessionId: session.id,
+      tabId: currentTab.id,
+      generation: artifactScopeGenerationRef.current,
+    };
     try {
       const text = await api.selectedBrowserText(session.id, currentTab.id);
+      if (!artifactScopeIsCurrent(scope)) return;
       if (!text.trim()) {
         toast.info(t('browser.noSelectedText'));
         return;
       }
-      onSendArtifactToAgent({ kind: 'text', url: currentTab.url, title: currentTab.title, text });
+      onSendArtifactToAgent({
+        conversationId: scope.conversationId,
+        sessionId: scope.sessionId,
+        tabId: scope.tabId,
+        selection: { kind: 'text', url: currentTab.url, title: currentTab.title, text },
+      });
       toast.success(t('browser.artifactAttached'));
     } catch (error) {
-      reportError(t('browser.actionFailed'), error);
+      if (artifactScopeIsCurrent(scope)) reportError(t('browser.actionFailed'), error);
     }
-  }, [currentTab, onSendArtifactToAgent, reportError, session, t]);
+  }, [artifactScopeIsCurrent, conversationId, currentTab, onSendArtifactToAgent, reportError, session, t]);
 
   const takeControl = useCallback(async () => {
-    if (!session) return;
+    if (!conversationId || !session) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
     try {
-      setSession(await api.acquireBrowserControl(session.id, 'user'));
+      commitSession(scope, await api.acquireBrowserControl(session.id, 'user'));
     } catch (error) {
-      reportError(t('browser.actionFailed'), error);
+      reportScopeError(scope, t('browser.actionFailed'), error);
     }
-  }, [reportError, session, t]);
+  }, [beginSessionRequest, commitSession, conversationId, reportScopeError, session, t]);
 
   const handBackControl = useCallback(async () => {
-    if (!session) return;
+    if (!conversationId || !session) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
     try {
-      setSession(await api.acquireBrowserControl(session.id, 'none'));
+      commitSession(scope, await api.acquireBrowserControl(session.id, 'none'));
     } catch (error) {
-      reportError(t('browser.actionFailed'), error);
+      reportScopeError(scope, t('browser.actionFailed'), error);
     }
-  }, [reportError, session, t]);
+  }, [beginSessionRequest, commitSession, conversationId, reportScopeError, session, t]);
+
+  const activateTab = useCallback(async (tabId: string) => {
+    if (!conversationId || !session) return;
+    const scope = beginSessionRequest(conversationId, session.id);
+    if (!scope) return;
+    try {
+      commitSession(scope, await api.activateBrowserTab(session.id, tabId));
+    } catch (error) {
+      reportScopeError(scope, t('browser.actionFailed'), error);
+    }
+  }, [beginSessionRequest, commitSession, conversationId, reportScopeError, session, t]);
 
   const resize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (effectiveFullScreen) return;
@@ -499,7 +956,7 @@ export function BrowserDock({
         <div className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-0.5">
           {session?.tabs.map((tab) => (
             <div key={tab.id} className={`group flex h-7 min-w-24 max-w-40 items-center gap-1 rounded-md border px-2 text-[10px] ${tab.active ? 'border-cyan-400/25 bg-cyan-400/10 text-text-primary' : 'border-transparent bg-surface-2/60 text-text-tertiary hover:bg-surface-3'}`}>
-              <button type="button" onClick={() => session && void api.activateBrowserTab(session.id, tab.id).then(setSession)} className="min-w-0 flex-1 truncate text-left" title={shortTitle(tab)}>{shortTitle(tab)}</button>
+              <button type="button" onClick={() => void activateTab(tab.id)} className="min-w-0 flex-1 truncate text-left" title={shortTitle(tab)}>{shortTitle(tab)}</button>
               <button type="button" onClick={() => void closeTab(tab.id)} className="opacity-0 transition-opacity group-hover:opacity-100" aria-label={t('browser.closeTab')}><X size={11} /></button>
             </div>
           ))}

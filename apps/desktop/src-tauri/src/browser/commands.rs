@@ -102,8 +102,9 @@ pub fn browser_set_bounds_cmd(
     session_id: String,
     bounds: BrowserBounds,
     visible: bool,
+    visibility_revision: u64,
 ) -> Result<(), String> {
-    state.set_bounds(&session_id, bounds, visible)
+    state.set_bounds(&session_id, bounds, visible, visibility_revision)
 }
 
 #[tauri::command]

@@ -554,7 +554,11 @@ impl Tool for BrowserSessionTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::BrowserRead, ToolCategory::BrowserInteract]
+        &[
+            ToolCategory::BrowserRead,
+            ToolCategory::VisualObservation,
+            ToolCategory::BrowserInteract,
+        ]
     }
 
     fn requires_confirmation(&self, args: &serde_json::Value) -> bool {

@@ -64,6 +64,21 @@ function finalizeToolCall(
 function patchToolCallFromRun(previous: ToolCallEvent, run: ToolRunItem): ToolCallEvent {
   const status = toolRunStatusToToolCallStatus(run.status);
   const argumentsText = run.arguments ?? previous.arguments;
+  // The screenshot event is intentionally ephemeral. Merge it into the live
+  // projection so it does not replace the durable result artifact that will
+  // be restored when the conversation is reopened.
+  const incomingArtifacts = run.artifacts;
+  const artifacts = incomingArtifacts
+    && !Array.isArray(incomingArtifacts)
+    && incomingArtifacts.kind === 'toolVisualEvidence'
+    && incomingArtifacts.persistence === 'currentTurnOnly'
+    ? {
+        ...(previous.artifacts && !Array.isArray(previous.artifacts)
+          ? previous.artifacts
+          : {}),
+        visualEvidence: incomingArtifacts,
+      }
+    : incomingArtifacts ?? previous.artifacts;
   return {
     ...previous,
     toolName: run.toolName || previous.toolName,
@@ -77,7 +92,7 @@ function patchToolCallFromRun(previous: ToolCallEvent, run: ToolRunItem): ToolCa
     argsBytes: Math.max(previous.argsBytes, argumentsText.length),
     content: run.content ?? previous.content,
     isError: run.isError ?? previous.isError,
-    artifacts: run.artifacts ?? previous.artifacts,
+    artifacts,
     durationMs: run.durationMs ?? previous.durationMs,
     progressNote: run.progressNote ?? previous.progressNote,
   };

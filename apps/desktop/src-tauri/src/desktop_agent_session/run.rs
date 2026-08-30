@@ -9,6 +9,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         steering_rx,
         approval_runtime,
         summarization_provider,
+        tool_visual_interpreter,
         history,
         user_parts,
         db,
@@ -37,6 +38,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         .with_cancel_token(executor_cancel_token)
         .with_steering_receiver(steering_rx);
     executor = executor.with_approval_callback(approval_cb);
+    executor = executor.with_tool_visual_interpreter(tool_visual_interpreter);
     if let Some(provider) = summarization_provider {
         executor = executor.with_summarization_provider(provider);
     }

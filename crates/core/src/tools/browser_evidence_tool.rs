@@ -70,7 +70,7 @@ impl Tool for BrowserEvidenceCaptureTool {
     }
 
     fn categories(&self) -> &'static [ToolCategory] {
-        &[ToolCategory::BrowserRead]
+        &[ToolCategory::BrowserRead, ToolCategory::VisualObservation]
     }
 
     async fn execute(

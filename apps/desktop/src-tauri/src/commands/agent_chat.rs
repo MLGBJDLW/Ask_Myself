@@ -4,15 +4,16 @@ use crate::desktop_agent_session::{
     annotate_user_artifacts_with_execution_mode, apply_desktop_agent_turn_config_effects,
     build_desktop_agent_initial_task_artifacts, build_desktop_agent_session_config,
     build_desktop_agent_session_dependencies, build_desktop_agent_turn_config,
-    build_desktop_agent_vision_user_content, finalize_desktop_agent_stop,
-    finalize_desktop_agent_turn, provider_config_egress_id, provider_config_is_local,
-    reconcile_authoritative_run_event_outbox_failure, request_desktop_running_agent_stop,
-    resolve_desktop_summarization_provider_config, run_desktop_agent_post_success_learning,
-    run_desktop_agent_turn, DesktopAgentApprovalRuntime, DesktopAgentPostSuccessLearningRequest,
-    DesktopAgentSessionConfigInput, DesktopAgentSessionDependencyRequest,
-    DesktopAgentStopFinalization, DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization,
-    DesktopAgentTurnRequest, DesktopAgentTurnRuntime, DesktopAgentTurnStream,
-    DesktopAgentVisionUserContentRequest, DesktopRunningAgentStopRequest,
+    build_desktop_agent_vision_user_content, build_desktop_tool_visual_interpreter,
+    finalize_desktop_agent_stop, finalize_desktop_agent_turn, provider_config_egress_id,
+    provider_config_is_local, reconcile_authoritative_run_event_outbox_failure,
+    request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
+    run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
+    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
+    DesktopAgentSessionDependencyRequest, DesktopAgentStopFinalization,
+    DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
+    DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
+    DesktopRunningAgentStopRequest, DesktopToolVisualInterpreterRequest,
 };
 use nexa_core::approval::ToolApprovalMode;
 use nexa_core::llm::ReasoningEffort;
@@ -1323,6 +1324,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     primary_native_vision_allowed,
                     turn_override: vision_turn_override,
                     cancellation: &cancel_token_clone,
+                    allow_observation_cache: true,
                 })
                 .await?;
             db.update_message_vision_context(
@@ -1332,6 +1334,20 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             )
             .map_err(|error| error.to_string())?;
             let user_parts = vision_content.parts;
+            let tool_visual_interpreter = build_desktop_tool_visual_interpreter(
+                DesktopToolVisualInterpreterRequest {
+                    db: Arc::clone(&db),
+                    provider_config: provider_config.clone(),
+                    db_config: effective_db_config.clone(),
+                    registry_scope: registry_scope.clone(),
+                    task_run_id: task_run_id.clone(),
+                    user_prompt: user_llm_content.clone(),
+                    primary_egress_id: primary_egress_id.clone(),
+                    primary_routes_local,
+                    turn_override: vision_turn_override,
+                    cancellation: cancel_token_clone.clone(),
+                },
+            );
             record_turn_launch_metric(
                 &db,
                 &handle,
@@ -1355,6 +1371,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 executor_config,
                 approval_runtime,
                 summarization_provider,
+                tool_visual_interpreter,
                 history,
                 user_parts,
                 turn_timeout_secs,
@@ -1368,6 +1385,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             executor_config,
             approval_runtime,
             summarization_provider,
+            tool_visual_interpreter,
             history,
             user_parts,
             turn_timeout_secs,
@@ -1413,6 +1431,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             steering_rx,
             approval_runtime,
             summarization_provider,
+            tool_visual_interpreter,
             history,
             user_parts,
             db: db.clone(),

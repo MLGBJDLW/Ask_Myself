@@ -151,6 +151,16 @@ interface GeneratedAudioArtifact {
   bytes?: number;
 }
 
+interface ToolVisualEvidence {
+  name: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  base64: string;
+  contentHash?: string;
+}
+
+const MAX_TOOL_VISUAL_EVIDENCE_BASE64_BYTES = 6 * 1024 * 1024;
+const TOOL_VISUAL_EVIDENCE_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 interface ImagePromptArgs {
   prompt?: string;
   size?: string;
@@ -937,6 +947,49 @@ function extractGeneratedAudioArtifact(
   return artifacts as unknown as GeneratedAudioArtifact;
 }
 
+function extractToolVisualEvidencePayload(value: unknown): ToolVisualEvidence | null {
+  if (!isRecord(value)) return null;
+  const evidence = value.evidence;
+  if (!isRecord(evidence)) return null;
+  const mimeType = evidence.mimeType;
+  const base64 = evidence.base64;
+  if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') {
+    return null;
+  }
+  if (
+    typeof base64 !== 'string' ||
+    base64.length === 0 ||
+    base64.length > MAX_TOOL_VISUAL_EVIDENCE_BASE64_BYTES ||
+    base64.length % 4 !== 0 ||
+    !TOOL_VISUAL_EVIDENCE_BASE64.test(base64)
+  ) {
+    return null;
+  }
+  return {
+    name: typeof evidence.name === 'string' && evidence.name.trim()
+      ? evidence.name.trim()
+      : 'visual-evidence',
+    mimeType,
+    base64,
+    contentHash: typeof evidence.contentHash === 'string' ? evidence.contentHash : undefined,
+  };
+}
+
+export function extractToolVisualEvidence(
+  artifacts: ArtifactPayload | undefined,
+): ToolVisualEvidence | null {
+  if (!isRecord(artifacts)) return null;
+  const payload = artifacts.kind === 'toolVisualEvidence'
+    && artifacts.persistence === 'currentTurnOnly'
+    ? artifacts
+    : isRecord(artifacts.visualEvidence)
+      && artifacts.visualEvidence.kind === 'toolVisualEvidence'
+      && artifacts.visualEvidence.persistence === 'currentTurnOnly'
+      ? artifacts.visualEvidence
+      : null;
+  return extractToolVisualEvidencePayload(payload);
+}
+
 function extractSkillActivationArtifact(
   artifacts: ArtifactPayload | undefined,
 ): SkillActivationArtifact | null {
@@ -1067,6 +1120,48 @@ function extensionForMediaType(mediaType?: string): string {
   if (lower.includes('webp')) return 'webp';
   if (lower.includes('gif')) return 'gif';
   return 'png';
+}
+
+function ToolVisualEvidencePreview({
+  evidence,
+  label,
+  compact = false,
+}: {
+  evidence: ToolVisualEvidence;
+  label: string;
+  compact?: boolean;
+}) {
+  const [imageError, setImageError] = useState(false);
+  const source = `data:${evidence.mimeType};base64,${evidence.base64}`;
+  return (
+    <div
+      className="space-y-1.5"
+      data-testid="tool-visual-evidence"
+      data-content-hash={evidence.contentHash || undefined}
+    >
+      <div className="overflow-hidden rounded-md border border-border/60 bg-surface-0">
+        {!imageError ? (
+          <img
+            src={source}
+            alt={`${label} visual evidence`}
+            className={`${compact ? 'max-h-52' : 'max-h-[32rem]'} w-full object-contain`}
+            onError={() => setImageError(true)}
+          />
+        ) : (
+          <div className="flex min-h-24 items-center justify-center px-3 text-center text-xs text-text-tertiary">
+            {evidence.name}
+          </div>
+        )}
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-text-tertiary">
+        <Monitor className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 truncate">{evidence.name}</span>
+        <span className="shrink-0 rounded border border-border/45 bg-surface-0/50 px-1 py-0.5">
+          {evidence.mimeType.replace('image/', '').toUpperCase()}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function generatedImageSuggestedFilename(image: GeneratedImageArtifact): string {
@@ -1721,6 +1816,7 @@ export function ToolCallCard({
   const trustBoundary = useMemo(() => extractTrustBoundary(artifacts), [artifacts]);
   const generatedImage = useMemo(() => extractGeneratedImageArtifact(artifacts), [artifacts]);
   const generatedAudio = useMemo(() => extractGeneratedAudioArtifact(artifacts), [artifacts]);
+  const visualEvidence = useMemo(() => extractToolVisualEvidence(artifacts), [artifacts]);
   const graphUsage = useMemo(() => extractGraphAgentUsage(artifacts), [artifacts]);
   const officeArtifact = useMemo(() => extractOfficeArtifactEvidence(artifacts), [artifacts]);
   const questionRequest = useMemo(
@@ -1743,7 +1839,7 @@ export function ToolCallCard({
   }, []);
 
   const [expanded, setExpanded] = useState(
-    () => !isPending && Boolean(subagentBatch || subagentJudgement),
+    () => !isPending && Boolean(subagentBatch || subagentJudgement || visualEvidence),
   );
 
   useEffect(() => {
@@ -1760,9 +1856,9 @@ export function ToolCallCard({
   // output, rather than low-value implementation detail.
   useEffect(() => {
     if (!isPending) {
-      setExpanded(Boolean(subagentBatch || subagentJudgement));
+      setExpanded(Boolean(subagentBatch || subagentJudgement || visualEvidence));
     }
-  }, [isPending, subagentBatch, subagentJudgement]);
+  }, [isPending, subagentBatch, subagentJudgement, visualEvidence]);
 
   if (questionRequest && !inline) {
     if (questionRequest.interactionId) {
@@ -1866,6 +1962,7 @@ export function ToolCallCard({
     diffStats ||
     generatedImage ||
     generatedAudio ||
+    visualEvidence ||
     graphUsage ||
     officeArtifact,
   );
@@ -1892,6 +1989,7 @@ export function ToolCallCard({
     fileDiff ||
     diffStats ||
     generatedImage ||
+    visualEvidence ||
     graphUsage ||
     officeArtifact ||
     showImagePendingPreview,
@@ -1981,6 +2079,12 @@ export function ToolCallCard({
                 ) : null}
                 {skillActivation ? (
                   <SkillActivationPanel activation={skillActivation} compact />
+                ) : visualEvidence ? (
+                  <ToolVisualEvidencePreview
+                    evidence={visualEvidence}
+                    label={briefLabel}
+                    compact
+                  />
                 ) : generatedImage ? (
                   <GeneratedImagePreview image={generatedImage} compact />
                 ) : showImagePendingPreview ? (
@@ -2524,6 +2628,8 @@ export function ToolCallCard({
               )}
               {skillActivation ? (
                 <SkillActivationPanel activation={skillActivation} />
+              ) : visualEvidence ? (
+                <ToolVisualEvidencePreview evidence={visualEvidence} label={briefLabel} />
               ) : generatedImage ? (
                 <GeneratedImagePreview image={generatedImage} />
               ) : showImagePendingPreview ? (

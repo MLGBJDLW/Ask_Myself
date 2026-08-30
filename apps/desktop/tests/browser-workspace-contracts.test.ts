@@ -46,12 +46,16 @@ test('Browser Workspace uses a native top-level child webview instead of an ifra
 });
 
 test('Browser Workspace exposes shared sessions, control leases, and observation-scoped artifacts', () => {
-  const runtime = source('../../crates/core/src/browser_runtime/runtime.rs');
+  const runtimeModule = source('../../crates/core/src/browser_runtime/mod.rs');
+  const browserModule = source('src-tauri/src/browser/mod.rs');
   const browser = source('src-tauri/src/browser/state.rs');
   const agentTool = source('src-tauri/src/browser/agent_tool.rs');
   const commands = source('src-tauri/src/browser/commands.rs');
   const dock = source('src/features/browser/BrowserDock.tsx');
-  assert(runtime.includes('trait BrowserRuntime'), 'core must expose an engine-neutral BrowserRuntime contract');
+  const api = source('src/lib/api.ts');
+  assert(!runtimeModule.includes('mod runtime;'), 'a single pass-through BrowserRuntime trait must not masquerade as a multi-engine seam');
+  assert(!runtimeModule.includes('mod events;'), 'unproduced BrowserRuntime events must not remain as a second lifecycle vocabulary');
+  assert(!browserModule.includes('runtime_adapter'), 'BrowserState callers must not pay for a one-implementation forwarding adapter');
   assert(browser.includes('BrowserControlOwner'), 'runtime must model Agent/User control ownership');
   assert(browser.includes('observations'), 'runtime must retain observation identity for stale checks');
   assert(agentTool.includes('observe'), 'Agent adapter must observe the same native runtime');
@@ -63,7 +67,8 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('network_proxy: Arc<BrowserNetworkProxy>'), 'all tabs in a session must share one stable policy proxy');
   assert(browser.includes('dispatch_agent_action'), 'Agent action validation and WebView dispatch must share one runtime lock');
   assert(browser.includes('revalidate_agent_lease'), 'Agent observations must not cross a user takeover');
-  assert(browser.includes('validate_agent_network_url(&snapshot_url)'), 'observations must validate the URL captured after Agent control is acquired');
+  assert(browser.includes('prepare_agent_network_access(session_id, tab_id, &snapshot_url)'), 'observations must revalidate the captured URL and refresh any conversation-scoped local-service permit');
+  assert(browser.includes('managed_loopback_permits(conversation_id)'), 'local browser access must originate from a live service owned by the same conversation');
   assert(browser.includes('dispatched_url != snapshot_url'), 'observations must reject navigation during snapshot validation');
   assert(browser.includes('tab.webview.navigate(url.clone())'), 'navigation dispatch must remain atomic with its checked lease');
   assert(browser.includes('reload_as_agent'), 'Agent reload must validate and dispatch under one control lease');
@@ -88,9 +93,40 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(dock.includes('beginBrowserRegionPick'), 'dock must support coordinate-region fallback');
   assert(dock.includes('openInitialUrlOnReuse: Boolean(url)'), 'only explicit Open in Browser URLs may open a tab when creation reuses a session');
   assert(dock.includes('event.preventDefault()'), 'the mounted dock must acknowledge Open in Browser delivery');
-  assert(dock.includes('session?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
+  assert(dock.includes('current?.conversationId === conversationId'), 'session reuse must be scoped to the active conversation');
+  assert(dock.includes('sessionScopeOwnsCurrent'), 'async session results must retain their conversation and session ownership guard');
   assert(dock.includes('{onSendArtifactToAgent && ('), 'agent artifact controls require a live artifact recipient');
   assert(dock.includes('!onSendArtifactToAgent) return'), 'artifact capture must fail closed without a recipient');
+  assert(api.includes('visibilityRevision: number'), 'session snapshots must expose the authoritative visibility revision');
+  assert(api.includes('visibilityRequested: boolean'), 'missed visibility events need a durable snapshot flag');
+  assert(api.includes('visibilityRequestRevision?: number | null'), 'visibility acknowledgements must retain their minimum revision');
+  assert(dock.includes('recordMinimumVisibilityRevision'), 'frontend visibility writes must advance beyond backend revision fences');
+  assert(dock.includes('sessionPromisesRef = useRef(new Map'), 'pending session creation must be scoped by conversation');
+  assert(dock.includes('MAX_BROWSER_TABS_PER_SESSION = 16'), 'frontend popup admission must match the authoritative backend session cap');
+});
+
+test('Agent Browser Workspace sessions become visible and every observation carries visual proof', () => {
+  const types = source('../../crates/core/src/browser_runtime/types.rs');
+  const host = source('src-tauri/src/browser/webview_host.rs');
+  const browser = source('src-tauri/src/browser/state.rs');
+  const agentTool = source('src-tauri/src/browser/agent_tool.rs');
+  const streamBridge = source('src-tauri/src/agent_stream_bridge.rs');
+  const dock = source('src/features/browser/BrowserDock.tsx');
+  const toolCard = source('src/components/chat/ToolCallCard.tsx');
+  assert(types.includes('pub screenshot: Option<BrowserScreenshot>'), 'browser observations need a typed screenshot channel');
+  assert(host.includes('Page.captureScreenshot'), 'native observations must capture the exact shared WebView page');
+  assert(browser.includes('wait_until_workspace_visible'), 'Agent observation must wait for real dock bounds instead of inspecting a hidden 1x1 view');
+  assert(browser.includes('"requestVisible": actor == NavigationActor::Agent'), 'Agent-created sessions must ask the owning UI to reveal the shared browser');
+  assert(browser.includes('"conversationId": conversation_id'), 'visibility events must be scoped to the active conversation');
+  assert(agentTool.includes('browser_screenshot_attachment'), 'browser observations must return image proof through the tool attachment channel');
+  assert(streamBridge.includes('AgentRunEventPersistence::Ephemeral'), 'raw screenshot proof must never enter durable Run Event storage');
+  assert(streamBridge.includes('is_current_turn_visual_evidence'), 'visual evidence needs an explicit live-event boundary');
+  assert(toolCard.includes('extractToolVisualEvidence'), 'tool cards must validate visual evidence before rendering it');
+  assert(toolCard.includes('data-testid="tool-visual-evidence"'), 'users must see the captured browser or desktop screenshot in the tool card');
+  assert(toolCard.includes('MAX_TOOL_VISUAL_EVIDENCE_BASE64_BYTES'), 'the frontend must bound current-turn screenshot payloads');
+  assert(dock.includes("event.payload.kind === 'sessionCreated'"), 'the Browser Dock must react to Agent-created sessions');
+  assert(dock.includes('requestVisible'), 'the Browser Dock must distinguish Agent visibility requests from background refreshes');
+  assert(dock.includes('onOpenChange(true)'), 'Agent visibility requests must open the shared Browser Dock');
 });
 
 test('HTTP links have one in-app destination and the duplicate web preview is removed', () => {

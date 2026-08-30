@@ -316,6 +316,7 @@ pub async fn build_desktop_agent_vision_user_content(
         primary_native_vision_allowed,
         turn_override,
         cancellation,
+        allow_observation_cache,
     } = request;
     let mut parts = vec![ContentPart::Text {
         text: message.to_string(),
@@ -491,7 +492,7 @@ pub async fn build_desktop_agent_vision_user_content(
             }
             _ => {
                 let now_epoch = Utc::now().timestamp();
-                let cached = if policy.cache_enabled {
+                let cached = if allow_observation_cache && policy.cache_enabled {
                     db.get_vision_observation_cache(&computed_hash, &profile_hash, now_epoch)
                         .map_err(|error| error.to_string())?
                 } else {
@@ -569,7 +570,10 @@ pub async fn build_desktop_agent_vision_user_content(
                     .map_err(|error| error.to_string())?;
                     selected_fallback_index = next_fallback_index;
                 }
-                if policy.cache_enabled && status == VisionAttachmentStatus::Observed {
+                if allow_observation_cache
+                    && policy.cache_enabled
+                    && status == VisionAttachmentStatus::Observed
+                {
                     let expires_at_epoch =
                         now_epoch + i64::from(policy.cache_retention_days) * 24 * 60 * 60;
                     db.save_vision_observation_cache(&observation, now_epoch, expires_at_epoch)
@@ -625,6 +629,145 @@ pub async fn build_desktop_agent_vision_user_content(
             .collect::<Vec<_>>()
             .join("\n\n"),
     })
+}
+
+pub fn build_desktop_tool_visual_interpreter(
+    request: DesktopToolVisualInterpreterRequest,
+) -> ToolVisualInterpreter {
+    Arc::new(move |visual_request: ToolVisualInterpretationRequest| {
+        let request = request.clone();
+        Box::pin(async move { interpret_desktop_tool_visuals(request, visual_request).await })
+    })
+}
+
+async fn interpret_desktop_tool_visuals(
+    request: DesktopToolVisualInterpreterRequest,
+    visual_request: ToolVisualInterpretationRequest,
+) -> ToolVisualObservation {
+    let tool_name = visual_request.tool_name;
+    let attachments = visual_request
+        .attachments
+        .into_iter()
+        .filter_map(|attachment| {
+            let base64_data = attachment.data.get("base64")?.as_str()?.to_string();
+            Some(ImageAttachment {
+                base64_data,
+                media_type: attachment.mime_type,
+                original_name: attachment.name,
+                attachment_id: None,
+                attachment_hash: None,
+                vision_analysis: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    if attachments.is_empty() {
+        return ToolVisualObservation::unavailable(
+            "desktop-vision-router",
+            "tool_visual_image_missing",
+            "The tool did not return a valid current-turn image attachment.",
+        );
+    }
+    let vision_resolution = match request.db.resolve_or_pin_task_runtime_capability(
+        &request.registry_scope,
+        "vision",
+        &request.task_run_id,
+    ) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            warn!("Failed to resolve auxiliary vision for tool '{tool_name}': {error}");
+            return ToolVisualObservation::failed(
+                "desktop-vision-router",
+                "vision_capability_resolution_failed",
+                "The configured auxiliary visual capability could not be resolved. The current-turn pixels were not persisted.",
+            );
+        }
+    };
+    let result = build_desktop_agent_vision_user_content(DesktopAgentVisionUserContentRequest {
+        db: request.db.as_ref(),
+        app_handle: None,
+        provider_config: &request.provider_config,
+        db_config: &request.db_config,
+        message: &request.user_prompt,
+        attachments: Some(&attachments),
+        vision_resolution: vision_resolution.as_ref(),
+        task_run_id: &request.task_run_id,
+        primary_egress_id: &request.primary_egress_id,
+        primary_routes_local: request.primary_routes_local,
+        // Core invokes this adapter only for a text-only primary. Keeping
+        // this false also prevents accidental image replay into that model.
+        primary_native_vision_allowed: false,
+        turn_override: request.turn_override,
+        cancellation: &request.cancellation,
+        allow_observation_cache: false,
+    })
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            warn!("Auxiliary visual interpretation failed for tool '{tool_name}': {error}");
+            return ToolVisualObservation::failed(
+                "desktop-vision-router",
+                "vision_processing_failed",
+                "The auxiliary Vision Router and OCR fallback could not produce a structured observation. The current-turn pixels were not persisted.",
+            );
+        }
+    };
+    let mut reason_code = None;
+    let mut observed = false;
+    let mut failed = false;
+    for analysis in result
+        .attachments
+        .iter()
+        .filter_map(|attachment| attachment.vision_analysis.as_ref())
+    {
+        observed |= matches!(
+            analysis.status,
+            VisionAttachmentStatus::Observed | VisionAttachmentStatus::Cached
+        );
+        failed |= analysis.status == VisionAttachmentStatus::Failed;
+        reason_code = reason_code.or_else(|| analysis.reason_code.clone());
+    }
+    let text = result
+        .parts
+        .into_iter()
+        .skip(1)
+        .filter_map(|part| match part {
+            ContentPart::Text { text } => Some(text),
+            ContentPart::Image { .. } | ContentPart::ProviderTurn { .. } => None,
+        })
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if failed {
+        return ToolVisualObservation::failed(
+            "desktop-vision-router",
+            reason_code.unwrap_or_else(|| "vision_processing_failed".to_string()),
+            if text.is_empty() {
+                "The auxiliary visual interpreter failed without a usable observation.".to_string()
+            } else {
+                text
+            },
+        );
+    }
+    if observed {
+        return ToolVisualObservation::interpreted(
+            "desktop-vision-router",
+            if text.is_empty() {
+                "The auxiliary visual interpreter completed without textual details.".to_string()
+            } else {
+                text
+            },
+        );
+    }
+    ToolVisualObservation::unavailable(
+        "desktop-vision-router",
+        reason_code.unwrap_or_else(|| "no_image_processor_available".to_string()),
+        if text.is_empty() {
+            "No configured auxiliary Vision Router or OCR processor could interpret the current-turn pixels. The pixels were not persisted.".to_string()
+        } else {
+            text
+        },
+    )
 }
 
 fn build_desktop_vision_provider_routes(

@@ -5,8 +5,12 @@ import { expect, test } from '@playwright/test';
 const source = readFileSync(join(process.cwd(), 'src-tauri', 'src', 'browser', 'scripts.rs'), 'utf8');
 const runtimeSource = source.match(/pub const BROWSER_INIT_SCRIPT: &str = r#"\r?\n([\s\S]*?)\r?\n"#;/)?.[1]
   .replace('__NEXA_PICK_TOKEN__', JSON.stringify('playwright-picker-token'));
+const takeoverSource = source.match(/pub fn browser_takeover_script[\s\S]*?\br#"\r?\n([\s\S]*?)\r?\n"#\r?\n\s*\.replace/)?.[1]
+  .replace('__NEXA_TAKEOVER_URL__', JSON.stringify('nexa-user-input://playwright-takeover-token'))
+  .replace('__NEXA_TAKEOVER_TOKEN__', JSON.stringify('playwright-takeover-token'));
 
 if (!runtimeSource) throw new Error('Could not extract the native Browser Workspace interaction runtime');
+if (!takeoverSource) throw new Error('Could not extract the native Browser Workspace takeover guard');
 
 test('Agent browser interaction shows cursor motion and commits verified pointer actions', async ({ page }) => {
   await page.setContent(`
@@ -131,6 +135,165 @@ test('Agent pointer preparation scrolls targets into view and rejects covered el
     .rejects.toThrow(/covered by another element/);
 });
 
+test('same-length interactive attribute changes invalidate an observation', async ({ page }) => {
+  await page.setContent('<!doctype html><a id="target" href="https://example.com/a">Open details</a>');
+  await page.addScriptTag({ content: runtimeSource });
+  const observation = await observe(page);
+  const targetRef = observation.elements.find(element => element.name === 'Open details')!.ref;
+
+  await page.locator('#target').evaluate((element) => {
+    element.setAttribute('href', 'https://example.com/b');
+  });
+
+  await expect(page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.previewAction(value), actionInput(observation, 'click', targetRef)))
+    .rejects.toThrow(/page content changed/);
+});
+
+test('trusted input preparation validates, focuses, and selects editable targets', async ({ page }) => {
+  await page.setContent('<!doctype html><input id="target" value="replace me"><button id="other">Other</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  const observation = await observe(page);
+  const targetRef = observation.elements.find(element => element.name === '')!.ref;
+  const input = actionInput(observation, 'type', targetRef);
+
+  const prepared = await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareTrustedText(value), input);
+  expect(prepared.focused).toBe(true);
+  expect(await page.locator('#target').evaluate((element) => (
+    element as HTMLInputElement
+  ).selectionStart)).toBe(0);
+  expect(await page.locator('#target').evaluate((element) => (
+    element as HTMLInputElement
+  ).selectionEnd)).toBe('replace me'.length);
+
+  const next = await observe(page);
+  const otherRef = next.elements.find(element => element.name === 'Other')!.ref;
+  await expect(page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.prepareTrustedText(value), actionInput(next, 'type', otherRef)))
+    .rejects.toThrow(/editable target/);
+});
+
+test('authenticated trusted input does not masquerade as user takeover state', async ({ page }) => {
+  await page.setContent('<!doctype html><button id="target">Open details</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  const before = await observe(page);
+  const targetBounds = await page.locator('#target').boundingBox();
+  if (!targetBounds) throw new Error('Expected trusted input target bounds');
+  const expectedPointer = {
+    kind: 'pointer' as const,
+    x: targetBounds.x + targetBounds.width / 2,
+    y: targetBounds.y + targetBounds.height / 2,
+    button: 'left',
+  };
+
+  expect(await page.evaluate((expected) => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'operation-1',
+    { pointerDown: 1, keyDown: 0, input: 0 },
+    expected,
+  ), expectedPointer)).toBe(true);
+  await page.locator('#target').click();
+  const guarded = await observe(page);
+  expect(guarded.userEpoch).toBe(before.userEpoch);
+
+  expect(await page.evaluate(({ expected }) => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'operation-2',
+    { pointerDown: 1, keyDown: 0, input: 0 },
+    { ...expected, x: expected.x + 100 },
+  ), { expected: expectedPointer })).toBe(false);
+  await page.locator('#target').click();
+  const unguarded = await observe(page);
+  expect(unguarded.userEpoch).toBe(before.userEpoch + 1);
+});
+
+test('trusted pointer guard rejects a replacement element at the approved coordinates', async ({ page }) => {
+  await page.setContent('<!doctype html><button id="target">Approved target</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  const before = await observe(page);
+  const targetBounds = await page.locator('#target').boundingBox();
+  if (!targetBounds) throw new Error('Expected trusted input target bounds');
+  const expected = {
+    kind: 'pointer' as const,
+    x: targetBounds.x + targetBounds.width / 2,
+    y: targetBounds.y + targetBounds.height / 2,
+    button: 'left' as const,
+  };
+
+  expect(await page.evaluate((pointer) => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'replacement-operation',
+    { pointerDown: 1, keyDown: 0, input: 0 },
+    pointer,
+  ), expected)).toBe(true);
+  await page.evaluate(() => {
+    const original = document.querySelector('#target');
+    const replacement = document.createElement('button');
+    replacement.id = 'replacement';
+    replacement.textContent = 'Different action';
+    original?.replaceWith(replacement);
+  });
+  await page.locator('#replacement').click();
+
+  expect((await observe(page)).userEpoch).toBe(before.userEpoch + 1);
+});
+
+test('trusted text and key guards require the exact dispatched event signature', async ({ page }) => {
+  await page.setContent('<!doctype html><input id="target"><button id="button">Continue</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  await page.locator('#target').focus();
+  const beforeText = await observe(page);
+
+  expect(await page.evaluate(() => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'text-operation',
+    { pointerDown: 0, keyDown: 0, input: 1 },
+    { kind: 'text', data: 'agent text' },
+  ))).toBe(true);
+  await page.keyboard.insertText('agent text');
+  expect((await observe(page)).userEpoch).toBe(beforeText.userEpoch);
+
+  await page.locator('#button').focus();
+  const beforeKey = await observe(page);
+  expect(await page.evaluate(() => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'key-operation',
+    { pointerDown: 0, keyDown: 1, input: 0 },
+    { kind: 'key', key: 'Escape' },
+  ))).toBe(true);
+  await page.keyboard.press('Escape');
+  expect((await observe(page)).userEpoch).toBe(beforeKey.userEpoch);
+
+  expect(await page.evaluate(() => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
+    'playwright-takeover-token',
+    'mismatched-text-operation',
+    { pointerDown: 0, keyDown: 0, input: 1 },
+    { kind: 'text', data: 'agent text' },
+  ))).toBe(true);
+  await page.locator('#target').focus();
+  await page.keyboard.insertText('user text');
+  expect((await observe(page)).userEpoch).toBe(beforeKey.userEpoch + 1);
+});
+
 async function observe(page: import('@playwright/test').Page): Promise<BrowserObservation> {
   return page.evaluate(() => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
@@ -183,6 +346,22 @@ interface BrowserBridge {
   observe(): BrowserObservation;
   previewAction(input: BrowserActionInput): { durationMs: number };
   prepareNativePointer(input: BrowserActionInput): { bounds: { x: number; y: number; width: number; height: number } };
+  prepareTrustedText(input: BrowserActionInput): { focused: boolean };
+  prepareTrustedKey(input: BrowserActionInput): { focused: boolean };
   act(input: BrowserActionInput): boolean;
   invalidateForUserTakeover(): void;
+}
+
+interface TrustedInputGuard {
+  arm(
+    token: string,
+    operationId: string,
+    budget: { pointerDown: number; keyDown: number; input: number },
+    expected: {
+      kind: 'pointer';
+      x: number;
+      y: number;
+      button: 'left' | 'middle' | 'right';
+    } | { kind: 'text'; data: string } | { kind: 'key'; key: string },
+  ): boolean;
 }
