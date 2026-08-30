@@ -70,7 +70,15 @@ test('Browser Workspace exposes shared sessions, control leases, and observation
   assert(browser.includes('prepare_agent_network_access(session_id, tab_id, &snapshot_url)'), 'observations must revalidate the captured URL and refresh any conversation-scoped local-service permit');
   assert(browser.includes('managed_loopback_permits(conversation_id)'), 'local browser access must originate from a live service owned by the same conversation');
   assert(browser.includes('dispatched_url != snapshot_url'), 'observations must reject navigation during snapshot validation');
-  assert(browser.includes('tab.webview.navigate(url.clone())'), 'navigation dispatch must remain atomic with its checked lease');
+  assert(
+    browser.includes('dispatch_browser_navigation(commit_tracker, || {')
+      && browser.includes('.navigate(url.clone())'),
+    'navigation dispatch and its commit tracker must remain atomic with the checked lease',
+  );
+  assert(
+    browser.includes('Agent browser navigation requires durable commit tracking before dispatch'),
+    'Agent navigation must fail before dispatch when durable commit tracking is absent',
+  );
   assert(browser.includes('reload_as_agent'), 'Agent reload must validate and dispatch under one control lease');
   assert(browser.includes('activate_tab_as_agent'), 'Agent tab activation must validate its exact owner');
   assert(browser.includes('close_session_as_agent'), 'Agent session closure must validate its exact owner');
