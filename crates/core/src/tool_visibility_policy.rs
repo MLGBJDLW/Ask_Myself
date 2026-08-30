@@ -611,16 +611,23 @@ pub fn resolve_turn_capability_requirements(
         );
     }
 
+    let visual_observation = if has_signal(&signals, ToolVisibilitySignalKind::WebArtifactAuthoring)
+        || has_signal(&signals, ToolVisibilitySignalKind::Browser)
+    {
+        VisualObservationRequirement::AfterLastMutation
+    } else {
+        VisualObservationRequirement::default()
+    };
+    let desktop_observation = if has_signal(&signals, ToolVisibilitySignalKind::Desktop) {
+        DesktopObservationRequirement::BeforeControlAndAfterLastControl
+    } else {
+        DesktopObservationRequirement::default()
+    };
     let interaction = TurnInteractionRequirements {
-        visual_observation: (has_signal(&signals, ToolVisibilitySignalKind::WebArtifactAuthoring)
-            || has_signal(&signals, ToolVisibilitySignalKind::Browser))
-        .then_some(VisualObservationRequirement::AfterLastMutation)
-        .unwrap_or_default(),
+        visual_observation,
         browser_observation: has_signal(&signals, ToolVisibilitySignalKind::Browser),
         browser_interaction: has_signal(&signals, ToolVisibilitySignalKind::BrowserInteraction),
-        desktop_observation: has_signal(&signals, ToolVisibilitySignalKind::Desktop)
-            .then_some(DesktopObservationRequirement::BeforeControlAndAfterLastControl)
-            .unwrap_or_default(),
+        desktop_observation,
         desktop_interaction: has_signal(&signals, ToolVisibilitySignalKind::DesktopInteraction),
     };
 

@@ -764,15 +764,10 @@ impl AgentExecutor {
         if let Some(isolation) = workspace_isolation.as_ref() {
             controller_state_sections_owned.push(isolation.prompt_section());
         }
-        if (self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra())
-            && workflow_ir.is_some()
-        {
-            controller_state_sections_owned.push(
-                workflow_ir
-                    .as_ref()
-                    .expect("checked workflow presence")
-                    .to_prompt_section(),
-            );
+        let expose_workflow_ir =
+            self.config.power_mode.is_nexus() || self.config.orchestration_profile.is_ultra();
+        if let Some(workflow) = workflow_ir.as_ref().filter(|_| expose_workflow_ir) {
+            controller_state_sections_owned.push(workflow.to_prompt_section());
         }
         let controller_state_sections = controller_state_sections_owned
             .iter()

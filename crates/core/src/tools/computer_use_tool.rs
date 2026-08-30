@@ -902,7 +902,9 @@ enum ControlFailurePhase {
 enum PreCommitFailureKind {
     InvalidAction,
     ObservationStale,
+    #[cfg(target_os = "windows")]
     Refused,
+    #[cfg(target_os = "windows")]
     UserTakeover,
     Cancelled,
     RuntimeUnavailable,
@@ -955,6 +957,7 @@ struct ControlCommitTracker {
 }
 
 impl ControlCommitTracker {
+    #[cfg(any(target_os = "windows", test))]
     fn mark(&self) {
         self.effect_may_have_occurred
             .store(true, AtomicOrdering::Release);
@@ -991,6 +994,7 @@ impl ControlCommitTracker {
         result.map_err(|cause| self.failure(cause))
     }
 
+    #[cfg(target_os = "windows")]
     fn result_as<T>(
         &self,
         kind: PreCommitFailureKind,
@@ -1021,7 +1025,9 @@ fn control_failure_contract(failure: &ControlFailure) -> (&'static str, bool) {
         {
             PreCommitFailureKind::InvalidAction => ("invalid_computer_action", true),
             PreCommitFailureKind::ObservationStale => ("computer_observation_stale", true),
+            #[cfg(target_os = "windows")]
             PreCommitFailureKind::Refused => ("computer_action_refused", false),
+            #[cfg(target_os = "windows")]
             PreCommitFailureKind::UserTakeover => ("computer_user_takeover", false),
             PreCommitFailureKind::Cancelled => ("computer_control_cancelled", false),
             PreCommitFailureKind::RuntimeUnavailable => {
