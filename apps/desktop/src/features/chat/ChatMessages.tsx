@@ -121,8 +121,6 @@ interface ChatMessagesProps {
   onApprovePlan?: (planMarkdown: string, sourceMessageId: string) => void;
   onQuestionSubmit?: (message: string, artifact: ArtifactPayload) => void;
   onResumePaused?: () => void;
-  onLowerReasoningRetry?: () => Promise<void> | void;
-  onStop?: () => void;
   loadingMsgs?: boolean;
   lastCached?: boolean;
   isCompacting?: boolean;
@@ -573,53 +571,6 @@ function TraceStatusRow({
   );
 }
 
-function SlowModelRecoveryBanner({
-  text,
-  onLowerReasoningRetry,
-  onStop,
-}: {
-  text: string;
-  onLowerReasoningRetry?: () => Promise<void> | void;
-  onStop?: () => void;
-}) {
-  const { t } = useTranslation();
-  const [retrying, setRetrying] = useState(false);
-  const retry = useCallback(() => {
-    if (!onLowerReasoningRetry || retrying) return;
-    setRetrying(true);
-    void Promise.resolve(onLowerReasoningRetry()).finally(() => setRetrying(false));
-  }, [onLowerReasoningRetry, retrying]);
-
-  return (
-    <div
-      className="flex max-w-full flex-wrap items-center gap-2 rounded-xl border border-warning/30 bg-warning/8 px-3 py-2 text-xs text-text-secondary"
-      data-testid="slow-model-recovery-banner"
-    >
-      <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-      <span className="min-w-0 flex-1">{text}</span>
-      {onLowerReasoningRetry && (
-        <button
-          type="button"
-          className="rounded-md border border-warning/30 bg-surface-1/70 px-2.5 py-1 font-medium text-text-primary transition-colors hover:bg-surface-2 disabled:cursor-wait disabled:opacity-60"
-          onClick={retry}
-          disabled={retrying}
-        >
-          {retrying ? t("chat.lowerReasoningRetrying") : t("chat.lowerReasoningRetry")}
-        </button>
-      )}
-      {onStop && (
-        <button
-          type="button"
-          className="rounded-md border border-border/60 px-2.5 py-1 text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-          onClick={onStop}
-        >
-          {t("chat.stop")}
-        </button>
-      )}
-    </div>
-  );
-}
-
 function TraceSteeringRow({
   text,
   label,
@@ -676,8 +627,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     onApprovePlan,
     onQuestionSubmit,
     onResumePaused,
-    onLowerReasoningRetry,
-    onStop,
     loadingMsgs,
     lastCached,
     isCompacting = false,
@@ -987,20 +936,11 @@ export function ChatMessages(props: ChatMessagesProps) {
           return {
             text: "",
             node: (
-              section.code === "model_planning_slow" ? (
-                <SlowModelRecoveryBanner
-                  key={section.id}
-                  text={section.text}
-                  onLowerReasoningRetry={onLowerReasoningRetry}
-                  onStop={onStop}
-                />
-              ) : (
-                <TraceStatusRow
-                  key={section.id}
-                  text={section.text}
-                  tone={section.tone}
-                />
-              )
+              <TraceStatusRow
+                key={section.id}
+                text={section.text}
+                tone={section.tone}
+              />
             ),
           };
         case "steering":
@@ -1051,7 +991,7 @@ export function ChatMessages(props: ChatMessagesProps) {
           return null;
       }
     },
-    [onLowerReasoningRetry, onQuestionSubmit, onStop, questionResponses, renderTraceReplyNode, t],
+    [onQuestionSubmit, questionResponses, renderTraceReplyNode, t],
   );
 
   const renderTimelineSections = useCallback(

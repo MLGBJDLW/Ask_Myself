@@ -14,8 +14,6 @@ use super::route::AgentRouteKind;
 use crate::llm::{ProviderType, ReasoningEffort};
 use crate::provider_catalog::model_capabilities_from_catalog;
 
-const DEFAULT_SOFT_WARNING: Duration = Duration::from_secs(45);
-const LONG_REASONER_SOFT_WARNING: Duration = Duration::from_secs(30);
 const LONG_REASONER_CONNECT_DEADLINE: Duration = Duration::from_secs(90);
 const DEFAULT_CONNECT_DEADLINE: Duration = Duration::from_secs(180);
 const LOCAL_MODEL_CONNECT_DEADLINE: Duration = Duration::from_secs(300);
@@ -24,7 +22,6 @@ const HOSTED_TOOL_HARD_DEADLINE: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ModelProgressPolicy {
-    pub(super) soft_warning_after: Duration,
     pub(super) hosted_tool_idle_deadline: Duration,
     pub(super) connect_deadline: Duration,
 }
@@ -64,11 +61,6 @@ impl ModelProgressPolicy {
             || normalized.contains("qwen3.8_max");
 
         Self {
-            soft_warning_after: if long_reasoner {
-                LONG_REASONER_SOFT_WARNING
-            } else {
-                DEFAULT_SOFT_WARNING
-            },
             hosted_tool_idle_deadline: HOSTED_TOOL_IDLE_DEADLINE,
             connect_deadline: if matches!(
                 provider,
@@ -160,10 +152,8 @@ enum ModelProgressPhase {
 
 pub(super) struct ModelProgressWatchdog {
     policy: ModelProgressPolicy,
-    started_at: Instant,
     deadline: Option<Instant>,
     phase: ModelProgressPhase,
-    warning_emitted: bool,
     hosted_tool_hard_deadline: Option<Instant>,
 }
 
@@ -186,10 +176,8 @@ impl ModelProgressWatchdog {
         let started_at = Instant::now();
         Self {
             policy,
-            started_at,
             deadline: Some(started_at + policy.connect_deadline),
             phase: ModelProgressPhase::Connecting,
-            warning_emitted: false,
             hosted_tool_hard_deadline: None,
         }
     }
@@ -201,36 +189,18 @@ impl ModelProgressWatchdog {
     pub(super) fn arm(&mut self) {
         if self.phase == ModelProgressPhase::Connecting {
             self.phase = ModelProgressPhase::Active;
-            self.started_at = Instant::now();
             self.deadline = None;
         }
     }
 
     pub(super) fn reset_for_new_attempt(&mut self) {
         self.phase = ModelProgressPhase::Connecting;
-        self.started_at = Instant::now();
-        self.deadline = Some(self.started_at + self.policy.connect_deadline);
-        self.warning_emitted = false;
+        self.deadline = Some(Instant::now() + self.policy.connect_deadline);
         self.hosted_tool_hard_deadline = None;
     }
 
     pub(super) fn reset_for_context_retry(&mut self) {
         self.reset_for_new_attempt();
-    }
-
-    pub(super) fn elapsed_seconds(&self) -> u64 {
-        Instant::now().duration_since(self.started_at).as_secs()
-    }
-
-    pub(super) fn observe_thinking(&mut self) -> bool {
-        if self.phase != ModelProgressPhase::Active
-            || self.warning_emitted
-            || Instant::now().duration_since(self.started_at) < self.policy.soft_warning_after
-        {
-            return false;
-        }
-        self.warning_emitted = true;
-        true
     }
 
     pub(super) fn observe_answer_progress(&mut self) {
@@ -281,14 +251,13 @@ mod tests {
 
     fn policy() -> ModelProgressPolicy {
         ModelProgressPolicy {
-            soft_warning_after: Duration::from_secs(2),
             hosted_tool_idle_deadline: Duration::from_secs(4),
             connect_deadline: Duration::from_secs(3),
         }
     }
 
     #[test]
-    fn provider_profile_only_changes_connection_and_warning_policy() {
+    fn provider_profile_changes_only_real_connection_deadlines() {
         let long_reasoner = ModelProgressPolicy::for_model(
             Some(ProviderType::Moonshot),
             "kimi-k3",
@@ -309,7 +278,6 @@ mod tests {
         );
 
         assert_eq!(long_reasoner.connect_deadline, Duration::from_secs(90));
-        assert_eq!(long_reasoner.soft_warning_after, Duration::from_secs(30));
         assert_eq!(ordinary.connect_deadline, Duration::from_secs(180));
         assert_eq!(local.connect_deadline, Duration::from_secs(300));
     }
@@ -325,20 +293,8 @@ mod tests {
         assert_eq!(watchdog.deadline(), None);
 
         tokio::time::advance(Duration::from_secs(600)).await;
-        watchdog.observe_thinking();
         watchdog.observe_tool_call_progress();
         watchdog.observe_answer_progress();
-        assert_eq!(watchdog.deadline(), None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn slow_reasoning_emits_one_warning_without_killing_the_stream() {
-        let mut watchdog = ModelProgressWatchdog::with_policy(policy());
-        watchdog.arm();
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(watchdog.observe_thinking());
-        assert!(!watchdog.observe_thinking());
-        assert_eq!(watchdog.elapsed_seconds(), 2);
         assert_eq!(watchdog.deadline(), None);
     }
 

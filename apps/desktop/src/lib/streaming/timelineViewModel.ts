@@ -486,7 +486,9 @@ export function visibleTraceEventsForTimeline(
   includeDeveloper = false,
 ): TraceEvent[] {
   return traceEvents.filter(event => (
-    event.kind !== 'status'
+    event.kind === 'status' && event.code === 'model_planning_slow'
+      ? false
+      : event.kind !== 'status'
     || (event.visibility !== 'internal'
       && (includeDeveloper || event.visibility !== 'developer'))
   ));
@@ -506,6 +508,7 @@ export function traceEventToTimelineSections(event: TraceEvent): TimelineSection
       trace: true,
     });
   }
+  if (event.code === 'model_planning_slow') return [];
   {
     if (event.displayKind === 'steering') {
       return [{ kind: 'steering', id: event.id, text: event.text }];

@@ -24,7 +24,6 @@ import {
   type InternalStreamState,
 } from './state';
 import {
-  appendStatusTraceEvent,
   applyStreamResetProjection,
   clearTransientControllerStatus,
 } from './terminalProjection';
@@ -196,6 +195,7 @@ export function applyAgentRunEvent(
     }
 
     case 'status': {
+      if (stringValue(payload.code) === 'model_planning_slow') return;
       applyStatusEvent(
         state,
         stringValue(payload.content) ?? runEvent.label,
@@ -215,16 +215,12 @@ export function applyAgentRunEvent(
     case 'recoveryAttempt': {
       const connection = asRecord(payload.state);
       if (typeof connection.state === 'string') {
-        applyConnectionStateEvent(state, connection);
+        applyConnectionStateEvent(state, connection, runEvent.label);
         return;
       }
-      appendStatusTraceEvent(
-        state,
-        stringValue(payload.reason) ?? runEvent.label,
-        'muted',
-        runEvent.visibility ?? 'user',
-        runEvent.displayKind ?? 'recovery',
-      );
+      // Legacy/generic recovery attempts are internal retry telemetry. Typed
+      // terminal connection failures are projected above; successful retries
+      // stay silent instead of becoming chat history.
       return;
     }
 

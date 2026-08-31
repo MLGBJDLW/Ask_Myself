@@ -473,6 +473,13 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
         unknown_deepseek.resolved_max_response_tokens("deepseek-unknown"),
         FALLBACK_DEEPSEEK_RESPONSE_TOKENS
     );
+    assert_eq!(
+        unknown_deepseek
+            .resolved_output_budget("deepseek-unknown")
+            .wire_max_tokens(),
+        None,
+        "an internal planning reserve must not become an artificial provider output cap",
+    );
 
     let deepseek = AgentConfig {
         provider_type: Some(ProviderType::DeepSeek),
@@ -486,6 +493,10 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     assert_eq!(
         catalog_driven.effective_tokens,
         catalog_driven.catalog_cap.unwrap()
+    );
+    assert_eq!(
+        catalog_driven.wire_max_tokens(),
+        Some(catalog_driven.effective_tokens),
     );
     assert!(catalog_driven.effective_tokens > FALLBACK_DEEPSEEK_RESPONSE_TOKENS);
 
@@ -589,6 +600,7 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
         explicit_plan.authority,
         OutputBudgetAuthority::SavedExplicitOverride
     );
+    assert_eq!(explicit_plan.wire_max_tokens(), Some(12_000));
 
     for (provider_type, model) in [
         (
@@ -623,10 +635,6 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
             .resolved_output_budget("deepseek-chat")
             .context_cap,
         Some(4_096)
-    );
-    assert_eq!(
-        explicit_plan.recommended_text_tool_chunk_chars(4_097),
-        8_194
     );
 }
 
@@ -674,7 +682,7 @@ fn test_build_system_prompt_skips_blank_sections() {
 }
 
 #[test]
-fn test_route_pack_injects_run_shell_contract_only_for_codebase_work() {
+fn route_pack_uses_tool_schema_without_duplicating_the_run_shell_contract() {
     let code_route = route_user_turn(
         "为什么主agent没有办法调用run_shell？请仔细排查并全面修复。",
         "",
@@ -685,9 +693,13 @@ fn test_route_pack_injects_run_shell_contract_only_for_codebase_work() {
     assert!(code_route
         .prompt_section
         .contains("## Route Pack: Codebase"));
-    assert!(code_route
-        .prompt_section
-        .contains("## Tool Contract: run_shell"));
+    assert!(code_route.prompt_section.contains("run_shell"));
+    assert!(
+        !code_route
+            .prompt_section
+            .contains("## Tool Contract: run_shell"),
+        "the function schema and structured validator are the tool contract; repeating it in the prompt bloats every cached turn",
+    );
 
     let direct_route = route_user_turn("Say hello in one sentence.", "", false);
     assert_eq!(direct_route.kind, AgentRouteKind::DirectResponse);
@@ -3027,7 +3039,8 @@ impl LlmProvider for TruncatedToolCallProvider {
             });
             let has_replan_instruction = request.messages.iter().any(|message| {
                 message.role == Role::System
-                    && message.text_content().contains("use append operations")
+                    && message.text_content().contains("append bounded chunks")
+                    && !message.text_content().contains("valid JSON arguments")
             });
             *self.saw_safe_replan_context.lock().unwrap() =
                 !has_tool_protocol_unit && has_replan_instruction;
@@ -3230,7 +3243,7 @@ impl LlmProvider for MalformedToolCallProvider {
                 message.role == Role::System
                     && message
                         .text_content()
-                        .contains("incomplete tool-call envelope")
+                        .contains("using the exposed tool schema")
             });
             *self.saw_safe_replan_context.lock().unwrap() =
                 !has_incomplete_replay && !has_tool_result && has_replan_instruction;
@@ -9909,7 +9922,7 @@ async fn model_progress_qwen_thinking_stream_remains_alive_until_answer() {
     );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(event_counts.slow_warnings, 1);
+    assert_eq!(event_counts.slow_warnings, 0);
     assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 0);
     assert_eq!(event_counts.done, 1);
@@ -10146,7 +10159,7 @@ async fn model_progress_direct_kimi_k3_keeps_requested_effort_while_active() {
         "answer after active reasoning"
     );
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(event_counts.slow_warnings, 1);
+    assert_eq!(event_counts.slow_warnings, 0);
     assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 0);
 
@@ -10234,7 +10247,7 @@ async fn model_progress_cancellation_wins_the_deadline_race() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
-    assert_eq!(event_counts.slow_warnings, 1);
+    assert_eq!(event_counts.slow_warnings, 0);
     assert_eq!(event_counts.resets, 0);
     assert_eq!(event_counts.errors, 1);
     assert_eq!(event_counts.done, 0);

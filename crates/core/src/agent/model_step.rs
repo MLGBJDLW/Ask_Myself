@@ -89,6 +89,7 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) route_kind: AgentRouteKind,
     pub(super) model: &'a str,
     pub(super) max_response_tokens: u32,
+    pub(super) wire_max_response_tokens: Option<u32>,
     pub(super) has_sources: bool,
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) messages: &'a mut Vec<Message>,
@@ -232,6 +233,7 @@ impl AgentExecutor {
             route_kind,
             model,
             max_response_tokens,
+            wire_max_response_tokens,
             has_sources,
             privacy_cfg,
             messages,
@@ -296,11 +298,10 @@ impl AgentExecutor {
             model: model.to_string(),
             messages: messages.to_vec(),
             temperature: self.config.temperature,
-            // Always send the same bounded output budget used by local
-            // context accounting. Leaving this as `None` lets long-reasoning
-            // providers consume their native 100k-1M output allowance before
-            // the agent can act.
-            max_tokens: Some(max_response_tokens),
+            // Local context accounting always has a deterministic reserve.
+            // Only explicit, catalog-verified, or cumulative-worker limits
+            // cross the provider boundary; unknown routes stay provider-owned.
+            max_tokens: wire_max_response_tokens,
             tools: if request_tools.is_empty() {
                 None
             } else {
@@ -484,7 +485,7 @@ impl AgentExecutor {
                         );
                         let _ = tx
                             .send(AgentEvent::StreamReset {
-                                reason: reason.clone(),
+                                reason: "user_requested_model_retry".to_string(),
                                 discard_sample: true,
                             })
                             .await;
@@ -610,19 +611,6 @@ impl AgentExecutor {
                                     content: thinking.clone(),
                                 })
                                 .await;
-                            if progress_watchdog.observe_thinking() {
-                                let _ = tx
-                                    .send(AgentEvent::ControllerStatus {
-                                        code: "model_planning_slow".to_string(),
-                                        content: format!(
-                                            "The model is still reasoning ({}s, about {} tokens). The active stream will continue while data is arriving. You can lower reasoning and retry, or stop the turn.",
-                                            progress_watchdog.elapsed_seconds(),
-                                            iteration_thinking.chars().count().div_ceil(4),
-                                        ),
-                                        tone: Some("warning".to_string()),
-                                    })
-                                    .await;
-                            }
                         }
                     }
                     // Forward text deltas.
@@ -1153,10 +1141,9 @@ impl AgentExecutor {
                     prompt_was_compacted: false,
                 });
             }
-            let reason = "Steering message received; restarting the model response.";
             let _ = tx
                 .send(AgentEvent::StreamReset {
-                    reason: reason.to_string(),
+                    reason: "steering_restart".to_string(),
                     discard_sample: true,
                 })
                 .await;
@@ -1639,10 +1626,11 @@ impl AgentExecutor {
             }
             *reasoning_disabled_for_tool_loop = true;
             reasoning_was_requested = safe_reasoning_was_requested;
-            let reset_reason = format!(
+            let reset_trace = format!(
                 "The provider omitted required replay state, so Nexa safely restarted the same route with {} before any tool ran.",
                 safe_controls.description
             );
+            append_developer_persisted_trace_status(persisted_trace_items, &reset_trace, "warning");
 
             provider_replay = response.provider_replay;
             let recovered_tool_calls = response.tool_calls.unwrap_or_default();
@@ -1650,7 +1638,7 @@ impl AgentExecutor {
                 crate::llm::reasoning_replay::sanitize_reasoning_text(response.thinking.as_deref());
             let _ = tx
                 .send(AgentEvent::StreamReset {
-                    reason: reset_reason,
+                    reason: "provider_replay_safe_restart".to_string(),
                     discard_sample: true,
                 })
                 .await;

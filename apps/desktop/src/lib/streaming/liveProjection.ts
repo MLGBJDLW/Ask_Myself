@@ -53,13 +53,11 @@ export function applyConnectionStateEvent(
   };
   state.connectionState = connectionState;
 
-  if (label) {
+  if (label && (connectionState.state === 'failed' || connectionState.state === 'offline')) {
     appendStatusTraceEvent(
       state,
       label,
-      connectionState.state === 'failed' || connectionState.state === 'offline'
-        ? 'error'
-        : connectionState.state === 'recovered' ? 'success' : 'muted',
+      'error',
       'user',
       'recovery',
     );

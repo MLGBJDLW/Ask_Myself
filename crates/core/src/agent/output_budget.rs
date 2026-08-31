@@ -32,22 +32,29 @@ pub(super) struct OutputBudgetPlan {
 }
 
 impl OutputBudgetPlan {
+    /// The internal reserve is always concrete so context trimming can remain
+    /// deterministic. It is sent to the provider only when the user or a
+    /// verified endpoint/model catalog is authoritative. Unknown/private
+    /// routes keep the reserve local and let the provider enforce its own
+    /// output boundary instead of inheriting an arbitrary Nexa cap.
+    pub(super) fn wire_max_tokens(self) -> Option<u32> {
+        match self.authority {
+            OutputBudgetAuthority::AutomaticFallbackReserve => None,
+            OutputBudgetAuthority::SavedExplicitOverride
+            | OutputBudgetAuthority::VerifiedCatalogCapability => Some(self.effective_tokens),
+        }
+    }
+
     pub(super) fn diagnostic(self) -> String {
         format!(
-            "per-request output budget: requested={}, effective={}, authority={}, catalog_cap={:?}, context_cap={:?}",
+            "per-request output budget: requested={}, effective_reserve={}, wire_max={:?}, authority={}, catalog_cap={:?}, context_cap={:?}",
             self.requested_tokens,
             self.effective_tokens,
+            self.wire_max_tokens(),
             self.authority.label(),
             self.catalog_cap,
             self.context_cap,
         )
-    }
-
-    /// Conservative advisory for JSON-wrapped UTF-8 text tool arguments. This
-    /// is not an execution limit: it gives the model a concrete chunk target
-    /// after a truncation while leaving room for JSON escaping and call prose.
-    pub(super) fn recommended_text_tool_chunk_chars(self, step_cap: u32) -> u32 {
-        step_cap.saturating_mul(2).clamp(2_048, 32_768)
     }
 }
 

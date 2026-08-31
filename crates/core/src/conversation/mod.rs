@@ -19,6 +19,8 @@ use crate::llm::provider_turn::ProviderTurnEnvelope;
 use crate::llm::reasoning_profile::ReasoningEnvelope;
 use crate::llm::{Role, ToolCallRequest};
 
+const CONVERSATION_DELETE_BIND_CHUNK: usize = 400;
+
 // ---------------------------------------------------------------------------
 // Domain types
 // ---------------------------------------------------------------------------
@@ -1440,20 +1442,29 @@ impl Database {
     /// Delete multiple conversations by ID (messages are CASCADE-deleted).
     /// Returns the number of deleted rows. Empty `ids` is a no-op.
     pub fn delete_conversations_batch(&self, ids: &[String]) -> Result<usize, CoreError> {
+        let ids = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         if ids.is_empty() {
             return Ok(0);
         }
-        let conn = self.conn();
-        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
-        let sql = format!(
-            "DELETE FROM conversations WHERE id IN ({})",
-            placeholders.join(", ")
-        );
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids
-            .iter()
-            .map(|id| id as &dyn rusqlite::types::ToSql)
-            .collect();
-        let affected = conn.execute(&sql, params.as_slice())?;
+        let mut conn = self.conn();
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut affected = 0usize;
+        for chunk in ids.chunks(CONVERSATION_DELETE_BIND_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!("DELETE FROM conversations WHERE id IN ({placeholders})");
+            let params = chunk
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect::<Vec<_>>();
+            affected = affected.saturating_add(transaction.execute(&sql, params.as_slice())?);
+        }
+        transaction.commit()?;
         Ok(affected)
     }
 
@@ -5661,6 +5672,31 @@ mod tests {
         assert!(db.get_conversation(&active.id).is_err());
         assert!(db.get_conversation(&archived.id).is_ok());
         assert_eq!(db.list_archived_conversations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_delete_conversations_batch_is_deduplicated_and_chunked() {
+        let db = Database::open_memory().unwrap();
+        let input = CreateConversationInput {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        };
+        let first = db.create_conversation(&input).unwrap();
+        let second = db.create_conversation(&input).unwrap();
+        db.archive_conversation(&second.id).unwrap();
+
+        let mut ids = (0..CONVERSATION_DELETE_BIND_CHUNK + 1)
+            .map(|index| format!("missing-{index}"))
+            .collect::<Vec<_>>();
+        ids.extend([first.id.clone(), second.id.clone(), first.id.clone()]);
+
+        assert_eq!(db.delete_conversations_batch(&ids).unwrap(), 2);
+        assert!(db.get_conversation(&first.id).is_err());
+        assert!(db.get_conversation(&second.id).is_err());
     }
 
     #[test]

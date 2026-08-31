@@ -13,8 +13,6 @@ pub(super) enum StreamRecoveryDecision {
     },
     Reconnect {
         attempt: u32,
-        status_message: String,
-        reset_reason: String,
         delay: Duration,
     },
     GiveUp {
@@ -28,7 +26,6 @@ pub(super) enum StreamConnectRetryDecision {
     Retry {
         attempt: u32,
         delay: Duration,
-        status_message: String,
     },
     GiveUp {
         user_message: String,
@@ -142,11 +139,7 @@ impl StreamRecoveryPolicy {
             retry_backoff_with_jitter(attempt)
         };
 
-        StreamConnectRetryDecision::Retry {
-            attempt,
-            delay,
-            status_message: format!("Rate limited. Retrying in {}s...", delay.as_secs()),
-        }
+        StreamConnectRetryDecision::Retry { attempt, delay }
     }
 
     pub(super) fn decide_after_transient_error(
@@ -167,11 +160,7 @@ impl StreamRecoveryPolicy {
         }
 
         let delay = retry_backoff_with_jitter(attempt);
-        StreamConnectRetryDecision::Retry {
-            attempt,
-            delay,
-            status_message: format!("Connection error. Retrying in {}s...", delay.as_secs()),
-        }
+        StreamConnectRetryDecision::Retry { attempt, delay }
     }
 
     pub(super) fn decide_after_incomplete(
@@ -191,19 +180,10 @@ impl StreamRecoveryPolicy {
         }
         if !force_non_streaming && completed_retries < self.max_disconnect_retries {
             let attempt = completed_retries + 1;
-            let reset_reason = format!(
-                "Stream interrupted; reconnecting model stream ({attempt}/{}).",
-                self.max_disconnect_retries
-            );
             let delay = Duration::from_millis(
                 250_u64.saturating_mul(2_u64.saturating_pow(attempt.saturating_sub(1))),
             );
-            return StreamRecoveryDecision::Reconnect {
-                attempt,
-                status_message: format!("{reset_reason} ({detail})"),
-                reset_reason,
-                delay,
-            };
+            return StreamRecoveryDecision::Reconnect { attempt, delay };
         }
 
         StreamRecoveryDecision::GiveUp {
@@ -240,10 +220,6 @@ mod tests {
             decision,
             StreamRecoveryDecision::Reconnect {
                 attempt: 1,
-                status_message:
-                    "Stream interrupted; reconnecting model stream (1/2). (connection closed)"
-                        .to_string(),
-                reset_reason: "Stream interrupted; reconnecting model stream (1/2).".to_string(),
                 delay: Duration::from_millis(250),
             }
         );
@@ -344,7 +320,6 @@ mod tests {
             StreamConnectRetryDecision::Retry {
                 attempt: 1,
                 delay: Duration::from_secs(7),
-                status_message: "Rate limited. Retrying in 7s...".to_string(),
             }
         );
         assert_eq!(
@@ -366,7 +341,6 @@ mod tests {
             StreamConnectRetryDecision::Retry {
                 attempt: 2,
                 delay: Duration::from_millis(10_274),
-                status_message: "Connection error. Retrying in 10s...".to_string(),
             }
         );
         assert_eq!(

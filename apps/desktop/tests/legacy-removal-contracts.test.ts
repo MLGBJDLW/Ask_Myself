@@ -30,6 +30,24 @@ test('desktop IPC sends the versioned agent request through one canonical argume
   assert(!api.includes('...request,'), 'agentChat must not mirror request fields at the command root');
 });
 
+test('conversation deletion runs on the dedicated database writer lane', () => {
+  const commands = source('src-tauri/src/commands/conversation.rs');
+  for (const command of [
+    'delete_conversation_cmd',
+    'delete_conversations_batch_cmd',
+    'delete_all_conversations_cmd',
+  ]) {
+    const start = commands.indexOf(`pub async fn ${command}`);
+    assert(start >= 0, `missing ${command}`);
+    const end = commands.indexOf('\n#[tauri::command]', start + 1);
+    const body = commands.slice(start, end >= 0 ? end : undefined);
+    assert(
+      body.includes('db_executor') && body.includes('.write('),
+      `${command} must not run synchronous cascading SQLite work on an async command worker`,
+    );
+  }
+});
+
 test('stream types are imported from their authoritative protocol instead of a hook shim', () => {
   const hook = source('src/lib/useAgentStream.ts');
   assert(

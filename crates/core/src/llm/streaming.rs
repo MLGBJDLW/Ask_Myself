@@ -9,6 +9,8 @@ use super::{
 };
 use crate::error::CoreError;
 
+const TERMINAL_SSE_TAIL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 // ---------------------------------------------------------------------------
 // SSE JSON wire types (OpenAI streaming format)
 // ---------------------------------------------------------------------------
@@ -609,6 +611,7 @@ async fn process_sse_line(
     tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
     in_think_block: &mut bool,
     think_tag_buffer: &mut String,
+    terminal_finish_seen: &mut bool,
 ) -> Result<bool, CoreError> {
     if line.is_empty() {
         return Ok(false);
@@ -672,6 +675,7 @@ async fn process_sse_line(
                 .and_then(|c| c.finish_reason.as_deref())
                 .map(parse_finish_reason)
                 .transpose()?;
+            *terminal_finish_seen |= finish_reason.is_some();
             let usage = sse.usage.map(|u| {
                 let prompt_details = u.prompt_tokens_details;
                 let cache_read_tokens = super::prompt_cache::openai_compatible_cache_read_tokens(
@@ -776,6 +780,7 @@ async fn process_sse_event_data_lines(
     tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
     in_think_block: &mut bool,
     think_tag_buffer: &mut String,
+    terminal_finish_seen: &mut bool,
 ) -> Result<bool, CoreError> {
     if event_data_lines.is_empty() {
         return Ok(false);
@@ -788,6 +793,7 @@ async fn process_sse_event_data_lines(
         tx,
         in_think_block,
         think_tag_buffer,
+        terminal_finish_seen,
     )
     .await
 }
@@ -798,6 +804,7 @@ async fn collect_or_dispatch_sse_line(
     tx: &mpsc::Sender<Result<StreamChunk, CoreError>>,
     in_think_block: &mut bool,
     think_tag_buffer: &mut String,
+    terminal_finish_seen: &mut bool,
 ) -> Result<bool, CoreError> {
     if line.is_empty() {
         return process_sse_event_data_lines(
@@ -805,6 +812,7 @@ async fn collect_or_dispatch_sse_line(
             tx,
             in_think_block,
             think_tag_buffer,
+            terminal_finish_seen,
         )
         .await;
     }
@@ -819,8 +827,14 @@ async fn collect_or_dispatch_sse_line(
     let trimmed = data.trim_start();
     if !event_data_lines.is_empty()
         && (trimmed.starts_with('{') || trimmed == "[DONE]")
-        && process_sse_event_data_lines(event_data_lines, tx, in_think_block, think_tag_buffer)
-            .await?
+        && process_sse_event_data_lines(
+            event_data_lines,
+            tx,
+            in_think_block,
+            think_tag_buffer,
+            terminal_finish_seen,
+        )
+        .await?
     {
         return Ok(true);
     }
@@ -855,34 +869,56 @@ pub async fn parse_sse_stream_with_idle_timeout(
     let mut think_tag_buffer = String::new();
     let mut event_data_lines: Vec<String> = Vec::new();
     let mut first_chunk = true;
+    let mut terminal_finish_seen = false;
 
-    while let Some(chunk_result) = next_stream_item_with_idle_timeout(
-        &mut byte_stream,
-        stream_idle_timeout,
-        "OpenAI SSE stream",
-    )
-    .await?
-    {
-        let chunk = chunk_result.map_err(|e| {
-            error!("Stream read error: {e}");
-            let msg = e.to_string().to_ascii_lowercase();
-            // Reqwest errors surfaced mid-stream (hyper decode error, connection
-            // RST/closed, h2 protocol, TLS shutdown) are recoverable stream
-            // interruptions — not fatal LLM errors. Map them so the agent can
-            // soft-fail and continue.
-            if msg.contains("decoding response body")
-                || msg.contains("connection")
-                || msg.contains("closed")
-                || msg.contains("reset")
-                || msg.contains("broken pipe")
-                || msg.contains("incompleted")
-                || msg.contains("eof")
+    loop {
+        let idle_timeout = if terminal_finish_seen {
+            stream_idle_timeout.min(TERMINAL_SSE_TAIL_GRACE)
+        } else {
+            stream_idle_timeout
+        };
+        let Some(chunk_result) = (match next_stream_item_with_idle_timeout(
+            &mut byte_stream,
+            idle_timeout,
+            "OpenAI SSE stream",
+        )
+        .await
+        {
+            Ok(next) => next,
+            Err(error)
+                if terminal_finish_seen && matches!(error, CoreError::StreamIncomplete(_)) =>
             {
-                CoreError::StreamIncomplete(format!("stream interrupted: {e}"))
-            } else {
-                CoreError::Llm(format!("Stream read error: {e}"))
+                warn!("Ignoring transport shutdown after a terminal finish_reason: {error}");
+                break;
             }
-        })?;
+            Err(error) => return Err(error),
+        }) else {
+            break;
+        };
+        let chunk = match chunk_result {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                error!("Stream read error: {error}");
+                let message = error.to_string().to_ascii_lowercase();
+                let error = if message.contains("decoding response body")
+                    || message.contains("connection")
+                    || message.contains("closed")
+                    || message.contains("reset")
+                    || message.contains("broken pipe")
+                    || message.contains("incompleted")
+                    || message.contains("eof")
+                {
+                    CoreError::StreamIncomplete(format!("stream interrupted: {error}"))
+                } else {
+                    CoreError::Llm(format!("Stream read error: {error}"))
+                };
+                if terminal_finish_seen && matches!(error, CoreError::StreamIncomplete(_)) {
+                    warn!("Ignoring transport shutdown after a terminal finish_reason: {error}");
+                    break;
+                }
+                return Err(error);
+            }
+        };
         if first_chunk {
             debug!("First SSE chunk received");
             first_chunk = false;
@@ -896,6 +932,7 @@ pub async fn parse_sse_stream_with_idle_timeout(
                 &tx,
                 &mut in_think_block,
                 &mut think_tag_buffer,
+                &mut terminal_finish_seen,
             )
             .await?
             {
@@ -912,6 +949,7 @@ pub async fn parse_sse_stream_with_idle_timeout(
             &tx,
             &mut in_think_block,
             &mut think_tag_buffer,
+            &mut terminal_finish_seen,
         )
         .await?
         {
@@ -924,13 +962,43 @@ pub async fn parse_sse_stream_with_idle_timeout(
         &tx,
         &mut in_think_block,
         &mut think_tag_buffer,
+        &mut terminal_finish_seen,
     )
     .await?
     {
         return Ok(());
     }
 
-    // Stream ended without [DONE] marker — server likely crashed or disconnected.
+    // A terminal finish_reason is the semantic boundary. A few compatible
+    // servers close cleanly (or with a harmless HTTP tail error) without the
+    // optional transport sentinel; replaying that completed sample can repeat
+    // tool calls and visible output.
+    if terminal_finish_seen {
+        if !think_tag_buffer.is_empty() {
+            let tail = std::mem::take(&mut think_tag_buffer);
+            let chunk = if in_think_block {
+                StreamChunk {
+                    delta: String::new(),
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: Some(tail),
+                }
+            } else {
+                StreamChunk {
+                    delta: tail,
+                    tool_call_delta: None,
+                    finish_reason: None,
+                    usage: None,
+                    thinking_delta: None,
+                }
+            };
+            let _ = tx.send(Ok(chunk)).await;
+        }
+        return Ok(());
+    }
+
+    // Stream ended without either semantic or transport terminal evidence.
     warn!("Stream ended without [DONE] marker");
     Err(CoreError::StreamIncomplete(
         "stream ended without [DONE] marker".to_string(),
@@ -940,12 +1008,64 @@ pub async fn parse_sse_stream_with_idle_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn serve_terminal_chat_sse_without_done(
+        listener: tokio::net::TcpListener,
+    ) -> std::io::Result<()> {
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = [0u8; 2048];
+        let _ = socket.read(&mut request).await?;
+        let body = br#"data: {"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+
+"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await?;
+        socket.write_all(body).await?;
+        socket.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn terminal_finish_reason_accepts_clean_eof_without_done_sentinel() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture server");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(serve_terminal_chat_sse_without_done(listener));
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/chat/completions"))
+            .send()
+            .await
+            .expect("fixture response");
+        let (tx, mut rx) = mpsc::channel(4);
+
+        parse_sse_stream_with_idle_timeout(response, tx, std::time::Duration::from_secs(1))
+            .await
+            .expect("a complete finish_reason is a safe terminal boundary");
+        server.await.expect("fixture task").expect("fixture server");
+
+        let chunk = rx
+            .recv()
+            .await
+            .expect("terminal chunk")
+            .expect("valid terminal chunk");
+        assert_eq!(chunk.delta, "finished");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Stop));
+    }
 
     #[tokio::test]
     async fn deepseek_reasoning_only_length_chunk_keeps_answer_empty() {
         let (tx, mut rx) = mpsc::channel(2);
         let mut in_think_block = false;
         let mut think_tag_buffer = String::new();
+        let mut terminal_finish_seen = false;
         let line = r#"data: {"choices":[{"delta":{"content":null,"reasoning_content":"raw internal reasoning"},"finish_reason":"length"}]}"#;
 
         let done = process_sse_line(
@@ -953,6 +1073,7 @@ mod tests {
             &tx,
             &mut in_think_block,
             &mut think_tag_buffer,
+            &mut terminal_finish_seen,
         )
         .await
         .expect("DeepSeek-compatible SSE chunk should parse");
@@ -976,6 +1097,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(2);
         let mut in_think_block = false;
         let mut think_tag_buffer = String::new();
+        let mut terminal_finish_seen = false;
         let line =
             r#"data: {"choices":[{"delta":{},"finish_reason":"insufficient_system_resource"}]}"#;
 
@@ -984,6 +1106,7 @@ mod tests {
             &tx,
             &mut in_think_block,
             &mut think_tag_buffer,
+            &mut terminal_finish_seen,
         )
         .await
         .expect_err("capacity interruption must enter stream recovery");
@@ -1351,6 +1474,7 @@ mod tests {
         let mut event_data_lines = Vec::new();
         let mut in_think_block = false;
         let mut think_tag_buffer = String::new();
+        let mut terminal_finish_seen = false;
 
         for line in [
             "data: {",
@@ -1364,6 +1488,7 @@ mod tests {
                 &tx,
                 &mut in_think_block,
                 &mut think_tag_buffer,
+                &mut terminal_finish_seen,
             )
             .await
             .expect("process line");

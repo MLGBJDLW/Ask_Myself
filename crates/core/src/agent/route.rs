@@ -131,7 +131,7 @@ fn route_pack_for_route(kind: AgentRouteKind) -> String {
              - If evidence is missing, say it was not found in the current source scope or knowledge base."
                 .to_string()
         }
-        AgentRouteKind::CodebaseOperation => format!(
+        AgentRouteKind::CodebaseOperation =>
             "## Route Pack: Codebase and Shell Work\n\
              - Read relevant implementation before changing code, but start by locating it efficiently.\n\
              - For named symbols, prefer code_intelligence symbols/references before broad search.\n\
@@ -139,17 +139,15 @@ fn route_pack_for_route(kind: AgentRouteKind) -> String {
              - After search or code_intelligence returns candidate paths and line numbers, read only the relevant files or ranges needed to understand and edit safely.\n\
              - Keep edits scoped to the request and local patterns; verify with the narrowest useful test, project_tool run, or focused run_shell command.\n\
              - Prefer dedicated file/project tools for plain-text reads and edits. Use run_shell when a command, build, test, generated artifact, or scripted workflow is the right tool; external commands automatically detach when still running, so continue through activity_observe instead of guessing a timeout.\n\
-             - For an existing user terminal, prefer terminal_session inspect/run/observe over starting a substitute shell. For a local dev URL or interactive SPA, hand the ready URL to browser_session and use observation-scoped element refs.\n\n{}",
-            run_shell_contract::system_prompt_section()
-        ),
-        AgentRouteKind::FileOperation => format!(
+             - For an existing user terminal, prefer terminal_session inspect/run/observe over starting a substitute shell. For a local dev URL or interactive SPA, hand the ready URL to browser_session and use observation-scoped element refs."
+                .to_string(),
+        AgentRouteKind::FileOperation =>
             "## Route Pack: File and Office Work\n\
              - Use list_dir, glob_files, search_files, grep_files, read_file, or read_files to locate and inspect plain-text files.\n\
              - Use edit_file, multi_edit, or create_file for plain-text changes. Do not use ad hoc scripts for ordinary plain-text reads or edits.\n\
              - For DOCX/XLSX/PPTX/PDF creation or editing, use run_shell plus the relevant document skill/script workflow; do not use plain-text edit tools on Office/PDF binaries.\n\
-             - Keep large generation specs in files or stdin instead of one giant tool argument; validate or render artifacts when the format requires it.\n\n{}",
-            run_shell_contract::system_prompt_section()
-        ),
+             - Keep large generation specs in files or stdin instead of one giant tool argument; validate or render artifacts when the format requires it."
+                .to_string(),
         AgentRouteKind::WebLookup => "## Route Pack: Web Lookup\n\
              - Use fetch_url for ordinary static page text. Use browser_session for JavaScript apps, authenticated flows, interaction, localhost, or page-state debugging; use its atomic observations and never reuse an element ref after the page changes.\n\
              - Use web_search for external facts that may have changed or when the knowledge base is insufficient.\n\

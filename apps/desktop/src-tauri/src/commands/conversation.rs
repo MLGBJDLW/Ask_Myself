@@ -896,7 +896,12 @@ pub async fn delete_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    state.db.delete_conversation(&id).map_err(|e| e.to_string())
+    state
+        .db_executor
+        .write(move |db| db.delete_conversation(&id))
+        .await
+        .map(|execution| execution.value)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -931,8 +936,10 @@ pub async fn delete_conversations_batch_cmd(
     ids: Vec<String>,
 ) -> Result<usize, String> {
     state
-        .db
-        .delete_conversations_batch(&ids)
+        .db_executor
+        .write(move |db| db.delete_conversations_batch(&ids))
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 
@@ -941,8 +948,10 @@ pub async fn delete_all_conversations_cmd(
     state: tauri::State<'_, AppState>,
 ) -> Result<usize, String> {
     state
-        .db
-        .delete_all_conversations()
+        .db_executor
+        .write(|db| db.delete_all_conversations())
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 
