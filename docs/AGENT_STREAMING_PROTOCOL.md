@@ -121,7 +121,34 @@ opaque fragments, while object-valued OpenAI-compatible arguments are typed
 complete snapshots and replace the prior snapshot. The runtime never infers
 that distinction by reparsing every growing string.
 
+The exposed JSON schema plus host validation is the executable tool contract.
+Provider deltas and repaired historical envelopes never authorize execution,
+and the system prompt does not duplicate a global "return valid tool JSON"
+contract. A malformed or truncated draft is discarded and receives one short,
+call-specific retry instruction; only the newly completed, schema-valid call
+may cross the dispatch boundary.
+
 ## Completion and recovery
+
+Provider terminal rules are dialect-specific. A Chat Completions stream with a
+parsed terminal `finish_reason` is complete even when a compatible server closes
+immediately without a trailing `[DONE]`; EOF without either terminal evidence
+remains an interruption. DeepSeek Responses instead requires
+`response.completed`, `response.incomplete`, or `response.failed` and does not
+use `[DONE]`. OpenAI Responses and DeepSeek Responses retain separate request,
+replay, usage, and terminal capability profiles.
+
+Context planning always keeps a concrete response reserve, but that estimate
+is not automatically a provider limit. `max_tokens` / `max_output_tokens` is
+sent only for a saved explicit override, a verified endpoint/model catalog
+capability, or a caller-authorized cumulative worker budget. Unknown and custom
+routes remain provider-managed instead of inheriting Nexa's fallback reserve.
+
+Attempt resets are control-plane events. They may clear an abandoned answer,
+thinking block, or preparing tool card, but their retry reason is developer
+telemetry and never becomes a chat status row. Reconnecting, degraded, and
+recovered states remain silent when recovery succeeds; only a final
+failed/offline connection state is user-facing.
 
 A terminal submission is not completion by itself. The terminal completion
 barrier resolves only after the terminal Run Event and its task projection are
