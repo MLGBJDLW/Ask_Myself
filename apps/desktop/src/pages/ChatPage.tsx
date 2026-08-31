@@ -820,16 +820,6 @@ export function ChatPage() {
     await Promise.all([refreshInteractions(), chat.reloadMessages()]);
   }, [chat.activeId, chat.reloadMessages, refreshInteractions]);
 
-  const handleLowerReasoningRetry = useCallback(async () => {
-    if (!chat.activeId) return;
-    try {
-      await api.agentLowerReasoningAndRetry(chat.activeId);
-    } catch (error) {
-      toast.error(formatUserError(t('chat.lowerReasoningRetry'), error));
-      throw error;
-    }
-  }, [chat.activeId, t]);
-
   const handleComposerSend = useCallback(async (
     content: string,
     attachments?: ImageAttachment[],
@@ -1834,8 +1824,6 @@ export function ChatPage() {
               onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
               onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
               onResumePaused={isArchivedConversation ? undefined : handleResumePaused}
-              onLowerReasoningRetry={isArchivedConversation ? undefined : handleLowerReasoningRetry}
-              onStop={isArchivedConversation ? undefined : chat.stop}
               onQuestionSubmit={isArchivedConversation ? undefined : (message, artifact) => {
                 void handleChatSend(message, undefined, { userArtifacts: artifact });
               }}

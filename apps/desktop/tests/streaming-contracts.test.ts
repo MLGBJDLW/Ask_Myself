@@ -355,7 +355,7 @@ test('runtime wire schema accepts only the canonical Run Event envelope', () => 
   );
 });
 
-test('slow model status keeps its semantic recovery action until model progress resumes', () => {
+test('legacy slow-model diagnostics never enter the user timeline', () => {
   const warning = runEvent({
     eventSeq: 1,
     kind: 'status',
@@ -371,11 +371,7 @@ test('slow model status keeps its semantic recovery action until model progress 
   const actionable = projectedWarning.traceEvents.find(event => (
     event.kind === 'status' && event.code === 'model_planning_slow'
   ));
-  assert(
-    actionable?.kind === 'status',
-    'slow-model warning should retain its semantic action code',
-  );
-  assertEqual(actionable.text, warning.label, 'slow-model progress text');
+  assertEqual(actionable, undefined, 'slow-model timing diagnostics are internal telemetry');
 
   const projectedAnswer = projectRunEventsToStreamState(taskRun('running'), [
     warning,
@@ -1298,12 +1294,12 @@ test('canonical approval and recovery projection matches live stream dispatch st
   assertEqual(live.pendingApprovals[0].id, projected.pendingApprovals[0].id, 'pending approval id equivalence');
   assertEqual(live.pendingApprovals[0].toolName, projected.pendingApprovals[0].toolName, 'pending approval tool equivalence');
   assert(
-    projected.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
-    'projected recovery status should be visible',
+    !projected.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
+    'projected successful retry telemetry should stay internal',
   );
   assert(
-    live.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
-    'live recovery status should be visible',
+    !live.traceEvents.some(event => event.kind === 'status' && event.text === 'Retrying stream'),
+    'live successful retry telemetry should stay internal',
   );
   assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
 
@@ -1376,14 +1372,14 @@ test('canonical stream reset projection matches live stream dispatch recovered s
     'stream reset should include recovered reply trace',
   );
   assert(
-    projected.traceEvents.some(event =>
+    !projected.traceEvents.some(event =>
       event.kind === 'status' && event.text === 'Stream interrupted; retrying without streaming.'),
-    'projected stream reset status should be visible',
+    'projected stream reset reasons are internal recovery telemetry',
   );
   assert(
-    live.traceEvents.some(event =>
+    !live.traceEvents.some(event =>
       event.kind === 'status' && event.text === 'Stream interrupted; retrying without streaming.'),
-    'live stream reset status should be visible',
+    'live stream reset reasons are internal recovery telemetry',
   );
   assertEqual(live.isStreaming, projected.isStreaming, 'streaming state equivalence');
 
@@ -2006,6 +2002,43 @@ test('structured connection recovery updates state without becoming reasoning', 
   assertEqual(projected.connectionState?.state, 'reconnecting', 'connection state');
   assertEqual(projected.connectionState?.attempt, 1, 'connection retry attempt');
   assertEqual(projected.thinkingText, '', 'retry status must not enter reasoning');
+  assert(
+    !projected.traceEvents.some(event => event.kind === 'status' && event.text === 'Reconnecting to provider'),
+    'recoverable connection telemetry must not enter the chat timeline',
+  );
+});
+
+test('terminal connection failure remains user-visible', () => {
+  const projected = projectRunEventsToStreamState(taskRun('failed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'recoveryAttempt',
+      label: 'Provider connection failed',
+      status: 'failed',
+      payload: {
+        type: 'connectionState',
+        state: {
+          state: 'failed',
+          providerId: 'deepseek',
+          modelId: 'deepseek-v4-pro',
+          errorCategory: 'network',
+          attempt: 2,
+          maxAttempts: 2,
+          recoverable: false,
+          queuedUserInputs: 0,
+          turnPreserved: true,
+        },
+      },
+    }),
+  ]);
+
+  assertEqual(projected.connectionState?.state, 'failed', 'terminal connection state');
+  assert(
+    projected.traceEvents.some(event => (
+      event.kind === 'status' && event.text === 'Provider connection failed'
+    )),
+    'terminal connection failure should remain actionable',
+  );
 });
 
 test('terminal completion clears a stale reconnecting state', () => {

@@ -162,7 +162,6 @@ export function applyStreamResetProjection(
   state._activeRoundId = null;
   state._activeRoundAcceptingStarts = false;
   resetActiveStreamBlocks(state);
-  appendStatusTraceEvent(state, reason, 'muted');
 }
 
 export function applyTerminalProjection(
