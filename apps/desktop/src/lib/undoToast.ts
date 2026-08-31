@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { createUndoActionGate } from './undoActionGate';
 
 interface UndoToastOptions {
   message: string;
@@ -9,22 +10,21 @@ interface UndoToastOptions {
 }
 
 export function undoableAction({ message, undoLabel, onConfirm, onUndo, duration = 5000 }: UndoToastOptions) {
-  let cancelled = false;
+  const gate = createUndoActionGate(onConfirm, onUndo);
 
   const toastId = toast(message, {
     duration,
     action: {
       label: undoLabel,
       onClick: () => {
-        cancelled = true;
-        void Promise.resolve(onUndo?.());
+        void gate.undo();
       },
     },
     onDismiss: () => {
-      if (!cancelled) void Promise.resolve(onConfirm());
+      void gate.confirm();
     },
     onAutoClose: () => {
-      if (!cancelled) void Promise.resolve(onConfirm());
+      void gate.confirm();
     },
   });
 

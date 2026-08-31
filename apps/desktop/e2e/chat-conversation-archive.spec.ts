@@ -153,6 +153,10 @@ test.beforeEach(async ({ page }) => {
         }
         case 'delete_conversation_cmd': {
           const id = String(args.id ?? '');
+          if (localStorage.getItem('e2e-delay-conversation-delete') === '1') {
+            localStorage.removeItem('e2e-delay-conversation-delete');
+            await new Promise((resolve) => setTimeout(resolve, 750));
+          }
           active = active.filter((item) => item.id !== id);
           archived = archived.filter((item) => item.id !== id);
           return null;
@@ -459,6 +463,29 @@ test('archived conversations can be restored from the sidebar manager', async ({
   )).toContain('unarchive_conversation_cmd');
 
   await expect(page.getByText('Archived conversation', { exact: true })).toBeVisible();
+});
+
+test('archived deletion stays responsive and invokes the destructive command once', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  await page.getByTestId('chat-archive-nav').click();
+  await page.evaluate(() => localStorage.setItem('e2e-delay-conversation-delete', '1'));
+
+  const archivedItem = page.getByTestId('archived-conversation-conv-archived');
+  await archivedItem.getByRole('button', { name: 'Delete' }).click();
+  await expect(archivedItem).toBeHidden();
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __ARCHIVE_COMMANDS__: string[] })
+      .__ARCHIVE_COMMANDS__.filter((command) => command === 'delete_conversation_cmd').length,
+  ), { timeout: 7_000 }).toBe(1);
+
+  await page.getByRole('button', { name: 'Back to conversations' }).click();
+  await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
+  await page.waitForTimeout(900);
+  expect(await page.evaluate(() =>
+    (window as unknown as { __ARCHIVE_COMMANDS__: string[] })
+      .__ARCHIVE_COMMANDS__.filter((command) => command === 'delete_conversation_cmd').length,
+  )).toBe(1);
 });
 
 test('a direct archived conversation link opens read-only without joining the active list', async ({ page }) => {
