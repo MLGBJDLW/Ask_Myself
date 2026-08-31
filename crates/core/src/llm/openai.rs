@@ -613,16 +613,47 @@ fn role_str(role: &Role) -> &'static str {
 }
 
 fn chat_completion_wire_order(messages: &[Message]) -> Vec<usize> {
-    // Nexa's prompt IR may append volatile controller/runtime sections after
-    // the current user turn. OpenAI-compatible Chat Completions endpoints do
-    // not share a portable `developer` role, but relabelling those controls as
-    // `user` makes the harness -- not the human -- the latest requester.
-    // Compile every system-plane message into the leading control prefix while
-    // preserving the relative order of both partitions.
-    (0..messages.len())
-        .filter(|index| messages[*index].role == Role::System)
-        .chain((0..messages.len()).filter(|index| messages[*index].role != Role::System))
-        .collect()
+    // DeepSeek's cache persists complete request prefixes. Reordering a newly
+    // appended controller message into the leading system partition makes
+    // every new turn diverge before the old transcript. Preserve the canonical
+    // timeline exactly; later system-plane blocks are compiled as explicitly
+    // labelled controller user context below for Chat-compatible endpoints.
+    (0..messages.len()).collect()
+}
+
+fn chat_completion_wire_role(
+    message: &Message,
+    index: usize,
+    leading_system_count: usize,
+) -> &'static str {
+    if index >= leading_system_count && message.role == Role::System {
+        "user"
+    } else {
+        role_str(&message.role)
+    }
+}
+
+fn controller_context_for_chat(message: &Message, wire_role: &str) -> Message {
+    if message.role != Role::System || wire_role != "user" {
+        return message.clone();
+    }
+    let mut compiled = message.clone();
+    let marker = "[Nexa controller context; not user-authored]\n";
+    if let Some(ContentPart::Text { text }) = compiled
+        .parts
+        .iter_mut()
+        .find(|part| matches!(part, ContentPart::Text { .. }))
+    {
+        text.insert_str(0, marker);
+    } else {
+        compiled.parts.insert(
+            0,
+            ContentPart::Text {
+                text: marker.to_string(),
+            },
+        );
+    }
+    compiled
 }
 
 fn parse_finish_reason(s: &str) -> FinishReason {
@@ -954,13 +985,20 @@ fn build_request_body_with_config(
         &request.model,
     );
     let wire_source_indices = chat_completion_wire_order(&request.messages);
+    let leading_system_count = request
+        .messages
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
     let mut messages: Vec<OaiMessage> = wire_source_indices
         .iter()
         .map(|index| {
             let message = &request.messages[*index];
+            let wire_role = chat_completion_wire_role(message, *index, leading_system_count);
+            let compiled = controller_context_for_chat(message, wire_role);
             convert_message(
-                message,
-                role_str(&message.role),
+                &compiled,
+                wire_role,
                 include_reasoning_content,
                 reasoning_history_encoding,
                 raw_tool_args,
@@ -1243,7 +1281,11 @@ fn validate_responses_input_items(items: &[serde_json::Value]) -> Result<(), Cor
 
 fn responses_input_items(messages: &[Message]) -> Result<Vec<serde_json::Value>, CoreError> {
     let mut items = Vec::new();
-    for message in messages {
+    let leading_system_count = messages
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
+    for (message_index, message) in messages.iter().enumerate() {
         if message.role == Role::Tool {
             items.push(serde_json::json!({
                 "type": "function_call_output",
@@ -1289,9 +1331,19 @@ fn responses_input_items(messages: &[Message]) -> Result<Vec<serde_json::Value>,
         let generic_message = (!(content.is_empty()
             || message.role == Role::Assistant && replayed_message))
             .then(|| {
+                let wire_role =
+                    if message.role == Role::System && message_index >= leading_system_count {
+                        // OpenAI Responses supports developer messages; DeepSeek
+                        // Responses explicitly treats them as user/controller
+                        // input. This preserves append-only prompt order without
+                        // presenting runtime state as human-authored text.
+                        "developer"
+                    } else {
+                        role_str(&message.role)
+                    };
                 serde_json::json!({
                 "type": "message",
-                "role": role_str(&message.role),
+                "role": wire_role,
                 "content": content,
                 })
             });
@@ -1368,11 +1420,47 @@ fn build_responses_request(
     mode: super::native_search::SearchExecutionMode,
     capability: crate::model_catalog::NativeWebSearchCapability,
 ) -> Result<serde_json::Value, CoreError> {
+    build_responses_request_with_tools(
+        request,
+        dialect,
+        responses_tools(request, dialect, mode, capability),
+        capability.can_mix_client_tools,
+    )
+}
+
+fn build_generic_responses_request(
+    request: &CompletionRequest,
+    dialect: super::native_search::NativeSearchDialect,
+) -> Result<serde_json::Value, CoreError> {
+    let tools = request
+        .tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|tool| !super::native_search::is_native_marker(tool))
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            })
+        })
+        .collect();
+    build_responses_request_with_tools(request, dialect, tools, false)
+}
+
+fn build_responses_request_with_tools(
+    request: &CompletionRequest,
+    dialect: super::native_search::NativeSearchDialect,
+    tools: Vec<serde_json::Value>,
+    include_encrypted_reasoning: bool,
+) -> Result<serde_json::Value, CoreError> {
     let input = responses_input_items(&request.messages)?;
     let mut body = serde_json::json!({
         "model": request.model,
         "input": input,
-        "tools": responses_tools(request, dialect, mode, capability),
+        "tools": tools,
         "parallel_tool_calls": request.parallel_tool_calls,
         "store": false,
     });
@@ -1380,7 +1468,7 @@ fn build_responses_request(
         body["max_output_tokens"] = serde_json::json!(max_tokens);
     }
     if dialect == super::native_search::NativeSearchDialect::OpenAiResponses {
-        if capability.can_mix_client_tools {
+        if include_encrypted_reasoning {
             // Stateless Responses tool loops must replay encrypted reasoning
             // items alongside function calls. The returned payload is kept in
             // ToolCallRequest::thought_signature and never shown as reasoning.
@@ -1447,6 +1535,38 @@ fn without_reasoning(request: &CompletionRequest) -> CompletionRequest {
         thinking_budget: None,
         ..request.clone()
     }
+}
+
+fn generic_responses_capability(
+    dialect: super::native_search::NativeSearchDialect,
+) -> crate::model_catalog::NativeWebSearchCapability {
+    crate::model_catalog::NativeWebSearchCapability {
+        dialect,
+        supports_domains: false,
+        supports_recency: false,
+        supports_locale: false,
+        supports_location: false,
+        supports_citations: false,
+        supports_stream_events: true,
+        can_mix_client_tools: true,
+    }
+}
+
+fn is_direct_deepseek_responses_request(
+    config: &ProviderConfig,
+    request: &CompletionRequest,
+) -> bool {
+    config.provider_type == ProviderType::DeepSeek
+        && super::provider_boundary::is_deepseek_public_endpoint(
+            config.provider_type,
+            config.base_url.as_deref(),
+        )
+        && request
+            .model
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("deepseek-v4")
+        && hosted_search_context(request).is_none()
 }
 
 fn parse_responses_completion(
@@ -2701,19 +2821,29 @@ impl OpenAiProvider {
         }
     }
 
-    async fn complete_hosted_search(
+    async fn complete_responses(
         &self,
         request: &CompletionRequest,
         dialect: super::native_search::NativeSearchDialect,
-        mode: super::native_search::SearchExecutionMode,
-        capability: crate::model_catalog::NativeWebSearchCapability,
+        hosted_search: Option<(
+            super::native_search::SearchExecutionMode,
+            crate::model_catalog::NativeWebSearchCapability,
+        )>,
     ) -> Result<CompletionResponse, CoreError> {
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
-        let body = build_responses_request(request, dialect, mode, capability)?;
-        let body_bytes = serialized_json_body(&body, "Responses hosted-search request")?;
+        let capability = hosted_search
+            .map(|(_, capability)| capability)
+            .unwrap_or_else(|| generic_responses_capability(dialect));
+        let body = match hosted_search {
+            Some((mode, capability)) => {
+                build_responses_request(request, dialect, mode, capability)?
+            }
+            None => build_generic_responses_request(request, dialect)?,
+        };
+        let body_bytes = serialized_json_body(&body, "Responses request")?;
         let api_key = self.api_key()?;
         info!(
-            "Responses hosted-search request to {url}, model={}, dialect={dialect:?}",
+            "Responses request to {url}, model={}, dialect={dialect:?}",
             request.model
         );
         let response = with_request_timeout(
@@ -2757,15 +2887,25 @@ impl OpenAiProvider {
         Ok(parsed)
     }
 
-    async fn stream_hosted_search_events(
+    async fn stream_responses_events(
         &self,
         request: &CompletionRequest,
         dialect: super::native_search::NativeSearchDialect,
-        mode: super::native_search::SearchExecutionMode,
-        capability: crate::model_catalog::NativeWebSearchCapability,
+        hosted_search: Option<(
+            super::native_search::SearchExecutionMode,
+            crate::model_catalog::NativeWebSearchCapability,
+        )>,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
-        let mut body = build_responses_request(request, dialect, mode, capability)?;
+        let capability = hosted_search
+            .map(|(_, capability)| capability)
+            .unwrap_or_else(|| generic_responses_capability(dialect));
+        let mut body = match hosted_search {
+            Some((mode, capability)) => {
+                build_responses_request(request, dialect, mode, capability)?
+            }
+            None => build_generic_responses_request(request, dialect)?,
+        };
         body["stream"] = serde_json::json!(true);
         let body_bytes = serialized_json_body(&body, "Responses streaming request")?;
         let api_key = self.api_key()?;
@@ -2841,10 +2981,21 @@ impl LlmProvider for OpenAiProvider {
     }
 
     fn reasoning_replay_policy(&self, model: &str) -> ReasoningReplayPolicy {
+        let api_style = if self.config.provider_type == ProviderType::DeepSeek
+            && super::provider_boundary::is_deepseek_public_endpoint(
+                self.config.provider_type,
+                self.config.base_url.as_deref(),
+            )
+            && model.trim().to_ascii_lowercase().starts_with("deepseek-v4")
+        {
+            ReasoningApiStyle::OpenAiResponses
+        } else {
+            ReasoningApiStyle::OpenAiChatCompletions
+        };
         resolve_reasoning_profile(
             self.config.provider_type,
             self.config.base_url.as_deref(),
-            ReasoningApiStyle::OpenAiChatCompletions,
+            api_style,
             model,
         )
         .replay_policy
@@ -2870,6 +3021,9 @@ impl LlmProvider for OpenAiProvider {
                 ReasoningApiStyle::OpenAiChatCompletions
             }
             Some(_) => ReasoningApiStyle::OpenAiResponses,
+            None if is_direct_deepseek_responses_request(&self.config, request) => {
+                ReasoningApiStyle::OpenAiResponses
+            }
             None => ReasoningApiStyle::OpenAiChatCompletions,
         };
         let profile = resolve_reasoning_profile(
@@ -2927,7 +3081,7 @@ impl LlmProvider for OpenAiProvider {
                 &fallback_request
             } else {
                 let result = match self
-                    .complete_hosted_search(request, dialect, mode, capability)
+                    .complete_responses(request, dialect, Some((mode, capability)))
                     .await
                 {
                     Err(error)
@@ -2940,7 +3094,7 @@ impl LlmProvider for OpenAiProvider {
                             "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
                         );
                         let safe_request = without_reasoning(request);
-                        self.complete_hosted_search(&safe_request, dialect, mode, capability)
+                        self.complete_responses(&safe_request, dialect, Some((mode, capability)))
                             .await
                     }
                     result => result,
@@ -2959,6 +3113,22 @@ impl LlmProvider for OpenAiProvider {
                     Err(error) => return Err(error),
                 }
             }
+        } else if is_direct_deepseek_responses_request(&self.config, request) {
+            let dialect = super::native_search::NativeSearchDialect::DeepSeekResponses;
+            let result = match self.complete_responses(request, dialect, None).await {
+                Err(error)
+                    if request.reasoning_enabled != Some(false)
+                        && is_deepseek_missing_reasoning_replay(&error) =>
+                {
+                    warn!(
+                        "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
+                    );
+                    self.complete_responses(&without_reasoning(request), dialect, None)
+                        .await
+                }
+                result => result,
+            };
+            return result;
         } else {
             request
         };
@@ -3097,7 +3267,7 @@ impl LlmProvider for OpenAiProvider {
                     || !hosted_search_requires_client_tools(request, mode))
             {
                 return match self
-                    .stream_hosted_search_events(request, dialect, mode, capability)
+                    .stream_responses_events(request, dialect, Some((mode, capability)))
                     .await
                 {
                     Ok(stream) => Ok(stream),
@@ -3111,19 +3281,23 @@ impl LlmProvider for OpenAiProvider {
                             "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
                         );
                         let safe_request = without_reasoning(request);
-                        self.stream_hosted_search_events(&safe_request, dialect, mode, capability)
-                            .await
-                            .map_err(|error| {
-                                if matches!(
-                                    mode,
-                                    super::native_search::SearchExecutionMode::Auto
-                                        | super::native_search::SearchExecutionMode::Hybrid
-                                ) {
-                                    contextualize_hosted_search_error(dialect, error)
-                                } else {
-                                    error
-                                }
-                            })
+                        self.stream_responses_events(
+                            &safe_request,
+                            dialect,
+                            Some((mode, capability)),
+                        )
+                        .await
+                        .map_err(|error| {
+                            if matches!(
+                                mode,
+                                super::native_search::SearchExecutionMode::Auto
+                                    | super::native_search::SearchExecutionMode::Hybrid
+                            ) {
+                                contextualize_hosted_search_error(dialect, error)
+                            } else {
+                                error
+                            }
+                        })
                     }
                     Err(error)
                         if matches!(
@@ -3141,6 +3315,23 @@ impl LlmProvider for OpenAiProvider {
             return Ok(Box::pin(futures::stream::iter(
                 completion_response_to_provider_events(response),
             )));
+        }
+        if is_direct_deepseek_responses_request(&self.config, request) {
+            let dialect = super::native_search::NativeSearchDialect::DeepSeekResponses;
+            return match self.stream_responses_events(request, dialect, None).await {
+                Ok(stream) => Ok(stream),
+                Err(error)
+                    if request.reasoning_enabled != Some(false)
+                        && is_deepseek_missing_reasoning_replay(&error) =>
+                {
+                    warn!(
+                        "DeepSeek Responses rejected legacy reasoning replay; retrying the same Responses route once with reasoning disabled"
+                    );
+                    self.stream_responses_events(&without_reasoning(request), dialect, None)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
         }
         if requires_non_streaming_fallback(&request.model) {
             let response = self.complete(request).await?;
@@ -3515,6 +3706,30 @@ data: [DONE]
             socket.shutdown().await?;
         }
         Ok(())
+    }
+
+    async fn serve_generic_deepseek_responses(
+        listener: tokio::net::TcpListener,
+        bodies: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> std::io::Result<()> {
+        let (mut socket, _) = listener.accept().await?;
+        let body = read_json_request(&mut socket).await?;
+        bodies.lock().expect("request bodies").push(body);
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+        socket
+            .write_all(
+                br#"data: {"type":"response.output_text.delta","item_id":"msg-generic","output_index":0,"content_index":0,"delta":"generic response","sequence_number":1}
+
+data: {"type":"response.completed","response":{"id":"resp-generic","status":"completed","output":[{"id":"msg-generic","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"generic response","annotations":[]}]}],"usage":{"input_tokens":9,"input_tokens_details":{"cached_tokens":7},"output_tokens":2,"total_tokens":11}},"sequence_number":2}
+
+"#,
+            )
+            .await?;
+        socket.shutdown().await
     }
 
     async fn serve_delayed_responses_sse_response(
@@ -4131,6 +4346,85 @@ data: [DONE]
         assert!(
             replay_captured,
             "terminal hosted-search replay must survive without a client tool call"
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_deepseek_v4_responses_do_not_invent_web_search() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let server = tokio::spawn(serve_generic_deepseek_responses(
+            listener,
+            Arc::clone(&bodies),
+        ));
+        let provider = OpenAiProvider::new(ProviderConfig {
+            provider_type: ProviderType::DeepSeek,
+            base_url: Some(format!("http://{addr}/v1")),
+            api_key: Some("test-key".to_string()),
+            org_id: None,
+            timeout_secs: Some(2),
+            streaming: Default::default(),
+        })
+        .expect("provider");
+        let mut request = endpoint_reasoning_request("deepseek-v4-pro");
+        request.tools = Some(vec![ToolDefinition {
+            name: "record_result".to_string(),
+            description: "Record a result".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "value": { "type": "string" } },
+                "required": ["value"]
+            }),
+        }]);
+
+        let mut stream = provider
+            .stream_responses_events(
+                &request,
+                super::super::native_search::NativeSearchDialect::DeepSeekResponses,
+                None,
+            )
+            .await
+            .expect("generic DeepSeek Responses stream");
+        let mut answer = String::new();
+        let mut finish_reason = None;
+        while let Some(event) = stream.next().await {
+            match event {
+                ProviderStreamEvent::Chunk { chunk } => {
+                    answer.push_str(&chunk.delta);
+                    finish_reason = chunk.finish_reason.or(finish_reason);
+                }
+                event => panic!("unexpected generic Responses event: {event:?}"),
+            }
+        }
+        server.await.expect("server task").expect("server result");
+
+        assert_eq!(answer, "generic response");
+        assert_eq!(finish_reason, Some(FinishReason::Stop));
+        let bodies = bodies.lock().expect("request bodies");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["stream"], true);
+        let tools = bodies[0]["tools"].as_array().expect("Responses tools");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["name"], "record_result");
+    }
+
+    #[test]
+    fn direct_deepseek_v4_responses_route_requires_the_official_endpoint() {
+        let request = endpoint_reasoning_request("deepseek-v4-pro");
+        let official = endpoint_config(ProviderType::DeepSeek, "https://api.deepseek.com");
+        let custom = endpoint_config(ProviderType::DeepSeek, "https://example.com/v1");
+
+        assert!(is_direct_deepseek_responses_request(&official, &request));
+        assert!(!is_direct_deepseek_responses_request(&custom, &request));
+
+        let provider = OpenAiProvider::new(official).expect("official provider");
+        assert_eq!(
+            provider.route_snapshot(&request).api_style,
+            ReasoningApiStyle::OpenAiResponses,
         );
     }
 
@@ -5828,7 +6122,7 @@ data: [DONE]
     }
 
     #[test]
-    fn controller_system_tail_stays_control_plane_and_human_remains_latest_user() {
+    fn controller_system_tail_is_append_only_and_compiles_as_controller_user_context() {
         let request = CompletionRequest {
             model: "deepseek-v4-pro".to_string(),
             messages: vec![
@@ -5852,10 +6146,118 @@ data: [DONE]
 
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "stable system");
-        assert_eq!(body["messages"][1]["role"], "system");
-        assert_eq!(body["messages"][1]["content"], "runtime tail");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "question");
         assert_eq!(body["messages"][2]["role"], "user");
-        assert_eq!(body["messages"][2]["content"], "question");
+        assert!(body["messages"][2]["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("runtime tail")));
+    }
+
+    #[test]
+    fn deepseek_chat_wire_preserves_the_previous_request_as_an_exact_prefix() {
+        let first = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable policy"),
+                Message::text(Role::User, "first request"),
+                Message::text(Role::System, "runtime one"),
+            ],
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+        let second = CompletionRequest {
+            messages: vec![
+                Message::text(Role::System, "stable policy"),
+                Message::text(Role::User, "first request"),
+                Message::text(Role::System, "runtime one"),
+                Message::text(Role::Assistant, "first answer"),
+                Message::text(Role::User, "second request"),
+                Message::text(Role::System, "runtime two"),
+            ],
+            ..first.clone()
+        };
+
+        let first_body = serde_json::to_value(build_request_body(&first, false)).unwrap();
+        let second_body = serde_json::to_value(build_request_body(&second, false)).unwrap();
+        let first_messages = first_body["messages"].as_array().expect("first messages");
+        let second_messages = second_body["messages"].as_array().expect("second messages");
+
+        assert_eq!(
+            first_messages.as_slice(),
+            &second_messages[..first_messages.len()],
+            "DeepSeek cache units require the next turn to append to the exact prior request prefix",
+        );
+    }
+
+    #[test]
+    fn deepseek_responses_wire_preserves_the_previous_request_as_an_exact_prefix() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let first = CompletionRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message::text(Role::System, "stable policy"),
+                Message::text(Role::User, "first request"),
+                Message::text(Role::System, "runtime one"),
+            ],
+            provider_type: Some(ProviderType::DeepSeek),
+            parallel_tool_calls: true,
+            ..CompletionRequest::default()
+        };
+        let second = CompletionRequest {
+            messages: vec![
+                Message::text(Role::System, "stable policy"),
+                Message::text(Role::User, "first request"),
+                Message::text(Role::System, "runtime one"),
+                Message::text(Role::Assistant, "first answer"),
+                Message::text(Role::User, "second request"),
+                Message::text(Role::System, "runtime two"),
+            ],
+            ..first.clone()
+        };
+
+        let first_body = build_generic_responses_request(&first, dialect).unwrap();
+        let second_body = build_generic_responses_request(&second, dialect).unwrap();
+        let first_input = first_body["input"].as_array().expect("first input");
+        let second_input = second_body["input"].as_array().expect("second input");
+
+        assert_eq!(first_input, &second_input[..first_input.len()]);
+        assert_eq!(first_input[2]["role"], "developer");
+    }
+
+    #[test]
+    fn deepseek_responses_eligible_prefix_identity_rate_exceeds_99_percent() {
+        let dialect = super::super::native_search::NativeSearchDialect::DeepSeekResponses;
+        let mut messages = vec![Message::text(Role::System, "stable policy")];
+        let mut previous_input: Option<Vec<serde_json::Value>> = None;
+        let mut eligible = 0_u32;
+        let mut identical = 0_u32;
+
+        for turn in 0..101 {
+            messages.push(Message::text(Role::User, format!("request {turn}")));
+            messages.push(Message::text(Role::System, format!("runtime {turn}")));
+            let request = CompletionRequest {
+                model: "deepseek-v4-pro".to_string(),
+                messages: messages.clone(),
+                provider_type: Some(ProviderType::DeepSeek),
+                parallel_tool_calls: true,
+                ..CompletionRequest::default()
+            };
+            let body = build_generic_responses_request(&request, dialect).unwrap();
+            let current = body["input"].as_array().expect("Responses input").clone();
+            if let Some(previous) = previous_input {
+                eligible += 1;
+                if current.starts_with(&previous) {
+                    identical += 1;
+                }
+            }
+            previous_input = Some(current);
+            messages.push(Message::text(Role::Assistant, format!("answer {turn}")));
+        }
+
+        assert!(eligible > 0);
+        assert!(identical.saturating_mul(10_000) / eligible >= 9_900);
     }
 
     #[test]

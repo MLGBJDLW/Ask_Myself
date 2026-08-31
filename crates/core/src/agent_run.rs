@@ -318,7 +318,12 @@ fn event_presentation(
             AgentRunDisplayKind::Approval,
             AgentRunEventImportance::High,
         ),
-        AgentRunEventKind::StreamReset | AgentRunEventKind::RecoveryAttempt => (
+        AgentRunEventKind::StreamReset => (
+            AgentRunEventVisibility::Developer,
+            AgentRunDisplayKind::Recovery,
+            AgentRunEventImportance::Low,
+        ),
+        AgentRunEventKind::RecoveryAttempt => (
             AgentRunEventVisibility::User,
             AgentRunDisplayKind::Recovery,
             AgentRunEventImportance::High,
@@ -604,13 +609,13 @@ impl AgentRunEvent {
             AgentEvent::ConnectionState { state } => {
                 let (label, status) = match state.state {
                     crate::agent::ConnectionStateKind::Degraded => {
-                        ("Provider connection degraded", "degraded")
+                        ("provider_connection_degraded", "degraded")
                     }
                     crate::agent::ConnectionStateKind::Reconnecting => {
-                        ("Reconnecting to provider", "reconnecting")
+                        ("provider_connection_reconnecting", "reconnecting")
                     }
                     crate::agent::ConnectionStateKind::Recovered => {
-                        ("Provider connection recovered", "recovered")
+                        ("provider_connection_recovered", "recovered")
                     }
                     crate::agent::ConnectionStateKind::Offline => {
                         ("Provider is offline", "offline")
@@ -698,11 +703,16 @@ impl AgentRunEvent {
         };
 
         let (mut visibility, mut display_kind, mut importance) = event_presentation(kind);
-        if let AgentEvent::ControllerStatus { code, .. } = event {
-            if code == "model_planning_slow" {
-                visibility = AgentRunEventVisibility::User;
-                importance = AgentRunEventImportance::High;
-            } else {
+        if matches!(event, AgentEvent::ControllerStatus { .. }) {
+            visibility = AgentRunEventVisibility::Developer;
+            importance = AgentRunEventImportance::Low;
+        }
+        if let AgentEvent::ConnectionState { state } = event {
+            if !matches!(
+                state.state,
+                crate::agent::ConnectionStateKind::Offline
+                    | crate::agent::ConnectionStateKind::Failed
+            ) {
                 visibility = AgentRunEventVisibility::Developer;
                 importance = AgentRunEventImportance::Low;
             }
@@ -1354,20 +1364,20 @@ mod tests {
     }
 
     #[test]
-    fn slow_model_controller_status_is_actionable_user_output() {
+    fn legacy_slow_model_controller_status_is_internal_diagnostics() {
         let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ControllerStatus {
             code: "model_planning_slow".to_string(),
-            content: "The model is still reasoning (45s, about 120 tokens).".to_string(),
+            content: "legacy timing diagnostic".to_string(),
             tone: Some("warning".to_string()),
         });
 
-        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
-        assert_eq!(run_event.importance, AgentRunEventImportance::High);
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::Developer);
+        assert_eq!(run_event.importance, AgentRunEventImportance::Low);
         assert_eq!(run_event.payload["code"], "model_planning_slow");
     }
 
     #[test]
-    fn connection_state_projects_to_user_recovery_event() {
+    fn recoverable_connection_state_projects_to_internal_recovery_event() {
         let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ConnectionState {
             state: ConnectionStateEvent {
                 state: ConnectionStateKind::Reconnecting,
@@ -1385,10 +1395,33 @@ mod tests {
 
         assert_eq!(run_event.kind, AgentRunEventKind::RecoveryAttempt);
         assert_eq!(run_event.phase, AgentRunPhase::Responding);
-        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::Developer);
         assert_eq!(run_event.display_kind, AgentRunDisplayKind::Recovery);
+        assert_eq!(run_event.importance, AgentRunEventImportance::Low);
         assert_eq!(run_event.status.as_deref(), Some("reconnecting"));
         assert_eq!(run_event.payload["state"]["providerId"], "openai");
+    }
+
+    #[test]
+    fn terminal_connection_failure_remains_user_facing() {
+        let run_event = AgentRunEvent::from_agent_event(&AgentEvent::ConnectionState {
+            state: ConnectionStateEvent {
+                state: ConnectionStateKind::Failed,
+                provider_id: "deepseek".to_string(),
+                model_id: "deepseek-v4-pro".to_string(),
+                error_category: Some(ConnectionErrorCategory::Network),
+                attempt: 2,
+                max_attempts: 2,
+                next_retry_at: None,
+                recoverable: false,
+                queued_user_inputs: 0,
+                turn_preserved: true,
+            },
+        });
+
+        assert_eq!(run_event.visibility, AgentRunEventVisibility::User);
+        assert_eq!(run_event.importance, AgentRunEventImportance::High);
+        assert_eq!(run_event.status.as_deref(), Some("failed"));
     }
 
     #[test]

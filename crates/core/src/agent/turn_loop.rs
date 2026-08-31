@@ -1454,6 +1454,14 @@ impl AgentExecutor {
                 turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             };
+            let wire_model_step_max_response_tokens =
+                if self.config.max_actual_tokens_per_run.is_some() {
+                    // A caller-authorized cumulative worker cap must bound each
+                    // physical request as the remaining budget shrinks.
+                    Some(model_step_max_response_tokens)
+                } else {
+                    output_budget_plan.wire_max_tokens()
+                };
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -1463,6 +1471,7 @@ impl AgentExecutor {
                     route_kind: route_plan.kind,
                     model,
                     max_response_tokens: model_step_max_response_tokens,
+                    wire_max_response_tokens: wire_model_step_max_response_tokens,
                     has_sources,
                     privacy_cfg: &privacy_cfg,
                     messages: &mut messages,
@@ -1930,12 +1939,14 @@ impl AgentExecutor {
                         !buffer_answer_projection,
                     );
                     let rejection_reason = match tool_round_rejection_cause {
-                        Some(ToolRoundRejectionCause::OutputLimit) => "The provider reached its output limit while assembling a tool call. Nexa discarded the truncated parameters before re-planning.",
-                        Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before the client tool envelope committed. Nexa discarded the draft call before resuming provider state.",
-                        Some(ToolRoundRejectionCause::ContextLimit) => "The provider reached the context limit before the tool envelope committed. Nexa discarded the draft call before context rollover.",
-                        Some(ToolRoundRejectionCause::MalformedToolCall) => "The provider reported a malformed tool call. Nexa discarded the draft before re-planning.",
-                        Some(ToolRoundRejectionCause::ToolsSuppressed) => "The provider returned tool calls during the reserved answer-only step. Nexa discarded them before re-planning.",
-                        Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The provider returned an incomplete tool-call envelope, so Nexa discarded that sample before re-planning.",
+                        Some(ToolRoundRejectionCause::OutputLimit) => "tool_draft_output_limit",
+                        Some(ToolRoundRejectionCause::ProviderPause) => "tool_draft_provider_pause",
+                        Some(ToolRoundRejectionCause::ContextLimit) => "tool_draft_context_limit",
+                        Some(ToolRoundRejectionCause::MalformedToolCall) => "tool_draft_malformed",
+                        Some(ToolRoundRejectionCause::ToolsSuppressed) => "tool_draft_suppressed",
+                        Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => {
+                            "tool_draft_incomplete"
+                        }
                     };
                     let _ = tx
                         .send(AgentEvent::StreamReset {
@@ -2060,20 +2071,12 @@ impl AgentExecutor {
 
                     {
                         let replan_instruction = match tool_round_rejection_cause {
-                            Some(ToolRoundRejectionCause::OutputLimit) => {
-                                let recommended_chars = output_budget_plan
-                                    .recommended_text_tool_chunk_chars(
-                                        model_step_max_response_tokens,
-                                    );
-                                format!(
-                                    "The previous provider response hit its {model_step_max_response_tokens}-token output limit while assembling a tool call and was discarded before execution. Re-plan from the user request. For create_file/write_note, keep each content value below about {recommended_chars} characters, create a small first chunk, then use append operations with nextExpectedBytes. Otherwise emit one complete tool call with valid JSON arguments. This protocol repair does not consume a verified tool round."
-                                )
-                            }
-                            Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before its client tool draft committed. Resume from committed provider state only; do not execute or continue the partial client call. This recovery does not consume a verified tool round.".to_string(),
-                            Some(ToolRoundRejectionCause::ContextLimit) => "The model context ended before its tool draft committed. Re-plan after context rollover and emit a fresh, complete call; do not continue the partial envelope. This recovery does not consume a verified tool round.".to_string(),
-                            Some(ToolRoundRejectionCause::MalformedToolCall) => "The provider reported a malformed tool call. Emit a fresh call whose id and name are non-empty and whose arguments are one exact JSON object. Do not continue the malformed envelope. This repair does not consume a verified tool round.".to_string(),
-                            Some(ToolRoundRejectionCause::ToolsSuppressed) => "Client tools are unavailable because this is the reserved answer-only synthesis step. Do not emit any tool call. Produce the best complete visible answer from the committed evidence and tool results already in context. This protocol repair does not consume another tool round.".to_string(),
-                            Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The previous provider response contained an incomplete tool-call envelope and was discarded before execution. Re-plan from the user request. If a tool is still needed, emit a new call with a non-empty id and name plus one complete JSON object for arguments; do not continue the partial call. This protocol repair does not consume a verified tool round.".to_string(),
+                            Some(ToolRoundRejectionCause::OutputLimit) => "The previous tool-call draft was truncated at the provider output boundary and was not executed. Retry with a smaller operation. For large file content, create a small first chunk and append bounded chunks.".to_string(),
+                            Some(ToolRoundRejectionCause::ProviderPause) => "The provider paused before the client tool draft committed. Resume from committed provider state; do not continue the discarded draft.".to_string(),
+                            Some(ToolRoundRejectionCause::ContextLimit) => "The context ended before the tool draft committed. After rollover, retry once using the exposed tool schema; do not continue the discarded draft.".to_string(),
+                            Some(ToolRoundRejectionCause::MalformedToolCall) => "The previous tool-call draft was malformed and was not executed. Retry once using the exposed tool schema; change strategy if it fails again.".to_string(),
+                            Some(ToolRoundRejectionCause::ToolsSuppressed) => "Client tools are unavailable during the reserved answer-only step. Produce the best complete visible answer from the committed evidence and tool results.".to_string(),
+                            Some(ToolRoundRejectionCause::ProtocolIncomplete) | None => "The previous tool-call draft was incomplete and was not executed. Retry once from the user request using the exposed tool schema.".to_string(),
                         };
                         if let Some(message) =
                             prompt_ir::controller_state_message(replan_instruction)
@@ -2156,8 +2159,7 @@ impl AgentExecutor {
                     last_iteration_content.clear();
                     let _ = tx
                         .send(AgentEvent::StreamReset {
-                            reason: "A repeated agent loop was stopped before another model or tool step."
-                                .to_string(),
+                            reason: "agent_loop_stopped".to_string(),
                             discard_sample: true,
                         })
                         .await;

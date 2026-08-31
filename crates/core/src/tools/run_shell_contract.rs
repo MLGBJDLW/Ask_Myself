@@ -72,7 +72,6 @@ pub(crate) const SHELL_ENUM: &[&str] =
     &["none", "default", "powershell", "pwsh", "cmd", "bash", "sh"];
 
 static TOOL_DESCRIPTION: OnceLock<String> = OnceLock::new();
-static SYSTEM_PROMPT_SECTION: OnceLock<String> = OnceLock::new();
 static ROUTE_GUIDANCE: OnceLock<String> = OnceLock::new();
 
 pub(crate) fn tool_description() -> &'static str {
@@ -172,24 +171,6 @@ pub(crate) fn parameters_schema() -> Value {
             }
         },
         "required": []
-    })
-}
-
-pub(crate) fn system_prompt_section() -> &'static str {
-    SYSTEM_PROMPT_SECTION.get_or_init(|| {
-        format!(
-            "## Tool Contract: run_shell\n\n- {project_tool}\n- {invocation_modes}\n- {direct_command} {shell_mode}\n- {restricted_programs}\n- {native_fs} {plain_text_tools}\n- {large_payloads}\n- {html_pptx}\n- {timeouts}",
-            project_tool = "Use `project_tool list` / `project_tool describe` before ad hoc `run_shell` when a repository may define local lint, test, codegen, diagnostics, export, or validation workflows in `.nexa/tools` or `.agents/tools`. Use `project_tool run` only when the manifest clearly matches the task; include the current `manifestHash` returned by list/describe.",
-            invocation_modes = prompt_invocation_modes_sentence(),
-            direct_command = prompt_direct_command_sentence(),
-            shell_mode = prompt_shell_mode_sentence(),
-            restricted_programs = prompt_restricted_programs_sentence(),
-            native_fs = prompt_native_filesystem_sentence(),
-            plain_text_tools = prompt_plain_text_tools_sentence(),
-            large_payloads = prompt_large_payload_sentence(),
-            html_pptx = prompt_html_pptx_sentence(),
-            timeouts = prompt_timeout_sentence(),
-        )
     })
 }
 
@@ -320,24 +301,12 @@ fn invocation_modes_sentence() -> &'static str {
     "You can pass either `command` for short one-line commands like `git status --short`, or `program` plus `args` for exact argv control."
 }
 
-fn prompt_invocation_modes_sentence() -> &'static str {
-    "Use `run_shell` only when a dedicated file/project tool is not the better fit. Use `command` for simple cross-platform commands and `program` plus `args` for exact argv control or large stdin-driven scripts."
-}
-
 fn direct_command_sentence() -> &'static str {
     "Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode continues to reject it."
 }
 
-fn prompt_direct_command_sentence() -> &'static str {
-    "Plain `command` input is parsed into exact argv without a shell. In ConfirmAll/Open modes, recognizable shell syntax automatically uses the platform default shell; Restricted mode rejects shell syntax."
-}
-
 fn shell_mode_sentence() -> &'static str {
     "Set `shell` explicitly when the interpreter choice matters. Shell execution is rejected in Restricted access and only works in ConfirmAll/Open."
-}
-
-fn prompt_shell_mode_sentence() -> &'static str {
-    "Set `shell` when interpreter choice matters; explicit shell mode is rejected in Restricted access and, when allowed, uses PowerShell on Windows for `shell: \"default\"` and `sh` on Unix-like systems."
 }
 
 fn restricted_programs_sentence() -> String {
@@ -352,58 +321,26 @@ fn restricted_programs_sentence() -> String {
     )
 }
 
-fn prompt_restricted_programs_sentence() -> String {
-    format!(
-        "In Restricted mode, non-shell `run_shell` is limited to whitelisted programs (`{}`), read-only `git`, and scoped filesystem commands (`pwd`, `ls`, `cat`, `mkdir`, `cp`, `mv`); filesystem paths must stay inside registered sources.",
-        PROGRAM_WHITELIST
-            .iter()
-            .copied()
-            .filter(|program| !matches!(*program, "git" | "pwd" | "ls" | "cat" | "mkdir" | "cp" | "mv"))
-            .collect::<Vec<_>>()
-            .join("`, `")
-    )
-}
-
 fn native_filesystem_sentence() -> &'static str {
     "Simple filesystem commands are implemented natively by the app, so use them directly for directory creation, copying, and moving instead of writing one-off Python snippets."
-}
-
-fn prompt_native_filesystem_sentence() -> &'static str {
-    "Use app-native filesystem tools directly for simple directory/copy/move work."
 }
 
 fn plain_text_tools_sentence() -> &'static str {
     "For plain-text read/create/edit/list work, prefer read_file, read_files, create_file, edit_file, and list_dir over Python. Reserve Python for real scripts, structured document workflows, parsing/transforms, or operations that need libraries."
 }
 
-fn prompt_plain_text_tools_sentence() -> &'static str {
-    "Do not write Python just to `mkdir`, list files, print a file, copy, move, create, or edit a plain-text path; reserve Python for real scripts, structured document work, parsing/transforms, or operations needing libraries."
-}
-
 fn large_payload_sentence() -> &'static str {
     "For large scripts or generated text, pass the content through `stdin` and use a program form that reads stdin (for example python with args [\"-\"]); do not stuff large content into argv."
-}
-
-fn prompt_large_payload_sentence() -> &'static str {
-    "Do not pass large generated scripts or long file contents through `run_shell.args` or `python -c`; pass them through `run_shell.stdin` with a stdin-reading program, or use the appropriate file/document tool."
 }
 
 fn html_pptx_sentence() -> &'static str {
     "For HTML-first PPTX/deck generation, call the renderer with `--spec -` and put the generated JSON spec in `stdin`; never put raw HTML/CSS/JSON deck specs inside `args` or `python -c`."
 }
 
-fn prompt_html_pptx_sentence() -> &'static str {
-    "For HTML-first PPTX generation, pass `--spec -` in `run_shell.args` and put the generated JSON spec in `run_shell.stdin`; never put raw HTML/CSS/JSON deck content inside `args`."
-}
-
 fn timeout_sentence() -> String {
     format!(
         "Output is capped at 64 KB per stream. External commands without stdin are observed briefly, then automatically detached if still running; callers do not predict duration. Follow the returned activityId/cursor with activity_observe, whose wait is capped at 2.5 seconds. Native filesystem operations and stdin-driven commands remain finite foreground runs with default timeout {DEFAULT_TIMEOUT_SECS}s."
     )
-}
-
-fn prompt_timeout_sentence() -> String {
-    "Output is capped at 64 KB per stream. External commands without stdin automatically detach after a brief observation window if still running. Do not set background based on guessed duration and do not fake waiting with sleep commands. Follow the returned `activityId` and `cursor` through `activity_observe`; each observation waits at most 2.5 seconds and returns on new events. Compatibility status/wait/stop calls remain available, with wait capped at 3 seconds.".to_string()
 }
 
 fn windows_paths_sentence() -> &'static str {
@@ -452,12 +389,6 @@ mod tests {
             "src/tools/snapshots/run_shell_tool_definition.json",
             &actual,
         );
-    }
-
-    #[test]
-    fn run_shell_prompt_section_snapshot_matches_contract() {
-        let actual = format!("{}\n", system_prompt_section());
-        assert_snapshot("src/tools/snapshots/run_shell_system_prompt.md", &actual);
     }
 
     #[test]

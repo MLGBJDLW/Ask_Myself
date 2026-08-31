@@ -404,8 +404,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                                         if resettable_progress_seen {
                                             self.pending_agent_events.push_back(
                                                 AgentEvent::StreamReset {
-                                                    reason: "The provider rejected an incomplete draft; Nexa discarded that sample before the typed retry."
-                                                        .to_string(),
+                                                    reason: "provider_draft_retry".to_string(),
                                                     discard_sample: true,
                                                 },
                                             );
@@ -419,7 +418,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                                         if resettable_progress_seen && context_overflow {
                                             self.pending_agent_events.push_back(
                                                 AgentEvent::StreamReset {
-                                                    reason: "The provider reported context overflow; Nexa discarded the incomplete draft before compaction."
+                                                    reason: "provider_context_compaction"
                                                         .to_string(),
                                                     discard_sample: true,
                                                 },
@@ -718,12 +717,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     },
                 ));
             }
-            StreamRecoveryDecision::Reconnect {
-                attempt,
-                reset_reason,
-                delay,
-                ..
-            } => {
+            StreamRecoveryDecision::Reconnect { attempt, delay } => {
                 self.disconnect_retries = attempt;
                 self.pending_recovery = Some(RecoverySignal {
                     attempt,
@@ -737,7 +731,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 );
                 self.pending_agent_events
                     .push_back(AgentEvent::StreamReset {
-                        reason: reset_reason.clone(),
+                        reason: "provider_stream_retry".to_string(),
                         discard_sample: true,
                     });
                 self.discard_resettable_sample();
