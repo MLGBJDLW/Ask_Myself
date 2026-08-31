@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.4...nexa-monorepo-v0.13.5) (2026-08-31)
+
+
+### Bug Fixes
+
+* **chat:** Hide transient model recovery diagnostics ([d428fc9](https://github.com/MLGBJDLW/Nexa/commit/d428fc9f604dba2be8cdf02a07a0e55a3c2fa5a9))
+* **chat:** Settle destructive actions exactly once ([18cc6d7](https://github.com/MLGBJDLW/Nexa/commit/18cc6d7cc7f1a3337a851942da59f6175a01485a))
+* **core:** Harden DeepSeek streaming and archive deletion ([11b4ebd](https://github.com/MLGBJDLW/Nexa/commit/11b4ebd1bcca00765bddd80c874be453d64d67ab))
+* **core:** Harden provider streaming and tool recovery ([96efe11](https://github.com/MLGBJDLW/Nexa/commit/96efe11d499ef598d421d67fd85fbe7a36cbd532))
+* **core:** Make conversation deletion non-blocking ([1eb071e](https://github.com/MLGBJDLW/Nexa/commit/1eb071ed234778742b603583972aef948d64593f))
+
 ## [0.13.4](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.3...nexa-monorepo-v0.13.4) (2026-08-30)
 
 
