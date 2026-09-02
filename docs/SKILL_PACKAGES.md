@@ -39,7 +39,9 @@ left untouched and unregistered until the user chooses the normal import flow,
 including security-warning acknowledgement. A disabled skill keeps its files;
 only an explicit Delete removes its folder. Invalid, unsafe, or conflicting
 edits are reported and left on disk for correction rather than overwritten by
-the last database projection.
+the last database projection. Nexa also preserves unmodeled files such as
+`README.md`, `LICENSE`, and repository metadata in these user-owned folders;
+recursive stale-file pruning remains limited to the legacy internal cache.
 
 The optional `agents/openai.yaml` file describes agent-facing metadata and
 dependencies:

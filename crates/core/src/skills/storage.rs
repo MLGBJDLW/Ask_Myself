@@ -218,12 +218,20 @@ pub fn materialize_user_skill_to_disk(
     app_data_dir: &Path,
     skill: &Skill,
 ) -> Result<PathBuf, CoreError> {
-    materialize_user_skill_to_directory(&app_data_dir.join("skills").join("user"), skill)
+    materialize_user_skill(&app_data_dir.join("skills").join("user"), skill, true)
 }
 
 pub fn materialize_user_skill_to_directory(
     user_skills_dir: &Path,
     skill: &Skill,
+) -> Result<PathBuf, CoreError> {
+    materialize_user_skill(user_skills_dir, skill, false)
+}
+
+fn materialize_user_skill(
+    user_skills_dir: &Path,
+    skill: &Skill,
+    prune_stale_projection_files: bool,
 ) -> Result<PathBuf, CoreError> {
     if skill.builtin {
         return Err(CoreError::InvalidInput(
@@ -275,7 +283,9 @@ pub fn materialize_user_skill_to_directory(
         write_user_file_if_changed(&target, &bytes, &skill.id)?;
     }
 
-    prune_stale_user_skill_files(&skill_dir, &skill_dir, &expected_files, &skill.id)?;
+    if prune_stale_projection_files {
+        prune_stale_user_skill_files(&skill_dir, &skill_dir, &expected_files, &skill.id)?;
+    }
 
     Ok(skill_dir)
 }

@@ -1021,6 +1021,38 @@ mod tests {
     }
 
     #[test]
+    fn test_user_owned_skill_directory_preserves_unknown_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Source-owned skill".into(),
+                description: "Use for source ownership tests".into(),
+                content: "Keep user-authored files.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let skill_dir = materialize_user_skill_to_directory(dir.path(), &saved).unwrap();
+        fs::write(skill_dir.join("README.md"), "user notes\n").unwrap();
+        fs::create_dir_all(skill_dir.join(".git")).unwrap();
+        fs::write(skill_dir.join(".git/config"), "user metadata\n").unwrap();
+
+        materialize_user_skill_to_directory(dir.path(), &saved).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("README.md")).unwrap(),
+            "user notes\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join(".git/config")).unwrap(),
+            "user metadata\n"
+        );
+    }
+
+    #[test]
     fn test_discover_skills_in_directory_recurses_and_loads_resources() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("nested/productivity");
