@@ -4,32 +4,29 @@ use nexa_core::package_host::PackageSurfaceKind;
 
 // ── Skills Commands ─────────────────────────────────────────────────
 
-fn app_data_dir_for_skills(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data directory: {e}"))
+fn materialize_user_skill_resource(state: &AppState, skill: &Skill) -> Result<(), String> {
+    nexa_core::skills::materialize_user_skill_to_directory(
+        &state.user_extensions.skills_dir(),
+        skill,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
-fn materialize_user_skill_resource(app_handle: &AppHandle, skill: &Skill) -> Result<(), String> {
-    let data_dir = app_data_dir_for_skills(app_handle)?;
-    nexa_core::skills::materialize_user_skill_to_disk(&data_dir, skill)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+fn materialize_user_skill_resources(state: &AppState, skills: &[Skill]) -> Result<(), String> {
+    nexa_core::skills::materialize_user_skills_to_directory(
+        &state.user_extensions.skills_dir(),
+        skills,
+    )
+    .map_err(|e| e.to_string())
 }
 
-fn materialize_user_skill_resources(
-    app_handle: &AppHandle,
-    skills: &[Skill],
-) -> Result<(), String> {
-    let data_dir = app_data_dir_for_skills(app_handle)?;
-    nexa_core::skills::materialize_user_skills_to_disk(&data_dir, skills).map_err(|e| e.to_string())
-}
-
-fn remove_user_skill_resource(app_handle: &AppHandle, skill_id: &str) -> Result<(), String> {
-    let data_dir = app_data_dir_for_skills(app_handle)?;
-    nexa_core::skills::remove_materialized_user_skill(&data_dir, skill_id)
-        .map_err(|e| e.to_string())
+fn remove_user_skill_resource(state: &AppState, skill_id: &str) -> Result<(), String> {
+    nexa_core::skills::remove_materialized_user_skill_from_directory(
+        &state.user_extensions.skills_dir(),
+        skill_id,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -39,32 +36,22 @@ pub async fn list_skills_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Sk
 
 #[tauri::command]
 pub async fn save_skill_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     input: SaveSkillInput,
 ) -> Result<Skill, String> {
     let skill = state.db.save_skill(&input).map_err(|e| e.to_string())?;
-    if skill.enabled {
-        materialize_user_skill_resource(&app_handle, &skill)?;
-    } else {
-        remove_user_skill_resource(&app_handle, &skill.id)?;
-    }
+    materialize_user_skill_resource(&state, &skill)?;
     Ok(skill)
 }
 
 #[tauri::command]
-pub async fn delete_skill_cmd(
-    app_handle: AppHandle,
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_skill_cmd(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     state.db.delete_skill(&id).map_err(|e| e.to_string())?;
-    remove_user_skill_resource(&app_handle, &id)
+    remove_user_skill_resource(&state, &id)
 }
 
 #[tauri::command]
 pub async fn toggle_skill_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     enabled: bool,
@@ -73,20 +60,16 @@ pub async fn toggle_skill_cmd(
         .db
         .toggle_skill(&id, enabled)
         .map_err(|e| e.to_string())?;
-    if enabled {
-        if let Some(skill) = state
-            .db
-            .list_skills()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|skill| skill.id == id)
-        {
-            materialize_user_skill_resource(&app_handle, &skill)?;
-        }
-        Ok(())
-    } else {
-        remove_user_skill_resource(&app_handle, &id)
+    if let Some(skill) = state
+        .db
+        .list_skills()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|skill| skill.id == id)
+    {
+        materialize_user_skill_resource(&state, &skill)?;
     }
+    Ok(())
 }
 
 pub(crate) fn filter_desktop_builtin_skills_by_package_host(
@@ -124,7 +107,6 @@ pub async fn list_builtin_skills_cmd(
 
 #[tauri::command]
 pub async fn import_skill_from_md_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     content: String,
 ) -> Result<Skill, String> {
@@ -139,7 +121,7 @@ pub async fn import_skill_from_md_cmd(
     };
     let skill = state.db.save_skill(&input).map_err(|e| e.to_string())?;
     if skill.enabled {
-        materialize_user_skill_resource(&app_handle, &skill)?;
+        materialize_user_skill_resource(&state, &skill)?;
     }
     Ok(skill)
 }
@@ -169,7 +151,6 @@ pub async fn inspect_skill_install_source_cmd(
 
 #[tauri::command]
 pub async fn install_skills_from_source_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     source: String,
     replace_existing: bool,
@@ -182,7 +163,7 @@ pub async fn install_skills_from_source_cmd(
         accept_blocked_warnings,
     )
     .map_err(|e| e.to_string())?;
-    materialize_user_skill_resources(&app_handle, &skills)?;
+    materialize_user_skill_resources(&state, &skills)?;
     Ok(skills)
 }
 
@@ -196,13 +177,12 @@ pub async fn discover_skills_in_directory_cmd(
 
 #[tauri::command]
 pub async fn import_skills_from_directory_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     directory: String,
 ) -> Result<Vec<Skill>, String> {
     let skills = nexa_core::skills::import_skills_from_directory(&state.db, Path::new(&directory))
         .map_err(|e| e.to_string())?;
-    materialize_user_skill_resources(&app_handle, &skills)?;
+    materialize_user_skill_resources(&state, &skills)?;
     Ok(skills)
 }
 
@@ -284,14 +264,32 @@ fn may_list_mcp_tools(server: &McpServer) -> bool {
     server.enabled
 }
 
-fn user_mcp_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app_data_dir_for_skills(app_handle)?;
-    Ok(nexa_core::mcp::config_file::user_mcp_config_path(&data_dir))
+#[tauri::command]
+pub fn get_user_extension_layout_cmd(
+    state: tauri::State<'_, AppState>,
+) -> nexa_core::user_extensions::UserExtensionLayoutView {
+    state.user_extensions.view()
 }
 
 #[tauri::command]
-pub async fn prepare_mcp_config_file_cmd(app_handle: AppHandle) -> Result<String, String> {
-    let path = user_mcp_config_path(&app_handle)?;
+pub async fn reload_user_skill_files_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<nexa_core::skills::RegisteredSkillFileSyncReport, String> {
+    let report = nexa_core::skills::sync_registered_user_skills_from_directory(
+        &state.db,
+        &state.user_extensions.skills_dir(),
+    )
+    .map_err(|error| error.to_string())?;
+    let skills = state.db.list_skills().map_err(|error| error.to_string())?;
+    materialize_user_skill_resources(&state, &skills)?;
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn prepare_mcp_config_file_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let path = state.user_extensions.mcp_config_path();
     nexa_core::mcp::config_file::ensure_user_mcp_config(&path)
         .map_err(|error| error.to_string())?;
     Ok(path.to_string_lossy().into_owned())
@@ -299,11 +297,10 @@ pub async fn prepare_mcp_config_file_cmd(app_handle: AppHandle) -> Result<String
 
 #[tauri::command]
 pub async fn reload_mcp_config_file_cmd(
-    app_handle: AppHandle,
     state: tauri::State<'_, AppState>,
     mcp_state: tauri::State<'_, McpManagerState>,
 ) -> Result<nexa_core::mcp::config_file::McpConfigReloadReport, String> {
-    let path = user_mcp_config_path(&app_handle)?;
+    let path = state.user_extensions.mcp_config_path();
     let report = nexa_core::mcp::config_file::reload_user_mcp_config(&state.db, &path)
         .map_err(|error| error.to_string())?;
     let mut manager = mcp_state.manager.lock().await;

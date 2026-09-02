@@ -416,6 +416,24 @@ fn main() {
             // Migrate legacy user data (ask-myself -> nexa). Safe to call every start.
             migrate_legacy_data_dir(&data_dir);
 
+            let user_extensions =
+                nexa_core::user_extensions::UserExtensionLayout::discover(&data_dir)
+                    .expect("failed to resolve Nexa user extension home");
+            match user_extensions.bootstrap() {
+                Ok(report) => log::info!(
+                    "Prepared Nexa user extension home at {} (copied={}, preserved={}, skipped_links={})",
+                    user_extensions.root().display(),
+                    report.copied_files,
+                    report.preserved_user_files,
+                    report.skipped_links,
+                ),
+                Err(error) => log::warn!("Failed to prepare Nexa user extension home: {error}"),
+            }
+            nexa_core::skills::configure_user_skills_directory(
+                &user_extensions.skills_dir(),
+            )
+            .expect("failed to configure Nexa user skill directory");
+
             // Materialize bundled skill assets to disk so run_shell can exec them
             // and <SKILL_DIR> placeholders in prompts resolve correctly.
             match nexa_core::skills::materialize_skills_to_disk(&data_dir) {
@@ -483,8 +501,7 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
-            let mcp_config_path =
-                nexa_core::mcp::config_file::user_mcp_config_path(&data_dir);
+            let mcp_config_path = user_extensions.mcp_config_path();
             match nexa_core::mcp::config_file::reload_user_mcp_config(
                 &db,
                 &mcp_config_path,
@@ -499,11 +516,30 @@ fn main() {
                     mcp_config_path.display()
                 ),
             }
-            match db
-                .list_skills()
-                .and_then(|skills| nexa_core::skills::materialize_user_skills_to_disk(&data_dir, &skills))
-            {
-                Ok(()) => log::info!("Materialized user skills to {}", data_dir.join("skills/user").display()),
+            match nexa_core::skills::sync_registered_user_skills_from_directory(
+                &db,
+                &user_extensions.skills_dir(),
+            ) {
+                Ok(report) if report.updated > 0 || !report.rejected.is_empty() => log::info!(
+                    "Synchronized ~/.nexa skills: updated={}, unchanged={}, unregistered={}, rejected={}",
+                    report.updated,
+                    report.unchanged,
+                    report.unregistered,
+                    report.rejected.len(),
+                ),
+                Ok(_) => {}
+                Err(error) => log::warn!("Failed to synchronize ~/.nexa skills: {error}"),
+            }
+            match db.list_skills().and_then(|skills| {
+                nexa_core::skills::materialize_user_skills_to_directory(
+                    &user_extensions.skills_dir(),
+                    &skills,
+                )
+            }) {
+                Ok(()) => log::info!(
+                    "Materialized user skills to {}",
+                    user_extensions.skills_dir().display()
+                ),
                 Err(e) => log::warn!("Failed to materialize user skills: {e}"),
             }
             let db = Arc::new(db);
@@ -585,6 +621,7 @@ fn main() {
             let (background_work, background_work_receiver) = BackgroundWorkGovernor::new();
             app.manage(AppState {
                 db: db.clone(),
+                user_extensions: user_extensions.clone(),
                 db_executor,
                 run_event_outboxes,
                 subagent_lifecycle: subagent_lifecycle::SubagentLifecycleRuntime::default(),
@@ -979,6 +1016,8 @@ fn main() {
             commands::get_video_metadata_cmd,
             // Skills
             commands::list_skills_cmd,
+            commands::get_user_extension_layout_cmd,
+            commands::reload_user_skill_files_cmd,
             commands::save_skill_cmd,
             commands::delete_skill_cmd,
             commands::toggle_skill_cmd,

@@ -1,6 +1,40 @@
 use super::*;
 use tauri::Emitter;
 
+fn merge_user_theme_files(
+    state: &AppState,
+    plugins: Vec<nexa_core::theme_resource_plugin::ThemeResourcePlugin>,
+) -> Result<Vec<nexa_core::theme_resource_plugin::ThemeResourcePlugin>, String> {
+    let mut merged = plugins
+        .into_iter()
+        .map(|plugin| (plugin.id.clone(), plugin))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let disk = state
+        .user_extensions
+        .load_theme_plugins()
+        .map_err(|error| error.to_string())?;
+    for warning in disk.warnings {
+        log::warn!("{warning}");
+    }
+    for plugin in disk.plugins {
+        merged.insert(plugin.id.clone(), plugin);
+    }
+    Ok(merged.into_values().collect())
+}
+
+fn materialize_theme_registry(
+    state: &AppState,
+    registry: &nexa_core::appearance::AppearanceRegistry,
+) -> Result<(), String> {
+    for plugin in &registry.plugins {
+        state
+            .user_extensions
+            .write_theme_plugin(plugin.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 // ── App Config ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -43,10 +77,13 @@ pub fn hydrate_appearance_registry_cmd(
     plugins: Vec<nexa_core::theme_resource_plugin::ThemeResourcePlugin>,
     active_theme_id: String,
 ) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
-    state
+    let plugins = merge_user_theme_files(&state, plugins)?;
+    let registry = state
         .db
         .hydrate_appearance_registry(plugins, active_theme_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    materialize_theme_registry(&state, &registry)?;
+    Ok(registry)
 }
 
 #[tauri::command]
@@ -55,6 +92,10 @@ pub fn apply_appearance_plugin_cmd(
     state: tauri::State<'_, AppState>,
     plugin: nexa_core::theme_resource_plugin::ThemeResourcePlugin,
 ) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    state
+        .user_extensions
+        .write_theme_plugin(plugin.clone())
+        .map_err(|error| error.to_string())?;
     let registry = state
         .db
         .apply_appearance_plugin(plugin)
@@ -93,6 +134,10 @@ pub fn remove_appearance_cmd(
     state: tauri::State<'_, AppState>,
     theme_id: String,
 ) -> Result<nexa_core::appearance::AppearanceRegistry, String> {
+    state
+        .user_extensions
+        .remove_theme_plugin(&theme_id)
+        .map_err(|error| error.to_string())?;
     let registry = state
         .db
         .remove_appearance(&theme_id)

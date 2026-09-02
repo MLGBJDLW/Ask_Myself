@@ -19,6 +19,25 @@ use super::registry::builtin_skill_bundles;
 /// `<SKILL_DIR>` placeholder in bundled SKILL.md bodies is left untouched so
 /// the model can still reason about relative paths.
 static SKILLS_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static USER_SKILLS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Configure the single user-owned skill source root before skills are loaded
+/// from the database. Reconfiguration to a different path is rejected so
+/// runtime paths cannot drift after prompts have been rendered.
+pub fn configure_user_skills_directory(user_skills_dir: &Path) -> Result<(), CoreError> {
+    if let Some(configured) = USER_SKILLS_DIR.get() {
+        if configured == user_skills_dir {
+            return Ok(());
+        }
+        return Err(CoreError::Conflict(format!(
+            "User skill directory is already configured as {}",
+            configured.display()
+        )));
+    }
+    USER_SKILLS_DIR
+        .set(user_skills_dir.to_path_buf())
+        .map_err(|_| CoreError::Conflict("User skill directory was configured concurrently".into()))
+}
 
 /// Substitute `<SKILL_DIR>` in a bundled skill body with the materialized
 /// on-disk path for that skill, if materialization has been performed.
@@ -135,7 +154,10 @@ fn substitute_user_skill_dir(body: String, skill_id: &str) -> String {
     if !body.contains("<SKILL_DIR>") {
         return body;
     }
-    if let Some(base) = SKILLS_BASE_DIR.get() {
+    if let Some(base) = USER_SKILLS_DIR.get() {
+        let skill_dir = base.join(safe_skill_dir_name(skill_id));
+        body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
+    } else if let Some(base) = SKILLS_BASE_DIR.get() {
         let skill_dir = base.join("user").join(safe_skill_dir_name(skill_id));
         body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
     } else {
@@ -144,17 +166,63 @@ fn substitute_user_skill_dir(body: String, skill_id: &str) -> String {
 }
 
 pub(crate) fn user_skill_source_path(skill_id: &str) -> Option<String> {
-    SKILLS_BASE_DIR.get().map(|base| {
-        base.join("user")
-            .join(safe_skill_dir_name(skill_id))
-            .join("SKILL.md")
-            .to_string_lossy()
-            .to_string()
-    })
+    USER_SKILLS_DIR
+        .get()
+        .map(|base| {
+            base.join(safe_skill_dir_name(skill_id))
+                .join("SKILL.md")
+                .to_string_lossy()
+                .to_string()
+        })
+        .or_else(|| {
+            SKILLS_BASE_DIR.get().map(|base| {
+                base.join("user")
+                    .join(safe_skill_dir_name(skill_id))
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .to_string()
+            })
+        })
+}
+
+pub(crate) fn portable_user_skill_content(
+    content: &str,
+    skill_id: &str,
+    preferred_user_skills_dir: Option<&Path>,
+) -> String {
+    let mut portable = content.to_string();
+    let mut candidate_dirs = Vec::new();
+    if let Some(base) = preferred_user_skills_dir {
+        candidate_dirs.push(base.join(safe_skill_dir_name(skill_id)));
+    }
+    if let Some(base) = USER_SKILLS_DIR.get() {
+        candidate_dirs.push(base.join(safe_skill_dir_name(skill_id)));
+    }
+    if let Some(base) = SKILLS_BASE_DIR.get() {
+        candidate_dirs.push(base.join("user").join(safe_skill_dir_name(skill_id)));
+    }
+    candidate_dirs.sort();
+    candidate_dirs.dedup();
+    for directory in candidate_dirs {
+        let native = directory.to_string_lossy();
+        portable = portable.replace(native.as_ref(), "<SKILL_DIR>");
+        let slash_normalized = native.replace('\\', "/");
+        if slash_normalized != native.as_ref() {
+            portable = portable.replace(&slash_normalized, "<SKILL_DIR>");
+        }
+    }
+    portable
 }
 
 pub fn materialize_user_skill_to_disk(
     app_data_dir: &Path,
+    skill: &Skill,
+) -> Result<PathBuf, CoreError> {
+    materialize_user_skill_to_directory(&app_data_dir.join("skills").join("user"), skill)
+}
+
+pub fn materialize_user_skill_to_directory(
+    user_skills_dir: &Path,
     skill: &Skill,
 ) -> Result<PathBuf, CoreError> {
     if skill.builtin {
@@ -163,23 +231,23 @@ pub fn materialize_user_skill_to_disk(
         ));
     }
 
-    let skills_dir = app_data_dir.join("skills");
-    let user_dir = skills_dir.join("user");
-    let skill_dir = user_skill_dir(app_data_dir, &skill.id);
-    fs::create_dir_all(app_data_dir).map_err(|e| {
+    let skill_dir = user_skills_dir.join(safe_skill_dir_name(&skill.id));
+    fs::create_dir_all(user_skills_dir).map_err(|e| {
         CoreError::Internal(format!(
-            "Failed to create app data dir {}: {e}",
-            app_data_dir.display()
+            "Failed to create user skills dir {}: {e}",
+            user_skills_dir.display()
         ))
     })?;
-    for directory in [&skills_dir, &user_dir, &skill_dir] {
+    for directory in [user_skills_dir, skill_dir.as_path()] {
         ensure_real_user_skill_directory(directory, &skill.id)?;
     }
-
     let mut expected_files = BTreeSet::from([PathBuf::from("SKILL.md")]);
+    let mut portable_skill = skill.clone();
+    portable_skill.content =
+        portable_user_skill_content(&skill.content, &skill.id, Some(user_skills_dir));
     write_user_file_if_changed(
         &skill_dir.join("SKILL.md"),
-        export_skill_to_md(skill).as_bytes(),
+        export_skill_to_md(&portable_skill).as_bytes(),
         &skill.id,
     )?;
 
@@ -385,6 +453,22 @@ pub fn materialize_user_skills_to_disk(
     Ok(())
 }
 
+pub fn materialize_user_skills_to_directory(
+    user_skills_dir: &Path,
+    skills: &[Skill],
+) -> Result<(), CoreError> {
+    for skill in skills {
+        if skill.builtin {
+            continue;
+        }
+        // This directory is user-owned source, not an enabled-runtime cache.
+        // Disabled skills remain editable and can be enabled again without
+        // reconstructing or losing their files.
+        materialize_user_skill_to_directory(user_skills_dir, skill)?;
+    }
+    Ok(())
+}
+
 pub fn remove_materialized_user_skill(
     app_data_dir: &Path,
     skill_id: &str,
@@ -397,6 +481,44 @@ pub fn remove_materialized_user_skill(
                 skill_dir.display()
             ))
         })?;
+    }
+    Ok(())
+}
+
+pub fn remove_materialized_user_skill_from_directory(
+    user_skills_dir: &Path,
+    skill_id: &str,
+) -> Result<(), CoreError> {
+    let skill_dir = user_skills_dir.join(safe_skill_dir_name(skill_id));
+    match fs::symlink_metadata(&skill_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            fs::remove_file(&skill_dir)
+                .or_else(|_| fs::remove_dir(&skill_dir))
+                .map_err(|e| {
+                    CoreError::Internal(format!(
+                        "Failed to remove user skill link {}: {e}",
+                        skill_dir.display()
+                    ))
+                })?;
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(&skill_dir).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to remove user skill dir {}: {e}",
+                    skill_dir.display()
+                ))
+            })?;
+        }
+        Ok(_) => {
+            fs::remove_file(&skill_dir).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to remove user skill path {}: {e}",
+                    skill_dir.display()
+                ))
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -534,7 +656,11 @@ fn normalize_skill_input(input: &SaveSkillInput) -> Result<SaveSkillInput, CoreE
         .collect::<Vec<_>>()
         .join(" ");
     let description = input.description.trim().to_string();
-    let content = input.content.trim().to_string();
+    let content = input
+        .id
+        .as_deref()
+        .map(|id| portable_user_skill_content(input.content.trim(), id, None))
+        .unwrap_or_else(|| input.content.trim().to_string());
 
     if name.is_empty() {
         return Err(CoreError::InvalidInput("Skill name cannot be empty".into()));

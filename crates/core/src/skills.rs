@@ -30,7 +30,8 @@ pub use catalog::{
 };
 pub use importer::{
     discover_skills_in_directory, import_skills_from_directory, import_skills_from_source,
-    inspect_skill_install_source,
+    inspect_skill_install_source, sync_registered_user_skills_from_directory,
+    RegisteredSkillFileSyncReport,
 };
 pub use model::{
     DiscoveredSkillBundle, SaveSkillInput, Skill, SkillDependencies, SkillFrontmatter,
@@ -59,8 +60,10 @@ pub use spec::{
 };
 pub(crate) use storage::normalize_resource_bundle;
 pub use storage::{
-    builtin_skill_dir, materialize_skills_to_disk, materialize_user_skill_to_disk,
-    materialize_user_skills_to_disk, remove_materialized_user_skill, user_skill_dir,
+    builtin_skill_dir, configure_user_skills_directory, materialize_skills_to_disk,
+    materialize_user_skill_to_directory, materialize_user_skill_to_disk,
+    materialize_user_skills_to_directory, materialize_user_skills_to_disk,
+    remove_materialized_user_skill, remove_materialized_user_skill_from_directory, user_skill_dir,
 };
 pub use trust_policy::{
     classify_skill_source, evaluate_skill_trust_policy, trust_state_for_skill, SkillSourceKind,
@@ -831,6 +834,9 @@ mod tests {
 
         let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
         assert!(skill_dir.join("SKILL.md").exists());
+        let skill_markdown = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(skill_markdown.contains("<SKILL_DIR>/scripts/render.py"));
+        assert!(!skill_markdown.contains(&dir.path().to_string_lossy().to_string()));
         assert_eq!(
             fs::read_to_string(skill_dir.join("scripts/render.py")).unwrap(),
             "print('ok')\n"
@@ -990,6 +996,27 @@ mod tests {
         materialize_user_skills_to_disk(dir.path(), &disabled).unwrap();
 
         assert!(!user_skill_dir(dir.path(), &saved.id).exists());
+    }
+
+    #[test]
+    fn test_user_owned_skill_directory_keeps_disabled_skill_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Portable disabled skill".into(),
+                description: "Use for user-owned source tests".into(),
+                content: "Keep this declaration editable.".into(),
+                enabled: false,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+
+        materialize_user_skills_to_directory(dir.path(), &[saved.clone()]).unwrap();
+
+        assert!(dir.path().join(&saved.id).join("SKILL.md").is_file());
     }
 
     #[test]

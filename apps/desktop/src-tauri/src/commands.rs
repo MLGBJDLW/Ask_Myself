@@ -149,6 +149,7 @@ const DEFAULT_MCP_CALL_TIMEOUT_SECS: u64 = 300;
 /// Application state holding the database connection.
 pub struct AppState {
     pub db: Arc<Database>,
+    pub user_extensions: nexa_core::user_extensions::UserExtensionLayout,
     pub db_executor: DatabaseExecutor,
     pub run_event_outboxes: AgentRunEventOutboxes,
     pub subagent_lifecycle: crate::subagent_lifecycle::SubagentLifecycleRuntime,
