@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
-    const plugin = {
+    const extremePlugin = {
       manifestVersion: 2,
       kind: 'theme-resource',
       id: 'mermaid-extreme-theme',
@@ -38,10 +38,56 @@ test.beforeEach(async ({ page }) => {
         background: { kind: 'none' },
       },
     };
+    const xiangnaiPlugin = {
+      manifestVersion: 2,
+      kind: 'theme-resource',
+      id: 'xiangnai-qiuting-repro',
+      name: 'Xiangnai Qiuting reproduction',
+      theme: {
+        baseTheme: 'light',
+        mode: 'light',
+        colors: {
+          accent: '#d66a3e',
+          accentHover: '#c05a32',
+          accentSubtle: '#f3e0d8',
+          border: 'rgba(122, 94, 66, 0.20)',
+          surface0: 'rgba(246, 240, 228, 0.52)',
+          surface1: 'rgba(251, 246, 237, 0.56)',
+          surface2: 'rgba(255, 252, 247, 0.60)',
+          textPrimary: '#43322a',
+          textSecondary: '#7a675a',
+        },
+        effects: {
+          surfaceOpacity: 0.4,
+          glassBlur: 4,
+          shadowIntensity: 0.7,
+          radiusScale: 1.05,
+        },
+        typography: {},
+        motion: {},
+        brand: {},
+        content: {},
+        components: {},
+        background: {
+          kind: 'image',
+          assetId: 'cf7168457cd8b6ad5a6627e5160bfdcec7494c2d261ce024fedd55ee260d6e44',
+          fit: 'cover',
+          position: 'right',
+          opacity: 1,
+          dim: 0,
+          blur: 0,
+          overlayColor: 'transparent',
+        },
+      },
+    };
+    const plugin = localStorage.getItem('nexa-e2e-mermaid-theme') === 'xiangnai'
+      ? xiangnaiPlugin
+      : extremePlugin;
     localStorage.setItem('nexa-theme-resource-plugins-v2', JSON.stringify([plugin]));
     localStorage.setItem('nexa-active-theme-v1', plugin.id);
 
     const nowIso = new Date().toISOString();
+    const reproduceNativeHistory = localStorage.getItem('nexa-e2e-mermaid-history') === 'real';
     const conversation = {
       id: 'conv-mermaid',
       title: 'Mermaid rendering',
@@ -59,6 +105,28 @@ test.beforeEach(async ({ page }) => {
         content: [
           'Here is the flow:',
           '',
+          ...(reproduceNativeHistory ? [
+            '```mermaid',
+            '[diagram]',
+            '```',
+            '',
+            '```mermaid',
+            'sequenceDiagram',
+            '    User->>Server: POST /login (credentials)',
+            '    Server->>DB: Validate credentials',
+            '    DB-->>Server: User record',
+            '    Server-->>User: 200 OK + token',
+            '```',
+            '',
+            '```mermaid',
+            'flowchart LR',
+            '    A[Prompt 讲清楚任务] --> B[Agent 自动执行]',
+            '    B --> C[国内工具怎么选]',
+            '    C --> D[MCP / Skills 扩展能力]',
+            '    D --> E[实战与安全]',
+            '```',
+            '',
+          ] : []),
           '```mermaid',
           'flowchart TD',
           '  A[Start] --> B{Ready?}',
@@ -93,6 +161,14 @@ test.beforeEach(async ({ page }) => {
           '  C --> F[SV=实际含税销售额, ST=年初销售指标]',
           '  C --> G[RSV=实际试剂含税, RST=年初试剂销售指标]',
           '  D --> H[三级医院开发/新项目/装机等]',
+          '```',
+          '',
+          '```mermaid',
+          'flowchart LR',
+          '    A[Prompt 讲清楚任务] --> B[Agent 自动执行]',
+          '    B --> C[国内工具怎么选]',
+          '    C --> D[MCP / Skills 扩展能力]',
+          '    D --> E[实战与安全]',
           '```',
           '',
           '```mermaid',
@@ -242,7 +318,7 @@ test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
   await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(6);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(7);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
 });
 
@@ -252,9 +328,9 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
 
   const surfaces = page.getByTestId('mermaid-surface');
   await expect(page.locator('html')).toHaveAttribute('data-custom-theme', 'true');
-  await expect(surfaces).toHaveCount(5);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
-  await expect(page.locator('svg style')).toHaveCount(5);
+  await expect(surfaces).toHaveCount(6);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(6);
+  await expect(page.locator('svg style')).toHaveCount(6);
   await expect(page.locator('svg foreignObject')).toHaveCount(0);
   await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
 
@@ -287,12 +363,108 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
   }
 });
 
+test('keeps the reported linear flow readable in the Xiangnai light resource theme', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    localStorage.setItem('nexa-e2e-mermaid-theme', 'xiangnai');
+    localStorage.setItem('nexa-e2e-mermaid-history', 'real');
+  });
+  await page.goto('/chat/conv-mermaid');
+
+  const matchingSurfaces = page.getByTestId('mermaid-surface').filter({ hasText: 'Prompt 讲清楚任务' });
+  const surface = matchingSurfaces.last();
+  await expect(page.locator('html')).toHaveClass(/theme-light/);
+  await expect(page.locator('html')).toHaveAttribute('data-theme-backdrop', 'true');
+  await expect(matchingSurfaces).toHaveCount(2);
+  const nodes = await surface.locator('g.node').evaluateAll((elements) => elements.map((node) => {
+    const shape = node.querySelector<SVGGraphicsElement>('rect, polygon, path, circle, ellipse');
+    const label = node.querySelector<SVGGraphicsElement>('.label, .nodeLabel, text');
+    if (!shape || !label) throw new Error('Mermaid node is missing its shape or label');
+    const shapeBox = shape.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    const labelCenter = {
+      x: labelBox.x + labelBox.width / 2,
+      y: labelBox.y + labelBox.height / 2,
+    };
+    return {
+      label: label.textContent ?? '',
+      fill: getComputedStyle(shape).fill,
+      labelFill: getComputedStyle(label).fill,
+      labelOpacity: getComputedStyle(label).opacity,
+      shapeBox: { x: shapeBox.x, y: shapeBox.y, width: shapeBox.width, height: shapeBox.height },
+      labelBox: { x: labelBox.x, y: labelBox.y, width: labelBox.width, height: labelBox.height },
+      centered:
+        labelCenter.x >= shapeBox.x - 1
+        && labelCenter.x <= shapeBox.x + shapeBox.width + 1
+        && labelCenter.y >= shapeBox.y - 1
+        && labelCenter.y <= shapeBox.y + shapeBox.height + 1,
+    };
+  }));
+
+  expect(nodes.map((node) => node.label)).toEqual([
+    'Prompt 讲清楚任务',
+    'Agent 自动执行',
+    '国内工具怎么选',
+    'MCP / Skills 扩展能力',
+    '实战与安全',
+  ]);
+  for (const node of nodes) {
+    expect(node.fill, JSON.stringify(node)).not.toBe('rgb(0, 0, 0)');
+    expect(node.labelFill, JSON.stringify(node)).not.toBe('rgb(0, 0, 0)');
+    expect(Number(node.labelOpacity), JSON.stringify(node)).toBeGreaterThan(0);
+    expect(node.centered, JSON.stringify(node)).toBe(true);
+  }
+
+  const serializedSvg = await surface.locator('svg').evaluate((svg) => svg.outerHTML);
+  await page.evaluate((svg) => new Promise<void>((resolve) => {
+    const frame = document.createElement('iframe');
+    frame.name = 'mermaid-csp-probe';
+    frame.hidden = true;
+    frame.addEventListener('load', () => resolve(), { once: true });
+    frame.srcdoc = [
+      '<!doctype html>',
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\'">',
+      '<body>',
+      svg,
+    ].join('');
+    document.body.appendChild(frame);
+  }), serializedSvg);
+  const cspFrame = page.frame({ name: 'mermaid-csp-probe' });
+  if (!cspFrame) throw new Error('CSP Mermaid probe frame was not created');
+  const cspNodes = await cspFrame.locator('g.node').evaluateAll((elements) => elements.map((node) => {
+    const shape = node.querySelector<SVGGraphicsElement>('rect, polygon, path, circle, ellipse');
+    const label = node.querySelector<SVGGraphicsElement>('.label, .nodeLabel, text');
+    if (!shape || !label) throw new Error('CSP Mermaid node is missing its shape or label');
+    const shapeBox = shape.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    const labelCenter = {
+      x: labelBox.x + labelBox.width / 2,
+      y: labelBox.y + labelBox.height / 2,
+    };
+    return {
+      label: label.textContent ?? '',
+      fill: getComputedStyle(shape).fill,
+      labelFill: getComputedStyle(label).fill,
+      centered:
+        labelCenter.x >= shapeBox.x - 1
+        && labelCenter.x <= shapeBox.x + shapeBox.width + 1
+        && labelCenter.y >= shapeBox.y - 1
+        && labelCenter.y <= shapeBox.y + shapeBox.height + 1,
+    };
+  }));
+  for (const node of cspNodes) {
+    expect(node.fill, JSON.stringify(node)).not.toBe('rgb(0, 0, 0)');
+    expect(node.labelFill, JSON.stringify(node)).not.toBe('rgb(0, 0, 0)');
+    expect(node.centered, JSON.stringify(node)).toBe(true);
+  }
+});
+
 test('isolates Mermaid geometry and palette from extreme custom typography', async ({ page }) => {
   await page.goto('/chat/conv-mermaid');
 
   const surfaces = page.getByTestId('mermaid-surface');
-  await expect(surfaces).toHaveCount(5);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(5);
+  await expect(surfaces).toHaveCount(6);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(6);
   const diagnostics = await surfaces.evaluateAll((elements) => elements.map((surface) => {
     const luminance = (value: string) => {
       const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
