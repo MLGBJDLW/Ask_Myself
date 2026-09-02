@@ -38,6 +38,27 @@ pub struct RegisteredSkillFileSyncReport {
     pub unchanged: u32,
     pub unregistered: u32,
     pub rejected: Vec<String>,
+    /// Registered source directories that must not be regenerated from the
+    /// database because their current user edit was rejected.
+    #[serde(skip_serializing)]
+    pub preserved_skill_ids: Vec<String>,
+}
+
+fn reject_registered_skill(
+    report: &mut RegisteredSkillFileSyncReport,
+    skill_id: &str,
+    message: impl Into<String>,
+) {
+    if !report
+        .preserved_skill_ids
+        .iter()
+        .any(|preserved| preserved == skill_id)
+    {
+        report.preserved_skill_ids.push(skill_id.to_string());
+    }
+    report
+        .rejected
+        .push(format!("{skill_id}: {}", message.into()));
 }
 
 /// Synchronize edits to already-registered user skill directories. Directory
@@ -67,22 +88,33 @@ pub fn sync_registered_user_skills_from_directory(
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                report.rejected.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            continue;
-        }
         let Some(skill_id) = entry.file_name().to_str().map(str::to_string) else {
             report
                 .rejected
                 .push(format!("Non-UTF-8 skill directory: {}", path.display()));
             continue;
         };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if existing.contains_key(&skill_id) {
+                    reject_registered_skill(&mut report, &skill_id, error.to_string());
+                } else {
+                    report.rejected.push(format!("{}: {error}", path.display()));
+                }
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            if existing.contains_key(&skill_id) {
+                reject_registered_skill(
+                    &mut report,
+                    &skill_id,
+                    "registered skill source must be a real directory",
+                );
+            }
+            continue;
+        }
         let Some(installed) = existing.get(&skill_id) else {
             report.unregistered = report.unregistered.saturating_add(1);
             continue;
@@ -90,7 +122,7 @@ pub fn sync_registered_user_skills_from_directory(
         let candidate = match load_candidate_from_markdown(&path.join("SKILL.md")) {
             Ok(candidate) => candidate,
             Err(error) => {
-                report.rejected.push(format!("{skill_id}: {error}"));
+                reject_registered_skill(&mut report, &skill_id, error.to_string());
                 continue;
             }
         };
@@ -102,20 +134,25 @@ pub fn sync_registered_user_skills_from_directory(
             .map(|warning| warning.message.as_str())
             .collect::<Vec<_>>();
         if !blocked.is_empty() {
-            report.rejected.push(format!(
-                "{skill_id}: blocked security warnings: {}",
-                blocked.join("; ")
-            ));
+            reject_registered_skill(
+                &mut report,
+                &skill_id,
+                format!("blocked security warnings: {}", blocked.join("; ")),
+            );
             continue;
         }
         if names
             .get(&candidate.input.name.to_lowercase())
             .is_some_and(|owner| owner != &skill_id)
         {
-            report.rejected.push(format!(
-                "{skill_id}: skill name `{}` belongs to another installed skill",
-                candidate.input.name
-            ));
+            reject_registered_skill(
+                &mut report,
+                &skill_id,
+                format!(
+                    "skill name `{}` belongs to another installed skill",
+                    candidate.input.name
+                ),
+            );
             continue;
         }
         let installed_content =
@@ -746,6 +783,43 @@ mod tests {
         assert_eq!(report.updated, 1);
         assert_eq!(report.rejected.len(), 1);
         assert_eq!(shared_count, 1);
+    }
+
+    #[test]
+    fn rejected_registered_skill_edit_is_preserved_for_user_correction() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "editable".into(),
+                description: "Editable".into(),
+                content: "Valid body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        crate::skills::materialize_user_skills_to_directory(
+            dir.path(),
+            std::slice::from_ref(&installed),
+        )
+        .unwrap();
+        let skill_file = dir.path().join(&installed.id).join("SKILL.md");
+        let rejected_edit = "---\nname: [\ndescription: broken\n---\n\nFix me\n";
+        fs::write(&skill_file, rejected_edit).unwrap();
+
+        let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        crate::skills::materialize_user_skills_to_directory_except(
+            dir.path(),
+            &db.list_skills().unwrap(),
+            &report.preserved_skill_ids,
+        )
+        .unwrap();
+
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.preserved_skill_ids, vec![installed.id]);
+        assert_eq!(fs::read_to_string(skill_file).unwrap(), rejected_edit);
     }
 
     #[test]

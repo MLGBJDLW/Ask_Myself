@@ -61,8 +61,9 @@ pub use spec::{
 pub(crate) use storage::normalize_resource_bundle;
 pub use storage::{
     builtin_skill_dir, configure_user_skills_directory, materialize_skills_to_disk,
-    materialize_user_skill_to_directory, materialize_user_skill_to_disk,
-    materialize_user_skills_to_directory, materialize_user_skills_to_disk,
+    materialize_user_skill_to_configured_directory, materialize_user_skill_to_directory,
+    materialize_user_skill_to_disk, materialize_user_skills_to_directory,
+    materialize_user_skills_to_directory_except, materialize_user_skills_to_disk,
     remove_materialized_user_skill, remove_materialized_user_skill_from_directory, user_skill_dir,
 };
 pub use trust_policy::{

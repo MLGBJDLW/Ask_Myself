@@ -48,8 +48,8 @@ shape:
 
 | Directory | Current behavior |
 | --- | --- |
-| `skills/<database-id>/` | Registered user skills are materialized here. Startup or explicit Reload imports valid edits while preserving the database identity and enabled state. Unknown folders are not activated until they pass the explicit import and security-review flow. Disabling a skill never deletes its files. |
-| `themes/<theme-id>.json` | Declarative theme resources are schema-validated. Valid files override the same theme id in the persisted projection during hydration. |
+| `skills/<database-id>/` | Registered user skills are materialized here. Startup or explicit Reload imports valid edits while preserving the database identity and enabled state. Rejected edits remain untouched so the user can correct them. Unknown folders are not activated until they pass the explicit import and security-review flow. Disabling a skill never deletes its files. |
+| `themes/<theme-id>.json` | Declarative theme resources are schema-validated. Valid files override the same theme id in the persisted projection during hydration, including after registry initialization. Rejected files remain untouched for correction. |
 | `connectors/mcp.json` | Versioned MCP declarations are validated as a whole and projected into the runtime store. Invalid updates retain the last valid projection. |
 | `capabilities/`, `workflows/` | Reserved package locations. Merely placing a file here does not grant permissions or activate native code; each package still needs a supported, trust-gated host path. |
 

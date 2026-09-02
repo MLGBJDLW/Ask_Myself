@@ -520,27 +520,34 @@ fn main() {
                 &db,
                 &user_extensions.skills_dir(),
             ) {
-                Ok(report) if report.updated > 0 || !report.rejected.is_empty() => log::info!(
-                    "Synchronized ~/.nexa skills: updated={}, unchanged={}, unregistered={}, rejected={}",
-                    report.updated,
-                    report.unchanged,
-                    report.unregistered,
-                    report.rejected.len(),
-                ),
-                Ok(_) => {}
+                Ok(report) => {
+                    if report.updated > 0
+                        || report.unregistered > 0
+                        || !report.rejected.is_empty()
+                    {
+                        log::info!(
+                            "Synchronized ~/.nexa skills: updated={}, unchanged={}, unregistered={}, rejected={}",
+                            report.updated,
+                            report.unchanged,
+                            report.unregistered,
+                            report.rejected.len(),
+                        );
+                    }
+                    match db.list_skills().and_then(|skills| {
+                        nexa_core::skills::materialize_user_skills_to_directory_except(
+                            &user_extensions.skills_dir(),
+                            &skills,
+                            &report.preserved_skill_ids,
+                        )
+                    }) {
+                        Ok(()) => log::info!(
+                            "Materialized user skills to {}",
+                            user_extensions.skills_dir().display()
+                        ),
+                        Err(e) => log::warn!("Failed to materialize user skills: {e}"),
+                    }
+                }
                 Err(error) => log::warn!("Failed to synchronize ~/.nexa skills: {error}"),
-            }
-            match db.list_skills().and_then(|skills| {
-                nexa_core::skills::materialize_user_skills_to_directory(
-                    &user_extensions.skills_dir(),
-                    &skills,
-                )
-            }) {
-                Ok(()) => log::info!(
-                    "Materialized user skills to {}",
-                    user_extensions.skills_dir().display()
-                ),
-                Err(e) => log::warn!("Failed to materialize user skills: {e}"),
             }
             let db = Arc::new(db);
             let db_executor = nexa_core::db_executor::DatabaseExecutor::new((*db).clone(), 64)

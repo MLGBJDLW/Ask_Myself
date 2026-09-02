@@ -21,6 +21,19 @@ fn materialize_user_skill_resources(state: &AppState, skills: &[Skill]) -> Resul
     .map_err(|e| e.to_string())
 }
 
+fn materialize_user_skill_resources_except(
+    state: &AppState,
+    skills: &[Skill],
+    preserved_skill_ids: &[String],
+) -> Result<(), String> {
+    nexa_core::skills::materialize_user_skills_to_directory_except(
+        &state.user_extensions.skills_dir(),
+        skills,
+        preserved_skill_ids,
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn remove_user_skill_resource(state: &AppState, skill_id: &str) -> Result<(), String> {
     nexa_core::skills::remove_materialized_user_skill_from_directory(
         &state.user_extensions.skills_dir(),
@@ -59,17 +72,7 @@ pub async fn toggle_skill_cmd(
     state
         .db
         .toggle_skill(&id, enabled)
-        .map_err(|e| e.to_string())?;
-    if let Some(skill) = state
-        .db
-        .list_skills()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|skill| skill.id == id)
-    {
-        materialize_user_skill_resource(&state, &skill)?;
-    }
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) fn filter_desktop_builtin_skills_by_package_host(
@@ -237,10 +240,12 @@ pub async fn apply_skill_change_proposal_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<AppliedSkillChange, String> {
-    state
+    let applied = state
         .db
         .apply_skill_change_proposal(&id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    materialize_user_skill_resource(&state, &applied.skill)?;
+    Ok(applied)
 }
 
 #[tauri::command]
@@ -281,7 +286,7 @@ pub async fn reload_user_skill_files_cmd(
     )
     .map_err(|error| error.to_string())?;
     let skills = state.db.list_skills().map_err(|error| error.to_string())?;
-    materialize_user_skill_resources(&state, &skills)?;
+    materialize_user_skill_resources_except(&state, &skills, &report.preserved_skill_ids)?;
     Ok(report)
 }
 

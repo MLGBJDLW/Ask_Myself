@@ -543,6 +543,7 @@ impl Tool for ManageSkillTool {
                     .proposal_id
                     .ok_or_else(|| missing("proposal_id", action))?;
                 let applied = db.apply_skill_change_proposal(&proposal_id)?;
+                crate::skills::materialize_user_skill_to_configured_directory(&applied.skill)?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!(

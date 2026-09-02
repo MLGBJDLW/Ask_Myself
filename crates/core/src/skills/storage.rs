@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -280,6 +280,15 @@ pub fn materialize_user_skill_to_directory(
     Ok(skill_dir)
 }
 
+pub fn materialize_user_skill_to_configured_directory(
+    skill: &Skill,
+) -> Result<Option<PathBuf>, CoreError> {
+    USER_SKILLS_DIR
+        .get()
+        .map(|directory| materialize_user_skill_to_directory(directory, skill))
+        .transpose()
+}
+
 fn ensure_real_user_skill_directory(path: &Path, skill_id: &str) -> Result<(), CoreError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -457,8 +466,20 @@ pub fn materialize_user_skills_to_directory(
     user_skills_dir: &Path,
     skills: &[Skill],
 ) -> Result<(), CoreError> {
+    materialize_user_skills_to_directory_except(user_skills_dir, skills, &[])
+}
+
+pub fn materialize_user_skills_to_directory_except(
+    user_skills_dir: &Path,
+    skills: &[Skill],
+    preserved_skill_ids: &[String],
+) -> Result<(), CoreError> {
+    let preserved = preserved_skill_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     for skill in skills {
-        if skill.builtin {
+        if skill.builtin || preserved.contains(skill.id.as_str()) {
             continue;
         }
         // This directory is user-owned source, not an enabled-runtime cache.

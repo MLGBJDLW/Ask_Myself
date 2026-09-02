@@ -37,7 +37,9 @@ silently create a second identity. Startup and the explicit Reload skill files
 action synchronize valid edits for already-registered ids. Unknown folders are
 left untouched and unregistered until the user chooses the normal import flow,
 including security-warning acknowledgement. A disabled skill keeps its files;
-only an explicit Delete removes its folder.
+only an explicit Delete removes its folder. Invalid, unsafe, or conflicting
+edits are reported and left on disk for correction rather than overwritten by
+the last database projection.
 
 The optional `agents/openai.yaml` file describes agent-facing metadata and
 dependencies:
