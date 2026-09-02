@@ -433,6 +433,10 @@ fn main() {
                 &user_extensions.skills_dir(),
             )
             .expect("failed to configure Nexa user skill directory");
+            nexa_core::user_extensions::configure_user_theme_directory(
+                &user_extensions.themes_dir(),
+            )
+            .expect("failed to configure Nexa user theme directory");
 
             // Materialize bundled skill assets to disk so run_shell can exec them
             // and <SKILL_DIR> placeholders in prompts resolve correctly.

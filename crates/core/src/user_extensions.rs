@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -25,6 +26,8 @@ const LEGACY_MCP_CONFIG_FILE: &str = "mcp-connectors.json";
 const MAX_MIGRATION_FILES: usize = 10_000;
 const MAX_MIGRATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_THEME_FILE_BYTES: u64 = 1024 * 1024;
+
+static USER_THEMES_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 const README_CONTENT: &str = r#"# Nexa user extensions
 
@@ -182,23 +185,11 @@ impl UserExtensionLayout {
     }
 
     pub fn write_theme_plugin(&self, plugin: ThemeResourcePlugin) -> Result<(), CoreError> {
-        let plugin = plugin.normalize()?;
-        fs::create_dir_all(self.themes_dir())?;
-        let encoded = serde_json::to_vec_pretty(&plugin)?;
-        atomic_write(&self.theme_path(&plugin.id), &encoded)
+        write_theme_plugin_to_directory(&self.themes_dir(), plugin)
     }
 
     pub fn remove_theme_plugin(&self, theme_id: &str) -> Result<(), CoreError> {
-        let path = self.theme_path(theme_id);
-        if path.exists() {
-            fs::remove_file(&path).map_err(|error| {
-                CoreError::Internal(format!(
-                    "Failed to remove user theme file {}: {error}",
-                    path.display()
-                ))
-            })?;
-        }
-        Ok(())
+        remove_theme_plugin_from_directory(&self.themes_dir(), theme_id)
     }
 
     pub fn load_theme_plugins(&self) -> Result<ThemeFileLoadReport, CoreError> {
@@ -282,20 +273,76 @@ impl UserExtensionLayout {
         report.plugins.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(report)
     }
+}
 
-    fn theme_path(&self, theme_id: &str) -> PathBuf {
-        let safe_id = theme_id
-            .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                    character
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        self.themes_dir().join(format!("{safe_id}.json"))
+pub fn configure_user_theme_directory(themes_dir: &Path) -> Result<(), CoreError> {
+    if let Some(configured) = USER_THEMES_DIR.get() {
+        if configured == themes_dir {
+            return Ok(());
+        }
+        return Err(CoreError::Conflict(format!(
+            "User theme directory is already configured as {}",
+            configured.display()
+        )));
     }
+    USER_THEMES_DIR
+        .set(themes_dir.to_path_buf())
+        .map_err(|_| CoreError::Conflict("User theme directory was configured concurrently".into()))
+}
+
+pub fn write_theme_plugin_to_configured_directory(
+    plugin: ThemeResourcePlugin,
+) -> Result<bool, CoreError> {
+    let Some(themes_dir) = USER_THEMES_DIR.get() else {
+        return Ok(false);
+    };
+    write_theme_plugin_to_directory(themes_dir, plugin)?;
+    Ok(true)
+}
+
+pub fn remove_theme_plugin_from_configured_directory(theme_id: &str) -> Result<bool, CoreError> {
+    let Some(themes_dir) = USER_THEMES_DIR.get() else {
+        return Ok(false);
+    };
+    remove_theme_plugin_from_directory(themes_dir, theme_id)?;
+    Ok(true)
+}
+
+fn write_theme_plugin_to_directory(
+    themes_dir: &Path,
+    plugin: ThemeResourcePlugin,
+) -> Result<(), CoreError> {
+    let plugin = plugin.normalize()?;
+    fs::create_dir_all(themes_dir)?;
+    let encoded = serde_json::to_vec_pretty(&plugin)?;
+    atomic_write(&theme_path(themes_dir, &plugin.id), &encoded)
+}
+
+fn remove_theme_plugin_from_directory(themes_dir: &Path, theme_id: &str) -> Result<(), CoreError> {
+    let path = theme_path(themes_dir, theme_id);
+    if path.exists() {
+        fs::remove_file(&path).map_err(|error| {
+            CoreError::Internal(format!(
+                "Failed to remove user theme file {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn theme_path(themes_dir: &Path, theme_id: &str) -> PathBuf {
+    let safe_id = theme_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    themes_dir.join(format!("{safe_id}.json"))
 }
 
 fn display_path(path: &Path) -> String {
