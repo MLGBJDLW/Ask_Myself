@@ -73,12 +73,22 @@ pub fn hydrate_appearance_registry_cmd(
         .db
         .hydrate_appearance_registry(hydration_plugins, active_theme_id)
         .map_err(|e| e.to_string())?;
+    let preserved_theme_ids = disk.preserved_theme_ids.iter().cloned().collect::<Vec<_>>();
     let registry = state
         .db
-        .reconcile_appearance_plugins(disk.plugins)
+        .reconcile_appearance_file_plugins(disk.plugins, preserved_theme_ids)
         .map_err(|e| e.to_string())?;
     materialize_theme_registry(&state, &registry, &disk.preserved_theme_ids)?;
-    Ok(registry)
+    state
+        .db
+        .commit_appearance_file_projection(
+            registry
+                .plugins
+                .iter()
+                .map(|plugin| plugin.id.clone())
+                .collect(),
+        )
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

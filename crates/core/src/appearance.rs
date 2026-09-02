@@ -1,5 +1,7 @@
 //! Durable appearance registry shared by Settings and the Agent.
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +23,10 @@ pub struct AppearanceRegistry {
     pub previous_theme_id: Option<String>,
     #[serde(default)]
     pub plugins: Vec<ThemeResourcePlugin>,
+    #[serde(default)]
+    file_projection_initialized: bool,
+    #[serde(default)]
+    file_backed_theme_ids: Vec<String>,
 }
 
 impl Default for AppearanceRegistry {
@@ -32,6 +38,8 @@ impl Default for AppearanceRegistry {
             active_theme_id: "dark".to_string(),
             previous_theme_id: None,
             plugins: Vec::new(),
+            file_projection_initialized: false,
+            file_backed_theme_ids: Vec::new(),
         }
     }
 }
@@ -52,6 +60,15 @@ impl AppearanceRegistry {
             }
         }
         self.plugins = normalized;
+        let plugin_ids = self
+            .plugins
+            .iter()
+            .map(|plugin| plugin.id.as_str())
+            .collect::<HashSet<_>>();
+        self.file_backed_theme_ids
+            .retain(|id| plugin_ids.contains(id.as_str()));
+        self.file_backed_theme_ids.sort();
+        self.file_backed_theme_ids.dedup();
         if !self.has_theme(&self.active_theme_id) {
             self.active_theme_id = "dark".to_string();
         }
@@ -80,16 +97,54 @@ impl AppearanceRegistry {
         self.normalize()
     }
 
-    /// Reconcile authoritative file-backed theme declarations without
-    /// changing the active or rollback selection. Unlike `hydrate`, this is
-    /// intentionally effective after the registry has been initialized.
-    pub fn reconcile_plugins(
+    /// Reconcile authoritative file-backed theme declarations. Once a
+    /// successful file projection has been recorded, a previously tracked id
+    /// that is neither present nor protected is treated as a user deletion.
+    pub fn reconcile_file_plugins(
         mut self,
         plugins: Vec<ThemeResourcePlugin>,
+        preserved_theme_ids: &[String],
     ) -> Result<Self, CoreError> {
+        let plugins = plugins
+            .into_iter()
+            .map(ThemeResourcePlugin::normalize)
+            .collect::<Result<Vec<_>, _>>()?;
+        let present = plugins
+            .iter()
+            .map(|plugin| plugin.id.as_str())
+            .collect::<HashSet<_>>();
+        let preserved = preserved_theme_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         let mut changed = false;
+        if self.file_projection_initialized {
+            let removed = self
+                .file_backed_theme_ids
+                .iter()
+                .filter(|id| !present.contains(id.as_str()) && !preserved.contains(id.as_str()))
+                .cloned()
+                .collect::<HashSet<_>>();
+            if !removed.is_empty() {
+                self.plugins.retain(|plugin| !removed.contains(&plugin.id));
+                if removed.contains(&self.active_theme_id) {
+                    self.active_theme_id = self
+                        .previous_theme_id
+                        .clone()
+                        .filter(|id| self.has_theme(id))
+                        .unwrap_or_else(|| "dark".to_string());
+                }
+                if self
+                    .previous_theme_id
+                    .as_ref()
+                    .is_some_and(|id| removed.contains(id))
+                {
+                    self.previous_theme_id = None;
+                }
+                changed = true;
+            }
+        }
         for plugin in plugins {
-            let plugin = plugin.normalize()?;
             if let Some(existing) = self.plugins.iter_mut().find(|item| item.id == plugin.id) {
                 if *existing != plugin {
                     *existing = plugin;
@@ -103,6 +158,20 @@ impl AppearanceRegistry {
         if changed {
             self.revision = self.revision.saturating_add(1);
         }
+        self.normalize()
+    }
+
+    pub fn commit_file_projection(mut self, theme_ids: Vec<String>) -> Result<Self, CoreError> {
+        let installed = self
+            .plugins
+            .iter()
+            .map(|plugin| plugin.id.as_str())
+            .collect::<HashSet<_>>();
+        self.file_backed_theme_ids = theme_ids
+            .into_iter()
+            .filter(|id| installed.contains(id.as_str()))
+            .collect();
+        self.file_projection_initialized = true;
         self.normalize()
     }
 
@@ -192,11 +261,21 @@ impl Database {
         self.mutate_appearance_registry(|registry| registry.apply(plugin))
     }
 
-    pub fn reconcile_appearance_plugins(
+    pub fn reconcile_appearance_file_plugins(
         &self,
         plugins: Vec<ThemeResourcePlugin>,
+        preserved_theme_ids: Vec<String>,
     ) -> Result<AppearanceRegistry, CoreError> {
-        self.mutate_appearance_registry(|registry| registry.reconcile_plugins(plugins))
+        self.mutate_appearance_registry(|registry| {
+            registry.reconcile_file_plugins(plugins, &preserved_theme_ids)
+        })
+    }
+
+    pub fn commit_appearance_file_projection(
+        &self,
+        theme_ids: Vec<String>,
+    ) -> Result<AppearanceRegistry, CoreError> {
+        self.mutate_appearance_registry(|registry| registry.commit_file_projection(theme_ids))
     }
 
     pub fn activate_appearance(&self, theme_id: &str) -> Result<AppearanceRegistry, CoreError> {
@@ -352,11 +431,60 @@ mod tests {
         let mut edited = plugin("autumn");
         edited.name = "Edited on disk".into();
 
-        let reconciled = db.reconcile_appearance_plugins(vec![edited]).unwrap();
+        let reconciled = db
+            .reconcile_appearance_file_plugins(vec![edited], Vec::new())
+            .unwrap();
 
         assert_eq!(reconciled.active_theme_id, "autumn");
         assert_eq!(reconciled.plugins[0].name, "Edited on disk");
         assert_eq!(reconciled.revision, initial.revision + 1);
         assert_eq!(db.load_appearance_registry().unwrap(), reconciled);
+    }
+
+    #[test]
+    fn file_projection_seeds_once_then_treats_missing_tracked_themes_as_deletions() {
+        let db = Database::open_memory().unwrap();
+        let initial = db
+            .hydrate_appearance_registry(vec![plugin("autumn")], "autumn".into())
+            .unwrap();
+
+        let seeded = db
+            .reconcile_appearance_file_plugins(Vec::new(), Vec::new())
+            .unwrap();
+        assert_eq!(seeded.plugins, initial.plugins);
+        let seeded = db
+            .commit_appearance_file_projection(
+                seeded
+                    .plugins
+                    .iter()
+                    .map(|plugin| plugin.id.clone())
+                    .collect(),
+            )
+            .unwrap();
+        assert!(seeded.file_projection_initialized);
+
+        let deleted = db
+            .reconcile_appearance_file_plugins(Vec::new(), Vec::new())
+            .unwrap();
+        assert!(deleted.plugins.is_empty());
+        assert_eq!(deleted.active_theme_id, "dark");
+        assert_eq!(deleted.revision, seeded.revision + 1);
+    }
+
+    #[test]
+    fn rejected_file_backed_theme_is_not_treated_as_deleted() {
+        let db = Database::open_memory().unwrap();
+        let initial = db
+            .hydrate_appearance_registry(vec![plugin("autumn")], "autumn".into())
+            .unwrap();
+        db.commit_appearance_file_projection(vec!["autumn".into()])
+            .unwrap();
+
+        let preserved = db
+            .reconcile_appearance_file_plugins(Vec::new(), vec!["autumn".into()])
+            .unwrap();
+
+        assert_eq!(preserved.plugins, initial.plugins);
+        assert_eq!(preserved.active_theme_id, "autumn");
     }
 }
