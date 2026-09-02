@@ -67,6 +67,8 @@ pub enum NativeSearchDialect {
     AnthropicServerTool,
     GeminiGoogleSearch,
     DeepSeekResponses,
+    XaiResponses,
+    OpenRouterServerTool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

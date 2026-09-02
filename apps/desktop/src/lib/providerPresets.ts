@@ -12,6 +12,7 @@ import {
   modelEndpointId,
   normalizeModelEndpointUrl,
   type LegacyCatalogModel,
+  type NativeWebSearchCapability,
 } from './modelCatalog';
 
 export type {
@@ -34,6 +35,7 @@ export interface ProviderPreset {
   icon: string;
   description: string;
   capabilities?: ProviderCapabilities;
+  nativeWebSearch?: NativeWebSearchCapability;
   streaming?: ProviderStreamingConfig;
 }
 

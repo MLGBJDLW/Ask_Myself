@@ -1508,6 +1508,32 @@ test("appearance installs the backend-normalized theme draft only after explicit
   })).toEqual({ name: "Generated Ocean", active: "theme-generated-ocean" });
 });
 
+test("web search settings expose native provider support and persist OpenRouter engine priority", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Extensions", exact: true }).click();
+
+  const section = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Web search", exact: true }),
+  });
+  await section.getByRole("button").first().click();
+
+  const support = section.getByTestId("provider-native-search-support");
+  await expect(support).toContainText("OpenAI");
+  await expect(support).toContainText("xAI");
+  await expect(support).toContainText("OpenRouter");
+  await expect(support).toContainText("openRouterServerTool");
+
+  const engineField = section.locator("label").filter({ hasText: "Provider-native engine" });
+  await selectNexaOption(engineField.locator("[data-nexa-select-trigger]"), "exa");
+  await section.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as {
+      __savedAppConfig?: { webSearch?: { providerNativeEngine?: string } };
+    }
+  ).__savedAppConfig?.webSearch?.providerNativeEngine)).toBe("exa");
+});
+
 test("Theme Studio isolates a dark draft from the active light palette", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("nexa-active-theme-v1", "light");

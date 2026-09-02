@@ -86,7 +86,9 @@
             "openAiResponses",
             "anthropicServerTool",
             "geminiGoogleSearch",
-            "deepSeekResponses"
+            "deepSeekResponses",
+            "xaiResponses",
+            "openRouterServerTool"
           ]
         },
         "supportsDomains": { "type": "boolean" },

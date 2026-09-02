@@ -5,6 +5,7 @@ import { useTranslation, type TranslationKey } from '../../i18n';
 import * as api from '../../lib/api';
 import type {
   AppConfig,
+  ProviderNativeSearchEngine,
   WebSearchCustomProviderConfig,
   WebSearchCustomProviderPreset,
   WebSearchConfig,
@@ -18,6 +19,8 @@ import type {
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Section } from './SettingsSection';
+import { PROVIDER_PRESETS } from '../../lib/providerPresets';
+import type { NativeWebSearchCapability } from '../../lib/modelCatalog';
 
 interface WebSearchSettingsPanelProps {
   appConfig: AppConfig;
@@ -29,6 +32,7 @@ interface WebSearchSettingsPanelProps {
 
 const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
   executionMode: 'auto',
+  providerNativeEngine: 'auto',
   providerProfile: 'default',
   reranker: 'auto',
   providerMode: 'built_in_first',
@@ -108,6 +112,46 @@ const EXECUTION_MODE_OPTIONS: WebSearchExecutionMode[] = [
   'nexaRouter',
   'hybrid',
 ];
+
+const PROVIDER_NATIVE_ENGINE_OPTIONS: ProviderNativeSearchEngine[] = [
+  'auto',
+  'native',
+  'exa',
+  'firecrawl',
+  'parallel',
+  'perplexity',
+];
+
+const PROVIDER_NATIVE_ENGINE_LABELS: Record<ProviderNativeSearchEngine, string> = {
+  auto: 'Auto',
+  native: 'Native',
+  exa: 'Exa',
+  firecrawl: 'Firecrawl',
+  parallel: 'Parallel',
+  perplexity: 'Perplexity',
+};
+
+type NativeSearchSupportEntry = {
+  id: string;
+  name: string;
+  capability: NativeWebSearchCapability;
+  modelCount: number;
+};
+
+const NATIVE_SEARCH_SUPPORT: NativeSearchSupportEntry[] = PROVIDER_PRESETS.flatMap((preset) => {
+  const modelCapabilities = preset.models.flatMap((model) => {
+    const capability = model.descriptor.capabilities.nativeWebSearch;
+    return capability ? [capability] : [];
+  });
+  const capability = preset.nativeWebSearch ?? modelCapabilities[0];
+  if (!capability) return [];
+  return [{
+    id: preset.id,
+    name: preset.name,
+    capability,
+    modelCount: preset.nativeWebSearch ? preset.models.length : modelCapabilities.length,
+  }];
+});
 
 const CUSTOM_PROVIDER_PRESETS: WebSearchCustomProviderPreset[] = [
   'brave',
@@ -342,7 +386,49 @@ export function WebSearchSettingsPanel({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-2" data-testid="provider-native-search-support">
+          <div>
+            <p className="text-sm font-medium text-text-primary">
+              {t('settings.webSearchNativeSupport')}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
+              {t('settings.webSearchNativeSupport.desc')}
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {NATIVE_SEARCH_SUPPORT.map(({ id, name, capability, modelCount }) => (
+              <div key={id} className="rounded-lg border border-border bg-surface-2 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">{name}</p>
+                    <p className="mt-0.5 text-[11px] text-text-tertiary">
+                      {capability.dialect} · {modelCount} models
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[10px] font-medium text-success">
+                    {capability.dialect === 'openRouterServerTool' ? 'Hosted · Beta' : 'Native'}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-text-secondary">
+                  {capability.supportsCitations && (
+                    <span className="rounded border border-border/70 bg-surface-1 px-1.5 py-0.5">Citations</span>
+                  )}
+                  {capability.supportsDomains && (
+                    <span className="rounded border border-border/70 bg-surface-1 px-1.5 py-0.5">Domains</span>
+                  )}
+                  {capability.supportsLocation && (
+                    <span className="rounded border border-border/70 bg-surface-1 px-1.5 py-0.5">Location</span>
+                  )}
+                  {capability.canMixClientTools && (
+                    <span className="rounded border border-border/70 bg-surface-1 px-1.5 py-0.5">Client tools</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
           <label className="space-y-2">
             <span className="text-sm font-medium text-text-primary">
               {t('settings.webSearchProfile')}
@@ -390,6 +476,31 @@ export function WebSearchSettingsPanel({
             </NexaSelect>
             <span className="block text-xs leading-relaxed text-text-tertiary">
               {t(RERANKER_DESC_KEYS[config.reranker])}
+            </span>
+          </label>
+
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-text-primary">
+              {t('settings.webSearchProviderNativeEngine')}
+            </span>
+            <NexaSelect
+              value={config.providerNativeEngine}
+              onChange={(event) =>
+                updateConfig({
+                  ...config,
+                  providerNativeEngine: event.target.value as ProviderNativeSearchEngine,
+                })
+              }
+              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+            >
+              {PROVIDER_NATIVE_ENGINE_OPTIONS.map((engine) => (
+                <option key={engine} value={engine}>
+                  {PROVIDER_NATIVE_ENGINE_LABELS[engine]}
+                </option>
+              ))}
+            </NexaSelect>
+            <span className="block text-xs leading-relaxed text-text-tertiary">
+              {t('settings.webSearchProviderNativeEngine.desc')}
             </span>
           </label>
         </div>

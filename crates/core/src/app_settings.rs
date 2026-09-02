@@ -257,6 +257,8 @@ pub struct WebSearchConfig {
     #[serde(default)]
     pub execution_mode: crate::llm::native_search::SearchExecutionMode,
     #[serde(default)]
+    pub provider_native_engine: crate::llm::native_search::ProviderNativeSearchEngine,
+    #[serde(default)]
     pub provider_profile: WebSearchProviderProfile,
     #[serde(default)]
     pub reranker: WebSearchReranker,
@@ -270,6 +272,7 @@ impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
             execution_mode: crate::llm::native_search::SearchExecutionMode::Auto,
+            provider_native_engine: crate::llm::native_search::ProviderNativeSearchEngine::Auto,
             provider_profile: WebSearchProviderProfile::Default,
             reranker: WebSearchReranker::Auto,
             provider_mode: WebSearchProviderMode::BuiltInFirst,
@@ -1361,6 +1364,7 @@ mod tests {
     #[test]
     fn web_search_provider_wire_names_match_frontend() {
         let config: WebSearchConfig = serde_json::from_value(serde_json::json!({
+            "providerNativeEngine": "exa",
             "providerProfile": "default",
             "reranker": "auto",
             "providerMode": "built_in_first",
@@ -1399,6 +1403,10 @@ mod tests {
         assert_eq!(
             config.custom_providers[1].preset,
             WebSearchCustomProviderPreset::AnySearch
+        );
+        assert_eq!(
+            config.provider_native_engine,
+            crate::llm::native_search::ProviderNativeSearchEngine::Exa
         );
         assert_eq!(
             config.custom_providers[2].preset,

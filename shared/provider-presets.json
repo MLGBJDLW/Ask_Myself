@@ -434,6 +434,16 @@
     "capabilities": {
       "vision": true
     },
+    "nativeWebSearch": {
+      "dialect": "openRouterServerTool",
+      "supportsDomains": true,
+      "supportsRecency": false,
+      "supportsLocale": false,
+      "supportsLocation": false,
+      "supportsCitations": true,
+      "supportsStreamEvents": true,
+      "canMixClientTools": true
+    },
     "models": [
       {
         "id": "~anthropic/claude-fable-latest",
@@ -7353,6 +7363,16 @@
     "description": "Grok 4.6, Grok 4.5, Grok 4.3, Grok Build 0.1, Grok 4.20",
     "capabilities": {
       "vision": true
+    },
+    "nativeWebSearch": {
+      "dialect": "xaiResponses",
+      "supportsDomains": true,
+      "supportsRecency": false,
+      "supportsLocale": false,
+      "supportsLocation": false,
+      "supportsCitations": true,
+      "supportsStreamEvents": true,
+      "canMixClientTools": true
     },
     "models": [
       {

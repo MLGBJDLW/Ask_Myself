@@ -541,11 +541,12 @@ pub fn build_desktop_agent_turn_config(
         thinking_budget: power_policy.thinking_budget,
         reasoning_effort: power_policy.reasoning_effort,
         provider_type: Some(provider_type),
-        native_search_plan: nexa_core::llm::native_search::NativeSearchPlan::resolve(
+        native_search_plan: nexa_core::llm::native_search::NativeSearchPlan::resolve_with_engine(
             app_cfg.web_search.execution_mode,
             provider_type,
             db_config.base_url.as_deref(),
             &db_config.model,
+            app_cfg.web_search.provider_native_engine,
         ),
         request_kind: AgentRequestKind::MainAgentStep,
         summarization_model: db_config.summarization_model.clone(),
