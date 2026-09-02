@@ -42,6 +42,9 @@ edits are reported and left on disk for correction rather than overwritten by
 the last database projection. Nexa also preserves unmodeled files such as
 `README.md`, `LICENSE`, and repository metadata in these user-owned folders;
 recursive stale-file pruning remains limited to the legacy internal cache.
+When an approved update removes or renames a previously modeled resource,
+Nexa deletes only that exact former resource path so it cannot be re-imported
+on the next reload.
 
 The optional `agents/openai.yaml` file describes agent-facing metadata and
 dependencies:

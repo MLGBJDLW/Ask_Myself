@@ -64,7 +64,9 @@ pub use storage::{
     materialize_user_skill_to_configured_directory, materialize_user_skill_to_directory,
     materialize_user_skill_to_disk, materialize_user_skills_to_directory,
     materialize_user_skills_to_directory_except, materialize_user_skills_to_disk,
-    remove_materialized_user_skill, remove_materialized_user_skill_from_directory, user_skill_dir,
+    remove_materialized_user_skill, remove_materialized_user_skill_from_directory,
+    remove_obsolete_user_skill_resources_from_configured_directory,
+    remove_obsolete_user_skill_resources_from_directory, user_skill_dir,
 };
 pub use trust_policy::{
     classify_skill_source, evaluate_skill_trust_policy, trust_state_for_skill, SkillSourceKind,
@@ -1049,6 +1051,58 @@ mod tests {
         assert_eq!(
             fs::read_to_string(skill_dir.join(".git/config")).unwrap(),
             "user metadata\n"
+        );
+    }
+
+    #[test]
+    fn test_user_owned_skill_update_removes_only_previously_modeled_resources() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let previous = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Resource update skill".into(),
+                description: "Use for precise resource cleanup tests".into(),
+                content: "Run the current helper.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/old.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('old')\n".into(),
+                }],
+            })
+            .unwrap();
+        let skill_dir = materialize_user_skill_to_directory(dir.path(), &previous).unwrap();
+        fs::write(skill_dir.join("README.md"), "keep me\n").unwrap();
+        let next = db
+            .save_skill(&SaveSkillInput {
+                id: Some(previous.id.clone()),
+                name: previous.name.clone(),
+                description: previous.description.clone(),
+                content: previous.content.clone(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/new.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('new')\n".into(),
+                }],
+            })
+            .unwrap();
+
+        remove_obsolete_user_skill_resources_from_directory(dir.path(), &previous, &next).unwrap();
+        materialize_user_skill_to_directory(dir.path(), &next).unwrap();
+
+        assert!(!skill_dir.join("scripts/old.py").exists());
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts/new.py")).unwrap(),
+            "print('new')\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("README.md")).unwrap(),
+            "keep me\n"
         );
     }
 

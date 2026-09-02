@@ -13,6 +13,30 @@ fn materialize_user_skill_resource(state: &AppState, skill: &Skill) -> Result<()
     .map_err(|e| e.to_string())
 }
 
+fn find_user_skill(state: &AppState, skill_id: &str) -> Result<Option<Skill>, String> {
+    state
+        .db
+        .list_skills()
+        .map_err(|error| error.to_string())
+        .map(|skills| skills.into_iter().find(|skill| skill.id == skill_id))
+}
+
+fn reconcile_user_skill_resource(
+    state: &AppState,
+    previous: Option<&Skill>,
+    next: &Skill,
+) -> Result<(), String> {
+    if let Some(previous) = previous {
+        nexa_core::skills::remove_obsolete_user_skill_resources_from_directory(
+            &state.user_extensions.skills_dir(),
+            previous,
+            next,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    materialize_user_skill_resource(state, next)
+}
+
 fn materialize_user_skill_resources(state: &AppState, skills: &[Skill]) -> Result<(), String> {
     nexa_core::skills::materialize_user_skills_to_directory(
         &state.user_extensions.skills_dir(),
@@ -50,10 +74,21 @@ pub async fn list_skills_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<Sk
 #[tauri::command]
 pub async fn save_skill_cmd(
     state: tauri::State<'_, AppState>,
-    input: SaveSkillInput,
+    mut input: SaveSkillInput,
 ) -> Result<Skill, String> {
+    let previous = match input.id.as_deref() {
+        Some(skill_id) => find_user_skill(&state, skill_id)?,
+        None => None,
+    };
+    // The current editor intentionally receives only resource metadata. An
+    // ordinary text edit must therefore preserve the server-side bundle.
+    if input.resource_bundle.is_empty() {
+        if let Some(previous) = &previous {
+            input.resource_bundle = previous.resource_bundle.clone();
+        }
+    }
     let skill = state.db.save_skill(&input).map_err(|e| e.to_string())?;
-    materialize_user_skill_resource(&state, &skill)?;
+    reconcile_user_skill_resource(&state, previous.as_ref(), &skill)?;
     Ok(skill)
 }
 
@@ -159,6 +194,13 @@ pub async fn install_skills_from_source_cmd(
     replace_existing: bool,
     accept_blocked_warnings: bool,
 ) -> Result<Vec<Skill>, String> {
+    let previous = state
+        .db
+        .list_skills()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|skill| (skill.id.clone(), skill))
+        .collect::<std::collections::HashMap<_, _>>();
     let skills = nexa_core::skills::import_skills_from_source(
         &state.db,
         Path::new(&source),
@@ -166,7 +208,9 @@ pub async fn install_skills_from_source_cmd(
         accept_blocked_warnings,
     )
     .map_err(|e| e.to_string())?;
-    materialize_user_skill_resources(&state, &skills)?;
+    for skill in &skills {
+        reconcile_user_skill_resource(&state, previous.get(&skill.id), skill)?;
+    }
     Ok(skills)
 }
 
@@ -240,11 +284,19 @@ pub async fn apply_skill_change_proposal_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<AppliedSkillChange, String> {
+    let proposal = state
+        .db
+        .get_skill_change_proposal(&id)
+        .map_err(|e| e.to_string())?;
+    let previous = match proposal.skill_id.as_deref() {
+        Some(skill_id) => find_user_skill(&state, skill_id)?,
+        None => None,
+    };
     let applied = state
         .db
         .apply_skill_change_proposal(&id)
         .map_err(|e| e.to_string())?;
-    materialize_user_skill_resource(&state, &applied.skill)?;
+    reconcile_user_skill_resource(&state, previous.as_ref(), &applied.skill)?;
     Ok(applied)
 }
 

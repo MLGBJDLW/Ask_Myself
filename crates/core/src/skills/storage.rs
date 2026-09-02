@@ -247,7 +247,7 @@ fn materialize_user_skill(
         ))
     })?;
     for directory in [user_skills_dir, skill_dir.as_path()] {
-        ensure_real_user_skill_directory(directory, &skill.id)?;
+        ensure_real_user_skill_directory(directory, &skill.id, prune_stale_projection_files)?;
     }
     let mut expected_files = BTreeSet::from([PathBuf::from("SKILL.md")]);
     let mut portable_skill = skill.clone();
@@ -257,6 +257,7 @@ fn materialize_user_skill(
         &skill_dir.join("SKILL.md"),
         export_skill_to_md(&portable_skill).as_bytes(),
         &skill.id,
+        prune_stale_projection_files,
     )?;
 
     let resources = normalize_resource_bundle(&skill.resource_bundle)?;
@@ -264,7 +265,12 @@ fn materialize_user_skill(
         expected_files.insert(PathBuf::from(&resource.path));
         let target = skill_dir.join(&resource.path);
         if let Some(parent) = target.parent() {
-            ensure_user_skill_resource_parent(&skill_dir, parent, &skill.id)?;
+            ensure_user_skill_resource_parent(
+                &skill_dir,
+                parent,
+                &skill.id,
+                prune_stale_projection_files,
+            )?;
         }
         let bytes = match resource.encoding {
             SkillResourceEncoding::Utf8 => resource.content.into_bytes(),
@@ -280,7 +286,7 @@ fn materialize_user_skill(
                     })?
             }
         };
-        write_user_file_if_changed(&target, &bytes, &skill.id)?;
+        write_user_file_if_changed(&target, &bytes, &skill.id, prune_stale_projection_files)?;
     }
 
     if prune_stale_projection_files {
@@ -299,9 +305,101 @@ pub fn materialize_user_skill_to_configured_directory(
         .transpose()
 }
 
-fn ensure_real_user_skill_directory(path: &Path, skill_id: &str) -> Result<(), CoreError> {
+pub fn remove_obsolete_user_skill_resources_from_directory(
+    user_skills_dir: &Path,
+    previous: &Skill,
+    next: &Skill,
+) -> Result<(), CoreError> {
+    if previous.id != next.id {
+        return Err(CoreError::InvalidInput(
+            "Cannot reconcile resources across different skill identities".into(),
+        ));
+    }
+    let next_paths = normalize_resource_bundle(&next.resource_bundle)?
+        .into_iter()
+        .map(|resource| resource.path)
+        .collect::<HashSet<_>>();
+    let skill_dir = user_skills_dir.join(safe_skill_dir_name(&next.id));
+    for resource in normalize_resource_bundle(&previous.resource_bundle)? {
+        if next_paths.contains(&resource.path) {
+            continue;
+        }
+        let target = skill_dir.join(&resource.path);
+        let removed_file = match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                fs::remove_file(&target)
+                    .or_else(|_| fs::remove_dir(&target))
+                    .map_err(|error| {
+                        CoreError::Internal(format!(
+                            "Failed to remove obsolete skill resource {}: {error}",
+                            target.display()
+                        ))
+                    })?;
+                true
+            }
+            Ok(metadata) if metadata.is_file() => {
+                fs::remove_file(&target).map_err(|error| {
+                    CoreError::Internal(format!(
+                        "Failed to remove obsolete skill resource {}: {error}",
+                        target.display()
+                    ))
+                })?;
+                true
+            }
+            Ok(_) => {
+                // Never recursively delete a directory in the user-owned
+                // source tree; it may contain files Nexa never modeled.
+                false
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if removed_file {
+            remove_empty_resource_parents(&skill_dir, target.parent());
+        }
+    }
+    Ok(())
+}
+
+fn remove_empty_resource_parents(skill_dir: &Path, mut parent: Option<&Path>) {
+    while let Some(directory) = parent {
+        if directory == skill_dir || !directory.starts_with(skill_dir) {
+            break;
+        }
+        let next = directory.parent();
+        let removable = fs::symlink_metadata(directory)
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+        if !removable || fs::remove_dir(directory).is_err() {
+            break;
+        }
+        parent = next;
+    }
+}
+
+pub fn remove_obsolete_user_skill_resources_from_configured_directory(
+    previous: &Skill,
+    next: &Skill,
+) -> Result<bool, CoreError> {
+    let Some(directory) = USER_SKILLS_DIR.get() else {
+        return Ok(false);
+    };
+    remove_obsolete_user_skill_resources_from_directory(directory, previous, next)?;
+    Ok(true)
+}
+
+fn ensure_real_user_skill_directory(
+    path: &Path,
+    skill_id: &str,
+    replace_conflicts: bool,
+) -> Result<(), CoreError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
+            if !replace_conflicts {
+                return Err(CoreError::Conflict(format!(
+                    "User-owned skill directory path is a link: {}",
+                    path.display()
+                )));
+            }
             fs::remove_file(path)
                 .or_else(|_| fs::remove_dir(path))
                 .map_err(|e| {
@@ -319,6 +417,12 @@ fn ensure_real_user_skill_directory(path: &Path, skill_id: &str) -> Result<(), C
         }
         Ok(metadata) if metadata.is_dir() => Ok(()),
         Ok(_) => {
+            if !replace_conflicts {
+                return Err(CoreError::Conflict(format!(
+                    "User-owned skill directory path is occupied: {}",
+                    path.display()
+                )));
+            }
             fs::remove_file(path).map_err(|e| {
                 CoreError::Internal(format!(
                     "Failed to replace user skill directory path {} for {skill_id}: {e}",
@@ -351,6 +455,7 @@ fn ensure_user_skill_resource_parent(
     skill_dir: &Path,
     parent: &Path,
     skill_id: &str,
+    replace_conflicts: bool,
 ) -> Result<(), CoreError> {
     let relative = parent.strip_prefix(skill_dir).map_err(|error| {
         CoreError::InvalidInput(format!(
@@ -365,12 +470,17 @@ fn ensure_user_skill_resource_parent(
             ));
         };
         current.push(component);
-        ensure_real_user_skill_directory(&current, skill_id)?;
+        ensure_real_user_skill_directory(&current, skill_id, replace_conflicts)?;
     }
     Ok(())
 }
 
-fn write_user_file_if_changed(path: &Path, bytes: &[u8], skill_id: &str) -> Result<(), CoreError> {
+fn write_user_file_if_changed(
+    path: &Path,
+    bytes: &[u8],
+    skill_id: &str,
+    replace_conflicting_directories: bool,
+) -> Result<(), CoreError> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
             fs::remove_file(path)
@@ -382,12 +492,21 @@ fn write_user_file_if_changed(path: &Path, bytes: &[u8], skill_id: &str) -> Resu
                     ))
                 })?;
         } else if metadata.is_dir() {
-            fs::remove_dir_all(path).map_err(|e| {
-                CoreError::Internal(format!(
-                    "Failed to replace user skill resource directory {} for {skill_id}: {e}",
-                    path.display()
-                ))
-            })?;
+            if replace_conflicting_directories {
+                fs::remove_dir_all(path).map_err(|e| {
+                    CoreError::Internal(format!(
+                        "Failed to replace user skill resource directory {} for {skill_id}: {e}",
+                        path.display()
+                    ))
+                })?;
+            } else {
+                fs::remove_dir(path).map_err(|e| {
+                    CoreError::Conflict(format!(
+                        "Cannot replace non-empty user-owned skill directory {} for {skill_id}: {e}",
+                        path.display()
+                    ))
+                })?;
+            }
         }
     }
     if fs::read(path).is_ok_and(|existing| existing == bytes) {
