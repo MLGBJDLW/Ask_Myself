@@ -950,6 +950,14 @@ html[data-custom-theme='true'][data-theme-backdrop='false'] [data-theme-surface=
   background-image: var(--theme-component-card-background-layer, none);
 }
 
+/* Pointer focus stays visually quiet, while keyboard navigation retains an
+   explicit composer-level indicator. :focus-visible carries the browser's
+   input-modality decision and avoids reintroducing the click halo. */
+.chat-composer-surface[data-keyboard-focus='true']:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
 :is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='overlay'] {
   background: var(
     --theme-opaque-surface-1,

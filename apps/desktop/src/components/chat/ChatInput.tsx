@@ -379,6 +379,7 @@ export function ChatInput({
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [loadedDraftKey, setLoadedDraftKey] = useState(draftKey);
   const [isDragging, setIsDragging] = useState(false);
+  const [composerKeyboardFocus, setComposerKeyboardFocus] = useState(false);
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowCatalogTemplate[]>([]);
   const [activeSkills, setActiveSkills] = useState<Skill[]>([]);
   const [workflowCatalogOpen, setWorkflowCatalogOpen] = useState(false);
@@ -413,6 +414,7 @@ export function ChatInput({
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const slashListRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
+  const keyboardFocusModalityRef = useRef(false);
   const draftsRef = useRef<Record<string, ChatDraftState>>(
     initialDraftRef.current ? { [draftKey]: cloneDraftState(initialDraftRef.current) } : {},
   );
@@ -434,6 +436,23 @@ export function ChatInput({
     [inputHistory],
   );
   const [inputHistoryIndex, setInputHistoryIndex] = useState(-1);
+
+  useEffect(() => {
+    const handleKeyboardModality = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        keyboardFocusModalityRef.current = true;
+      }
+    };
+    const handlePointerModality = () => {
+      keyboardFocusModalityRef.current = false;
+    };
+    document.addEventListener('keydown', handleKeyboardModality, true);
+    document.addEventListener('pointerdown', handlePointerModality, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyboardModality, true);
+      document.removeEventListener('pointerdown', handlePointerModality, true);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1739,9 +1758,20 @@ export function ChatInput({
           data-testid="chat-composer-surface"
           data-theme-surface="panel"
           data-theme-readable="true"
-          className={`overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast ${
+          data-keyboard-focus={composerKeyboardFocus ? "true" : "false"}
+          className={`chat-composer-surface overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast ${
             effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
           }`}
+          onFocusCapture={() => setComposerKeyboardFocus(keyboardFocusModalityRef.current)}
+          onBlurCapture={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setComposerKeyboardFocus(false);
+            }
+          }}
+          onPointerDownCapture={() => {
+            keyboardFocusModalityRef.current = false;
+            setComposerKeyboardFocus(false);
+          }}
         >
         <CollapsibleMotion
           open={Boolean(activeSlashCommand)}
@@ -1862,7 +1892,7 @@ export function ChatInput({
           aria-label={t("chat.placeholder")}
           disabled={inputLocked}
           rows={1}
-          className="block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
+          className="chat-input-textarea block min-h-24 w-full resize-none overflow-y-auto bg-transparent px-4 pb-3 pt-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary outline-none disabled:pointer-events-none disabled:opacity-40"
         />
         </NexaPopoverAnchor>
 
