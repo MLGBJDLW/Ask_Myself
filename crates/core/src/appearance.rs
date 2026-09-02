@@ -80,6 +80,32 @@ impl AppearanceRegistry {
         self.normalize()
     }
 
+    /// Reconcile authoritative file-backed theme declarations without
+    /// changing the active or rollback selection. Unlike `hydrate`, this is
+    /// intentionally effective after the registry has been initialized.
+    pub fn reconcile_plugins(
+        mut self,
+        plugins: Vec<ThemeResourcePlugin>,
+    ) -> Result<Self, CoreError> {
+        let mut changed = false;
+        for plugin in plugins {
+            let plugin = plugin.normalize()?;
+            if let Some(existing) = self.plugins.iter_mut().find(|item| item.id == plugin.id) {
+                if *existing != plugin {
+                    *existing = plugin;
+                    changed = true;
+                }
+            } else {
+                self.plugins.push(plugin);
+                changed = true;
+            }
+        }
+        if changed {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.normalize()
+    }
+
     pub fn apply(mut self, plugin: ThemeResourcePlugin) -> Result<Self, CoreError> {
         let plugin = plugin.normalize()?;
         self.initialized = true;
@@ -164,6 +190,13 @@ impl Database {
         plugin: ThemeResourcePlugin,
     ) -> Result<AppearanceRegistry, CoreError> {
         self.mutate_appearance_registry(|registry| registry.apply(plugin))
+    }
+
+    pub fn reconcile_appearance_plugins(
+        &self,
+        plugins: Vec<ThemeResourcePlugin>,
+    ) -> Result<AppearanceRegistry, CoreError> {
+        self.mutate_appearance_registry(|registry| registry.reconcile_plugins(plugins))
     }
 
     pub fn activate_appearance(&self, theme_id: &str) -> Result<AppearanceRegistry, CoreError> {
@@ -308,5 +341,22 @@ mod tests {
         let updated = db.apply_appearance_plugin(plugin("autumn")).unwrap();
         assert_eq!(updated.previous_theme_id.as_deref(), Some("dark"));
         assert_eq!(db.rollback_appearance().unwrap().active_theme_id, "dark");
+    }
+
+    #[test]
+    fn file_backed_plugins_reconcile_after_initialization_without_changing_selection() {
+        let db = Database::open_memory().unwrap();
+        let initial = db
+            .hydrate_appearance_registry(vec![plugin("autumn")], "autumn".into())
+            .unwrap();
+        let mut edited = plugin("autumn");
+        edited.name = "Edited on disk".into();
+
+        let reconciled = db.reconcile_appearance_plugins(vec![edited]).unwrap();
+
+        assert_eq!(reconciled.active_theme_id, "autumn");
+        assert_eq!(reconciled.plugins[0].name, "Edited on disk");
+        assert_eq!(reconciled.revision, initial.revision + 1);
+        assert_eq!(db.load_appearance_registry().unwrap(), reconciled);
     }
 }

@@ -8,6 +8,7 @@
 use crate::error::CoreError;
 use crate::theme_resource_plugin::ThemeResourcePlugin;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -75,6 +76,7 @@ pub struct UserExtensionMigrationReport {
 pub struct ThemeFileLoadReport {
     pub plugins: Vec<ThemeResourcePlugin>,
     pub warnings: Vec<String>,
+    pub preserved_theme_ids: BTreeSet<String>,
 }
 
 impl UserExtensionLayout {
@@ -210,9 +212,19 @@ impl UserExtensionLayout {
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let file_theme_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_string);
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
+                    if let Some(theme_id) = file_theme_id {
+                        report.preserved_theme_ids.insert(theme_id);
+                    }
                     report
                         .warnings
                         .push(format!("Could not inspect {}: {error}", path.display()));
@@ -220,12 +232,15 @@ impl UserExtensionLayout {
                 }
             };
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                continue;
-            }
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                if let Some(theme_id) = file_theme_id {
+                    report.preserved_theme_ids.insert(theme_id);
+                }
                 continue;
             }
             if metadata.len() > MAX_THEME_FILE_BYTES {
+                if let Some(theme_id) = file_theme_id {
+                    report.preserved_theme_ids.insert(theme_id);
+                }
                 report
                     .warnings
                     .push(format!("Theme file exceeds 1 MiB: {}", path.display()));
@@ -244,14 +259,24 @@ impl UserExtensionLayout {
                 {
                     report.plugins.push(plugin)
                 }
-                Ok(plugin) => report.warnings.push(format!(
-                    "Rejected user theme {}: file name must be {}.json",
-                    path.display(),
-                    plugin.id
-                )),
-                Err(error) => report
-                    .warnings
-                    .push(format!("Rejected user theme {}: {error}", path.display())),
+                Ok(plugin) => {
+                    if let Some(theme_id) = file_theme_id {
+                        report.preserved_theme_ids.insert(theme_id);
+                    }
+                    report.warnings.push(format!(
+                        "Rejected user theme {}: file name must be {}.json",
+                        path.display(),
+                        plugin.id
+                    ));
+                }
+                Err(error) => {
+                    if let Some(theme_id) = file_theme_id {
+                        report.preserved_theme_ids.insert(theme_id);
+                    }
+                    report
+                        .warnings
+                        .push(format!("Rejected user theme {}: {error}", path.display()));
+                }
             }
         }
         report.plugins.sort_by(|left, right| left.id.cmp(&right.id));
@@ -521,6 +546,7 @@ mod tests {
         let mismatched = layout.load_theme_plugins().unwrap();
         assert_eq!(mismatched.plugins.len(), 1);
         assert_eq!(mismatched.warnings.len(), 1);
+        assert!(mismatched.preserved_theme_ids.contains("wrong-name"));
         layout.remove_theme_plugin("theme-user-test").unwrap();
         assert!(layout.load_theme_plugins().unwrap().plugins.is_empty());
     }
