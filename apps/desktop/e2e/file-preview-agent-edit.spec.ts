@@ -666,6 +666,12 @@ test('opens file preview as a large panel and closes it from outside clicks', as
 });
 
 test('opens editable HTML in a live sandboxed split preview', async ({ page }) => {
+  const escapedRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().startsWith('https://preview-leak.invalid/')) {
+      escapedRequests.push(request.url());
+    }
+  });
   await page.goto('/chat/conv-agent-edit');
 
   await page.getByRole('button', { name: /index\.html/i }).click();
@@ -679,16 +685,19 @@ test('opens editable HTML in a live sandboxed split preview', async ({ page }) =
   await expect(previewFrame.contentFrame().getByRole('heading', { name: 'Original preview' })).toBeVisible();
 
   await editor.fill([
-    '<!doctype html>',
-    '<html><head><style>h1 { color: rgb(20, 80, 160); }</style></head>',
-    '<body><h1>Updated live preview</h1><script>parent.document.body.dataset.htmlPreviewEscaped = "true"</script></body>',
-    '</html>',
+    '<!-- decoy <head><meta http-equiv="Content-Security-Policy" content="default-src *"></head> -->',
+    '<!doctype html><html><head><style>h1 { color: rgb(20, 80, 160); }</style></head>',
+    '<body><h1>Updated live preview</h1>',
+    '<img src="https://preview-leak.invalid/pixel.png" alt="blocked external image">',
+    '<script>parent.document.body.dataset.htmlPreviewEscaped = "true"</script></body></html>',
   ].join('\n'));
 
   const updatedHeading = previewFrame.contentFrame().getByRole('heading', { name: 'Updated live preview' });
   await expect(updatedHeading).toBeVisible();
   await expect(updatedHeading).toHaveCSS('color', 'rgb(20, 80, 160)');
   expect(await page.evaluate(() => document.body.dataset.htmlPreviewEscaped)).toBeUndefined();
+  await expect(previewFrame.contentFrame().locator('head meta[http-equiv="Content-Security-Policy"]')).toHaveCount(1);
+  expect(escapedRequests).toEqual([]);
 });
 
 test('closes file preview only after a dirty web link is confirmed and routed', async ({ page }) => {

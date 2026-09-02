@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import {
@@ -322,13 +323,24 @@ function secureHtmlPreviewDocument(content: string): string {
     '<meta charset="utf-8">',
     `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_POLICY}">`,
   ].join('');
-  if (/<head\b[^>]*>/i.test(content)) {
-    return content.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
-  }
-  if (/<html\b[^>]*>/i.test(content)) {
-    return content.replace(/<html\b[^>]*>/i, (html) => `${html}<head>${securityHead}</head>`);
-  }
-  return `<!doctype html><html><head>${securityHead}</head><body>${content}</body></html>`;
+  const sanitized = String(DOMPurify.sanitize(content, {
+    WHOLE_DOCUMENT: true,
+    ADD_TAGS: ['style'],
+    FORBID_TAGS: ['script', 'iframe', 'frame', 'object', 'embed', 'base', 'meta', 'link'],
+    FORBID_ATTR: ['srcdoc', 'action', 'formaction', 'ping', 'target'],
+    ALLOWED_URI_REGEXP: /^(?:#|data:|blob:)/i,
+  }));
+  const parsed = new DOMParser().parseFromString(sanitized, 'text/html');
+  const authorStyles = Array.from(parsed.head.querySelectorAll('style'))
+    .map((style) => style.outerHTML)
+    .join('');
+  const staticBody = parsed.body.innerHTML;
+
+  // The policy must be parsed before any author-controlled markup. Splicing
+  // into a textual <head> is unsafe because comments and inert templates can
+  // contain decoy tags. DOMPurify supplies a static rendering fragment, while
+  // the host-owned wrapper guarantees that CSP is active before it is parsed.
+  return `<!doctype html><html><head>${securityHead}${authorStyles}</head><body>${staticBody}</body></html>`;
 }
 
 function HtmlPreview({ content, title }: { content: string; title: string }) {
