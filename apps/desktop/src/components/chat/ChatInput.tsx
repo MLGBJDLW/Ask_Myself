@@ -1739,8 +1739,7 @@ export function ChatInput({
           data-testid="chat-composer-surface"
           data-theme-surface="panel"
           data-theme-readable="true"
-          data-theme-focus-surface="true"
-          className={`overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast focus-within:border-accent/55 focus-within:ring-accent/20 ${
+          className={`overflow-visible rounded-xl border bg-surface-0 shadow-[0_12px_32px_rgba(0,0,0,0.16)] ring-1 ring-white/[0.03] transition-colors duration-fast ${
             effectivePlanModeEnabled ? "border-accent/35" : "border-border/80"
           }`}
         >

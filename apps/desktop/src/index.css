@@ -950,12 +950,6 @@ html[data-custom-theme='true'][data-theme-backdrop='false'] [data-theme-surface=
   background-image: var(--theme-component-card-background-layer, none);
 }
 
-:is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='panel'][data-theme-focus-surface='true']:focus-within {
-  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
-  outline-offset: 1px;
-}
-
 :is(html.theme-dream, html[data-custom-theme='true']) [data-theme-surface='overlay'] {
   background: var(
     --theme-opaque-surface-1,
