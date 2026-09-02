@@ -31,6 +31,14 @@ description: Use when synthesizing evidence from multiple local or web sources.
 ---
 ```
 
+Installed personal skills use `~/.nexa/skills/<database-id>/` by default. Nexa
+uses the stable database id as the folder name so editing a skill does not
+silently create a second identity. Startup and the explicit Reload skill files
+action synchronize valid edits for already-registered ids. Unknown folders are
+left untouched and unregistered until the user chooses the normal import flow,
+including security-warning acknowledgement. A disabled skill keeps its files;
+only an explicit Delete removes its folder.
+
 The optional `agents/openai.yaml` file describes agent-facing metadata and
 dependencies:
 

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, FileJson, Loader2, Pencil, Plug, Plus, RefreshCw, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
+import { AlertTriangle, Blocks, Check, ChevronDown, ChevronUp, Download, Eye, FileJson, FolderOpen, Loader2, Pencil, Plug, Plus, RefreshCw, Search, Trash2, UserRound, X, Zap } from 'lucide-react';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
 import type { PersonaProfile, SavePersonaInput } from '../../lib/api';
 import type { AppConfig } from '../../types/conversation';
-import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill, SkillChangeProposal } from '../../types/extensions';
+import type { McpServer, McpToolInfo, SaveMcpServerInput, SaveSkillInput, Skill, SkillChangeProposal, UserExtensionLayout } from '../../types/extensions';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -40,6 +40,8 @@ interface ExtensionsSettingsTabProps {
   mcpServers: McpServer[];
   mcpConfigPath: string;
   mcpConfigReloading: boolean;
+  userExtensionLayout: UserExtensionLayout | null;
+  skillFilesReloading: boolean;
   showMcpForm: boolean;
   editingMcpServer: McpServer | null;
   deleteMcpTarget: McpServer | null;
@@ -73,6 +75,8 @@ interface ExtensionsSettingsTabProps {
   onAddMcpServer: () => void;
   onOpenMcpConfig: () => void;
   onReloadMcpConfig: () => void;
+  onOpenUserExtensionHome: () => void;
+  onReloadUserSkillFiles: () => void;
   onSaveMcpServer: (input: SaveMcpServerInput) => Promise<void>;
   onCancelMcpForm: () => void;
   onMcpFormDirtyChange: (dirty: boolean) => void;
@@ -410,6 +414,8 @@ export function ExtensionsSettingsTab({
   mcpServers,
   mcpConfigPath,
   mcpConfigReloading,
+  userExtensionLayout,
+  skillFilesReloading,
   showMcpForm,
   editingMcpServer,
   deleteMcpTarget,
@@ -443,6 +449,8 @@ export function ExtensionsSettingsTab({
   onAddMcpServer,
   onOpenMcpConfig,
   onReloadMcpConfig,
+  onOpenUserExtensionHome,
+  onReloadUserSkillFiles,
   onSaveMcpServer,
   onCancelMcpForm,
   onMcpFormDirtyChange,
@@ -507,6 +515,49 @@ export function ExtensionsSettingsTab({
 
   return (
     <>
+      <div
+        data-testid="user-extension-home"
+        className="rounded-xl border border-accent/20 bg-accent/5 p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+              <Blocks size={16} className="text-accent" />
+              {t('settings.userExtensionHome')}
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+              {t('settings.userExtensionHomeDescription')}
+            </p>
+            <p
+              className="mt-2 truncate rounded-md border border-border/60 bg-surface-1 px-2.5 py-1.5 font-mono text-[11px] text-text-tertiary"
+              title={userExtensionLayout?.root}
+            >
+              {userExtensionLayout?.root ?? t('common.loading')}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<FolderOpen size={14} />}
+              onClick={onOpenUserExtensionHome}
+              disabled={!userExtensionLayout}
+            >
+              {t('settings.userExtensionOpenHome')}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<RefreshCw size={14} className={skillFilesReloading ? 'animate-spin' : ''} />}
+              onClick={onReloadUserSkillFiles}
+              disabled={skillFilesReloading || !userExtensionLayout}
+            >
+              {t('settings.userExtensionReloadSkills')}
+            </Button>
+          </div>
+        </div>
+      </div>
+
       <PackageHostSettingsPanel onPackageStateChange={onPackageStateChange} />
 
       {appConfig && (

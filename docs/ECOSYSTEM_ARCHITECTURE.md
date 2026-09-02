@@ -20,6 +20,50 @@ The default product experience should not require users to understand agent
 internals. Advanced extension surfaces must sit behind clear trust and
 installation boundaries.
 
+## User-Owned Extension Home
+
+Nexa has one global, user-owned declaration root:
+
+```text
+~/.nexa/
+  capabilities/
+  skills/
+  themes/
+  workflows/
+  connectors/
+    mcp.json
+```
+
+`NEXA_HOME` may override this location, but it must be an absolute path. This
+root is for portable files users intentionally edit, review, back up, and share.
+It is not a replacement for the operating-system app-data directory. The Tauri
+identifier `com.nexa.desktop` and its app-data directory continue to own SQLite
+state, caches, logs, indexes, downloaded runtimes, managed assets, approvals,
+and other host internals. Credentials stay in host credential storage or are
+referenced through environment variables; they must not be copied into
+`.nexa` declarations.
+
+The current live file-backed lanes are deliberately narrower than the directory
+shape:
+
+| Directory | Current behavior |
+| --- | --- |
+| `skills/<database-id>/` | Registered user skills are materialized here. Startup or explicit Reload imports valid edits while preserving the database identity and enabled state. Unknown folders are not activated until they pass the explicit import and security-review flow. Disabling a skill never deletes its files. |
+| `themes/<theme-id>.json` | Declarative theme resources are schema-validated. Valid files override the same theme id in the persisted projection during hydration. |
+| `connectors/mcp.json` | Versioned MCP declarations are validated as a whole and projected into the runtime store. Invalid updates retain the last valid projection. |
+| `capabilities/`, `workflows/` | Reserved package locations. Merely placing a file here does not grant permissions or activate native code; each package still needs a supported, trust-gated host path. |
+
+On first startup after this layout is introduced, Nexa non-destructively copies
+legacy user skill projections and `mcp-connectors.json` from app data when the
+matching `.nexa` target does not already exist. Existing user-owned files always
+win, and the legacy files remain in place as a rollback source.
+
+Workspace-local declarations remain separate under `<workspace>/.nexa`. They
+are scoped to that registered source and its trust decision; they must not be
+silently merged into the global user home. For example, project capability
+discovery reads `<workspace>/.nexa/capabilities`, while global personal skills,
+themes, and connectors use the user-owned root above.
+
 ## Core Rule
 
 Do not use `plugin` as the default word for every extension.

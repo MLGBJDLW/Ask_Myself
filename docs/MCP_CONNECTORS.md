@@ -66,11 +66,13 @@ The current runtime stores MCP endpoint configuration as `McpServer` records and
 wraps discovered server tools with `mcp_tool` or `mcp__...` tool names. That
 internal naming can remain while the product language moves to connectors.
 
-Advanced users can also maintain the versioned `mcp-connectors.json` file in
-Nexa's app-data directory. Settings -> Extensions -> MCP Connectors exposes the
-resolved path plus explicit Open and Reload actions. The file is a declarative
-configuration source; startup and explicit Reload validate the whole document
-before materializing its connectors into the existing runtime store.
+Advanced users can maintain the versioned `~/.nexa/connectors/mcp.json` file
+(`NEXA_HOME` can override the `.nexa` root). Settings -> Extensions -> MCP
+Connectors exposes the resolved path plus explicit Open and Reload actions. The
+file is a declarative configuration source; startup and explicit Reload validate
+the whole document before materializing its connectors into the existing
+runtime store. Existing `mcp-connectors.json` content in app data is copied once
+when the new target is missing; the legacy file is retained for rollback.
 
 ```json
 {

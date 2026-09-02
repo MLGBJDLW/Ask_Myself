@@ -40,6 +40,25 @@ export interface McpConfigReloadReport {
   disabledAfterChange: number;
 }
 
+export interface UserExtensionLayout {
+  version: number;
+  root: string;
+  capabilitiesDir: string;
+  skillsDir: string;
+  themesDir: string;
+  workflowsDir: string;
+  connectorsDir: string;
+  mcpConfigPath: string;
+  legacyAppDataDir: string;
+}
+
+export interface RegisteredSkillFileSyncReport {
+  updated: number;
+  unchanged: number;
+  unregistered: number;
+  rejected: string[];
+}
+
 // Skill types
 
 export interface Skill {

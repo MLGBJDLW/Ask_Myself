@@ -100,6 +100,8 @@ import type {
   SkillChangeProposal,
   SkillProposalStatus,
   AppliedSkillChange,
+  RegisteredSkillFileSyncReport,
+  UserExtensionLayout,
 } from "../types/extensions";
 import type {
   TraceSummary,
@@ -2306,6 +2308,12 @@ export const discoverSkillsInDirectory = (directory: string) =>
 
 export const importSkillsFromDirectory = (directory: string) =>
   invoke<Skill[]>('import_skills_from_directory_cmd', { directory });
+
+export const getUserExtensionLayout = () =>
+  invoke<UserExtensionLayout>('get_user_extension_layout_cmd');
+
+export const reloadUserSkillFiles = () =>
+  invoke<RegisteredSkillFileSyncReport>('reload_user_skill_files_cmd');
 
 // ── MCP Servers ─────────────────────────────────────────────────────────
 
