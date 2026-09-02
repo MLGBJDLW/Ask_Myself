@@ -165,6 +165,7 @@ function hasStructuredPreview(preview: api.FilePreview | null): boolean {
 
 function defaultModeForPreview(preview: api.FilePreview): PreviewMode {
   if (preview.structuredPreview) return 'preview';
+  if (preview.editable && preview.kind === 'html') return 'split';
   if (preview.editable) return 'edit';
   return 'preview';
 }
@@ -298,6 +299,49 @@ function MarkdownPreview({ content }: { content: string }) {
         {content}
       </ReactMarkdown>
     </div>
+  );
+}
+
+const HTML_PREVIEW_POLICY = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  'img-src data: blob:',
+  'media-src data: blob:',
+  'font-src data:',
+  "script-src 'none'",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "child-src 'none'",
+  "object-src 'none'",
+  "form-action 'none'",
+  "base-uri 'none'",
+].join('; ');
+
+function secureHtmlPreviewDocument(content: string): string {
+  const securityHead = [
+    '<meta charset="utf-8">',
+    `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_POLICY}">`,
+  ].join('');
+  if (/<head\b[^>]*>/i.test(content)) {
+    return content.replace(/<head\b[^>]*>/i, (head) => `${head}${securityHead}`);
+  }
+  if (/<html\b[^>]*>/i.test(content)) {
+    return content.replace(/<html\b[^>]*>/i, (html) => `${html}<head>${securityHead}</head>`);
+  }
+  return `<!doctype html><html><head>${securityHead}</head><body>${content}</body></html>`;
+}
+
+function HtmlPreview({ content, title }: { content: string; title: string }) {
+  const srcDoc = useMemo(() => secureHtmlPreviewDocument(content), [content]);
+  return (
+    <iframe
+      data-testid="file-preview-html-preview"
+      title={title}
+      sandbox=""
+      referrerPolicy="no-referrer"
+      srcDoc={srcDoc}
+      className="h-full w-full border-0 bg-white"
+    />
   );
 }
 
@@ -1165,6 +1209,9 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   const hasStructured = hasStructuredPreview(preview);
   const hasRenderedPreview = Boolean(preview?.renderedPreview?.pages?.length);
   const canShowPreview = Boolean(hasStructured || hasRenderedPreview || preview?.content);
+  const supportsSplitPreview = Boolean(
+    preview?.editable && (preview.kind === 'markdown' || preview.kind === 'html'),
+  );
   const metadataBits = preview
     ? [
         formatBytes(preview.sizeBytes),
@@ -1303,7 +1350,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                         label={labels.edit}
                         onClick={() => setMode('edit')}
                       />
-                      {preview.kind === 'markdown' && (
+                      {supportsSplitPreview && (
                         <ModeButton
                           active={mode === 'split'}
                           icon={<SplitSquareHorizontal size={14} />}
@@ -1439,7 +1486,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                   spellCheck={false}
                   className="h-full w-full resize-none border-0 bg-surface-0 px-4 py-3 font-mono text-xs leading-5 text-text-primary outline-none placeholder:text-text-tertiary"
                 />
-              ) : mode === 'split' && preview.editable && preview.kind === 'markdown' ? (
+              ) : mode === 'split' && preview.editable && supportsSplitPreview ? (
                 <div className="grid h-full grid-cols-1 md:grid-cols-2">
                   <textarea
                     data-testid="file-preview-editor"
@@ -1452,7 +1499,11 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                     className="h-full w-full resize-none border-0 border-r border-border bg-surface-0 px-4 py-3 font-mono text-xs leading-5 text-text-primary outline-none placeholder:text-text-tertiary md:border-r"
                   />
                   <div className="h-full overflow-auto bg-surface-1">
-                    <MarkdownPreview content={draft} />
+                    {preview.kind === 'markdown' ? (
+                      <MarkdownPreview content={draft} />
+                    ) : (
+                      <HtmlPreview content={draft} title={`${labels.preview}: ${preview.displayName}`} />
+                    )}
                   </div>
                 </div>
               ) : canShowPreview ? (
@@ -1473,6 +1524,11 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                 >
                   {preview.kind === 'markdown' ? (
                     <MarkdownPreview content={preview.editable ? draft : content} />
+                  ) : preview.kind === 'html' ? (
+                    <HtmlPreview
+                      content={preview.editable ? draft : content}
+                      title={`${labels.preview}: ${preview.displayName}`}
+                    />
                   ) : (
                     <TextPreview content={preview.editable ? draft : content} />
                   )}

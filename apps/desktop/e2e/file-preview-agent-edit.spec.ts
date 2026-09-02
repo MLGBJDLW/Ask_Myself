@@ -93,7 +93,7 @@ test.beforeEach(async ({ page }) => {
           id: 'm-assistant-file',
           conversationId: 'conv-agent-edit',
           role: 'assistant',
-          content: 'Open `D:\\Vault\\scripts\\server.py` and inspect `D:\\Vault\\docs\\manual.pdf`. Also improve `D:\\Vault\\notes\\agent-edit.md`, inspect `D:\\Vault\\docs\\office-proposal.docx`, `D:\\Vault\\docs\\structured-report.docx`, and `D:\\Vault\\sheets\\budget.xlsx`.',
+          content: 'Open `D:\\Vault\\scripts\\server.py` and inspect `D:\\Vault\\docs\\manual.pdf`. Also improve `D:\\Vault\\notes\\agent-edit.md`, preview `D:\\Vault\\web\\index.html`, inspect `D:\\Vault\\docs\\office-proposal.docx`, `D:\\Vault\\docs\\structured-report.docx`, and `D:\\Vault\\sheets\\budget.xlsx`.',
           toolCallId: null,
           toolCalls: [],
           artifacts: null,
@@ -190,6 +190,41 @@ test.beforeEach(async ({ page }) => {
         case 'clear_answer_cache':
           return 0;
         case 'preview_file_cmd':
+          if (String(args.path ?? '').endsWith('index.html')) {
+            return {
+              path: 'D:\\Vault\\web\\index.html',
+              displayName: 'index.html',
+              sourceId: 'src-web-preview',
+              sourceName: 'Web Preview',
+              extension: '.html',
+              mimeType: 'text/html',
+              kind: 'html',
+              language: 'html',
+              content: [
+                '<!doctype html>',
+                '<html>',
+                '<head><style>body { font-family: sans-serif; color: #123456; }</style></head>',
+                '<body><h1>Original preview</h1></body>',
+                '</html>',
+              ].join('\n'),
+              encoding: 'utf-8',
+              editable: true,
+              sizeBytes: 156,
+              modifiedAt: nowIso,
+              hash: 'sha256-html-preview',
+              lineCount: 5,
+              truncated: false,
+              warning: null,
+              structuredPreview: null,
+              renderedPreview: null,
+              capabilities: {
+                canRenderStructured: false,
+                canExtractText: true,
+                needsExternalRuntime: false,
+                structuredUnavailableReason: null,
+              },
+            };
+          }
           if (String(args.path ?? '').endsWith('structured-report.docx')) {
             return {
               path: 'D:\\Vault\\docs\\structured-report.docx',
@@ -628,6 +663,32 @@ test('opens file preview as a large panel and closes it from outside clicks', as
 
   await page.getByTestId('file-preview-backdrop').click({ position: { x: 32, y: 120 } });
   await expect(previewPanel).toBeHidden();
+});
+
+test('opens editable HTML in a live sandboxed split preview', async ({ page }) => {
+  await page.goto('/chat/conv-agent-edit');
+
+  await page.getByRole('button', { name: /index\.html/i }).click();
+  await expect(page.getByLabel('File Preview')).toBeVisible();
+  const editor = page.getByTestId('file-preview-editor');
+  const previewFrame = page.getByTestId('file-preview-html-preview');
+  await expect(editor).toBeVisible();
+  await expect(previewFrame).toBeVisible();
+  await expect(previewFrame).toHaveAttribute('sandbox', '');
+  await expect(previewFrame).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect(previewFrame.contentFrame().getByRole('heading', { name: 'Original preview' })).toBeVisible();
+
+  await editor.fill([
+    '<!doctype html>',
+    '<html><head><style>h1 { color: rgb(20, 80, 160); }</style></head>',
+    '<body><h1>Updated live preview</h1><script>parent.document.body.dataset.htmlPreviewEscaped = "true"</script></body>',
+    '</html>',
+  ].join('\n'));
+
+  const updatedHeading = previewFrame.contentFrame().getByRole('heading', { name: 'Updated live preview' });
+  await expect(updatedHeading).toBeVisible();
+  await expect(updatedHeading).toHaveCSS('color', 'rgb(20, 80, 160)');
+  expect(await page.evaluate(() => document.body.dataset.htmlPreviewEscaped)).toBeUndefined();
 });
 
 test('closes file preview only after a dirty web link is confirmed and routed', async ({ page }) => {
