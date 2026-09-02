@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.13.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.5...nexa-monorepo-v0.13.6) (2026-09-02)
+
+
+### Features
+
+* **extensions:** add user-owned .nexa home ([3d4654c](https://github.com/MLGBJDLW/Nexa/commit/3d4654c8695a062877c34658d369094ccd32c590))
+* **preview:** add sandboxed live HTML split view ([1c55abc](https://github.com/MLGBJDLW/Nexa/commit/1c55abc8681366abf53c4e083eb5768da898d604))
+* **search:** add xAI and OpenRouter hosted routing ([9d79070](https://github.com/MLGBJDLW/Nexa/commit/9d79070b6e5328022b6528434ec40d6bd3311a53))
+* **settings:** expose the .nexa extension home ([b9e9b9c](https://github.com/MLGBJDLW/Nexa/commit/b9e9b9cfad6e4230e1d7191d0cf0dbc036894242))
+
+
+### Bug Fixes
+
+* **chat:** keep keyboard focus without click halo ([72d4073](https://github.com/MLGBJDLW/Nexa/commit/72d4073b850602cbbed163e59566079b2aad6796))
+* **chat:** preserve Mermaid styles under production CSP ([2ebc7e9](https://github.com/MLGBJDLW/Nexa/commit/2ebc7e90f6f2bf1027b6a81609c6ba39a53783d0))
+* **chat:** remove composer pointer focus halo ([344f47a](https://github.com/MLGBJDLW/Nexa/commit/344f47a249ab3ec76f67a2198d9f9b3543816b61))
+* harden desktop rendering and provider-hosted search ([eac0ab9](https://github.com/MLGBJDLW/Nexa/commit/eac0ab9b3e01a891f0e1717e655e46c9eda02219))
+* **preview:** harden HTML sandbox policy injection ([b13d326](https://github.com/MLGBJDLW/Nexa/commit/b13d32679358e99ea5c43f2bb07fc71fe5ba36c6))
+* **skills:** preserve rejected .nexa source edits ([1329f2e](https://github.com/MLGBJDLW/Nexa/commit/1329f2e561a9caa9bc180a92e1988278695a5066))
+* **skills:** preserve unknown .nexa source files ([1003327](https://github.com/MLGBJDLW/Nexa/commit/100332783192503419a70407f395666f27d124bd))
+* **skills:** remove only obsolete modeled resources ([1cfe19c](https://github.com/MLGBJDLW/Nexa/commit/1cfe19cb1695a15156efa8f53fb8a33d093d1b10))
+* **theme:** honor deleted .nexa theme files ([b43918e](https://github.com/MLGBJDLW/Nexa/commit/b43918efb2662b02f1dde39d18bde376519cdb67))
+* **theme:** preserve .nexa edits during hydration ([cb817bc](https://github.com/MLGBJDLW/Nexa/commit/cb817bc2b9ea27dd17b8b30413db302cfc016c28))
+* **theme:** project agent changes into .nexa ([010db55](https://github.com/MLGBJDLW/Nexa/commit/010db55fbdc2bfe50e397e2d7f024b4b9454c4e7))
+
 ## [0.13.5](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.4...nexa-monorepo-v0.13.5) (2026-08-31)
 
 
