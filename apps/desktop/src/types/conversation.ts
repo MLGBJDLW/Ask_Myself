@@ -676,6 +676,13 @@ export type WebSearchReranker = 'auto' | 'none' | 'docs_first' | 'research' | 'n
 export type WebSearchProviderHealth = 'healthy' | 'degraded' | 'blocked' | 'disabled';
 export type WebSearchProviderMode = 'built_in_first' | 'custom_first' | 'custom_only';
 export type WebSearchExecutionMode = 'auto' | 'providerNative' | 'nexaRouter' | 'hybrid';
+export type ProviderNativeSearchEngine =
+  | 'auto'
+  | 'native'
+  | 'exa'
+  | 'firecrawl'
+  | 'parallel'
+  | 'perplexity';
 export type WebSearchCustomProviderPreset =
   | 'brave'
   | 'tavily'
@@ -696,6 +703,7 @@ export type WebSearchEngine =
 
 export interface WebSearchConfig {
   executionMode: WebSearchExecutionMode;
+  providerNativeEngine: ProviderNativeSearchEngine;
   providerProfile: WebSearchProviderProfile;
   reranker: WebSearchReranker;
   providerMode: WebSearchProviderMode;

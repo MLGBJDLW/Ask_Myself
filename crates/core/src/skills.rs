@@ -30,7 +30,8 @@ pub use catalog::{
 };
 pub use importer::{
     discover_skills_in_directory, import_skills_from_directory, import_skills_from_source,
-    inspect_skill_install_source,
+    inspect_skill_install_source, sync_registered_user_skills_from_directory,
+    RegisteredSkillFileSyncReport,
 };
 pub use model::{
     DiscoveredSkillBundle, SaveSkillInput, Skill, SkillDependencies, SkillFrontmatter,
@@ -59,8 +60,13 @@ pub use spec::{
 };
 pub(crate) use storage::normalize_resource_bundle;
 pub use storage::{
-    builtin_skill_dir, materialize_skills_to_disk, materialize_user_skill_to_disk,
-    materialize_user_skills_to_disk, remove_materialized_user_skill, user_skill_dir,
+    builtin_skill_dir, configure_user_skills_directory, materialize_skills_to_disk,
+    materialize_user_skill_to_configured_directory, materialize_user_skill_to_directory,
+    materialize_user_skill_to_disk, materialize_user_skills_to_directory,
+    materialize_user_skills_to_directory_except, materialize_user_skills_to_disk,
+    remove_materialized_user_skill, remove_materialized_user_skill_from_directory,
+    remove_obsolete_user_skill_resources_from_configured_directory,
+    remove_obsolete_user_skill_resources_from_directory, user_skill_dir,
 };
 pub use trust_policy::{
     classify_skill_source, evaluate_skill_trust_policy, trust_state_for_skill, SkillSourceKind,
@@ -831,6 +837,9 @@ mod tests {
 
         let skill_dir = materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
         assert!(skill_dir.join("SKILL.md").exists());
+        let skill_markdown = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(skill_markdown.contains("<SKILL_DIR>/scripts/render.py"));
+        assert!(!skill_markdown.contains(&dir.path().to_string_lossy().to_string()));
         assert_eq!(
             fs::read_to_string(skill_dir.join("scripts/render.py")).unwrap(),
             "print('ok')\n"
@@ -990,6 +999,111 @@ mod tests {
         materialize_user_skills_to_disk(dir.path(), &disabled).unwrap();
 
         assert!(!user_skill_dir(dir.path(), &saved.id).exists());
+    }
+
+    #[test]
+    fn test_user_owned_skill_directory_keeps_disabled_skill_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Portable disabled skill".into(),
+                description: "Use for user-owned source tests".into(),
+                content: "Keep this declaration editable.".into(),
+                enabled: false,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+
+        materialize_user_skills_to_directory(dir.path(), &[saved.clone()]).unwrap();
+
+        assert!(dir.path().join(&saved.id).join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn test_user_owned_skill_directory_preserves_unknown_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Source-owned skill".into(),
+                description: "Use for source ownership tests".into(),
+                content: "Keep user-authored files.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let skill_dir = materialize_user_skill_to_directory(dir.path(), &saved).unwrap();
+        fs::write(skill_dir.join("README.md"), "user notes\n").unwrap();
+        fs::create_dir_all(skill_dir.join(".git")).unwrap();
+        fs::write(skill_dir.join(".git/config"), "user metadata\n").unwrap();
+
+        materialize_user_skill_to_directory(dir.path(), &saved).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("README.md")).unwrap(),
+            "user notes\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join(".git/config")).unwrap(),
+            "user metadata\n"
+        );
+    }
+
+    #[test]
+    fn test_user_owned_skill_update_removes_only_previously_modeled_resources() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let dir = tempdir().unwrap();
+        let previous = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Resource update skill".into(),
+                description: "Use for precise resource cleanup tests".into(),
+                content: "Run the current helper.".into(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/old.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('old')\n".into(),
+                }],
+            })
+            .unwrap();
+        let skill_dir = materialize_user_skill_to_directory(dir.path(), &previous).unwrap();
+        fs::write(skill_dir.join("README.md"), "keep me\n").unwrap();
+        let next = db
+            .save_skill(&SaveSkillInput {
+                id: Some(previous.id.clone()),
+                name: previous.name.clone(),
+                description: previous.description.clone(),
+                content: previous.content.clone(),
+                enabled: true,
+                resource_bundle: vec![SkillResourceFile {
+                    path: "scripts/new.py".into(),
+                    kind: SkillResourceKind::Script,
+                    encoding: SkillResourceEncoding::Utf8,
+                    content: "print('new')\n".into(),
+                }],
+            })
+            .unwrap();
+
+        remove_obsolete_user_skill_resources_from_directory(dir.path(), &previous, &next).unwrap();
+        materialize_user_skill_to_directory(dir.path(), &next).unwrap();
+
+        assert!(!skill_dir.join("scripts/old.py").exists());
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("scripts/new.py")).unwrap(),
+            "print('new')\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("README.md")).unwrap(),
+            "keep me\n"
+        );
     }
 
     #[test]

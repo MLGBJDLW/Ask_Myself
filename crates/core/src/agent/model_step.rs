@@ -1797,6 +1797,7 @@ mod tests {
                 can_mix_client_tools: true,
             }),
             trusted_endpoint: true,
+            provider_engine: crate::llm::native_search::ProviderNativeSearchEngine::Auto,
         };
         let visible = request_tools_with_native_search_plan(
             &[tool(crate::llm::native_search::LOCAL_WEB_SEARCH_TOOL)],

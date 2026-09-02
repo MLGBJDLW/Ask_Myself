@@ -418,12 +418,27 @@ test.beforeEach(async ({ page }) => {
           localStorage.setItem("e2e-mcp-list-tools-calls", String(calls + 1));
           return [];
         }
+        case "get_user_extension_layout_cmd":
+          return {
+            version: 1,
+            root: "C:\\Users\\Test\\.nexa",
+            capabilitiesDir: "C:\\Users\\Test\\.nexa\\capabilities",
+            skillsDir: "C:\\Users\\Test\\.nexa\\skills",
+            themesDir: "C:\\Users\\Test\\.nexa\\themes",
+            workflowsDir: "C:\\Users\\Test\\.nexa\\workflows",
+            connectorsDir: "C:\\Users\\Test\\.nexa\\connectors",
+            mcpConfigPath: "C:\\Users\\Test\\.nexa\\connectors\\mcp.json",
+            legacyAppDataDir: "C:\\Users\\Test\\AppData\\Roaming\\com.nexa.desktop",
+          };
+        case "reload_user_skill_files_cmd":
+          localStorage.setItem("e2e-user-skill-files-reloaded", "1");
+          return { updated: 1, unchanged: 0, unregistered: 0, rejected: [] };
         case "prepare_mcp_config_file_cmd":
-          return "C:\\Users\\Test\\AppData\\Roaming\\Nexa\\mcp-connectors.json";
+          return "C:\\Users\\Test\\.nexa\\connectors\\mcp.json";
         case "reload_mcp_config_file_cmd":
           localStorage.setItem("e2e-mcp-config-reloaded", "1");
           return {
-            path: "C:\\Users\\Test\\AppData\\Roaming\\Nexa\\mcp-connectors.json",
+            path: "C:\\Users\\Test\\.nexa\\connectors\\mcp.json",
             imported: 0,
             removed: 0,
             disabledAfterChange: 0,
@@ -1508,6 +1523,32 @@ test("appearance installs the backend-normalized theme draft only after explicit
   })).toEqual({ name: "Generated Ocean", active: "theme-generated-ocean" });
 });
 
+test("web search settings expose native provider support and persist OpenRouter engine priority", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Extensions", exact: true }).click();
+
+  const section = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Web search", exact: true }),
+  });
+  await section.getByRole("button").first().click();
+
+  const support = section.getByTestId("provider-native-search-support");
+  await expect(support).toContainText("OpenAI");
+  await expect(support).toContainText("xAI");
+  await expect(support).toContainText("OpenRouter");
+  await expect(support).toContainText("openRouterServerTool");
+
+  const engineField = section.locator("label").filter({ hasText: "Provider-native engine" });
+  await selectNexaOption(engineField.locator("[data-nexa-select-trigger]"), "exa");
+  await section.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as {
+      __savedAppConfig?: { webSearch?: { providerNativeEngine?: string } };
+    }
+  ).__savedAppConfig?.webSearch?.providerNativeEngine)).toBe("exa");
+});
+
 test("Theme Studio isolates a dark draft from the active light palette", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("nexa-active-theme-v1", "light");
@@ -1823,6 +1864,21 @@ test("custom wallpaper appearances cover every workspace surface without sacrifi
   });
 });
 
+test("extensions exposes one user-owned .nexa home and reloads registered skill files", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Extensions", exact: true }).click();
+
+  const extensionHome = page.getByTestId("user-extension-home");
+  await expect(extensionHome).toContainText("Nexa extension home");
+  await expect(extensionHome).toContainText("C:\\Users\\Test\\.nexa");
+  await extensionHome.getByRole("button", { name: "Open folder", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-opened-mcp-config")))
+    .toBe("C:\\Users\\Test\\.nexa");
+  await extensionHome.getByRole("button", { name: "Reload skill files", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-user-skill-files-reloaded")))
+    .toBe("1");
+});
+
 test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("e2e-mcp-reload-race", "1"));
   await page.goto("/settings");
@@ -1832,7 +1888,7 @@ test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
     has: page.getByRole("heading", { name: "MCP Connectors", exact: true }),
   });
   await mcpSection.getByRole("button").first().click();
-  await expect(mcpSection.getByText(/mcp-connectors\.json/)).toBeVisible();
+  await expect(mcpSection.getByText(/\.nexa\\connectors\\mcp\.json/)).toBeVisible();
   await expect(mcpSection.getByRole("button", { name: "Open JSON", exact: true })).toBeVisible();
   await expect(mcpSection.getByRole("button", { name: "Reload JSON", exact: true })).toBeVisible();
 
@@ -1841,7 +1897,7 @@ test("extensions exposes a user-owned MCP JSON workflow", async ({ page }) => {
 
   await mcpSection.getByRole("button", { name: "Open JSON", exact: true }).click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-opened-mcp-config")))
-    .toContain("mcp-connectors.json");
+    .toContain(".nexa\\connectors\\mcp.json");
   await mcpSection.getByRole("button", { name: "Reload JSON", exact: true }).click();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-mcp-config-reloaded")))
     .toBe("1");

@@ -113,6 +113,7 @@ pub mod trajectory;
 pub mod tts_provider_catalog;
 pub mod usage_analytics;
 pub mod usage_snapshot;
+pub mod user_extensions;
 #[cfg(feature = "video")]
 pub mod video;
 pub mod video_provider_catalog;

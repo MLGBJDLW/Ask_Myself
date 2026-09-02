@@ -480,8 +480,7 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     const style = getComputedStyle(element);
     return { borderColor: style.borderColor, outlineWidth: style.outlineWidth };
   });
-  expect(activeComposerFocus.borderColor).not.toBe(restingComposerFocus.borderColor);
-  expect(activeComposerFocus.outlineWidth).not.toBe(restingComposerFocus.outlineWidth);
+  expect(activeComposerFocus).toEqual(restingComposerFocus);
   const composerPanelLayout = await composerPanel.evaluate((element) => {
     const style = getComputedStyle(element);
     return {
@@ -497,7 +496,7 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
   });
   expect(composerPanelLayout.height).toBeLessThan(210);
 
-  const paletteFocusStyle = await composerPanel.evaluate((panel) => {
+  const opaqueComposerStyle = await composerPanel.evaluate((panel) => {
     const root = document.documentElement;
     root.setAttribute('data-theme-backdrop', 'false');
     const style = getComputedStyle(panel);
@@ -509,9 +508,9 @@ test('routes one custom wallpaper chrome surface through the active chat sidebar
     root.setAttribute('data-theme-backdrop', 'true');
     return result;
   });
-  expect(paletteFocusStyle.borderColor).not.toBe(restingComposerFocus.borderColor);
-  expect(paletteFocusStyle.outlineWidth).toBe('1px');
-  expect(paletteFocusStyle.backgroundImage).toContain('rgba(251, 246, 237, 0.52)');
+  expect(opaqueComposerStyle.borderColor).toBe(restingComposerFocus.borderColor);
+  expect(opaqueComposerStyle.outlineWidth).toBe(restingComposerFocus.outlineWidth);
+  expect(opaqueComposerStyle.backgroundImage).toContain('rgba(251, 246, 237, 0.52)');
 
   await page.screenshot({
     path: 'test-results/custom-wallpaper-chat-surfaces.png',
@@ -635,4 +634,39 @@ test('navigates previous user inputs from the textarea boundary and restores the
 
   await input.press('ArrowDown');
   await expect(input).toHaveValue('draft before history');
+});
+
+test('does not draw a focus halo around the composer after a pointer click', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
+
+  const surface = page.getByTestId('chat-composer-surface');
+  const input = page.getByTestId('chat-input-textarea');
+  const readFocusChrome = () => surface.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      borderColor: style.borderColor,
+      boxShadow: style.boxShadow,
+      outlineColor: style.outlineColor,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+    };
+  });
+
+  const before = await readFocusChrome();
+  await input.click();
+  await expect(input).toBeFocused();
+  await expect.poll(readFocusChrome).toEqual(before);
+});
+
+test('keeps a keyboard-only focus indicator on the composer', async ({ page }) => {
+  await page.goto('/chat/conv-draft-a');
+
+  const surface = page.getByTestId('chat-composer-surface');
+  const input = page.getByTestId('chat-input-textarea');
+  await input.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await expect(input).toBeFocused();
+  await expect(surface).toHaveCSS('outline-style', 'solid');
+  await expect(surface).toHaveCSS('outline-width', '2px');
 });

@@ -29,6 +29,31 @@ pub enum SearchExecutionMode {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderNativeSearchEngine {
+    #[default]
+    Auto,
+    Native,
+    Exa,
+    Firecrawl,
+    Parallel,
+    Perplexity,
+}
+
+impl ProviderNativeSearchEngine {
+    fn as_wire_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Native => "native",
+            Self::Exa => "exa",
+            Self::Firecrawl => "firecrawl",
+            Self::Parallel => "parallel",
+            Self::Perplexity => "perplexity",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchIntent {
@@ -49,6 +74,8 @@ pub struct WebSearchIntent {
     pub privacy_mode: SearchPrivacyMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approximate_location: Option<ApproximateLocation>,
+    #[serde(default)]
+    pub provider_engine: ProviderNativeSearchEngine,
 }
 
 impl Default for WebSearchIntent {
@@ -63,6 +90,7 @@ impl Default for WebSearchIntent {
             evidence_mode: EvidenceMode::Citations,
             privacy_mode: SearchPrivacyMode::ProviderDefault,
             approximate_location: None,
+            provider_engine: ProviderNativeSearchEngine::Auto,
         }
     }
 }
@@ -128,15 +156,71 @@ pub struct SearchEvidence {
     pub citations: Vec<SearchCitation>,
 }
 
-/// Compile only controls the selected endpoint explicitly supports. This is
-/// intentionally lossy for unsupported intent fields: adapters must not send
-/// optimistic OpenAI-shaped options to DeepSeek or Gemini endpoints.
+fn validate_hosted_search_intent(
+    dialect: NativeSearchDialect,
+    capability: NativeWebSearchCapability,
+    intent: &WebSearchIntent,
+) -> Result<(), CoreError> {
+    if (!intent.allowed_domains.is_empty() || !intent.blocked_domains.is_empty())
+        && !capability.supports_domains
+    {
+        return Err(CoreError::Llm(format!(
+            "Provider-native search dialect {dialect:?} does not support domain constraints"
+        )));
+    }
+    if dialect == NativeSearchDialect::XaiResponses
+        && !intent.allowed_domains.is_empty()
+        && !intent.blocked_domains.is_empty()
+    {
+        return Err(CoreError::Llm(
+            "xAI web search cannot combine allowed and excluded domains".to_string(),
+        ));
+    }
+    if dialect == NativeSearchDialect::OpenRouterServerTool
+        && intent.provider_engine != ProviderNativeSearchEngine::Exa
+        && !intent.allowed_domains.is_empty()
+        && !intent.blocked_domains.is_empty()
+    {
+        return Err(CoreError::Llm(format!(
+            "OpenRouter {:?} web search cannot safely combine allowed and excluded domains; only the Exa engine documents both together",
+            intent.provider_engine
+        )));
+    }
+    if intent.recency.is_some() && !capability.supports_recency {
+        return Err(CoreError::Llm(format!(
+            "Provider-native search dialect {dialect:?} does not support recency constraints"
+        )));
+    }
+    if intent.locale.is_some() && !capability.supports_locale {
+        return Err(CoreError::Llm(format!(
+            "Provider-native search dialect {dialect:?} does not support locale constraints"
+        )));
+    }
+    if intent.approximate_location.is_some() && !capability.supports_location {
+        return Err(CoreError::Llm(format!(
+            "Provider-native search dialect {dialect:?} does not support location sharing"
+        )));
+    }
+    if intent.privacy_mode == SearchPrivacyMode::ExternalWebOnly
+        && dialect != NativeSearchDialect::OpenAiResponses
+    {
+        return Err(CoreError::Llm(format!(
+            "Provider-native search dialect {dialect:?} cannot guarantee external-web-only access"
+        )));
+    }
+    Ok(())
+}
+
+/// Compile only controls the selected endpoint explicitly supports. Required
+/// constraints fail closed instead of being silently dropped or optimistically
+/// translated into a different provider's wire dialect.
 pub fn compile_hosted_search_tool(
     dialect: NativeSearchDialect,
     capability: NativeWebSearchCapability,
     intent: &WebSearchIntent,
-) -> serde_json::Value {
-    match dialect {
+) -> Result<serde_json::Value, CoreError> {
+    validate_hosted_search_intent(dialect, capability, intent)?;
+    let tool = match dialect {
         NativeSearchDialect::OpenAiResponses => {
             let mut tool = serde_json::json!({ "type": "web_search" });
             if capability.supports_domains {
@@ -174,11 +258,77 @@ pub fn compile_hosted_search_tool(
             tool
         }
         NativeSearchDialect::DeepSeekResponses => serde_json::json!({ "type": "web_search" }),
+        NativeSearchDialect::XaiResponses => {
+            let mut tool = serde_json::json!({ "type": "web_search" });
+            if capability.supports_domains {
+                let mut filters = serde_json::Map::new();
+                if !intent.allowed_domains.is_empty() {
+                    filters.insert(
+                        "allowed_domains".to_string(),
+                        serde_json::json!(intent
+                            .allowed_domains
+                            .iter()
+                            .take(5)
+                            .collect::<Vec<_>>()),
+                    );
+                } else if !intent.blocked_domains.is_empty() {
+                    filters.insert(
+                        "excluded_domains".to_string(),
+                        serde_json::json!(intent
+                            .blocked_domains
+                            .iter()
+                            .take(5)
+                            .collect::<Vec<_>>()),
+                    );
+                }
+                if !filters.is_empty() {
+                    tool["filters"] = serde_json::Value::Object(filters);
+                }
+            }
+            tool
+        }
+        NativeSearchDialect::OpenRouterServerTool => {
+            let mut parameters = serde_json::Map::new();
+            parameters.insert(
+                "engine".to_string(),
+                serde_json::json!(intent.provider_engine.as_wire_value()),
+            );
+            if capability.supports_domains {
+                if !intent.allowed_domains.is_empty() {
+                    parameters.insert(
+                        "allowed_domains".to_string(),
+                        serde_json::json!(intent.allowed_domains),
+                    );
+                }
+                if !intent.blocked_domains.is_empty() {
+                    parameters.insert(
+                        "excluded_domains".to_string(),
+                        serde_json::json!(intent.blocked_domains),
+                    );
+                }
+            }
+            if let Some(max_results) = intent.max_results {
+                let maximum = if intent.provider_engine == ProviderNativeSearchEngine::Perplexity {
+                    20
+                } else {
+                    25
+                };
+                parameters.insert(
+                    "max_results".to_string(),
+                    serde_json::json!(max_results.clamp(1, maximum)),
+                );
+            }
+            serde_json::json!({
+                "type": "openrouter:web_search",
+                "parameters": parameters,
+            })
+        }
         NativeSearchDialect::AnthropicServerTool => {
             serde_json::json!({ "type": "web_search_20260209", "name": "web_search" })
         }
         NativeSearchDialect::GeminiGoogleSearch => serde_json::json!({ "google_search": {} }),
-    }
+    };
+    Ok(tool)
 }
 
 /// Render provider citations through the same Markdown link path used by
@@ -220,6 +370,8 @@ pub struct NativeSearchPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<NativeWebSearchCapability>,
     pub trusted_endpoint: bool,
+    #[serde(default)]
+    pub provider_engine: ProviderNativeSearchEngine,
 }
 
 impl Default for NativeSearchPlan {
@@ -229,6 +381,7 @@ impl Default for NativeSearchPlan {
             dialect: None,
             capability: None,
             trusted_endpoint: false,
+            provider_engine: ProviderNativeSearchEngine::Auto,
         }
     }
 }
@@ -239,6 +392,22 @@ impl NativeSearchPlan {
         provider_type: ProviderType,
         base_url: Option<&str>,
         model: &str,
+    ) -> Self {
+        Self::resolve_with_engine(
+            mode,
+            provider_type,
+            base_url,
+            model,
+            ProviderNativeSearchEngine::Auto,
+        )
+    }
+
+    pub fn resolve_with_engine(
+        mode: SearchExecutionMode,
+        provider_type: ProviderType,
+        base_url: Option<&str>,
+        model: &str,
+        provider_engine: ProviderNativeSearchEngine,
     ) -> Self {
         let normalized = normalize_base_url(base_url);
         let capability = load_provider_presets()
@@ -256,11 +425,20 @@ impl NativeSearchPlan {
             // discovered IDs from inheriting a server-tool contract that was
             // never verified for them.
             .and_then(|preset| {
-                preset
+                let model_capability = preset
                     .models
                     .iter()
                     .find(|candidate| candidate.id.eq_ignore_ascii_case(model.trim()))
-                    .and_then(|candidate| candidate.native_web_search)
+                    .and_then(|candidate| candidate.native_web_search);
+                model_capability.or_else(|| {
+                    preset.native_web_search.filter(|capability| {
+                        matches!(
+                            capability.dialect,
+                            NativeSearchDialect::OpenRouterServerTool
+                                | NativeSearchDialect::XaiResponses
+                        )
+                    })
+                })
             });
         let dialect = capability.map(|value| value.dialect);
         Self {
@@ -268,6 +446,7 @@ impl NativeSearchPlan {
             dialect,
             capability,
             trusted_endpoint: dialect.is_some(),
+            provider_engine,
         }
     }
 
@@ -300,9 +479,19 @@ impl NativeSearchPlan {
                 "xNexaSearchMode": self.mode,
                 "xNexaSearchDialect": self.dialect,
                 "xNexaSearchCapability": self.capability,
+                "xNexaSearchEngine": self.provider_engine,
             }),
         })
     }
+}
+
+pub fn marker_engine(tools: &[ToolDefinition]) -> ProviderNativeSearchEngine {
+    tools
+        .iter()
+        .find(|tool| tool.name == NATIVE_WEB_SEARCH_MARKER)
+        .and_then(|tool| tool.parameters.get("xNexaSearchEngine"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
 }
 
 pub fn marker_mode(tools: &[ToolDefinition]) -> Option<SearchExecutionMode> {
@@ -466,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_compiler_drops_controls_deepseek_does_not_support() {
+    fn responses_compiler_rejects_required_controls_deepseek_does_not_support() {
         let intent = WebSearchIntent {
             allowed_domains: vec!["example.com".to_string()],
             blocked_domains: vec!["blocked.example".to_string()],
@@ -486,9 +675,108 @@ mod tests {
             supports_stream_events: true,
             can_mix_client_tools: true,
         };
-        assert_eq!(
-            compile_hosted_search_tool(NativeSearchDialect::DeepSeekResponses, capability, &intent),
-            serde_json::json!({ "type": "web_search" })
+        let error =
+            compile_hosted_search_tool(NativeSearchDialect::DeepSeekResponses, capability, &intent)
+                .expect_err("unsupported required constraints must fail closed");
+        assert!(error.to_string().contains("domain constraints"));
+    }
+
+    #[test]
+    fn xai_and_openrouter_use_their_verified_responses_dialects() {
+        let xai = NativeSearchPlan::resolve(
+            SearchExecutionMode::Auto,
+            ProviderType::OpenAi,
+            Some("https://api.x.ai/v1"),
+            "grok-4.6",
         );
+        assert_eq!(xai.dialect, Some(NativeSearchDialect::XaiResponses));
+
+        let openrouter = NativeSearchPlan::resolve_with_engine(
+            SearchExecutionMode::ProviderNative,
+            ProviderType::OpenRouter,
+            Some("https://openrouter.ai/api/v1"),
+            "anthropic/claude-sonnet-5",
+            ProviderNativeSearchEngine::Exa,
+        );
+        assert_eq!(
+            openrouter.dialect,
+            Some(NativeSearchDialect::OpenRouterServerTool)
+        );
+        let marker = openrouter.marker().expect("trusted OpenRouter marker");
+        assert_eq!(marker_engine(&[marker]), ProviderNativeSearchEngine::Exa);
+    }
+
+    #[test]
+    fn provider_specific_compilers_preserve_supported_controls() {
+        let capability = NativeWebSearchCapability {
+            dialect: NativeSearchDialect::XaiResponses,
+            supports_domains: true,
+            supports_recency: false,
+            supports_locale: false,
+            supports_location: false,
+            supports_citations: true,
+            supports_stream_events: true,
+            can_mix_client_tools: true,
+        };
+        let xai = compile_hosted_search_tool(
+            NativeSearchDialect::XaiResponses,
+            capability,
+            &WebSearchIntent {
+                blocked_domains: vec!["example.com".to_string()],
+                ..WebSearchIntent::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            xai,
+            serde_json::json!({
+                "type": "web_search",
+                "filters": { "excluded_domains": ["example.com"] },
+            })
+        );
+
+        let openrouter = compile_hosted_search_tool(
+            NativeSearchDialect::OpenRouterServerTool,
+            NativeWebSearchCapability {
+                dialect: NativeSearchDialect::OpenRouterServerTool,
+                ..capability
+            },
+            &WebSearchIntent {
+                allowed_domains: vec!["openai.com".to_string()],
+                blocked_domains: vec!["example.com".to_string()],
+                max_results: Some(50),
+                provider_engine: ProviderNativeSearchEngine::Exa,
+                ..WebSearchIntent::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            openrouter,
+            serde_json::json!({
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "engine": "exa",
+                    "allowed_domains": ["openai.com"],
+                    "excluded_domains": ["example.com"],
+                    "max_results": 25,
+                },
+            })
+        );
+
+        let unsafe_filters = compile_hosted_search_tool(
+            NativeSearchDialect::OpenRouterServerTool,
+            NativeWebSearchCapability {
+                dialect: NativeSearchDialect::OpenRouterServerTool,
+                ..capability
+            },
+            &WebSearchIntent {
+                allowed_domains: vec!["openai.com".to_string()],
+                blocked_domains: vec!["example.com".to_string()],
+                provider_engine: ProviderNativeSearchEngine::Parallel,
+                ..WebSearchIntent::default()
+            },
+        )
+        .expect_err("engine-specific mutually exclusive filters must fail closed");
+        assert!(unsafe_filters.to_string().contains("only the Exa engine"));
     }
 }

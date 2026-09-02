@@ -26,7 +26,9 @@ export type NativeSearchDialect =
   | 'openAiResponses'
   | 'anthropicServerTool'
   | 'geminiGoogleSearch'
-  | 'deepSeekResponses';
+  | 'deepSeekResponses'
+  | 'xaiResponses'
+  | 'openRouterServerTool';
 
 export interface NativeWebSearchCapability {
   dialect: NativeSearchDialect;

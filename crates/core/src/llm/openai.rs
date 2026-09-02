@@ -1137,6 +1137,8 @@ fn hosted_search_context(
         dialect,
         super::native_search::NativeSearchDialect::OpenAiResponses
             | super::native_search::NativeSearchDialect::DeepSeekResponses
+            | super::native_search::NativeSearchDialect::XaiResponses
+            | super::native_search::NativeSearchDialect::OpenRouterServerTool
     ) {
         return None;
     }
@@ -1384,12 +1386,16 @@ fn responses_tools(
     dialect: super::native_search::NativeSearchDialect,
     mode: super::native_search::SearchExecutionMode,
     capability: crate::model_catalog::NativeWebSearchCapability,
-) -> Vec<serde_json::Value> {
+) -> Result<Vec<serde_json::Value>, CoreError> {
+    let intent = super::native_search::WebSearchIntent {
+        provider_engine: super::native_search::marker_engine(
+            request.tools.as_deref().unwrap_or_default(),
+        ),
+        ..super::native_search::WebSearchIntent::default()
+    };
     let mut tools = vec![super::native_search::compile_hosted_search_tool(
-        dialect,
-        capability,
-        &super::native_search::WebSearchIntent::default(),
-    )];
+        dialect, capability, &intent,
+    )?];
     let include_local_search = mode == super::native_search::SearchExecutionMode::Hybrid;
     tools.extend(
         request
@@ -1411,7 +1417,7 @@ fn responses_tools(
                 })
             }),
     );
-    tools
+    Ok(tools)
 }
 
 fn build_responses_request(
@@ -1423,7 +1429,7 @@ fn build_responses_request(
     build_responses_request_with_tools(
         request,
         dialect,
-        responses_tools(request, dialect, mode, capability),
+        responses_tools(request, dialect, mode, capability)?,
         capability.can_mix_client_tools,
     )
 }
@@ -1478,6 +1484,29 @@ fn build_responses_request_with_tools(
             body["reasoning"] = serde_json::json!({ "effort": effort.to_string() });
         } else if let Some(temperature) = request.temperature {
             body["temperature"] = serde_json::json!(temperature);
+        }
+    } else if dialect == super::native_search::NativeSearchDialect::XaiResponses {
+        // xAI's Responses surface uses the nested OpenResponses shape even
+        // though its Chat Completions surface accepts `reasoning_effort`.
+        // Preserve the already catalog-scoped effort when native search moves
+        // the request onto /responses.
+        if let Some(effort) = request.reasoning_effort.as_ref() {
+            body["reasoning"] = serde_json::json!({ "effort": effort.to_string() });
+        }
+    } else if dialect == super::native_search::NativeSearchDialect::OpenRouterServerTool {
+        // OpenRouter normalizes reasoning on its Responses endpoint. A token
+        // budget and an effort are mutually exclusive; keep an explicit budget
+        // when present, then fall back to the selected effort/mode.
+        if let Some(max_tokens) = request.thinking_budget {
+            body["reasoning"] = serde_json::json!({ "max_tokens": max_tokens });
+        } else if let Some(effort) = request.reasoning_effort.as_ref() {
+            body["reasoning"] = serde_json::json!({ "effort": effort.to_string() });
+        } else if let Some(enabled) = request.reasoning_enabled {
+            body["reasoning"] = if enabled {
+                serde_json::json!({ "enabled": true })
+            } else {
+                serde_json::json!({ "effort": "none" })
+            };
         }
     } else if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
         let effort = if request.reasoning_enabled == Some(false)
@@ -1918,6 +1947,8 @@ fn responses_provider_id(dialect: super::native_search::NativeSearchDialect) -> 
     match dialect {
         super::native_search::NativeSearchDialect::DeepSeekResponses => "deepseek",
         super::native_search::NativeSearchDialect::OpenAiResponses => "openai",
+        super::native_search::NativeSearchDialect::XaiResponses => "xai",
+        super::native_search::NativeSearchDialect::OpenRouterServerTool => "openrouter",
         super::native_search::NativeSearchDialect::AnthropicServerTool => "anthropic",
         super::native_search::NativeSearchDialect::GeminiGoogleSearch => "google",
     }
@@ -4251,6 +4282,7 @@ data: [DONE]
             dialect: Some(super::super::native_search::NativeSearchDialect::DeepSeekResponses),
             capability: Some(capability),
             trusted_endpoint: true,
+            provider_engine: super::super::native_search::ProviderNativeSearchEngine::Auto,
         };
         let mut request = endpoint_reasoning_request("deepseek-v4-flash");
         request.tools = Some(vec![
@@ -4463,6 +4495,7 @@ data: [DONE]
             dialect: Some(super::super::native_search::NativeSearchDialect::DeepSeekResponses),
             capability: Some(capability),
             trusted_endpoint: true,
+            provider_engine: super::super::native_search::ProviderNativeSearchEngine::Auto,
         };
         let mut request = endpoint_reasoning_request("deepseek-v4-pro");
         request.reasoning_enabled = Some(true);
@@ -6678,6 +6711,62 @@ data: [DONE]
         assert_eq!(body["tools"][1]["name"], "read_file");
         assert_eq!(body["tools"].as_array().unwrap().len(), 2);
         assert_eq!(body["include"][0], "reasoning.encrypted_content");
+    }
+
+    #[test]
+    fn openrouter_responses_uses_the_selected_server_search_engine() {
+        let plan = super::super::native_search::NativeSearchPlan::resolve_with_engine(
+            super::super::native_search::SearchExecutionMode::ProviderNative,
+            ProviderType::OpenRouter,
+            Some("https://openrouter.ai/api/v1"),
+            "anthropic/claude-sonnet-5",
+            super::super::native_search::ProviderNativeSearchEngine::Exa,
+        );
+        let mut request = endpoint_reasoning_request("anthropic/claude-sonnet-5");
+        request.reasoning_effort = Some(ReasoningEffort::High);
+        request.tools = Some(vec![
+            ToolDefinition {
+                name: super::super::native_search::LOCAL_WEB_SEARCH_TOOL.to_string(),
+                description: "local".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            plan.marker().expect("trusted OpenRouter marker"),
+        ]);
+
+        let (dialect, mode, capability) = hosted_search_context(&request).expect("context");
+        let body = build_responses_request(&request, dialect, mode, capability).unwrap();
+        assert_eq!(
+            body["tools"][0],
+            serde_json::json!({
+                "type": "openrouter:web_search",
+                "parameters": { "engine": "exa" },
+            })
+        );
+        assert!(body.get("include").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn xai_responses_preserves_catalog_scoped_reasoning_effort_with_native_search() {
+        let plan = super::super::native_search::NativeSearchPlan::resolve(
+            super::super::native_search::SearchExecutionMode::ProviderNative,
+            ProviderType::OpenAi,
+            Some("https://api.x.ai/v1"),
+            "grok-4.6",
+        );
+        let mut request = endpoint_reasoning_request("grok-4.6");
+        request.reasoning_effort = Some(ReasoningEffort::XHigh);
+        request.tools = Some(vec![plan.marker().expect("trusted xAI marker")]);
+
+        let (dialect, mode, capability) = hosted_search_context(&request).expect("context");
+        let body = build_responses_request(&request, dialect, mode, capability).unwrap();
+        assert_eq!(
+            body["tools"][0],
+            serde_json::json!({ "type": "web_search" })
+        );
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

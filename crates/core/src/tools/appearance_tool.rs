@@ -134,12 +134,11 @@ impl Tool for AppearanceTool {
                     serde_json::json!({ "plugin": plugin }),
                 ));
             }
-            "apply" => (
-                context
-                    .db
-                    .apply_appearance_plugin(normalize_plugin(args.plugin, action)?)?,
-                true,
-            ),
+            "apply" => {
+                let plugin = normalize_plugin(args.plugin, action)?;
+                crate::user_extensions::write_theme_plugin_to_configured_directory(plugin.clone())?;
+                (context.db.apply_appearance_plugin(plugin)?, true)
+            }
             "activate" => (
                 context
                     .db
@@ -147,12 +146,11 @@ impl Tool for AppearanceTool {
                 true,
             ),
             "rollback" => (context.db.rollback_appearance()?, true),
-            "remove" => (
-                context
-                    .db
-                    .remove_appearance(required_theme_id(&args, action)?)?,
-                true,
-            ),
+            "remove" => {
+                let theme_id = required_theme_id(&args, action)?;
+                crate::user_extensions::remove_theme_plugin_from_configured_directory(theme_id)?;
+                (context.db.remove_appearance(theme_id)?, true)
+            }
             other => {
                 return Err(CoreError::InvalidInput(format!(
                     "Unknown appearance action '{other}'"

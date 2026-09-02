@@ -500,9 +500,83 @@ function enforceReadableMermaidNodePalette(root: Element): void {
         label.style.setProperty('color', '#0f172a', 'important');
       });
     });
+    materializeMermaidPresentationAttributes(root);
   } finally {
     probeHost.remove();
   }
+}
+
+const MERMAID_PRESENTATION_PROPERTIES = [
+  'color',
+  'fill',
+  'fill-opacity',
+  'fill-rule',
+  'opacity',
+  'paint-order',
+  'stroke',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-miterlimit',
+  'stroke-opacity',
+  'stroke-width',
+] as const;
+
+const MERMAID_TEXT_PRESENTATION_PROPERTIES = [
+  'alignment-baseline',
+  'baseline-shift',
+  'dominant-baseline',
+  'font-family',
+  'font-size',
+  'font-style',
+  'font-weight',
+  'letter-spacing',
+  'text-anchor',
+  'text-decoration',
+  'text-rendering',
+  'word-spacing',
+] as const;
+
+/**
+ * Tauri production builds hash static inline styles for CSP. Mermaid SVGs are
+ * rendered at runtime and then inserted through innerHTML, so their generated
+ * <style> element and style attributes are intentionally not part of that
+ * static allow-list. WebView keeps the attributes in outerHTML but declines to
+ * apply them, leaving SVG's black fill and start-aligned text defaults.
+ *
+ * SVG presentation attributes are data, not executable CSS. Materialize the
+ * already-sanitized computed palette and typography while the SVG is mounted
+ * in the isolated probe host so the same geometry survives strict production
+ * CSP without weakening the application policy.
+ */
+function materializeMermaidPresentationAttributes(root: Element): void {
+  const svgNamespace = 'http://www.w3.org/2000/svg';
+  const elements = [root, ...root.querySelectorAll('*')]
+    .filter((element): element is SVGElement => element.namespaceURI === svgNamespace);
+
+  elements.forEach((element) => {
+    if (element.localName.toLowerCase() === 'style') return;
+    const computed = getComputedStyle(element);
+    MERMAID_PRESENTATION_PROPERTIES.forEach((property) => {
+      const value = computed.getPropertyValue(property).trim();
+      if (value) element.setAttribute(property, value);
+    });
+
+    if (['text', 'tspan', 'textpath'].includes(element.localName.toLowerCase())) {
+      MERMAID_TEXT_PRESENTATION_PROPERTIES.forEach((property) => {
+        const value = computed.getPropertyValue(property).trim();
+        if (value) element.setAttribute(property, value);
+      });
+    }
+
+    if (element.localName.toLowerCase() === 'stop') {
+      for (const property of ['stop-color', 'stop-opacity'] as const) {
+        const value = computed.getPropertyValue(property).trim();
+        if (value) element.setAttribute(property, value);
+      }
+    }
+  });
 }
 
 export function sanitizeMermaidSvg(svg: string): string {

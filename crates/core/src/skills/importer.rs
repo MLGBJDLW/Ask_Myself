@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::db::Database;
 use crate::error::CoreError;
+use serde::Serialize;
 use walkdir::WalkDir;
 
 use super::model::{
@@ -14,7 +15,8 @@ use super::model::{
 use super::registry::{load_builtin_skills, parse_skill_file};
 use super::scanner::scan_skill_content;
 use super::storage::{
-    normalize_resource_bundle, resource_bundle_metadata, resource_kind_from_relative_path,
+    normalize_resource_bundle, portable_user_skill_content, resource_bundle_metadata,
+    resource_kind_from_relative_path,
 };
 
 const MAX_DISCOVERY_DEPTH: usize = 8;
@@ -27,6 +29,157 @@ const RESOURCE_FOLDERS: [&str; 4] = ["scripts", "references", "assets", "agents"
 struct InstallCandidate {
     preview: DiscoveredSkillBundle,
     input: SaveSkillInput,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredSkillFileSyncReport {
+    pub updated: u32,
+    pub unchanged: u32,
+    pub unregistered: u32,
+    pub rejected: Vec<String>,
+    /// Registered source directories that must not be regenerated from the
+    /// database because their current user edit was rejected.
+    #[serde(skip_serializing)]
+    pub preserved_skill_ids: Vec<String>,
+}
+
+fn reject_registered_skill(
+    report: &mut RegisteredSkillFileSyncReport,
+    skill_id: &str,
+    message: impl Into<String>,
+) {
+    if !report
+        .preserved_skill_ids
+        .iter()
+        .any(|preserved| preserved == skill_id)
+    {
+        report.preserved_skill_ids.push(skill_id.to_string());
+    }
+    report
+        .rejected
+        .push(format!("{skill_id}: {}", message.into()));
+}
+
+/// Synchronize edits to already-registered user skill directories. Directory
+/// names are stable database IDs; unknown directories remain untouched and are
+/// not implicitly activated. New skills still cross the explicit import flow,
+/// preserving its security-warning acknowledgement.
+pub fn sync_registered_user_skills_from_directory(
+    db: &Database,
+    root: &Path,
+) -> Result<RegisteredSkillFileSyncReport, CoreError> {
+    let mut report = RegisteredSkillFileSyncReport::default();
+    if !root.is_dir() {
+        return Ok(report);
+    }
+    let existing = db
+        .list_skills()?
+        .into_iter()
+        .map(|skill| (skill.id.clone(), skill))
+        .collect::<HashMap<_, _>>();
+    let mut names = existing
+        .values()
+        .map(|skill| (skill.name.to_lowercase(), skill.id.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut entries = fs::read_dir(root)?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let Some(skill_id) = entry.file_name().to_str().map(str::to_string) else {
+            report
+                .rejected
+                .push(format!("Non-UTF-8 skill directory: {}", path.display()));
+            continue;
+        };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if existing.contains_key(&skill_id) {
+                    reject_registered_skill(&mut report, &skill_id, error.to_string());
+                } else {
+                    report.rejected.push(format!("{}: {error}", path.display()));
+                }
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            if existing.contains_key(&skill_id) {
+                reject_registered_skill(
+                    &mut report,
+                    &skill_id,
+                    "registered skill source must be a real directory",
+                );
+            }
+            continue;
+        }
+        let Some(installed) = existing.get(&skill_id) else {
+            report.unregistered = report.unregistered.saturating_add(1);
+            continue;
+        };
+        let candidate = match load_candidate_from_markdown(&path.join("SKILL.md")) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                reject_registered_skill(&mut report, &skill_id, error.to_string());
+                continue;
+            }
+        };
+        let blocked = candidate
+            .preview
+            .warnings
+            .iter()
+            .filter(|warning| warning.severity == SkillWarningSeverity::Block)
+            .map(|warning| warning.message.as_str())
+            .collect::<Vec<_>>();
+        if !blocked.is_empty() {
+            reject_registered_skill(
+                &mut report,
+                &skill_id,
+                format!("blocked security warnings: {}", blocked.join("; ")),
+            );
+            continue;
+        }
+        if names
+            .get(&candidate.input.name.to_lowercase())
+            .is_some_and(|owner| owner != &skill_id)
+        {
+            reject_registered_skill(
+                &mut report,
+                &skill_id,
+                format!(
+                    "skill name `{}` belongs to another installed skill",
+                    candidate.input.name
+                ),
+            );
+            continue;
+        }
+        let installed_content =
+            portable_user_skill_content(&installed.content, &skill_id, Some(root));
+        let changed = installed.name != candidate.input.name
+            || installed.description != candidate.input.description
+            || installed_content != candidate.input.content
+            || installed.resource_bundle != candidate.input.resource_bundle;
+        if !changed {
+            report.unchanged = report.unchanged.saturating_add(1);
+            continue;
+        }
+        let mut input = candidate.input;
+        input.id = Some(skill_id.clone());
+        input.enabled = installed.enabled;
+        db.save_skill(&input)?;
+        let previous_name = installed.name.to_lowercase();
+        let next_name = input.name.to_lowercase();
+        if previous_name != next_name {
+            if names.get(&previous_name) == Some(&skill_id) {
+                names.remove(&previous_name);
+            }
+            names.insert(next_name, skill_id.clone());
+        }
+        report.updated = report.updated.saturating_add(1);
+    }
+    Ok(report)
 }
 
 /// Inspect a local SKILL.md, a directory containing one or more skills, or a
@@ -533,6 +686,140 @@ mod tests {
         assert_eq!(replaced[0].id, first_id);
         assert_eq!(replaced[0].content, "Version two.");
         assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registered_dot_nexa_skill_files_update_the_existing_database_identity() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "demo".into(),
+                description: "Before".into(),
+                content: "Before body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let skill_dir = dir.path().join(&installed.id);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo\ndescription: After\n---\n\nRun `<SKILL_DIR>/scripts/demo`.\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("not-installed")).unwrap();
+        fs::write(
+            dir.path().join("not-installed/SKILL.md"),
+            "---\nname: unknown\ndescription: Unknown\n---\n\nUnknown\n",
+        )
+        .unwrap();
+
+        let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        let saved = db
+            .list_skills()
+            .unwrap()
+            .into_iter()
+            .find(|skill| skill.id == installed.id)
+            .unwrap();
+        assert_eq!(saved.description, "After");
+        assert_eq!(
+            portable_user_skill_content(&saved.content, &saved.id, Some(dir.path())),
+            "Run `<SKILL_DIR>/scripts/demo`."
+        );
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.unregistered, 1);
+        assert_eq!(db.list_skills().unwrap().len(), 1);
+
+        let second = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        assert_eq!(second.updated, 0);
+        assert_eq!(second.unchanged, 1);
+    }
+
+    #[test]
+    fn registered_skill_file_sync_rejects_names_claimed_earlier_in_the_same_pass() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let first = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "first".into(),
+                description: "First".into(),
+                content: "First body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let second = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "second".into(),
+                description: "Second".into(),
+                content: "Second body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        for id in [&first.id, &second.id] {
+            let skill_dir = dir.path().join(id);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: shared\ndescription: Shared\n---\n\nShared body\n",
+            )
+            .unwrap();
+        }
+
+        let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        let shared_count = db
+            .list_skills()
+            .unwrap()
+            .into_iter()
+            .filter(|skill| skill.name == "shared")
+            .count();
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(shared_count, 1);
+    }
+
+    #[test]
+    fn rejected_registered_skill_edit_is_preserved_for_user_correction() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "editable".into(),
+                description: "Editable".into(),
+                content: "Valid body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        crate::skills::materialize_user_skills_to_directory(
+            dir.path(),
+            std::slice::from_ref(&installed),
+        )
+        .unwrap();
+        let skill_file = dir.path().join(&installed.id).join("SKILL.md");
+        let rejected_edit = "---\nname: [\ndescription: broken\n---\n\nFix me\n";
+        fs::write(&skill_file, rejected_edit).unwrap();
+
+        let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        crate::skills::materialize_user_skills_to_directory_except(
+            dir.path(),
+            &db.list_skills().unwrap(),
+            &report.preserved_skill_ids,
+        )
+        .unwrap();
+
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.preserved_skill_ids, vec![installed.id]);
+        assert_eq!(fs::read_to_string(skill_file).unwrap(), rejected_edit);
     }
 
     #[test]

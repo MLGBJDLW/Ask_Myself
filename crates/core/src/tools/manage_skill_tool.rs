@@ -542,7 +542,22 @@ impl Tool for ManageSkillTool {
                 let proposal_id = args
                     .proposal_id
                     .ok_or_else(|| missing("proposal_id", action))?;
+                let proposal = db.get_skill_change_proposal(&proposal_id)?;
+                let previous = match proposal.skill_id.as_deref() {
+                    Some(skill_id) => db
+                        .list_skills()?
+                        .into_iter()
+                        .find(|skill| skill.id == skill_id),
+                    None => None,
+                };
                 let applied = db.apply_skill_change_proposal(&proposal_id)?;
+                if let Some(previous) = &previous {
+                    crate::skills::remove_obsolete_user_skill_resources_from_configured_directory(
+                        previous,
+                        &applied.skill,
+                    )?;
+                }
+                crate::skills::materialize_user_skill_to_configured_directory(&applied.skill)?;
                 Ok(ToolResult {
                     call_id: call_id.to_string(),
                     content: format!(

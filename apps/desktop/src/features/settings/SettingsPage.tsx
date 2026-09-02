@@ -26,7 +26,7 @@ import type { EmbedderConfig } from '../../types/embedder';
 import type { AgentConfig, AppConfig, SaveAgentConfigInput, UserMemory, AgentProceduralMemory } from '../../types/conversation';
 import type { OcrConfig } from '../../types/ocr';
 import type { VideoConfig, WhisperModel } from '../../types/video';
-import type { Skill, SkillChangeProposal, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput } from '../../types/extensions';
+import type { Skill, SkillChangeProposal, McpServer, McpToolInfo, SaveSkillInput, SaveMcpServerInput, UserExtensionLayout } from '../../types/extensions';
 import type { TraceSummary, AgentTrace } from '../../types/trace';
 import type { QualityEvalReport } from '../../types/qualityEval';
 import { useTranslation, type Locale } from '../../i18n';
@@ -1193,6 +1193,8 @@ export function SettingsPage() {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [mcpConfigPath, setMcpConfigPath] = useState('');
   const [mcpConfigReloading, setMcpConfigReloading] = useState(false);
+  const [userExtensionLayout, setUserExtensionLayout] = useState<UserExtensionLayout | null>(null);
+  const [skillFilesReloading, setSkillFilesReloading] = useState(false);
   const [editingPersona, setEditingPersona] = useState<PersonaProfile | null>(null);
   const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
   const [editingMcpServer, setEditingMcpServer] = useState<McpServer | null>(null);
@@ -1250,6 +1252,12 @@ export function SettingsPage() {
     });
   }, []);
 
+  const loadUserExtensionLayout = useCallback(() => {
+    api.getUserExtensionLayout().then(setUserExtensionLayout).catch(() => {
+      setUserExtensionLayout(null);
+    });
+  }, []);
+
   useEffect(() => {
     if (activeTab === 'extensions') {
       loadPersonas();
@@ -1257,8 +1265,9 @@ export function SettingsPage() {
       loadSkillProposals();
       void loadMcpServers();
       loadMcpConfigPath();
+      loadUserExtensionLayout();
     }
-  }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpConfigPath, loadMcpServers]);
+  }, [activeTab, loadPersonas, loadSkillProposals, loadSkills, loadMcpConfigPath, loadMcpServers, loadUserExtensionLayout]);
 
   const handleSavePersona = async (input: SavePersonaInput) => {
     try {
@@ -1442,6 +1451,40 @@ export function SettingsPage() {
       toast.error(String(error), { duration: 8000 });
     } finally {
       setMcpConfigReloading(false);
+    }
+  };
+
+  const handleReloadUserSkillFiles = async () => {
+    setSkillFilesReloading(true);
+    try {
+      const report = await api.reloadUserSkillFiles();
+      loadSkills();
+      if (report.rejected.length > 0) {
+        toast.error(t('settings.userExtensionReloadRejected', {
+          count: String(report.rejected.length),
+        }), {
+          duration: 8000,
+          description: report.rejected.slice(0, 3).join('\n'),
+        });
+      } else {
+        toast.success(t('settings.userExtensionReloaded', {
+          count: String(report.updated),
+          unregistered: String(report.unregistered),
+        }));
+      }
+    } catch (error) {
+      toast.error(String(error), { duration: 8000 });
+    } finally {
+      setSkillFilesReloading(false);
+    }
+  };
+
+  const handleOpenUserExtensionHome = async () => {
+    if (!userExtensionLayout) return;
+    try {
+      await api.openFileInDefaultApp(userExtensionLayout.root);
+    } catch (error) {
+      toast.error(String(error));
     }
   };
 
@@ -1933,6 +1976,8 @@ export function SettingsPage() {
           mcpServers={mcpServers}
           mcpConfigPath={mcpConfigPath}
           mcpConfigReloading={mcpConfigReloading}
+          userExtensionLayout={userExtensionLayout}
+          skillFilesReloading={skillFilesReloading}
           showMcpForm={showMcpForm}
           editingMcpServer={editingMcpServer}
           deleteMcpTarget={deleteMcpTarget}
@@ -1974,6 +2019,8 @@ export function SettingsPage() {
           onAddMcpServer={() => { setEditingMcpServer(null); setShowMcpForm(true); }}
           onOpenMcpConfig={() => { void handleOpenMcpConfig(); }}
           onReloadMcpConfig={() => { void handleReloadMcpConfig(); }}
+          onOpenUserExtensionHome={() => { void handleOpenUserExtensionHome(); }}
+          onReloadUserSkillFiles={() => { void handleReloadUserSkillFiles(); }}
           onSaveMcpServer={handleSaveMcpServer}
           onCancelMcpForm={() => {
             setMcpFormDirty(false);
