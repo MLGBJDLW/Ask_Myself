@@ -186,11 +186,22 @@ fn safe_skill_dir_name(id: &str) -> String {
     }
 }
 
+fn is_windows_device_name(name: &str) -> bool {
+    matches!(name, "con" | "prn" | "aux" | "nul")
+        || name
+            .strip_prefix("com")
+            .is_some_and(|suffix| matches!(suffix.as_bytes(), [b'1'..=b'9']))
+        || name
+            .strip_prefix("lpt")
+            .is_some_and(|suffix| matches!(suffix.as_bytes(), [b'1'..=b'9']))
+}
+
 pub fn validate_canonical_skill_name(name: &str) -> Result<String, CoreError> {
     let name = name.trim();
     let valid = !name.is_empty()
         && name.len() <= MAX_CANONICAL_SKILL_NAME_CHARS
         && name.is_ascii()
+        && !is_windows_device_name(name)
         && !name.starts_with('-')
         && !name.ends_with('-')
         && !name.contains("--")
@@ -199,7 +210,7 @@ pub fn validate_canonical_skill_name(name: &str) -> Result<String, CoreError> {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
     if !valid {
         return Err(CoreError::InvalidInput(format!(
-            "Skill canonical name must be 1-{MAX_CANONICAL_SKILL_NAME_CHARS} lowercase ASCII letters, digits, or single hyphens"
+            "Skill canonical name must be 1-{MAX_CANONICAL_SKILL_NAME_CHARS} lowercase ASCII letters, digits, or single hyphens and cannot be a Windows device basename"
         )));
     }
     Ok(name.to_string())
@@ -328,11 +339,17 @@ fn replace_skill_directory_reference(content: &str, directory: &str) -> String {
             continue;
         }
         let end = start + directory.len();
+        let has_leading_boundary = content[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| {
+                !character.is_alphanumeric() && !matches!(character, '/' | '\\' | '.' | '_' | '-')
+            });
         let has_path_boundary = content[end..]
             .chars()
             .next()
             .is_none_or(|character| matches!(character, '/' | '\\'));
-        if !has_path_boundary {
+        if !has_leading_boundary || !has_path_boundary {
             continue;
         }
         output.push_str(&content[cursor..start]);
@@ -1056,16 +1073,21 @@ fn ensure_skill_canonical_names(conn: &rusqlite::Connection) -> Result<(), CoreE
     }
     let mut updates = Vec::new();
     for (id, display_name, stored) in skills {
-        let needs_backfill = stored
+        let missing_canonical_name = stored
             .as_deref()
             .is_none_or(|value| value.trim().is_empty());
+        let reserved_windows_name = stored
+            .as_deref()
+            .is_some_and(|value| is_windows_device_name(value.trim()));
+        let needs_repair = missing_canonical_name || reserved_windows_name;
         let mut canonical_name = match stored.as_deref().filter(|value| !value.trim().is_empty()) {
+            Some(_) if reserved_windows_name => migration_canonical_skill_name(&display_name, &id),
             Some(stored) => validate_canonical_skill_name(stored)?,
             None => derive_canonical_skill_name(&display_name)
                 .unwrap_or_else(|_| migration_canonical_skill_name(&display_name, &id)),
         };
         let mut key = canonical_name.to_ascii_lowercase();
-        if needs_backfill && used.contains_key(&key) {
+        if needs_repair && used.contains_key(&key) {
             canonical_name = migration_canonical_skill_name(&display_name, &id);
             key = canonical_name.to_ascii_lowercase();
         }
@@ -1074,13 +1096,13 @@ fn ensure_skill_canonical_names(conn: &rusqlite::Connection) -> Result<(), CoreE
                 "Skill `{id}` canonical name `{canonical_name}` conflicts with {owner}; rename it before migration"
             )));
         }
-        if needs_backfill {
+        if needs_repair {
             updates.push((id.clone(), canonical_name));
         }
     }
     for (id, canonical_name) in updates {
         conn.execute(
-            "UPDATE skills SET canonical_name = ?2 WHERE id = ?1 AND (canonical_name IS NULL OR canonical_name = '')",
+            "UPDATE skills SET canonical_name = ?2 WHERE id = ?1",
             rusqlite::params![id, canonical_name],
         )?;
     }

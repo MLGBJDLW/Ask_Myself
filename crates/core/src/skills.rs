@@ -1022,6 +1022,42 @@ mod tests {
     }
 
     #[test]
+    fn test_windows_device_names_are_never_portable_canonical_names() {
+        for reserved in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"] {
+            assert!(validate_canonical_skill_name(reserved).is_err());
+        }
+        for portable in ["console", "com0", "com10", "lpt0", "lpt10", "con-helper"] {
+            assert_eq!(validate_canonical_skill_name(portable).unwrap(), portable);
+        }
+
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "CON".into(),
+                description: "Windows-safe display name".into(),
+                content: "Use a portable directory fallback.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        assert_ne!(saved.canonical_name, "con");
+        assert!(saved.canonical_name.starts_with("skill-c-o-n-"));
+        assert!(validate_canonical_skill_name(&saved.canonical_name).is_ok());
+
+        db.conn()
+            .execute(
+                "UPDATE skills SET canonical_name = 'con' WHERE id = ?1",
+                rusqlite::params![&saved.id],
+            )
+            .unwrap();
+        let migrated = db.list_skills().unwrap().remove(0);
+        assert_ne!(migrated.canonical_name, "con");
+        assert!(migrated.canonical_name.starts_with("skill-c-o-n-"));
+    }
+
+    #[test]
     fn test_canonical_names_cannot_reuse_installed_database_ids() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -1056,10 +1092,12 @@ mod tests {
         let root = tempdir().unwrap();
         let report = root.path().join("report");
         let reporting_tool = root.path().join("reporting-tool");
+        let embedded_prefix = format!("backup{}", report.to_string_lossy());
         let content = format!(
-            "Run `{}/scripts/render.py`; compare `{}/references/check.md`; root {}",
+            "Run `{}/scripts/render.py`; compare `{}/references/check.md`; preserve {}/script.py; root {}",
             report.to_string_lossy(),
             reporting_tool.to_string_lossy(),
+            embedded_prefix,
             report.to_string_lossy()
         );
 
@@ -1075,6 +1113,7 @@ mod tests {
             "{}/references/check.md",
             reporting_tool.to_string_lossy()
         )));
+        assert!(portable.contains(&format!("{embedded_prefix}/script.py")));
         assert!(portable.ends_with("<SKILL_DIR>"));
     }
 
