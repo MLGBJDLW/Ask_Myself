@@ -370,6 +370,12 @@ jobs:
           key: ${{ runner.os }}-cargo-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-nexa-v1-
 
+      - name: Cache Copilot CLI runtime
+        uses: actions/cache@v5
+        with:
+          path: target/copilot-cli-cache/
+          key: ${{ runner.os }}-copilot-cli-v1-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Cache ONNX Runtime
         uses: actions/cache@v5
         with:
@@ -464,6 +470,12 @@ jobs:
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-nexa-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-nexa-v1-
+
+      - name: Cache Copilot CLI runtime
+        uses: actions/cache@v5
+        with:
+          path: target/copilot-cli-cache/
+          key: ${{ runner.os }}-copilot-cli-v1-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Prepare Tauri frontend stub
         shell: pwsh

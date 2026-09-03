@@ -1,0 +1,5 @@
+[env]
+# The official Copilot SDK integrity-checks its pinned CLI archive. Reuse that
+# archive across check/test/release profiles instead of downloading it once per
+# Cargo target profile. The cache remains inside the already-ignored target/.
+BUNDLED_CLI_CACHE_DIR = { value = "target/copilot-cli-cache", relative = true }
