@@ -1660,6 +1660,9 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
 
 .thinking-trace {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding-left: 1.25rem;
 }
 
@@ -1706,10 +1709,29 @@ html[data-theme-backdrop='true'] [data-theme-component='card'] {
 .thinking-trace-body,
 .thinking-trace-children {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.thinking-trace-body {
+  overflow-wrap: anywhere;
+}
+
+.thinking-trace-body :where(p, li, blockquote, a, code:not(pre code)) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.thinking-trace-body pre {
+  max-width: 100%;
+  overflow-wrap: normal;
 }
 
 .thinking-trace-section {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   min-height: 0.7rem;
 }
 

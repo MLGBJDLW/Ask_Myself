@@ -207,6 +207,9 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const currentMessages = messagesByConversation[conversationId] ?? [];
           const userText = String(args.message ?? '');
+          const firstThinkingText = /unbroken thinking boundary/i.test(userText)
+            ? `Need to inspect an unbroken token: ${'x'.repeat(2048)}`
+            : 'Need to search the knowledge base first.';
           const firstToolCallId = nextId('tool-search');
           const secondToolCallId = nextId('tool-compare');
           const firstToolArgs = JSON.stringify({ query: 'retry edge cases' });
@@ -237,7 +240,7 @@ test.beforeEach(async ({ page }) => {
             tokenCount: 0,
             createdAt: new Date().toISOString(),
             sortOrder: currentMessages.length + 1,
-            thinking: 'Need to search the knowledge base first.',
+            thinking: firstThinkingText,
             imageAttachments: null,
           };
           const firstToolMessage: Message = {
@@ -312,7 +315,7 @@ test.beforeEach(async ({ page }) => {
             emitEvent('agent://run-event', {
               conversationId,
               type: 'thinking',
-              content: 'Need to search the knowledge base first.',
+              content: firstThinkingText,
             });
             },
             () => {
@@ -472,4 +475,28 @@ test('preserves multiple thinking and tool rounds during a single streamed respo
 
   await page.getByRole('button', { name: 'Insert emoji' }).click();
   await expect(page.locator('em-emoji-picker')).toBeVisible();
+});
+
+test('wraps an unbroken live thinking token inside the chat boundary', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 720 });
+  await page.goto('/chat/conv-stream-rounds');
+
+  await page.getByTestId('chat-input-textarea').fill('Check the unbroken thinking boundary.');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => (
+    window as unknown as { __EMIT_STREAM_STEP__: () => boolean }
+  ).__EMIT_STREAM_STEP__());
+
+  const liveThinking = page.getByTestId('thinking-stream-content').last();
+  await expect(liveThinking).toBeVisible();
+  const geometry = await liveThinking.evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+    right: node.getBoundingClientRect().right,
+    chatRight: node.closest('[data-chat-scroll-root="true"]')?.getBoundingClientRect().right ?? 0,
+    overflowWrap: getComputedStyle(node).overflowWrap,
+  }));
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.chatRight + 1);
+  expect(geometry.overflowWrap).toBe('anywhere');
 });
