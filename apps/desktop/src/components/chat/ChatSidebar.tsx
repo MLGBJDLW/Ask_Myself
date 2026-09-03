@@ -1,4 +1,5 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Archive,
@@ -225,19 +226,11 @@ function ConversationItem({
       initial="hidden"
       animate="visible"
       exit="exit"
-      role="button"
       data-running={isRunning ? 'true' : 'false'}
       data-testid={`conversation-item-${conv.id}`}
-      tabIndex={0}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => {
-        if (editing) return;
-        if (isSelectMode) { onToggleSelect(); return; }
-        onSelect();
-      }}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!editing) { isSelectMode ? onToggleSelect() : onSelect(); } } }}
-      className={`group relative flex items-center gap-2 rounded-md px-2.5 py-2 cursor-pointer
+      className={`group relative flex items-center gap-2 rounded-md px-2.5 py-2
         transition-colors duration-fast ease-out text-sm
         ${isActive
           ? 'bg-accent-subtle text-accent-hover'
@@ -262,14 +255,14 @@ function ConversationItem({
             type="checkbox"
             checked={isSelected}
             onChange={onToggleSelect}
+            aria-label={conv.title || t('chat.newConversation')}
             className="h-3.5 w-3.5 rounded border-border text-accent accent-accent cursor-pointer"
           />
         </div>
       )}
 
-      <div className="flex-1 min-w-0">
-        {editing ? (
-          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      {editing ? (
+        <div className="flex min-w-0 flex-1 items-center gap-1">
             <input
               autoFocus
               value={editTitle}
@@ -281,19 +274,28 @@ function ConversationItem({
               className="flex-1 bg-surface-0 border border-border rounded px-1.5 py-0.5 text-xs
                 text-text-primary outline-none focus:border-accent"
             />
-            <button onClick={commitRename} className="text-success hover:text-success/80 cursor-pointer"
+            <button type="button" onClick={commitRename} className="text-success hover:text-success/80 cursor-pointer"
               aria-label={t('common.confirm')}
             >
               <Check className="h-3.5 w-3.5" />
             </button>
-            <button onClick={() => setEditing(false)} className="text-text-tertiary hover:text-text-secondary cursor-pointer"
+            <button type="button" onClick={() => setEditing(false)} className="text-text-tertiary hover:text-text-secondary cursor-pointer"
               aria-label={t('common.cancel')}
             >
               <X className="h-3.5 w-3.5" />
             </button>
-          </div>
-        ) : (
-          <>
+        </div>
+      ) : (
+        <button
+          type="button"
+          data-testid={`conversation-select-${conv.id}`}
+          aria-current={isActive ? 'page' : undefined}
+          onClick={() => { isSelectMode ? onToggleSelect() : onSelect(); }}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none
+            focus-visible:ring-2 focus-visible:ring-accent/45 focus-visible:ring-offset-2
+            focus-visible:ring-offset-surface-1 cursor-pointer"
+        >
+          <span className="min-w-0 flex-1">
             <div className="truncate text-xs font-medium">
               {conv.title || t('chat.newConversation')}
             </div>
@@ -301,22 +303,33 @@ function ConversationItem({
               <Badge className="!text-[10px] !px-1.5">{conv.model}</Badge>
               <span className="text-[10px] text-text-tertiary">{relativeTime(conv.updatedAt, t)}</span>
             </div>
-          </>
-        )}
-      </div>
+          </span>
 
-      {hasPendingQuestion && !isSelectMode && !editing && (
-        <span
-          data-testid={`conversation-question-${conv.id}`}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-accent/30 bg-accent/12 text-accent"
-          title={t('chat.decisionTrayWaiting')}
-          aria-label={t('chat.decisionTrayWaiting')}
-        >
-          <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
-        </span>
+          {hasPendingQuestion && !isSelectMode && (
+            <span
+              data-testid={`conversation-question-${conv.id}`}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-accent/30 bg-accent/12 text-accent"
+              title={t('chat.decisionTrayWaiting')}
+              aria-label={t('chat.decisionTrayWaiting')}
+            >
+              <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          )}
+
+          {isRunning && !hasPendingQuestion && !isSelectMode && (
+            <span
+              data-testid={`conversation-running-${conv.id}`}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent"
+              title={t('chat.thinking')}
+              aria-label={t('chat.thinking')}
+            >
+              <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            </span>
+          )}
+        </button>
       )}
 
-      {isRunning && !hasPendingQuestion && !isSelectMode && !editing && (
+      {isRunning && editing && (
         <span
           data-testid={`conversation-running-${conv.id}`}
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent"
@@ -331,6 +344,7 @@ function ConversationItem({
       {!isSelectMode && (hovered || isPinned || actionsOpen) && !editing && (
         <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button
+            type="button"
             onClick={onTogglePin}
             className={`p-1 rounded transition-colors cursor-pointer ${
               isPinned
@@ -344,6 +358,7 @@ function ConversationItem({
           {hovered && (
             <>
               <button
+                type="button"
                 onClick={startRename}
                 className="p-1 rounded hover:bg-surface-3 text-text-tertiary hover:text-text-secondary
                   transition-colors cursor-pointer"
@@ -352,6 +367,7 @@ function ConversationItem({
                 <Pencil className="h-3 w-3" />
               </button>
               <button
+                type="button"
                 onClick={(e) => {
                   const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
                   onRequestMove(rect);
@@ -365,6 +381,7 @@ function ConversationItem({
               </button>
               <div className="relative" ref={actionsRef}>
                 <button
+                  type="button"
                   onClick={() => setActionsOpen((open) => !open)}
                   data-testid={`conversation-actions-trigger-${conv.id}`}
                   className="p-1 rounded hover:bg-surface-3 text-text-tertiary hover:text-text-secondary
@@ -381,6 +398,7 @@ function ConversationItem({
                     data-testid={`conversation-actions-${conv.id}`}
                   >
                     <button
+                      type="button"
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-text-secondary
                         transition-colors hover:bg-surface-3 hover:text-text-primary"
                       onClick={() => {
@@ -392,6 +410,7 @@ function ConversationItem({
                       {t('chat.archive')}
                     </button>
                     <button
+                      type="button"
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-danger
                         transition-colors hover:bg-danger/10"
                       onClick={() => {
@@ -468,9 +487,30 @@ function ChatSidebarComponent({
         setMoveMenuPos(null);
       }
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMoveMenuConvId(null);
+        setMoveMenuPos(null);
+      }
+    };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [moveMenuConvId]);
+
+  const openMoveMenu = useCallback((conversationId: string, x: number, y: number) => {
+    const viewportMargin = 8;
+    const menuWidth = 192;
+    const menuMaxHeight = Math.min(window.innerHeight * 0.7, 384);
+    setMoveMenuConvId(conversationId);
+    setMoveMenuPos({
+      x: Math.max(viewportMargin, Math.min(x, window.innerWidth - menuWidth - viewportMargin)),
+      y: Math.max(viewportMargin, Math.min(y, window.innerHeight - menuMaxHeight - viewportMargin)),
+    });
+  }, []);
 
   // Filter conversations by active project
   const projectFiltered = useMemo(() => {
@@ -559,17 +599,19 @@ function ChatSidebarComponent({
       } else {
         await api.removeConversationFromProject(convId);
       }
-      onConversationMoved?.();
-    } catch { /* ignore */ }
-    setMoveMenuConvId(null);
-    setMoveMenuPos(null);
-  }, [onConversationMoved]);
+      await onConversationMoved?.();
+      toast.success(t(projectId ? 'project.moved' : 'project.removed'));
+      setMoveMenuConvId(null);
+      setMoveMenuPos(null);
+    } catch (error) {
+      toast.error(formatUserError(t('project.moveToProject'), error));
+    }
+  }, [onConversationMoved, t]);
 
   const handleConvContextMenu = useCallback((e: React.MouseEvent, convId: string) => {
     e.preventDefault();
-    setMoveMenuConvId(convId);
-    setMoveMenuPos({ x: e.clientX, y: e.clientY });
-  }, []);
+    openMoveMenu(convId, e.clientX, e.clientY);
+  }, [openMoveMenu]);
 
   const loadArchivedConversations = useCallback(async (foreground: boolean) => {
     const requestId = ++archivedRequestRef.current;
@@ -986,8 +1028,7 @@ function ChatSidebarComponent({
                         onTogglePin={() => togglePin(conv.id)}
                         onToggleSelect={() => toggleSelect(conv.id)}
                         onRequestMove={(rect) => {
-                          setMoveMenuConvId(conv.id);
-                          setMoveMenuPos({ x: rect.right + 4, y: rect.bottom + 4 });
+                          openMoveMenu(conv.id, rect.right + 4, rect.bottom + 4);
                         }}
                         t={t}
                       />
@@ -1035,10 +1076,13 @@ function ChatSidebarComponent({
 
 
       {/* Move-to-project context menu */}
-      {moveMenuConvId && moveMenuPos && (
+      {moveMenuConvId && moveMenuPos && createPortal(
         <div
           ref={moveMenuRef}
-          className="fixed z-[999] w-48 bg-surface-2 border border-border rounded-lg shadow-lg py-1 text-xs"
+          role="menu"
+          aria-label={t('project.moveToProject')}
+          data-testid="conversation-move-menu"
+          className="fixed z-[999] max-h-[min(70vh,24rem)] w-48 overflow-y-auto bg-surface-2 border border-border rounded-lg shadow-lg py-1 text-xs"
           style={{ left: moveMenuPos.x, top: moveMenuPos.y }}
         >
           <div className="px-3 py-1.5 text-[10px] font-semibold text-text-tertiary uppercase tracking-wider">
@@ -1050,6 +1094,8 @@ function ChatSidebarComponent({
             projectList.map((p) => (
               <button
                 key={p.id}
+                type="button"
+                role="menuitem"
                 className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
                   hover:text-text-primary transition-colors cursor-pointer flex items-center gap-1.5"
                 onClick={() => handleMoveToProject(moveMenuConvId, p.id)}
@@ -1061,6 +1107,8 @@ function ChatSidebarComponent({
           )}
           {conversations.find((c) => c.id === moveMenuConvId)?.projectId && (
             <button
+              type="button"
+              role="menuitem"
               className="w-full text-left px-3 py-1.5 hover:bg-surface-3 text-text-secondary
                 hover:text-text-primary transition-colors cursor-pointer border-t border-border mt-1 pt-1.5"
               onClick={() => handleMoveToProject(moveMenuConvId, null)}
@@ -1068,7 +1116,8 @@ function ChatSidebarComponent({
               {t('project.removeFromProject')}
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
 
     </div>
