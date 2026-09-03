@@ -436,9 +436,16 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         descriptor.sessionId,
       );
       setHasPendingVoiceSpool(true);
+      const transcribeRealtimeFallback = () => {
+        // The managed spool becomes the sole transcript authority once the
+        // realtime terminal path fails. Remove its stale interim hypothesis so
+        // a later callback identity change cannot publish it into another draft.
+        setPartialTranscript('');
+        return transcribeManagedVoiceSpool(descriptor.sessionId);
+      };
 
       if (!sessionId || realtimeUploadErrorRef.current) {
-        return transcribeManagedVoiceSpool(descriptor.sessionId);
+        return transcribeRealtimeFallback();
       }
       let transcript: string;
       try {
@@ -449,7 +456,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
       } catch {
         void api.cancelRealtimeTranscription(sessionId);
-        return transcribeManagedVoiceSpool(descriptor.sessionId);
+        return transcribeRealtimeFallback();
       }
       try {
         await api.cancelVoiceAudioSpool(descriptor.sessionId);
