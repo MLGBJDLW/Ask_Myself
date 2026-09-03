@@ -2152,7 +2152,7 @@ impl LlmProvider for SteeringInterruptProvider {
 
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
             StreamChunk {
-                delta: "steered answer".to_string(),
+                delta: "## Long Task Control State\nRequested explanation.".to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: Some(Usage {
@@ -9834,7 +9834,7 @@ async fn test_provider_hosted_tool_is_rendered_without_local_dispatch_or_extra_r
 }
 
 #[tokio::test]
-async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
+async fn test_steering_restarts_with_message_and_extends_final_hygiene_scope() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let request_texts = Arc::new(Mutex::new(Vec::new()));
@@ -9922,7 +9922,9 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     }
 
     steering_tx
-        .send(AgentSteeringMessage::text("focus on edge cases instead"))
+        .send(AgentSteeringMessage::text(
+            "Explain Long Task Control State",
+        ))
         .expect("steering send");
 
     let mut saw_reset = false;
@@ -9954,8 +9956,11 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
 
     assert!(saw_reset, "steering should reset the obsolete draft");
     assert!(!saw_error, "steering should not surface an error");
-    assert_eq!(visible_text, "steered answer");
-    assert_eq!(final_msg.text_content(), "steered answer");
+    assert_eq!(
+        visible_text,
+        "## Long Task Control State\nRequested explanation."
+    );
+    assert_eq!(final_msg.text_content(), visible_text);
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 
     let persisted = db.get_messages(&conversation.id).expect("messages");
@@ -9982,12 +9987,13 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     assert!(
         requests[1]
             .iter()
-            .any(|message| message.contains("focus on edge cases instead")),
+            .any(|message| message.contains("Explain Long Task Control State")),
         "second LLM request should include steering text"
     );
-    assert!(persisted
-        .iter()
-        .any(|message| { message.role == Role::Assistant && message.content == "steered answer" }));
+    assert!(persisted.iter().any(|message| {
+        message.role == Role::Assistant
+            && message.content == "## Long Task Control State\nRequested explanation."
+    }));
 }
 
 #[derive(Clone, Copy)]

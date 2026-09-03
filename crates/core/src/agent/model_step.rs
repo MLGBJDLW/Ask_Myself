@@ -1,5 +1,6 @@
 //! One model sampling step: request construction, streaming, recovery, and stream-time steering.
 
+use super::final_answer_hygiene::FinalAnswerHygieneScope;
 use super::steering::SteeringDrainContext;
 use super::*;
 use crate::llm::FinishReason;
@@ -93,6 +94,7 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) has_sources: bool,
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) messages: &'a mut Vec<Message>,
+    pub(super) final_answer_hygiene_scope: &'a mut FinalAnswerHygieneScope,
     pub(super) tool_defs: &'a mut Vec<ToolDefinition>,
     pub(super) accumulated_content: &'a mut String,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
@@ -237,6 +239,7 @@ impl AgentExecutor {
             has_sources,
             privacy_cfg,
             messages,
+            final_answer_hygiene_scope,
             tool_defs,
             accumulated_content,
             persisted_trace_items,
@@ -1141,6 +1144,7 @@ impl AgentExecutor {
                     prompt_was_compacted: false,
                 });
             }
+            final_answer_hygiene_scope.observe_user_texts(&steering_texts);
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: "steering_restart".to_string(),

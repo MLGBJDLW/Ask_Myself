@@ -1,6 +1,7 @@
 //! Turn-level state machine and ReAct loop implementation.
 
 use super::assistant_turn;
+use super::final_answer_hygiene::FinalAnswerHygieneScope;
 use super::finalization;
 use super::model_step;
 use super::output_recovery::{
@@ -1264,6 +1265,8 @@ impl AgentExecutor {
         let mut contaminated_final_retries = 0u8;
         let mut clean_final_retry_active = false;
         let mut next_step_purpose = TurnStepPurpose::Normal;
+        let mut final_answer_hygiene_scope =
+            FinalAnswerHygieneScope::from_user_text(user_query_text);
         'react_loop: loop {
             let step_purpose = next_step_purpose;
             let Some(step_permit) = turn_budget.permit(step_purpose) else {
@@ -1298,6 +1301,7 @@ impl AgentExecutor {
                     .await
             };
             if !steering_texts.is_empty() {
+                final_answer_hygiene_scope.observe_user_texts(&steering_texts);
                 if step_permit.allows_tools() {
                     self.expand_tool_defs_for_steering(
                         &mut tool_defs,
@@ -1449,6 +1453,7 @@ impl AgentExecutor {
                     has_sources,
                     privacy_cfg: &privacy_cfg,
                     messages: &mut messages,
+                    final_answer_hygiene_scope: &mut final_answer_hygiene_scope,
                     tool_defs: &mut tool_defs,
                     accumulated_content: &mut accumulated_content,
                     persisted_trace_items: &mut persisted_trace_items,
@@ -2186,10 +2191,9 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
-                if let Some(marker) = final_answer_hygiene::contamination_marker(
-                    &assistant_msg.text_content(),
-                    user_query_text,
-                ) {
+                if let Some(marker) =
+                    final_answer_hygiene_scope.contamination_marker(&assistant_msg.text_content())
+                {
                     messages.pop();
                     accumulated_content.truncate(
                         accumulated_content
@@ -2320,6 +2324,7 @@ impl AgentExecutor {
                     .await
                 };
                 if !steering_texts.is_empty() {
+                    final_answer_hygiene_scope.observe_user_texts(&steering_texts);
                     if step_permit.allows_tools() {
                         self.expand_tool_defs_for_steering(
                             &mut tool_defs,
