@@ -564,7 +564,7 @@ impl BrowserState {
             session_id: session_id.clone(),
             armed: true,
         };
-        let target = initial_url.unwrap_or("https://www.google.com");
+        let target = initial_url.unwrap_or("about:blank");
         if let Err(error) = self.open_tab(&session_id, target, actor, bounds).await {
             if let Ok(mut runtime) = self.inner.lock() {
                 runtime.sessions.remove(&session_id);
@@ -710,7 +710,7 @@ impl BrowserState {
         };
         let agent_restricted = Arc::new(AtomicBool::new(actor == NavigationActor::Agent));
         let network_proxy = Arc::new(BrowserNetworkProxy::start(Arc::clone(&agent_restricted))?);
-        if actor == NavigationActor::Agent {
+        if actor == NavigationActor::Agent && matches!(url.scheme(), "http" | "https") {
             Self::prepare_proxy_network_access(conversation_id.as_deref(), &network_proxy, &url)
                 .await?;
         }
@@ -886,8 +886,10 @@ impl BrowserState {
                     .ok_or_else(|| format!("Unknown browser session '{session_id}'"))?;
                 require_agent_tab_surface(session, tab_id)?;
             }
-            self.prepare_agent_network_access(session_id, tab_id, &url)
-                .await?;
+            if matches!(url.scheme(), "http" | "https") {
+                self.prepare_agent_network_access(session_id, tab_id, &url)
+                    .await?;
+            }
         } else {
             self.acquire_control(session_id, BrowserControlOwner::User)?;
         }
@@ -921,7 +923,7 @@ impl BrowserState {
                 .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
             tab.network_proxy
                 .set_agent_restricted(actor == NavigationActor::Agent);
-            if actor != NavigationActor::Agent {
+            if actor != NavigationActor::Agent || !matches!(url.scheme(), "http" | "https") {
                 tab.network_proxy.revoke_agent_network_access();
             }
             if actor == NavigationActor::Agent {

@@ -2,8 +2,9 @@ use std::collections::HashSet;
 
 use super::agent_tool::browser_action_names;
 use super::policy::{
-    classify_agent_action, form_navigation_approval_key, managed_permit_matches_url,
-    navigation_preapproved, normalize_browser_url, validate_agent_network_url_with_permit,
+    agent_resolved_address_allowed, classify_agent_action, form_navigation_approval_key,
+    managed_permit_matches_url, navigation_allowed, navigation_preapproved, normalize_browser_url,
+    normalize_browser_url_candidate, synthetic_dns_ip, validate_agent_network_url_with_permit,
     BrowserActionRisk, NavigationActor,
 };
 use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_SCRIPT};
@@ -148,6 +149,27 @@ fn agent_navigation_blocks_loopback_and_private_networks() {
             "{url}"
         );
     }
+}
+
+#[test]
+fn agent_can_boot_a_networkless_blank_workspace() {
+    let blank = normalize_browser_url_candidate("about:blank")
+        .expect("creating an empty Browser Workspace must not depend on public DNS");
+    assert_eq!(blank.as_str(), "about:blank");
+    assert!(navigation_allowed(&blank, true));
+}
+
+#[test]
+fn synthetic_dns_range_is_not_treated_as_literal_public_network() {
+    let fake_ip = "198.18.0.8".parse().unwrap();
+    let domain = url::Url::parse("https://example.com").unwrap();
+    let literal = url::Url::parse("http://198.18.0.8").unwrap();
+    assert!(synthetic_dns_ip(fake_ip));
+    assert!(!agent_resolved_address_allowed(&domain, fake_ip, false));
+    assert!(agent_resolved_address_allowed(&domain, fake_ip, true));
+    assert!(!agent_resolved_address_allowed(&literal, fake_ip, true));
+    assert!(normalize_browser_url("https://example.com", NavigationActor::Agent).is_ok());
+    assert!(normalize_browser_url("http://198.18.0.8", NavigationActor::Agent).is_err());
 }
 
 #[tokio::test]
