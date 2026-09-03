@@ -160,6 +160,7 @@ pub(super) enum OutputRecoveryDecision {
     },
     ToolRound {
         visible_delta: String,
+        working_delta: String,
     },
     Final {
         content: String,
@@ -184,6 +185,7 @@ pub(super) struct OutputRecovery {
     consecutive_no_progress_output_limits: u8,
     consecutive_no_progress_resumable_terminals: u8,
     last_provider_pause_state: Option<String>,
+    awaiting_first_answer_after_output_limit: bool,
     staged_tool_round_checkpoint: Option<OutputRecoveryCheckpoint>,
 }
 
@@ -198,6 +200,7 @@ struct OutputRecoveryCheckpoint {
     consecutive_no_progress_output_limits: u8,
     consecutive_no_progress_resumable_terminals: u8,
     last_provider_pause_state: Option<String>,
+    awaiting_first_answer_after_output_limit: bool,
 }
 
 impl OutputRecovery {
@@ -246,6 +249,7 @@ impl OutputRecovery {
             consecutive_no_progress_resumable_terminals: self
                 .consecutive_no_progress_resumable_terminals,
             last_provider_pause_state: self.last_provider_pause_state.clone(),
+            awaiting_first_answer_after_output_limit: self.awaiting_first_answer_after_output_limit,
         }
     }
 
@@ -268,6 +272,8 @@ impl OutputRecovery {
         self.consecutive_no_progress_resumable_terminals =
             checkpoint.consecutive_no_progress_resumable_terminals;
         self.last_provider_pause_state = checkpoint.last_provider_pause_state;
+        self.awaiting_first_answer_after_output_limit =
+            checkpoint.awaiting_first_answer_after_output_limit;
     }
 
     /// Arm a request-specific acknowledgement for the next continuation.
@@ -444,6 +450,9 @@ impl OutputRecovery {
                 };
             }
 
+            if !self.active {
+                self.awaiting_first_answer_after_output_limit = !has_visible_content;
+            }
             self.active = true;
             self.consecutive_no_progress_resumable_terminals = 0;
             let (visible_delta, semantic_progress) =
@@ -455,6 +464,7 @@ impl OutputRecovery {
                     }
                 };
             if semantic_progress {
+                self.awaiting_first_answer_after_output_limit = false;
                 self.consecutive_no_progress_output_limits = 0;
             } else {
                 let stalled_before_visible_separator = !visible_delta.is_empty()
@@ -547,26 +557,40 @@ impl OutputRecovery {
                 "a staged recovery tool round must be committed or rolled back before another sample"
             );
             self.staged_tool_round_checkpoint = Some(self.checkpoint());
-            let visible_delta = if self.active {
+            let reasoning_only_tool_boundary = self.active
+                && self.awaiting_first_answer_after_output_limit
+                && self.visible_prefix.trim().is_empty();
+            let (visible_delta, working_delta) = if reasoning_only_tool_boundary {
+                // The previous physical sample exhausted its budget entirely in
+                // the reasoning lane. Prose paired with a subsequent tool call
+                // is working narration, not the missing terminal answer.
+                self.active = false;
+                self.awaiting_first_answer_after_output_limit = false;
+                self.pending_ambiguous_fragments.clear();
+                (String::new(), content.to_string())
+            } else if self.active {
                 match self.commit_continuation_fragment(content, continuation_acknowledged) {
                     ContinuationCommit::Committed(delta)
-                    | ContinuationCommit::CommittedWhitespace(delta) => delta,
+                    | ContinuationCommit::CommittedWhitespace(delta) => (delta, String::new()),
                     ContinuationCommit::AmbiguousReplay | ContinuationCommit::Empty => {
                         let mut delta = String::new();
                         for pending in std::mem::take(&mut self.pending_ambiguous_fragments) {
                             self.visible_prefix.push_str(&pending);
                             delta.push_str(&pending);
                         }
-                        delta
+                        (delta, String::new())
                     }
                 }
             } else {
-                content.to_string()
+                (content.to_string(), String::new())
             };
             self.consecutive_no_progress_output_limits = 0;
             self.consecutive_no_progress_resumable_terminals = 0;
             self.last_provider_pause_state = None;
-            return OutputRecoveryDecision::ToolRound { visible_delta };
+            return OutputRecoveryDecision::ToolRound {
+                visible_delta,
+                working_delta,
+            };
         }
 
         if has_visible_content {
@@ -598,6 +622,7 @@ impl OutputRecovery {
             self.consecutive_no_progress_output_limits = 0;
             self.consecutive_no_progress_resumable_terminals = 0;
             self.last_provider_pause_state = None;
+            self.awaiting_first_answer_after_output_limit = false;
             return OutputRecoveryDecision::Final {
                 content: final_content,
                 visible_delta,
@@ -606,6 +631,7 @@ impl OutputRecovery {
 
         if !self.empty_terminal_retried {
             self.active = true;
+            self.awaiting_first_answer_after_output_limit = true;
             self.empty_terminal_retried = true;
             return OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::EmptyTerminal,
@@ -622,10 +648,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_limit_recovery_remains_active_across_tools() {
+    fn visible_output_limit_recovery_remains_active_across_tools() {
         let mut recovery = OutputRecovery::default();
         assert!(matches!(
-            recovery.observe(Some(&FinishReason::Length), "", false),
+            recovery.observe(Some(&FinishReason::Length), "partial ", false),
             OutputRecoveryDecision::Continue {
                 cause: OutputRecoveryCause::OutputLimit,
                 ..
@@ -636,6 +662,7 @@ mod tests {
             recovery.observe(Some(&FinishReason::ToolCalls), "", true),
             OutputRecoveryDecision::ToolRound {
                 visible_delta: String::new(),
+                working_delta: String::new(),
             }
         );
         recovery.commit_staged_tool_round();
@@ -643,11 +670,49 @@ mod tests {
         assert_eq!(
             recovery.observe(Some(&FinishReason::Stop), "done", false),
             OutputRecoveryDecision::Final {
-                content: "done".to_string(),
+                content: "partial done".to_string(),
                 visible_delta: "done".to_string(),
             }
         );
         assert!(!recovery.reserves_answer_channel());
+    }
+
+    #[test]
+    fn reasoning_only_output_limit_does_not_promote_tool_round_working_text() {
+        let mut recovery = OutputRecovery::default();
+        assert!(matches!(
+            recovery.observe(Some(&FinishReason::Length), "", false),
+            OutputRecoveryDecision::Continue {
+                cause: OutputRecoveryCause::OutputLimit,
+                ..
+            }
+        ));
+        let _ = recovery.controller_prompt(OutputRecoveryCause::OutputLimit, false);
+
+        assert_eq!(
+            recovery.observe(
+                Some(&FinishReason::ToolCalls),
+                "working narration before a tool",
+                true,
+            ),
+            OutputRecoveryDecision::ToolRound {
+                visible_delta: String::new(),
+                working_delta: "working narration before a tool".to_string(),
+            },
+            "tool-round prose belongs to the working trace, not the recovered answer",
+        );
+        recovery.commit_staged_tool_round();
+        assert!(
+            !recovery.reserves_answer_channel(),
+            "an accepted tool boundary must end a reasoning-only answer recovery episode",
+        );
+        assert_eq!(
+            recovery.observe(Some(&FinishReason::Stop), "final answer", false),
+            OutputRecoveryDecision::Final {
+                content: "final answer".to_string(),
+                visible_delta: "final answer".to_string(),
+            },
+        );
     }
 
     #[test]
@@ -821,6 +886,7 @@ mod tests {
             recovery.observe(Some(&FinishReason::ToolCalls), "cde", true),
             OutputRecoveryDecision::ToolRound {
                 visible_delta: "de".to_string(),
+                working_delta: String::new(),
             }
         );
         recovery.commit_staged_tool_round();
@@ -846,6 +912,7 @@ mod tests {
             recovery.observe(Some(&FinishReason::ToolCalls), "", true),
             OutputRecoveryDecision::ToolRound {
                 visible_delta: "foo".to_string(),
+                working_delta: String::new(),
             }
         );
         recovery.commit_staged_tool_round();
@@ -863,6 +930,7 @@ mod tests {
             recovery.observe(Some(&FinishReason::ToolCalls), "cde", true),
             OutputRecoveryDecision::ToolRound {
                 visible_delta: "de".to_string(),
+                working_delta: String::new(),
             }
         );
         assert_eq!(recovery.visible_prefix, "abcde");
@@ -1016,6 +1084,7 @@ mod tests {
                 recovery.observe(Some(&FinishReason::ToolCalls), "", true),
                 OutputRecoveryDecision::ToolRound {
                     visible_delta: String::new(),
+                    working_delta: String::new(),
                 }
             );
             recovery.commit_staged_tool_round();

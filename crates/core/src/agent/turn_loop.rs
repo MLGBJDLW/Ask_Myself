@@ -1692,6 +1692,7 @@ impl AgentExecutor {
             let mut tool_round_rejection_cause = None;
             let mut tool_round_rejection_committed_progress = false;
             let mut staged_tool_round_visible_delta = None;
+            let mut staged_tool_round_working_delta = None;
             let recovery_failure = match recovery_decision {
                 OutputRecoveryDecision::Continue {
                     cause,
@@ -1845,9 +1846,13 @@ impl AgentExecutor {
                     }
                     None
                 }
-                OutputRecoveryDecision::ToolRound { visible_delta } => {
+                OutputRecoveryDecision::ToolRound {
+                    visible_delta,
+                    working_delta,
+                } => {
                     if buffer_answer_projection {
                         staged_tool_round_visible_delta = Some(visible_delta);
+                        staged_tool_round_working_delta = Some(working_delta);
                     }
                     None
                 }
@@ -2089,6 +2094,20 @@ impl AgentExecutor {
                 }
             };
             output_recovery.commit_staged_tool_round();
+            let tool_round_working_delta = staged_tool_round_working_delta
+                .take()
+                .filter(|delta| !delta.trim().is_empty());
+            if let Some(working_delta) = tool_round_working_delta.as_ref() {
+                // This text arrived in the provider answer field only because a
+                // reasoning-only sample had already exhausted its output budget.
+                // Re-emit it on the typed working lane before the tool round.
+                let _ = tx
+                    .send(AgentEvent::Thinking {
+                        content: working_delta.clone(),
+                    })
+                    .await;
+                full_content.clear();
+            }
             if let Some(visible_delta) = staged_tool_round_visible_delta.take() {
                 commit_buffered_answer_projection(&tx, &mut accumulated_content, &visible_delta)
                     .await;
@@ -2097,6 +2116,15 @@ impl AgentExecutor {
             let tool_calls = verified_tool_calls.as_slice().to_vec();
 
             last_iteration_content = full_content.clone();
+
+            let display_iteration_thinking = match (
+                iteration_thinking.trim().is_empty(),
+                tool_round_working_delta.as_deref(),
+            ) {
+                (_, None) => iteration_thinking.clone(),
+                (true, Some(working)) => working.to_string(),
+                (false, Some(working)) => format!("{iteration_thinking}\n\n{working}"),
+            };
 
             // -- 4c. Build assistant message -----------------------------------
             let assistant_reasoning_content =
@@ -2120,7 +2148,7 @@ impl AgentExecutor {
                     route_snapshot,
                     assistant_msg.text_content(),
                     crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
-                        &iteration_thinking,
+                        &display_iteration_thinking,
                     ))
                     .as_deref(),
                     assistant_reasoning_content.as_deref(),
@@ -2482,7 +2510,7 @@ impl AgentExecutor {
                 &assistant_msg,
                 &tool_calls,
                 assistant_reasoning_content.clone(),
-                &iteration_thinking,
+                &display_iteration_thinking,
             )?;
             assistant_msg.set_provider_turn(provider_turn_envelope.clone());
             if let Some(message) = messages.last_mut() {

@@ -2539,6 +2539,10 @@ struct ToolingAnswerRecoveryProvider {
     request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
 }
 
+struct ReasoningOnlyThenToolProvider {
+    stream_calls: Arc<AtomicUsize>,
+}
+
 struct LengthContinuationProvider {
     stream_calls: Arc<AtomicUsize>,
     request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,
@@ -2716,6 +2720,69 @@ impl LlmProvider for ToolingAnswerRecoveryProvider {
                 finish_reason: Some(FinishReason::Length),
                 usage: None,
                 thinking_delta: Some("reasoning was incorrectly re-enabled".to_string()),
+            },
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ReasoningOnlyThenToolProvider {
+    fn name(&self) -> &str {
+        "reasoning-only-then-tool-mock"
+    }
+
+    fn reasoning_replay_policy(&self, _model: &str) -> ReasoningReplayPolicy {
+        ReasoningReplayPolicy::NotRequired
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-v4-pro".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let chunk = match call_no {
+            0 => StreamChunk {
+                delta: String::new(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                thinking_delta: Some("reasoning consumed the first sample".to_string()),
+            },
+            1 => StreamChunk {
+                delta: "I need to inspect the implementation first.".to_string(),
+                tool_call_delta: Some(ToolCallDelta {
+                    id: "working-tool-call".to_string(),
+                    name: Some("mock_tool".to_string()),
+                    arguments_delta: r#"{"value":"ok"}"#.to_string().into(),
+                    index: Some(0),
+                    thought_signature: None,
+                }),
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                thinking_delta: Some("select the inspection tool".to_string()),
+            },
+            _ => StreamChunk {
+                delta: "The implementation is fixed.".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: Some("synthesize the verified result".to_string()),
             },
         };
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(chunk)])))
@@ -7222,6 +7289,82 @@ async fn test_answer_only_recovery_survives_tool_rounds_until_final_answer() {
         }
     }
     assert_eq!(streamed, "abcde final answer after tool use");
+}
+
+#[tokio::test]
+async fn reasoning_only_recovery_keeps_tool_round_narration_out_of_reply() {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ReasoningOnlyThenToolProvider {
+            stream_calls: Arc::clone(&stream_calls),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-v4-pro".to_string()),
+            reasoning_enabled: Some(true),
+            max_iterations: 4,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "deep_seek".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let (tx, mut rx) = mpsc::channel(256);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "inspect and fix the implementation".to_string(),
+            }],
+            &db,
+            Some(&conversation.id),
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("reasoning-only recovery should continue through the tool boundary");
+
+    assert_eq!(final_message.text_content(), "The implementation is fixed.");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    let persisted = db.get_messages(&conversation.id).unwrap();
+    let assistants = persisted
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(assistants.len(), 2);
+    assert_eq!(assistants[0].content, "");
+    assert!(assistants[0]
+        .thinking
+        .as_deref()
+        .is_some_and(|thinking| thinking.contains("I need to inspect")));
+    assert_eq!(assistants[1].content, "The implementation is fixed.");
+
+    let mut answer = String::new();
+    let mut thinking = String::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => answer.push_str(&delta),
+            AgentEvent::Thinking { content } => thinking.push_str(&content),
+            _ => {}
+        }
+    }
+    assert_eq!(answer, "The implementation is fixed.");
+    assert!(!answer.contains("I need to inspect"));
+    assert!(thinking.contains("reasoning consumed the first sample"));
+    assert!(thinking.contains("I need to inspect the implementation first."));
+    assert!(thinking.contains("synthesize the verified result"));
 }
 
 #[tokio::test]
