@@ -6,7 +6,6 @@ use super::*;
 use crate::workflow_ir::WorkflowIr;
 
 const CHECKPOINT_EVERY_TOOL_ROUNDS: u32 = 3;
-const LONG_TASK_RECITATION_PREFIX: &str = "## Long Task Control State";
 
 #[derive(Debug, Default)]
 pub(super) struct LongTaskState {
@@ -31,34 +30,6 @@ pub(super) struct LongTaskCompactionContext<'a> {
 impl LongTaskState {
     pub(super) fn new() -> Self {
         Self::default()
-    }
-
-    pub(super) fn refresh_plan_recitation(
-        &self,
-        messages: &mut Vec<Message>,
-        plan: &AgentTaskPlan,
-        iteration: u32,
-        max_iterations: u32,
-        preserve_prefix: bool,
-    ) {
-        if iteration == 0 {
-            return;
-        }
-        if !preserve_prefix {
-            messages.retain(|message| {
-                message.role != Role::System
-                    || !message
-                        .text_content()
-                        .starts_with(LONG_TASK_RECITATION_PREFIX)
-            });
-        }
-        if let Some(message) = prompt_ir::controller_state_message(self.plan_recitation(
-            plan,
-            iteration,
-            max_iterations,
-        )) {
-            messages.push(message);
-        }
     }
 
     pub(super) fn should_checkpoint_after_tool_round(&self, iteration: u32) -> bool {
@@ -110,45 +81,6 @@ impl LongTaskState {
             "openQuestions": &plan.ledger.open_questions,
             "loopEventsTail": loop_events_tail,
         })
-    }
-
-    fn plan_recitation(&self, plan: &AgentTaskPlan, iteration: u32, max_iterations: u32) -> String {
-        let completed = plan
-            .steps
-            .iter()
-            .filter(|step| step.status == crate::intelligence::PlanStepStatus::Completed)
-            .count();
-        let current_step = plan
-            .steps
-            .iter()
-            .find(|step| step.status != crate::intelligence::PlanStepStatus::Completed)
-            .map(|step| format!("{} ({:?})", step.title, step.status))
-            .unwrap_or_else(|| "all planned steps completed".to_string());
-        let open_questions = compact_items(&plan.ledger.open_questions, "none");
-        let safeguards = compact_items(&plan.safeguards, "none");
-
-        format!(
-            "{LONG_TASK_RECITATION_PREFIX}\n\
-             This rolling control note keeps the long task anchored. Treat the original user request and active plan as still in force.\n\n\
-             Objective: {}\n\
-             Iteration: {}/{}\n\
-             Plan progress: {}/{} steps completed; current: {}\n\
-             Evidence sufficiency: {}; open questions: {}\n\
-             Safeguards: {}\n\n\
-             Rules:\n\
-             - Continue from completed work; do not repeat successful tool calls unless evidence is stale, missing, or contradicted.\n\
-             - Spend the next tool round on the smallest unfinished step that can change the answer.\n\
-             - Before the final answer, verify required evidence and name any remaining gaps.",
-            plan.objective,
-            iteration.saturating_add(1),
-            max_iterations,
-            completed,
-            plan.steps.len(),
-            current_step,
-            plan.ledger.sufficiency,
-            open_questions,
-            safeguards
-        )
     }
 }
 
@@ -266,79 +198,10 @@ pub(super) fn create_task_checkpoint_for_turn_with_state(
     Ok(Some(checkpoint.id))
 }
 
-fn compact_items(items: &[String], fallback: &str) -> String {
-    let selected = items
-        .iter()
-        .map(|item| item.trim())
-        .filter(|item| !item.is_empty())
-        .take(3)
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        fallback.to_string()
-    } else {
-        selected.join("; ")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::intelligence::{build_task_plan, TaskPlanningInput};
-
-    #[test]
-    fn recitation_is_replaced_not_accumulated() {
-        let state = LongTaskState::new();
-        let plan = build_task_plan(TaskPlanningInput::for_route(
-            "compare local notes",
-            "FileOperation",
-            true,
-            2,
-        ));
-        let mut messages = vec![Message::text(Role::System, "root system")];
-
-        state.refresh_plan_recitation(&mut messages, &plan, 1, 10, false);
-        state.refresh_plan_recitation(&mut messages, &plan, 2, 10, false);
-
-        let recitations = messages
-            .iter()
-            .filter(|message| {
-                message
-                    .text_content()
-                    .starts_with(LONG_TASK_RECITATION_PREFIX)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(recitations.len(), 1);
-        let recitation = recitations[0].text_content();
-        assert!(recitation.contains("Iteration: 3/10"));
-        assert!(recitation.contains(&plan.objective));
-    }
-
-    #[test]
-    fn recitation_can_preserve_prefix_by_appending() {
-        let state = LongTaskState::new();
-        let plan = build_task_plan(TaskPlanningInput::for_route(
-            "compare local notes",
-            "FileOperation",
-            true,
-            2,
-        ));
-        let mut messages = vec![Message::text(Role::System, "root system")];
-
-        state.refresh_plan_recitation(&mut messages, &plan, 1, 10, true);
-        let first = messages
-            .iter()
-            .map(|message| (message.role.clone(), message.text_content()))
-            .collect::<Vec<_>>();
-        state.refresh_plan_recitation(&mut messages, &plan, 2, 10, true);
-        let prefix = messages
-            .iter()
-            .take(first.len())
-            .map(|message| (message.role.clone(), message.text_content()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(messages.len(), first.len() + 1);
-        assert_eq!(prefix, first);
-    }
 
     #[test]
     fn checkpoint_cadence_tracks_completed_tool_rounds() {

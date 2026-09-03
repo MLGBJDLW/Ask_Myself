@@ -1,5 +1,6 @@
 //! One model sampling step: request construction, streaming, recovery, and stream-time steering.
 
+use super::final_answer_hygiene::FinalAnswerHygieneScope;
 use super::steering::SteeringDrainContext;
 use super::*;
 use crate::llm::FinishReason;
@@ -93,6 +94,10 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) has_sources: bool,
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) messages: &'a mut Vec<Message>,
+    /// Exact canonical message projection used for the initial physical
+    /// request. Context-recovery rebuilds replace this snapshot in-place.
+    pub(super) request_messages: Vec<Message>,
+    pub(super) final_answer_hygiene_scope: &'a mut FinalAnswerHygieneScope,
     pub(super) tool_defs: &'a mut Vec<ToolDefinition>,
     pub(super) accumulated_content: &'a mut String,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
@@ -117,6 +122,9 @@ pub(super) enum ModelStepOutcome {
 }
 
 pub(super) struct ModelStepOutput {
+    /// Exact canonical message projection used by the accepted physical
+    /// request, before provider-specific replay projection.
+    pub(super) request_messages: Vec<Message>,
     pub(super) full_content: String,
     pub(super) tool_calls: Vec<ToolCallRequest>,
     pub(super) tool_call_assembly_rejected: bool,
@@ -142,6 +150,17 @@ struct InterruptedProviderDraftCapture<'a> {
     iteration_thinking: &'a str,
     reasoning_was_requested: bool,
     output_recovery: Option<&'a super::output_recovery::OutputRecovery>,
+}
+
+struct AdmittedInterruptedProviderDraft {
+    message: Message,
+    reasoning_content: Option<String>,
+}
+
+enum InterruptedProviderDraftAdmission {
+    Absent,
+    Quarantined,
+    Admitted(AdmittedInterruptedProviderDraft),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,17 +196,35 @@ fn reset_iteration_capture_for_new_sample(
 }
 
 impl AgentExecutor {
-    fn persist_interrupted_provider_draft(
+    async fn admit_interrupted_provider_draft(
         &self,
-        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
         capture: InterruptedProviderDraftCapture<'_>,
-    ) {
+        final_answer_hygiene_scope: &FinalAnswerHygieneScope,
+        tx: &mpsc::Sender<AgentEvent>,
+        persisted_trace_items: &mut Vec<PersistedTraceItem>,
+    ) -> InterruptedProviderDraftAdmission {
         let full_content = match capture.output_recovery {
             Some(recovery) => recovery.canonical_interrupted_content(capture.sample_content),
             None => capture.sample_content.to_string(),
         };
         if full_content.trim().is_empty() && capture.iteration_thinking.trim().is_empty() {
-            return;
+            return InterruptedProviderDraftAdmission::Absent;
+        }
+        if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
+            append_developer_persisted_trace_status(
+                persisted_trace_items,
+                &format!(
+                    "discarded interrupted assistant draft containing reserved internal marker: {marker}"
+                ),
+                "warning",
+            );
+            let _ = tx
+                .send(AgentEvent::StreamReset {
+                    reason: "contaminated_interrupted_answer".to_string(),
+                    discard_sample: true,
+                })
+                .await;
+            return InterruptedProviderDraftAdmission::Quarantined;
         }
 
         let draft_reasoning =
@@ -213,12 +250,54 @@ impl AgentExecutor {
         );
         draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
         draft_message.set_provider_turn(draft_envelope);
+        InterruptedProviderDraftAdmission::Admitted(AdmittedInterruptedProviderDraft {
+            message: draft_message,
+            reasoning_content: draft_reasoning,
+        })
+    }
+
+    fn persist_admitted_interrupted_provider_draft(
+        &self,
+        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
+        draft: AdmittedInterruptedProviderDraft,
+        iteration_thinking: &str,
+    ) {
+        let AdmittedInterruptedProviderDraft {
+            message,
+            reasoning_content,
+        } = draft;
         self.persist_stream_interrupted_assistant_draft(
             ctx,
-            &draft_message,
-            draft_reasoning,
-            capture.iteration_thinking,
+            &message,
+            reasoning_content,
+            iteration_thinking,
         );
+    }
+
+    async fn persist_interrupted_provider_draft(
+        &self,
+        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
+        capture: InterruptedProviderDraftCapture<'_>,
+        final_answer_hygiene_scope: &FinalAnswerHygieneScope,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> bool {
+        let iteration_thinking = capture.iteration_thinking;
+        let admitted = self
+            .admit_interrupted_provider_draft(
+                capture,
+                final_answer_hygiene_scope,
+                tx,
+                &mut *ctx.persisted_trace_items,
+            )
+            .await;
+        match admitted {
+            InterruptedProviderDraftAdmission::Admitted(draft) => {
+                self.persist_admitted_interrupted_provider_draft(ctx, draft, iteration_thinking);
+                true
+            }
+            InterruptedProviderDraftAdmission::Absent
+            | InterruptedProviderDraftAdmission::Quarantined => false,
+        }
     }
 
     pub(super) async fn run_model_step(
@@ -237,6 +316,8 @@ impl AgentExecutor {
             has_sources,
             privacy_cfg,
             messages,
+            request_messages,
+            final_answer_hygiene_scope,
             tool_defs,
             accumulated_content,
             persisted_trace_items,
@@ -296,7 +377,7 @@ impl AgentExecutor {
         }
         let mut current_request = CompletionRequest {
             model: model.to_string(),
-            messages: messages.to_vec(),
+            messages: request_messages,
             temperature: self.config.temperature,
             // Local context accounting always has a deterministic reserve.
             // Only explicit, catalog-verified, or cumulative-worker limits
@@ -332,7 +413,7 @@ impl AgentExecutor {
         // route without inheriting a lossy primary-route projection.
         let mut reasoning_was_requested = request_reasoning_was_requested(&current_request);
         let mut accepted_attempt: Option<model_attempt::AcceptedModelAttempt> = None;
-        self.begin_prompt_cache_observation(model, messages, tool_defs);
+        self.begin_prompt_cache_observation(model, &current_request.messages, tool_defs);
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
@@ -541,7 +622,7 @@ impl AgentExecutor {
                     }
                     model_progress_watchdog::ModelProgressDeadlineAction::StopHostedTool => {
                         let trace_message = "model_progress_watchdog: provider-hosted action exceeded its absolute side-effect deadline; no automatic retry was attempted".to_string();
-                        if let Some(accepted) = accepted_attempt.as_ref() {
+                        let draft_preserved = if let Some(accepted) = accepted_attempt.as_ref() {
                             self.persist_interrupted_provider_draft(
                                 assistant_turn::AssistantTurnPersistenceContext {
                                     db,
@@ -560,8 +641,13 @@ impl AgentExecutor {
                                     output_recovery: buffer_answer_projection
                                         .then_some(output_recovery),
                                 },
-                            );
-                        }
+                                final_answer_hygiene_scope,
+                                tx,
+                            )
+                            .await
+                        } else {
+                            false
+                        };
                         append_developer_persisted_trace_status(
                             persisted_trace_items,
                             &trace_message,
@@ -575,7 +661,11 @@ impl AgentExecutor {
                                 route_kind,
                                 persisted_trace_items,
                                 TurnErrorMessages {
-                                    frontend_message: "The provider-hosted action exceeded its 10-minute safety limit. The partial draft was preserved; no automatic retry was attempted because the remote action may have side effects.".to_string(),
+                                    frontend_message: if draft_preserved {
+                                        "The provider-hosted action exceeded its 10-minute safety limit. The partial draft was preserved; no automatic retry was attempted because the remote action may have side effects.".to_string()
+                                    } else {
+                                        "The provider-hosted action exceeded its 10-minute safety limit. No safe assistant draft was preserved, and no automatic retry was attempted because the remote action may have side effects.".to_string()
+                                    },
                                     trace_message: trace_message.clone(),
                                 },
                             )
@@ -878,7 +968,10 @@ impl AgentExecutor {
                             reasoning_was_requested,
                             output_recovery: buffer_answer_projection.then_some(output_recovery),
                         },
-                    );
+                        final_answer_hygiene_scope,
+                        tx,
+                    )
+                    .await;
                     emit_error_and_finalize_turn(
                         tx,
                         db,
@@ -963,7 +1056,8 @@ impl AgentExecutor {
                                 );
                             }
                             accepted_attempt = None;
-                            current_request.messages = messages.to_vec();
+                            current_request.messages =
+                                prompt_ir::messages_for_model_step(messages, force_answer_only);
                             model_attempt = model_attempt::ModelAttempt::new(
                                 self.provider.as_ref(),
                                 current_request.clone(),
@@ -1049,7 +1143,10 @@ impl AgentExecutor {
                                 output_recovery: buffer_answer_projection
                                     .then_some(output_recovery),
                             },
-                        );
+                            final_answer_hygiene_scope,
+                            tx,
+                        )
+                        .await;
                     }
                     warn!("LLM model attempt cancelled: {message}");
                     emit_error_and_finalize_turn(
@@ -1076,52 +1173,40 @@ impl AgentExecutor {
                 .iter()
                 .any(Self::steering_message_has_effective_content);
             if !full_content.trim().is_empty() {
-                let draft_reasoning =
-                    self.reasoning_content_for_iteration(&iteration_thinking, false);
-                let mut draft_message = Message {
-                    role: Role::Assistant,
-                    parts: vec![ContentPart::Text {
-                        text: full_content.clone(),
-                    }],
-                    name: None,
-                    tool_calls: None,
-                    reasoning_content: draft_reasoning.clone(),
-                    prompt_cache_hint: None,
-                };
                 let accepted = accepted_attempt
                     .as_ref()
                     .expect("visible steering draft has accepted provenance");
-                let mut draft_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
-                    Uuid::new_v4().to_string(),
-                    accepted.sample_id.clone(),
-                    accepted.route_snapshot.clone(),
-                    draft_message.text_content(),
-                    crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
-                        &iteration_thinking,
-                    ))
-                    .as_deref(),
-                    draft_reasoning.as_deref(),
-                    Vec::new(),
-                    reasoning_was_requested,
-                );
-                draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
-                draft_message.set_provider_turn(draft_envelope);
-                messages.push(draft_message.clone());
-                if has_effective_steering {
-                    self.persist_stream_interrupted_assistant_draft(
-                        assistant_turn::AssistantTurnPersistenceContext {
-                            db,
-                            conversation_id,
-                            turn_id,
-                            model,
-                            route_kind,
-                            persisted_trace_items: &mut *persisted_trace_items,
-                            sort_order: &mut *sort_order,
+                let admitted = self
+                    .admit_interrupted_provider_draft(
+                        InterruptedProviderDraftCapture {
+                            accepted,
+                            sample_content: &full_content,
+                            iteration_thinking: &iteration_thinking,
+                            reasoning_was_requested,
+                            output_recovery: buffer_answer_projection.then_some(output_recovery),
                         },
-                        &draft_message,
-                        draft_reasoning,
-                        &iteration_thinking,
-                    );
+                        final_answer_hygiene_scope,
+                        tx,
+                        persisted_trace_items,
+                    )
+                    .await;
+                if let InterruptedProviderDraftAdmission::Admitted(draft) = admitted {
+                    messages.push(draft.message.clone());
+                    if has_effective_steering {
+                        self.persist_admitted_interrupted_provider_draft(
+                            assistant_turn::AssistantTurnPersistenceContext {
+                                db,
+                                conversation_id,
+                                turn_id,
+                                model,
+                                route_kind,
+                                persisted_trace_items: &mut *persisted_trace_items,
+                                sort_order: &mut *sort_order,
+                            },
+                            draft,
+                            &iteration_thinking,
+                        );
+                    }
                 }
             }
             let steering_texts = {
@@ -1141,6 +1226,7 @@ impl AgentExecutor {
                     prompt_was_compacted: false,
                 });
             }
+            final_answer_hygiene_scope.observe_user_texts(&steering_texts);
             let _ = tx
                 .send(AgentEvent::StreamReset {
                     reason: "steering_restart".to_string(),
@@ -1378,7 +1464,8 @@ impl AgentExecutor {
                                     .await;
                                     return Err(error);
                                 }
-                                safe_request.messages = messages.to_vec();
+                                safe_request.messages =
+                                    prompt_ir::messages_for_model_step(messages, force_answer_only);
                             }
                             ContextOverflowRecoveryDecision::GiveUp { user_message } => {
                                 emit_error_and_finalize_turn(
@@ -1621,6 +1708,7 @@ impl AgentExecutor {
             accepted_sample_id = safe_accepted.sample_id;
             accepted_route_snapshot = safe_route;
             attempt_timing = safe_timing;
+            current_request.messages = safe_request.messages;
             if completion_has_semantic_output(&response) {
                 *context_recovery_attempts = 0;
             }
@@ -1687,6 +1775,7 @@ impl AgentExecutor {
         }
 
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
+            request_messages: current_request.messages,
             full_content,
             tool_calls,
             tool_call_assembly_rejected,

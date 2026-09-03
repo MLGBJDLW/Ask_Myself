@@ -1,6 +1,7 @@
 //! Turn-level state machine and ReAct loop implementation.
 
 use super::assistant_turn;
+use super::final_answer_hygiene::FinalAnswerHygieneScope;
 use super::finalization;
 use super::model_step;
 use super::output_recovery::{
@@ -14,16 +15,6 @@ use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
 use super::usage_accounting;
 use super::*;
 use crate::llm::FinishReason;
-
-struct ReplayableSystemPersistenceContext<'a> {
-    db: &'a Database,
-    conversation_id: Option<&'a str>,
-    model: &'a str,
-    layout: prompt_layout::PromptLayout,
-    messages: &'a [Message],
-    sort_order: &'a mut i64,
-    persisted_contents: &'a mut Vec<String>,
-}
 
 struct ProviderContextLimitRecoveryContext<'a> {
     db: &'a Database,
@@ -274,6 +265,131 @@ fn rollback_rejected_sample_projection(
                 .saturating_sub(sample_content.len()),
         );
     }
+}
+
+/// In-memory transaction for one answer-recovery episode.
+///
+/// Output-limited fragments may be projected over several physical samples
+/// before their canonical answer exists. Keep enough typed ownership to roll
+/// back the whole episode if the assembled answer fails the visibility gate,
+/// without deleting unrelated committed tool messages.
+#[derive(Default)]
+struct RecoveryAnswerProjection {
+    accumulated_start: Option<usize>,
+    transient_sample_ids: HashSet<String>,
+}
+
+impl RecoveryAnswerProjection {
+    fn begin(&mut self, accumulated_start: usize) {
+        self.accumulated_start.get_or_insert(accumulated_start);
+    }
+
+    fn track_transient_sample(&mut self, sample_id: &str) {
+        self.transient_sample_ids.insert(sample_id.to_string());
+    }
+
+    fn commit(&mut self) {
+        self.accumulated_start = None;
+        self.transient_sample_ids.clear();
+    }
+
+    fn discard(
+        &mut self,
+        accumulated_content: &mut String,
+        messages: &mut Vec<Message>,
+        current_sample_start: usize,
+    ) {
+        let accumulated_start = self
+            .accumulated_start
+            .take()
+            .unwrap_or(current_sample_start)
+            .min(accumulated_content.len());
+        accumulated_content.truncate(accumulated_start);
+
+        if !self.transient_sample_ids.is_empty() {
+            messages.retain(|message| {
+                message
+                    .provider_turn()
+                    .is_none_or(|turn| !self.transient_sample_ids.contains(&turn.sample_id))
+            });
+            self.transient_sample_ids.clear();
+        }
+    }
+}
+
+struct ContaminatedProjectionContext<'a> {
+    db: &'a Database,
+    tx: &'a mpsc::Sender<AgentEvent>,
+    turn_id: Option<&'a str>,
+    route_kind: AgentRouteKind,
+    trace: &'a mut Option<AgentTrace>,
+    persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
+    messages: &'a mut Vec<Message>,
+    accumulated_content: &'a mut String,
+    current_sample_start: usize,
+    recovery_projection: &'a mut RecoveryAnswerProjection,
+    output_recovery: &'a mut OutputRecovery,
+    contaminated_sample_retries: &'a mut u8,
+    clean_final_retry_active: &'a mut bool,
+}
+
+async fn reject_contaminated_projection(
+    ctx: ContaminatedProjectionContext<'_>,
+    marker: &str,
+    tool_calls_empty: bool,
+) -> Result<(), CoreError> {
+    let ContaminatedProjectionContext {
+        db,
+        tx,
+        turn_id,
+        route_kind,
+        trace,
+        persisted_trace_items,
+        messages,
+        accumulated_content,
+        current_sample_start,
+        recovery_projection,
+        output_recovery,
+        contaminated_sample_retries,
+        clean_final_retry_active,
+    } = ctx;
+
+    recovery_projection.discard(accumulated_content, messages, current_sample_start);
+    *output_recovery = OutputRecovery::default();
+    let _ = tx
+        .send(AgentEvent::StreamReset {
+            reason: "contaminated_final_answer".to_string(),
+            discard_sample: true,
+        })
+        .await;
+    let trace_message =
+        format!("discarded assistant sample containing reserved internal marker: {marker}");
+    append_developer_persisted_trace_status(persisted_trace_items, &trace_message, "warning");
+    if *contaminated_sample_retries >= 1 {
+        emit_error_and_finalize_turn(
+            tx,
+            db,
+            trace,
+            turn_id,
+            route_kind,
+            persisted_trace_items,
+            TurnErrorMessages {
+                frontend_message: "Nexa discarded two assistant samples because they contained internal runtime metadata. No contaminated text or client tool call was saved or executed; retry the turn to request a clean response.".to_string(),
+                trace_message: trace_message.clone(),
+            },
+        )
+        .await;
+        return Err(CoreError::Agent(trace_message));
+    }
+
+    *contaminated_sample_retries = contaminated_sample_retries.saturating_add(1);
+    *clean_final_retry_active = tool_calls_empty;
+    if let Some(message) = prompt_ir::controller_state_message(
+        "The previous assistant sample exposed internal runtime metadata and was discarded before persistence or client-tool execution. Continue from the user request and committed evidence without reproducing controller state, replay headers, or tool transport logs.",
+    ) {
+        messages.push(message);
+    }
+    Ok(())
 }
 
 async fn emit_tool_dispatch_failure(
@@ -835,7 +951,6 @@ impl AgentExecutor {
             &output_budget_plan.diagnostic(),
             "info",
         );
-        let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
@@ -969,7 +1084,6 @@ impl AgentExecutor {
                     turn_id,
                     model,
                     &mut sort_order,
-                    &mut persisted_replayable_system_contents,
                     &mut messages,
                     &mut persisted_trace_items,
                     &mut task_plan,
@@ -1273,9 +1387,15 @@ impl AgentExecutor {
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
+        let mut recovery_answer_projection = RecoveryAnswerProjection::default();
+        let mut contaminated_sample_retries = 0u8;
+        let mut clean_final_retry_active = false;
         let mut next_step_purpose = TurnStepPurpose::Normal;
+        let mut final_answer_hygiene_scope =
+            FinalAnswerHygieneScope::from_user_text(user_query_text);
         'react_loop: loop {
-            let Some(step_permit) = turn_budget.permit(next_step_purpose) else {
+            let step_purpose = next_step_purpose;
+            let Some(step_permit) = turn_budget.permit(step_purpose) else {
                 break 'react_loop;
             };
             next_step_purpose = TurnStepPurpose::Normal;
@@ -1307,6 +1427,7 @@ impl AgentExecutor {
                     .await
             };
             if !steering_texts.is_empty() {
+                final_answer_hygiene_scope.observe_user_texts(&steering_texts);
                 if step_permit.allows_tools() {
                     self.expand_tool_defs_for_steering(
                         &mut tool_defs,
@@ -1334,7 +1455,9 @@ impl AgentExecutor {
             // A finite tool-round policy reserves a distinct answer-only sample
             // after the final verified tool round. Recovery samples retain that
             // mode without spending another logical tool round.
-            if iteration > 0 || step_permit.mode == TurnStepMode::FinalAnswerOnly {
+            if step_purpose != TurnStepPurpose::Recovery
+                && (iteration > 0 || step_permit.mode == TurnStepMode::FinalAnswerOnly)
+            {
                 let budget_hint = if step_permit.mode == TurnStepMode::FinalAnswerOnly {
                     "[System: The configured tool-round budget is complete. This is the reserved final-answer step. Do not call tools. Synthesize the complete answer from the evidence and tool results already available.]".to_string()
                 } else if step_permit
@@ -1361,14 +1484,6 @@ impl AgentExecutor {
                 }
             }
 
-            long_task_state.refresh_plan_recitation(
-                &mut messages,
-                &task_plan,
-                step_permit.tool_rounds_used,
-                self.config.max_iterations,
-                layout.append_volatile_system_prompt_to_tail,
-            );
-
             // Tool discovery and steering can expand the surface between model
             // steps. Re-apply the isolation boundary before any request
             // accounting so the estimated and transmitted surfaces stay
@@ -1376,7 +1491,7 @@ impl AgentExecutor {
             if workspace_isolation.is_some() {
                 WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
-            let suppress_tools_for_step = !step_permit.allows_tools();
+            let suppress_tools_for_step = clean_final_retry_active || !step_permit.allows_tools();
             let effective_tool_defs =
                 effective_tool_surface(tool_defs.as_slice(), suppress_tools_for_step);
             prompt_was_compacted |= self
@@ -1395,25 +1510,18 @@ impl AgentExecutor {
                     total_usage: &mut total_usage,
                 })
                 .await;
-            self.persist_unpersisted_replayable_system_messages(
-                ReplayableSystemPersistenceContext {
-                    db,
-                    conversation_id,
-                    model,
-                    layout,
-                    messages: &messages,
-                    sort_order: &mut sort_order,
-                    persisted_contents: &mut persisted_replayable_system_contents,
-                },
-            );
-
             let buffer_answer_projection = output_recovery.reserves_answer_channel();
-            let force_answer_only =
-                buffer_answer_projection || step_permit.mode == TurnStepMode::FinalAnswerOnly;
+            let force_answer_only = clean_final_retry_active
+                || buffer_answer_projection
+                || step_permit.mode == TurnStepMode::FinalAnswerOnly;
+            // Budget the exact canonical projection that the model step will
+            // send. Superseded step-scoped controls are not part of a reserved
+            // final-answer request and must not consume its output allowance.
+            let request_messages = prompt_ir::messages_for_model_step(&messages, force_answer_only);
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
                     model,
-                    &messages,
+                    &request_messages,
                     effective_tool_defs,
                     None,
                 )
@@ -1462,6 +1570,7 @@ impl AgentExecutor {
                 } else {
                     output_budget_plan.wire_max_tokens()
                 };
+            let accumulated_content_before_model_step = accumulated_content.len();
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -1475,6 +1584,8 @@ impl AgentExecutor {
                     has_sources,
                     privacy_cfg: &privacy_cfg,
                     messages: &mut messages,
+                    request_messages,
+                    final_answer_hygiene_scope: &mut final_answer_hygiene_scope,
                     tool_defs: &mut tool_defs,
                     accumulated_content: &mut accumulated_content,
                     persisted_trace_items: &mut persisted_trace_items,
@@ -1506,6 +1617,7 @@ impl AgentExecutor {
                 }
             };
             let model_step::ModelStepOutput {
+                request_messages,
                 mut full_content,
                 mut tool_calls,
                 tool_call_assembly_rejected,
@@ -1568,6 +1680,7 @@ impl AgentExecutor {
                         tx: &tx,
                         model,
                         messages: &mut messages,
+                        request_messages: &request_messages,
                         context_pipeline,
                         tool_defs: effective_tool_surface(
                             tool_defs.as_slice(),
@@ -1604,6 +1717,40 @@ impl AgentExecutor {
                 }
             }
             prompt_was_compacted = usage_report.compacted_after_step;
+
+            // Every completed answer-channel sample crosses the same
+            // visibility and persistence gate, including samples that also
+            // contain tool calls or would otherwise enter output recovery.
+            // Streaming stays responsive, but rejection resets the exact
+            // physical sample before persistence or client-tool execution.
+            if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
+                if let Err(error) = reject_contaminated_projection(
+                    ContaminatedProjectionContext {
+                        db,
+                        tx: &tx,
+                        turn_id,
+                        route_kind: route_plan.kind,
+                        trace: &mut trace,
+                        persisted_trace_items: &mut persisted_trace_items,
+                        messages: &mut messages,
+                        accumulated_content: &mut accumulated_content,
+                        current_sample_start: accumulated_content_before_model_step,
+                        recovery_projection: &mut recovery_answer_projection,
+                        output_recovery: &mut output_recovery,
+                        contaminated_sample_retries: &mut contaminated_sample_retries,
+                        clean_final_retry_active: &mut clean_final_retry_active,
+                    },
+                    marker,
+                    tool_calls.is_empty(),
+                )
+                .await
+                {
+                    turn_state.finish(TurnOutcome::Failed);
+                    return Err(error);
+                }
+                next_step_purpose = TurnStepPurpose::Recovery;
+                continue 'react_loop;
+            }
 
             if self.config.max_actual_tokens_per_run.is_some_and(|limit| {
                 total_usage.total_tokens > limit
@@ -1652,6 +1799,9 @@ impl AgentExecutor {
                 !tool_calls.is_empty(),
                 provider_state_fingerprint.as_deref(),
             );
+            if !buffer_answer_projection && output_recovery.reserves_answer_channel() {
+                recovery_answer_projection.begin(accumulated_content_before_model_step);
+            }
             let resumes_provider_pause = matches!(
                 &recovery_decision,
                 OutputRecoveryDecision::Continue {
@@ -1715,6 +1865,7 @@ impl AgentExecutor {
                     if committed_visible_delta || cause == OutputRecoveryCause::ProviderPause {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        recovery_answer_projection.track_transient_sample(&sample_id);
                         messages.push(capture_recovery_assistant_message(
                             RecoveryAssistantMessageContext {
                                 full_content: &visible_delta,
@@ -1805,6 +1956,7 @@ impl AgentExecutor {
                         );
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        recovery_answer_projection.track_transient_sample(&sample_id);
                         messages.push(capture_recovery_assistant_message(
                             RecoveryAssistantMessageContext {
                                 full_content: &full_content,
@@ -1860,6 +2012,42 @@ impl AgentExecutor {
                     content,
                     visible_delta,
                 } => {
+                    // A reserved heading may be split across output-limited
+                    // physical samples even though each sample is clean alone.
+                    // The canonical assembled answer must cross the same gate
+                    // before its final delta is projected or anything persists.
+                    if buffer_answer_projection {
+                        if let Some(marker) =
+                            final_answer_hygiene_scope.contamination_marker(&content)
+                        {
+                            if let Err(error) = reject_contaminated_projection(
+                                ContaminatedProjectionContext {
+                                    db,
+                                    tx: &tx,
+                                    turn_id,
+                                    route_kind: route_plan.kind,
+                                    trace: &mut trace,
+                                    persisted_trace_items: &mut persisted_trace_items,
+                                    messages: &mut messages,
+                                    accumulated_content: &mut accumulated_content,
+                                    current_sample_start: accumulated_content_before_model_step,
+                                    recovery_projection: &mut recovery_answer_projection,
+                                    output_recovery: &mut output_recovery,
+                                    contaminated_sample_retries: &mut contaminated_sample_retries,
+                                    clean_final_retry_active: &mut clean_final_retry_active,
+                                },
+                                marker,
+                                true,
+                            )
+                            .await
+                            {
+                                turn_state.finish(TurnOutcome::Failed);
+                                return Err(error);
+                            }
+                            next_step_purpose = TurnStepPurpose::Recovery;
+                            continue 'react_loop;
+                        }
+                    }
                     if buffer_answer_projection {
                         commit_buffered_answer_projection(
                             &tx,
@@ -1869,6 +2057,7 @@ impl AgentExecutor {
                         .await;
                     }
                     full_content = content;
+                    recovery_answer_projection.commit();
                     None
                 }
                 OutputRecoveryDecision::Reject(failure) => Some(failure),
@@ -2094,6 +2283,9 @@ impl AgentExecutor {
                 }
             };
             output_recovery.commit_staged_tool_round();
+            if !output_recovery.reserves_answer_channel() {
+                recovery_answer_projection.commit();
+            }
             let tool_round_working_delta = staged_tool_round_working_delta
                 .take()
                 .filter(|delta| !delta.trim().is_empty());
@@ -2212,6 +2404,7 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                clean_final_retry_active = false;
                 if let Some(intervention) = loop_guard_intervention.as_ref() {
                     if intervention.action == LoopGuardAction::ChangeStrategy
                         && turn_budget.can_start_normal_step()
@@ -2293,6 +2486,7 @@ impl AgentExecutor {
                     .await
                 };
                 if !steering_texts.is_empty() {
+                    final_answer_hygiene_scope.observe_user_texts(&steering_texts);
                     if step_permit.allows_tools() {
                         self.expand_tool_defs_for_steering(
                             &mut tool_defs,
@@ -3104,83 +3298,5 @@ mod rejected_sample_projection_tests {
         let mut projected_draft = "accepted draft".to_string();
         rollback_rejected_sample_projection(&mut projected_draft, " draft", true);
         assert_eq!(projected_draft, "accepted");
-    }
-}
-
-impl AgentExecutor {
-    fn persist_unpersisted_replayable_system_messages(
-        &self,
-        ctx: ReplayableSystemPersistenceContext<'_>,
-    ) {
-        let ReplayableSystemPersistenceContext {
-            db,
-            conversation_id,
-            model,
-            layout,
-            messages,
-            sort_order,
-            persisted_contents,
-        } = ctx;
-
-        if !layout.append_volatile_system_prompt_to_tail {
-            return;
-        }
-        let Some(conversation_id) = conversation_id else {
-            return;
-        };
-        let Some(current_user_index) = messages
-            .iter()
-            .rposition(|message| message.role == Role::User)
-        else {
-            return;
-        };
-
-        let mut seen_in_request: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for message in messages.iter().skip(current_user_index + 1) {
-            if message.role != Role::System {
-                continue;
-            }
-            let content = message.text_content();
-            if content.trim().is_empty() {
-                continue;
-            }
-            let seen_count = seen_in_request.entry(content.clone()).or_insert(0);
-            let persisted_count = persisted_contents
-                .iter()
-                .filter(|persisted| *persisted == &content)
-                .count();
-            if *seen_count < persisted_count {
-                *seen_count += 1;
-                continue;
-            }
-
-            let conv_msg = ConversationMessage {
-                id: Uuid::new_v4().to_string(),
-                conversation_id: conversation_id.to_string(),
-                role: Role::System,
-                content: content.clone(),
-                tool_call_id: None,
-                tool_calls: vec![],
-                artifacts: Some(serde_json::json!({
-                    "kind": "replayableRuntimeContext",
-                    "version": 1,
-                    "cachePurpose": "preserve exact-prefix provider prompt continuity across turns",
-                })),
-                token_count: estimate_message_tokens_for_model(model, message),
-                created_at: String::new(),
-                sort_order: *sort_order,
-                thinking: None,
-                image_attachments: None,
-            };
-            if let Err(err) = db.add_message(&conv_msg) {
-                warn!("Failed to persist replayable runtime context: {err}");
-                *seen_count += 1;
-                continue;
-            }
-            persisted_contents.push(content);
-            *sort_order += 1;
-            *seen_count += 1;
-        }
     }
 }

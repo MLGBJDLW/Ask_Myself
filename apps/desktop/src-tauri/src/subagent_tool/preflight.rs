@@ -88,7 +88,11 @@ pub(super) fn load_delegation_context_snapshot(
     let mut dropped_invalid_messages = 0usize;
     if let Some(conversation_id) = conversation_id {
         if let Ok(messages) = db.get_messages(conversation_id) {
-            for message in messages.into_iter().rev() {
+            for message in messages
+                .into_iter()
+                .filter(nexa_core::conversation::conversation_message_is_model_history)
+                .rev()
+            {
                 // Delegate conversational intent and final assistant output, not
                 // provider-specific tool protocol records. Evidence needed by a
                 // child is handed off through typed evidence cards instead.

@@ -70,6 +70,39 @@ function loadVoiceInputRuntime() {
           useState: (value) => [value, () => {}],
         };
       }
+      if (specifier === '../../lib/sttProviderPresets') {
+        const catalog = JSON.parse(fs.readFileSync(
+          path.join(root, '..', '..', 'shared', 'stt-provider-presets.json'),
+          'utf8',
+        ));
+        const finalOnly = {
+          audioInput: 'completeFile',
+          transcriptDelivery: 'finalOnly',
+          sampleRateHz: 16_000,
+        };
+        return {
+          sttRuntimeCapabilities: (config) => {
+            const preset = catalog.find((candidate) => (
+              candidate.provider === config?.provider
+              && candidate.apiStyle === config?.apiStyle
+              && (candidate.sherpaModelFamily ?? null) === (
+              config?.apiStyle === 'sherpa_onnx'
+                ? config?.sherpaModelFamily ?? 'sense_voice'
+                : null
+              )
+            ));
+            if (!preset) return finalOnly;
+            if (preset.transcription.transcriptDelivery === 'interimAndFinal'
+              && !preset.models.some((model) => model.id === config?.model?.trim())) {
+              return finalOnly;
+            }
+            return preset.transcription;
+          },
+        };
+      }
+      if (specifier === './boundedVoicePartial') {
+        return loadBoundedVoicePartial();
+      }
       return {};
     },
   };
@@ -137,6 +170,21 @@ function loadBoundedVoicePartial() {
   const module = { exports: {} };
   vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
     filename: partialPath,
+  });
+  return module.exports;
+}
+
+function loadVoiceDraftProjection() {
+  const projectionPath = path.join(root, 'src', 'features', 'voice', 'voiceDraftProjection.ts');
+  const transpiled = ts.transpileModule(fs.readFileSync(projectionPath, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+    },
+  });
+  const module = { exports: {} };
+  vm.runInNewContext(transpiled.outputText, { exports: module.exports, module }, {
+    filename: projectionPath,
   });
   return module.exports;
 }
@@ -291,6 +339,26 @@ test('OpenAI live transcription is a distinct realtime provider', () => {
   assert.equal(openaiLive.baseUrl, 'https://api.openai.com/v1');
   assert.equal(openaiLive.models[0].id, 'gpt-live-transcribe');
   assert.equal(openaiLive.models[0].recommended, true);
+  assert.equal(openaiLive.transcription.audioInput, 'chunkStream');
+  assert.equal(openaiLive.transcription.transcriptDelivery, 'interimAndFinal');
+  assert.equal(openaiLive.transcription.interimSemantics, 'appendDelta');
+  assert.equal(openaiLive.transcription.sampleRateHz, 24_000);
+});
+
+test('STT catalog distinguishes native interim delivery from batch and engine potential', () => {
+  const sttCatalog = JSON.parse(fs.readFileSync(path.join(root, '..', '..', 'shared', 'stt-provider-presets.json'), 'utf8'));
+  const qwenBatch = sttCatalog.find((preset) => preset.id === 'alibaba-qwen-asr');
+  const qwenRealtime = sttCatalog.find((preset) => preset.id === 'alibaba-qwen-realtime');
+  const sherpaZipformer = sttCatalog.find((preset) => preset.id === 'sherpa-zipformer');
+  const custom = sttCatalog.find((preset) => preset.id === 'custom-openai');
+
+  assert.equal(qwenBatch.transcription.transcriptDelivery, 'finalOnly');
+  assert.equal(qwenRealtime.apiStyle, 'dashscope_realtime_asr');
+  assert.equal(qwenRealtime.transcription.interimSemantics, 'replaceSnapshot');
+  assert.equal(qwenRealtime.transcription.sampleRateHz, 16_000);
+  assert.equal(sherpaZipformer.transcription.engineStreamingCapable, true);
+  assert.equal(sherpaZipformer.transcription.transcriptDelivery, 'finalOnly');
+  assert.equal(custom.transcription.transcriptDelivery, 'finalOnly');
 });
 
 test('QwenCloud and Token Plan keep distinct Qwen model catalogs', () => {
@@ -417,6 +485,34 @@ test('accepts configured OpenAI realtime transcription for voice input', () => {
   assert.equal(isSpeechToTextConfigured({ ...configured, model: '' }), false);
 });
 
+test('accepts Qwen realtime only through its explicit WebSocket dialect', () => {
+  const { isRealtimeTranscriptionConfig, isSpeechToTextConfigured } = loadVoiceInputRuntime();
+  const configured = {
+    provider: 'alibaba_model_studio',
+    apiStyle: 'dashscope_realtime_asr',
+    apiKey: 'sk-demo',
+    baseUrl: 'https://dashscope.aliyuncs.com/api-ws/v1',
+    model: 'qwen3-asr-flash-realtime',
+    language: 'zh',
+  };
+
+  assert.equal(isRealtimeTranscriptionConfig(configured), true);
+  assert.equal(isSpeechToTextConfigured(configured), true);
+  assert.equal(isRealtimeTranscriptionConfig({
+    ...configured,
+    apiStyle: 'dashscope_asr',
+    model: 'qwen3-asr-flash',
+  }), false);
+  assert.equal(isRealtimeTranscriptionConfig({
+    ...configured,
+    model: 'qwen3-asr-flash',
+  }), false);
+  assert.equal(isSpeechToTextConfigured({
+    ...configured,
+    model: 'qwen3-asr-flash',
+  }), false);
+});
+
 test('recovered native spools remain ordered and individually retryable', () => {
   const { queuePendingVoiceSpool, forgetPendingVoiceSpool } = loadVoiceInputRuntime();
   let pending = ['oldest', 'newer'];
@@ -511,6 +607,13 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
   assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
   assert.match(runtimeSource, /startInProgressRef\.current/);
+  assert.match(runtimeSource, /startupGenerationRef\.current/);
+  assert.match(runtimeSource, /startupAbortModeRef\.current/);
+  assert.match(runtimeSource, /releaseStaleUpload/);
+  assert.ok(
+    (runtimeSource.match(/if \(!startupIsCurrent\(\)\)/g) ?? []).length >= 7,
+    'every async startup resource boundary must reject a stale generation',
+  );
   assert.match(runtimeSource, /pendingVoiceCleanupIdsRef/);
   assert.match(runtimeSource, /discardPendingVoiceSpool/);
   assert.match(runtimeSource, /voiceSpool\.preserveAcceptedAudio\(\)/);
@@ -757,6 +860,219 @@ test('realtime partial transcript retains only the newest bounded text', () => {
   const replaced = replaceBoundedVoicePartial(oversized);
   assert.equal(replaced.length, MAX_VOICE_PARTIAL_CHARS);
   assert.equal(replaced.endsWith('-new'), true);
+});
+
+test('realtime transcript projection honors append deltas and empty replacement snapshots', () => {
+  const { projectRealtimeTranscriptText } = loadVoiceInputRuntime();
+  const baseEvent = {
+    sessionId: 'session-1',
+    sequence: 1,
+    kind: 'interim',
+  };
+  assert.equal(projectRealtimeTranscriptText('hello', {
+    ...baseEvent,
+    update: 'appendDelta',
+    text: ' world',
+  }), 'hello world');
+  assert.equal(projectRealtimeTranscriptText('stale hypothesis', {
+    ...baseEvent,
+    update: 'replaceSnapshot',
+    text: '',
+  }), '');
+  assert.equal(projectRealtimeTranscriptText('interim', {
+    ...baseEvent,
+    kind: 'final',
+    text: 'final transcript',
+  }), 'final transcript');
+});
+
+test('untouched realtime dictation owns one replaceable composer span', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('inspect', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'the config',
+  });
+  assert.equal(projection.draft, 'inspect the config');
+
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'the configuration',
+  });
+  assert.equal(projection.draft, 'inspect the configuration');
+
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'final',
+    text: 'the full configuration',
+  });
+  assert.equal(projection.draft, 'inspect the full configuration');
+  assert.equal(projection.session, null);
+});
+
+test('manual composer correction wins over later realtime revisions', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'check the entire configuration',
+  });
+  const corrected = projection.draft.replace('entire', 'whole');
+
+  projection = applyVoiceDictationEvent(corrected, projection.session, {
+    kind: 'interim',
+    text: 'check the entire configuration carefully',
+  });
+  assert.equal(projection.draft, 'check the whole configuration carefully');
+
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'final',
+    text: 'check the complete configuration carefully',
+  });
+  assert.equal(projection.draft, 'check the whole configuration carefully');
+  assert.equal(projection.session, null);
+});
+
+test('manual correction still accepts a proven tail after provider prefix revision', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'check the entire configuration',
+  });
+  const corrected = projection.draft.replace('entire', 'whole');
+
+  projection = applyVoiceDictationEvent(corrected, projection.session, {
+    kind: 'interim',
+    text: 'check the complete configuration carefully',
+  });
+
+  assert.equal(projection.draft, 'check the whole configuration carefully');
+});
+
+test('manual CJK correction retains proven no-space transcript extensions', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今天天气',
+  });
+
+  projection = applyVoiceDictationEvent('明天天气', projection.session, {
+    kind: 'interim',
+    text: '今天天气很好',
+  });
+  assert.equal(projection.draft, '明天天气很好');
+
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'final',
+    text: '今天天气很好啊',
+  });
+  assert.equal(projection.draft, '明天天气很好啊');
+  assert.equal(projection.session, null);
+});
+
+test('manual Japanese correction retains proven no-space transcript extensions', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今日は晴れ',
+  });
+
+  projection = applyVoiceDictationEvent('明日は晴れ', projection.session, {
+    kind: 'final',
+    text: '今日は晴れです',
+  });
+  assert.equal(projection.draft, '明日は晴れです');
+  assert.equal(projection.session, null);
+});
+
+test('manual CJK rewrite rejects a provider suffix without a user-owned anchor', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今天天气',
+  });
+
+  projection = applyVoiceDictationEvent('彻底改写', projection.session, {
+    kind: 'final',
+    text: '今天天气很好',
+  });
+  assert.equal(projection.draft, '彻底改写');
+  assert.equal(projection.session, null);
+});
+
+test('manual correction attaches punctuation-only snapshot extensions directly', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  for (const punctuation of ['.', ',', '?', '！']) {
+    let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+    projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+      kind: 'interim',
+      text: 'hello',
+    });
+    projection = applyVoiceDictationEvent('Hello', projection.session, {
+      kind: 'final',
+      text: `hello${punctuation}`,
+    });
+    assert.equal(projection.draft, `Hello${punctuation}`);
+    assert.equal(projection.session, null);
+  }
+});
+
+test('manual correction at the transcript tail does not duplicate a provider suffix', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'turn on the light',
+  });
+
+  projection = applyVoiceDictationEvent('turn on the lights', projection.session, {
+    kind: 'interim',
+    text: 'turn on the lights in kitchen',
+  });
+
+  assert.equal(projection.draft, 'turn on the lights in kitchen');
+});
+
+test('manual word replacement rejects an unproven provider word fragment', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'turn on the light',
+  });
+
+  projection = applyVoiceDictationEvent('turn on the lamp', projection.session, {
+    kind: 'interim',
+    text: 'turn on the lights in kitchen',
+  });
+
+  assert.equal(projection.draft, 'turn on the lamp');
+});
+
+test('voice cancel removes only an untouched provider-owned span', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let untouched = applyVoiceDictationEvent('prefix', null, { kind: 'start' });
+  untouched = applyVoiceDictationEvent(untouched.draft, untouched.session, {
+    kind: 'interim',
+    text: 'draft words',
+  });
+  untouched = applyVoiceDictationEvent(untouched.draft, untouched.session, { kind: 'cancel' });
+  assert.equal(untouched.draft, 'prefix');
+
+  let edited = applyVoiceDictationEvent('prefix', null, { kind: 'start' });
+  edited = applyVoiceDictationEvent(edited.draft, edited.session, {
+    kind: 'interim',
+    text: 'draft words',
+  });
+  edited = applyVoiceDictationEvent(
+    edited.draft.replace('draft', 'corrected'),
+    edited.session,
+    { kind: 'cancel' },
+  );
+  assert.equal(edited.draft, 'prefix corrected words');
 });
 
 await testAsync('native spool upload assigns ordered sequences and finalizes by opaque handle', async () => {

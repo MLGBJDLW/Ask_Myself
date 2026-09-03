@@ -38,16 +38,74 @@ enum RealtimeCommand {
     Cancel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeDialect {
+    OpenAi,
+    DashScope,
+}
+
+impl RealtimeDialect {
+    fn from_config(config: &nexa_core::app_settings::SpeechToTextConfig) -> Result<Self, String> {
+        if !config.is_configured() {
+            return Err("Realtime transcription is not fully configured".to_string());
+        }
+        match config.api_style.as_str() {
+            "openai_realtime_transcription" if config.model.trim() == "gpt-live-transcribe" => {
+                Ok(Self::OpenAi)
+            }
+            "dashscope_realtime_asr" if config.model.trim() == "qwen3-asr-flash-realtime" => {
+                Ok(Self::DashScope)
+            }
+            "openai_realtime_transcription" | "dashscope_realtime_asr" => Err(format!(
+                "Unsupported realtime transcription model for {}: {}",
+                config.api_style,
+                config.model.trim()
+            )),
+            value => Err(format!(
+                "Unsupported realtime transcription API style: {value}"
+            )),
+        }
+    }
+
+    fn sample_rate(self) -> u32 {
+        match self {
+            Self::OpenAi => 24_000,
+            Self::DashScope => 16_000,
+        }
+    }
+
+    fn waits_for_session_finished(self) -> bool {
+        self == Self::DashScope
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranscriptUpdate {
+    AppendDelta,
+    ReplaceSnapshot,
+}
+
+impl TranscriptUpdate {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::AppendDelta => "appendDelta",
+            Self::ReplaceSnapshot => "replaceSnapshot",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ParsedRealtimeServerEvent {
-    Delta {
-        item_id: Option<String>,
+    Interim {
+        utterance_id: Option<String>,
+        text: String,
+        update: TranscriptUpdate,
+    },
+    Final {
+        utterance_id: Option<String>,
         text: String,
     },
-    Completed {
-        item_id: Option<String>,
-        text: String,
-    },
+    SessionFinished,
     Error(String),
     Other,
 }
@@ -56,11 +114,14 @@ enum ParsedRealtimeServerEvent {
 #[serde(rename_all = "camelCase")]
 struct RealtimeTranscriptionFrontendEvent<'a> {
     session_id: &'a str,
+    sequence: u64,
     kind: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    item_id: Option<&'a str>,
+    update: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    utterance_id: Option<&'a str>,
 }
 
 fn build_realtime_endpoint(base_url: &str, model: &str) -> Result<String, String> {
@@ -104,54 +165,98 @@ fn language_hints(language: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn build_session_update(model: &str, language: Option<&str>) -> Value {
-    let mut transcription = serde_json::json!({
-        "model": model.trim(),
-        "delay": "low"
-    });
-    let languages = language_hints(language);
-    if !languages.is_empty() {
-        transcription["languages"] = serde_json::json!(languages);
-    }
-    serde_json::json!({
-        "type": "session.update",
-        "session": {
-            "type": "transcription",
-            "audio": {
-                "input": {
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": 24_000
-                    },
-                    "transcription": transcription,
+fn build_session_update(dialect: RealtimeDialect, model: &str, language: Option<&str>) -> Value {
+    match dialect {
+        RealtimeDialect::OpenAi => {
+            let mut transcription = serde_json::json!({
+                "model": model.trim(),
+                "delay": "low"
+            });
+            let languages = language_hints(language);
+            if !languages.is_empty() {
+                transcription["languages"] = serde_json::json!(languages);
+            }
+            serde_json::json!({
+                "type": "session.update",
+                "session": {
+                    "type": "transcription",
+                    "audio": {
+                        "input": {
+                            "format": {
+                                "type": "audio/pcm",
+                                "rate": dialect.sample_rate()
+                            },
+                            "transcription": transcription,
+                            "turn_detection": null
+                        }
+                    }
+                }
+            })
+        }
+        RealtimeDialect::DashScope => {
+            let mut transcription = serde_json::Map::new();
+            if let Some(language) = language_hints(language).into_iter().next() {
+                transcription.insert("language".to_string(), Value::String(language));
+            }
+            serde_json::json!({
+                "event_id": format!("event_{}", Uuid::new_v4().simple()),
+                "type": "session.update",
+                "session": {
+                    "input_audio_format": "pcm",
+                    "sample_rate": dialect.sample_rate(),
+                    "input_audio_transcription": transcription,
                     "turn_detection": null
                 }
-            }
+            })
         }
-    })
+    }
 }
 
-fn parse_server_event(event: &Value) -> ParsedRealtimeServerEvent {
-    let item_id = event
+fn parse_server_event(dialect: RealtimeDialect, event: &Value) -> ParsedRealtimeServerEvent {
+    let utterance_id = event
         .get("item_id")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    match event
+    let event_type = event
         .get("type")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
-        "conversation.item.input_audio_transcription.delta" => ParsedRealtimeServerEvent::Delta {
-            item_id,
-            text: event
-                .get("delta")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        },
+        .unwrap_or_default();
+    match event_type {
+        "conversation.item.input_audio_transcription.delta"
+            if dialect == RealtimeDialect::OpenAi =>
+        {
+            ParsedRealtimeServerEvent::Interim {
+                utterance_id,
+                text: event
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                update: TranscriptUpdate::AppendDelta,
+            }
+        }
+        "conversation.item.input_audio_transcription.text"
+            if dialect == RealtimeDialect::DashScope =>
+        {
+            ParsedRealtimeServerEvent::Interim {
+                utterance_id,
+                text: format!(
+                    "{}{}",
+                    event
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    event
+                        .get("stash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                ),
+                update: TranscriptUpdate::ReplaceSnapshot,
+            }
+        }
         "conversation.item.input_audio_transcription.completed" => {
-            ParsedRealtimeServerEvent::Completed {
-                item_id,
+            ParsedRealtimeServerEvent::Final {
+                utterance_id,
                 text: event
                     .get("transcript")
                     .and_then(Value::as_str)
@@ -159,12 +264,20 @@ fn parse_server_event(event: &Value) -> ParsedRealtimeServerEvent {
                     .to_string(),
             }
         }
+        "conversation.item.input_audio_transcription.failed" => ParsedRealtimeServerEvent::Error(
+            event
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Realtime transcription item failed")
+                .to_string(),
+        ),
+        "session.finished" => ParsedRealtimeServerEvent::SessionFinished,
         "error" => ParsedRealtimeServerEvent::Error(
             event
                 .pointer("/error/message")
                 .and_then(Value::as_str)
                 .or_else(|| event.get("message").and_then(Value::as_str))
-                .unwrap_or("OpenAI Realtime session failed")
+                .unwrap_or("Realtime transcription session failed")
                 .to_string(),
         ),
         _ => ParsedRealtimeServerEvent::Other,
@@ -174,20 +287,47 @@ fn parse_server_event(event: &Value) -> ParsedRealtimeServerEvent {
 fn emit_realtime_event(
     app_handle: &AppHandle,
     session_id: &str,
+    sequence: &mut u64,
     kind: &str,
     text: Option<&str>,
-    item_id: Option<&str>,
+    update: Option<TranscriptUpdate>,
+    utterance_id: Option<&str>,
 ) {
+    *sequence = sequence.saturating_add(1);
     emit_app_event(
         app_handle,
         REALTIME_TRANSCRIPTION_EVENT,
         &RealtimeTranscriptionFrontendEvent {
             session_id,
+            sequence: *sequence,
             kind,
             text,
-            item_id,
+            update: update.map(TranscriptUpdate::wire_name),
+            utterance_id,
         },
     );
+}
+
+fn finish_messages(dialect: RealtimeDialect) -> Vec<Value> {
+    let mut messages = vec![serde_json::json!({
+        "event_id": format!("event_{}", Uuid::new_v4().simple()),
+        "type": "input_audio_buffer.commit"
+    })];
+    if dialect == RealtimeDialect::DashScope {
+        messages.push(serde_json::json!({
+            "event_id": format!("event_{}", Uuid::new_v4().simple()),
+            "type": "session.finish"
+        }));
+    }
+    messages
+}
+
+fn append_message(audio_data: &[u8]) -> Value {
+    serde_json::json!({
+        "event_id": format!("event_{}", Uuid::new_v4().simple()),
+        "type": "input_audio_buffer.append",
+        "audio": BASE64.encode(audio_data),
+    })
 }
 
 fn resolve_pending_final(
@@ -199,7 +339,20 @@ fn resolve_pending_final(
     }
 }
 
-fn replay_wav_data_bytes(header: &[u8; 44]) -> Result<u32, String> {
+fn finished_session_transcript(
+    final_transcript: Option<String>,
+    saw_transcript_activity: bool,
+) -> Result<String, String> {
+    match final_transcript {
+        Some(text) => Ok(text),
+        None if saw_transcript_activity => {
+            Err("Realtime transcription finished without a final transcript".to_string())
+        }
+        None => Ok(String::new()),
+    }
+}
+
+fn replay_wav_data_bytes(header: &[u8; 44], expected_sample_rate: u32) -> Result<u32, String> {
     if &header[0..4] != b"RIFF"
         || &header[8..12] != b"WAVE"
         || &header[12..16] != b"fmt "
@@ -211,8 +364,14 @@ fn replay_wav_data_bytes(header: &[u8; 44]) -> Result<u32, String> {
     let channels = u16::from_le_bytes([header[22], header[23]]);
     let sample_rate = u32::from_le_bytes(header[24..28].try_into().expect("four bytes"));
     let bits_per_sample = u16::from_le_bytes([header[34], header[35]]);
-    if audio_format != 1 || channels != 1 || sample_rate != 24_000 || bits_per_sample != 16 {
-        return Err("Managed Realtime replay requires mono 24 kHz little-endian PCM16".to_string());
+    if audio_format != 1
+        || channels != 1
+        || sample_rate != expected_sample_rate
+        || bits_per_sample != 16
+    {
+        return Err(format!(
+            "Managed Realtime replay requires mono {expected_sample_rate} Hz little-endian PCM16"
+        ));
     }
     Ok(u32::from_le_bytes(
         header[40..44].try_into().expect("four bytes"),
@@ -226,9 +385,7 @@ pub(super) async fn transcribe_realtime_spool(
     wav_path: &Path,
     config: &nexa_core::app_settings::SpeechToTextConfig,
 ) -> Result<String, String> {
-    if config.api_style != "openai_realtime_transcription" || !config.is_configured() {
-        return Err("OpenAI Live transcription is not fully configured".to_string());
-    }
+    let dialect = RealtimeDialect::from_config(config)?;
     let endpoint = build_realtime_endpoint(
         config.base_url.as_deref().unwrap_or_default(),
         &config.model,
@@ -240,7 +397,7 @@ pub(super) async fn transcribe_realtime_spool(
         "Authorization",
         format!("Bearer {}", config.api_key.trim())
             .parse()
-            .map_err(|error| format!("Invalid OpenAI authorization header: {error}"))?,
+            .map_err(|error| format!("Invalid realtime authorization header: {error}"))?,
     );
     request.headers_mut().insert(
         "User-Agent",
@@ -251,15 +408,15 @@ pub(super) async fn transcribe_realtime_spool(
 
     let (mut socket, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|error| format!("Unable to reconnect to OpenAI Realtime: {error}"))?;
+        .map_err(|error| format!("Unable to reconnect to realtime transcription: {error}"))?;
     socket
         .send(Message::Text(
-            build_session_update(&config.model, config.language.as_deref())
+            build_session_update(dialect, &config.model, config.language.as_deref())
                 .to_string()
                 .into(),
         ))
         .await
-        .map_err(|error| format!("Unable to configure OpenAI Realtime replay: {error}"))?;
+        .map_err(|error| format!("Unable to configure realtime transcription replay: {error}"))?;
 
     let mut file = tokio::fs::File::open(wav_path)
         .await
@@ -268,7 +425,7 @@ pub(super) async fn transcribe_realtime_spool(
     file.read_exact(&mut header)
         .await
         .map_err(|error| format!("Unable to read managed Realtime WAV header: {error}"))?;
-    let mut remaining = replay_wav_data_bytes(&header)? as usize;
+    let mut remaining = replay_wav_data_bytes(&header, dialect.sample_rate())? as usize;
     file.seek(SeekFrom::Start(44))
         .await
         .map_err(|error| format!("Unable to seek managed Realtime audio: {error}"))?;
@@ -278,14 +435,13 @@ pub(super) async fn transcribe_realtime_spool(
         file.read_exact(&mut buffer[..chunk_len])
             .await
             .map_err(|error| format!("Unable to read managed Realtime audio: {error}"))?;
-        let payload = serde_json::json!({
-            "type": "input_audio_buffer.append",
-            "audio": BASE64.encode(&buffer[..chunk_len]),
-        });
+        let payload = append_message(&buffer[..chunk_len]);
         socket
             .send(Message::Text(payload.to_string().into()))
             .await
-            .map_err(|error| format!("Unable to replay audio to OpenAI Realtime: {error}"))?;
+            .map_err(|error| {
+                format!("Unable to replay audio to realtime transcription: {error}")
+            })?;
         remaining -= chunk_len;
 
         if let Ok(Some(incoming)) =
@@ -295,7 +451,7 @@ pub(super) async fn transcribe_realtime_spool(
                 Ok(Message::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<Value>(&text) {
                         if let ParsedRealtimeServerEvent::Error(message) =
-                            parse_server_event(&event)
+                            parse_server_event(dialect, &event)
                         {
                             return Err(message);
                         }
@@ -304,33 +460,47 @@ pub(super) async fn transcribe_realtime_spool(
                 Ok(Message::Ping(payload)) => socket
                     .send(Message::Pong(payload))
                     .await
-                    .map_err(|error| format!("OpenAI Realtime replay heartbeat failed: {error}"))?,
+                    .map_err(|error| format!("Realtime replay heartbeat failed: {error}"))?,
                 Ok(Message::Close(_)) => {
-                    return Err("OpenAI Realtime replay closed while uploading audio".to_string())
+                    return Err("Realtime replay closed while uploading audio".to_string())
                 }
-                Err(error) => return Err(format!("OpenAI Realtime replay failed: {error}")),
+                Err(error) => return Err(format!("Realtime transcription replay failed: {error}")),
                 Ok(_) => {}
             }
         }
     }
-    socket
-        .send(Message::Text(
-            serde_json::json!({ "type": "input_audio_buffer.commit" })
-                .to_string()
-                .into(),
-        ))
-        .await
-        .map_err(|error| format!("Unable to commit OpenAI Realtime replay: {error}"))?;
+    for message in finish_messages(dialect) {
+        socket
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .map_err(|error| format!("Unable to finish realtime transcription replay: {error}"))?;
+    }
 
     tokio::time::timeout(REPLAY_FINAL_TRANSCRIPT_TIMEOUT, async {
+        let mut final_transcript = None;
+        let mut saw_transcript_activity = false;
         while let Some(incoming) = socket.next().await {
             match incoming {
                 Ok(Message::Text(text)) => {
                     let Ok(event) = serde_json::from_str::<Value>(&text) else {
                         continue;
                     };
-                    match parse_server_event(&event) {
-                        ParsedRealtimeServerEvent::Completed { text, .. } => return Ok(text),
+                    match parse_server_event(dialect, &event) {
+                        ParsedRealtimeServerEvent::Interim { text, .. } => {
+                            saw_transcript_activity |= !text.is_empty();
+                        }
+                        ParsedRealtimeServerEvent::Final { text, .. } => {
+                            if !dialect.waits_for_session_finished() {
+                                return Ok(text);
+                            }
+                            final_transcript = Some(text);
+                        }
+                        ParsedRealtimeServerEvent::SessionFinished => {
+                            return finished_session_transcript(
+                                final_transcript,
+                                saw_transcript_activity,
+                            )
+                        }
                         ParsedRealtimeServerEvent::Error(message) => return Err(message),
                         _ => {}
                     }
@@ -338,16 +508,14 @@ pub(super) async fn transcribe_realtime_spool(
                 Ok(Message::Ping(payload)) => socket
                     .send(Message::Pong(payload))
                     .await
-                    .map_err(|error| format!("OpenAI Realtime replay heartbeat failed: {error}"))?,
+                    .map_err(|error| format!("Realtime replay heartbeat failed: {error}"))?,
                 Ok(Message::Close(_)) | Err(_) => {
-                    return Err(
-                        "OpenAI Realtime replay closed before returning a transcript".to_string(),
-                    )
+                    return Err("Realtime replay closed before returning a transcript".to_string())
                 }
                 Ok(_) => {}
             }
         }
-        Err("OpenAI Realtime replay ended before returning a transcript".to_string())
+        Err("Realtime replay ended before returning a transcript".to_string())
     })
     .await
     .map_err(|_| "Timed out waiting for the replayed Realtime transcript".to_string())?
@@ -364,9 +532,7 @@ pub async fn start_realtime_transcription_cmd(
         .load_app_config()
         .map_err(|error| error.to_string())?
         .speech_to_text;
-    if config.api_style != "openai_realtime_transcription" || !config.is_configured() {
-        return Err("OpenAI Live transcription is not fully configured".to_string());
-    }
+    let dialect = RealtimeDialect::from_config(&config)?;
 
     let endpoint = build_realtime_endpoint(
         config.base_url.as_deref().unwrap_or_default(),
@@ -379,7 +545,7 @@ pub async fn start_realtime_transcription_cmd(
         "Authorization",
         format!("Bearer {}", config.api_key.trim())
             .parse()
-            .map_err(|error| format!("Invalid OpenAI authorization header: {error}"))?,
+            .map_err(|error| format!("Invalid realtime authorization header: {error}"))?,
     );
     request.headers_mut().insert(
         "User-Agent",
@@ -390,16 +556,16 @@ pub async fn start_realtime_transcription_cmd(
 
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|error| format!("Unable to connect to OpenAI Realtime: {error}"))?;
+        .map_err(|error| format!("Unable to connect to realtime transcription: {error}"))?;
     let (mut socket_sink, mut socket_stream) = socket.split();
     socket_sink
         .send(Message::Text(
-            build_session_update(&config.model, config.language.as_deref())
+            build_session_update(dialect, &config.model, config.language.as_deref())
                 .to_string()
                 .into(),
         ))
         .await
-        .map_err(|error| format!("Unable to configure OpenAI Realtime: {error}"))?;
+        .map_err(|error| format!("Unable to configure realtime transcription: {error}"))?;
 
     let session_id = Uuid::new_v4().to_string();
     let (command_tx, mut command_rx) = mpsc::channel(REALTIME_COMMAND_BUFFER);
@@ -414,18 +580,18 @@ pub async fn start_realtime_transcription_cmd(
     tokio::spawn(async move {
         let mut pending_final = None;
         let mut terminal_error = None;
+        let mut final_transcript = None;
+        let mut saw_transcript_activity = false;
+        let mut frontend_sequence = 0_u64;
 
         loop {
             tokio::select! {
                 command = command_rx.recv() => {
                     match command {
                         Some(RealtimeCommand::Append(audio_data)) => {
-                            let payload = serde_json::json!({
-                                "type": "input_audio_buffer.append",
-                                "audio": BASE64.encode(audio_data),
-                            });
+                            let payload = append_message(&audio_data);
                             if let Err(error) = socket_sink.send(Message::Text(payload.to_string().into())).await {
-                                terminal_error = Some(format!("Unable to stream audio to OpenAI Realtime: {error}"));
+                                terminal_error = Some(format!("Unable to stream audio to realtime transcription: {error}"));
                                 break;
                             }
                         }
@@ -434,9 +600,14 @@ pub async fn start_realtime_transcription_cmd(
                                 let _ = response.send(Err("Realtime transcription is already finishing".to_string()));
                                 continue;
                             }
-                            let commit = serde_json::json!({ "type": "input_audio_buffer.commit" });
-                            if let Err(error) = socket_sink.send(Message::Text(commit.to_string().into())).await {
-                                let message = format!("Unable to commit OpenAI Realtime audio: {error}");
+                            let mut finish_error = None;
+                            for message in finish_messages(dialect) {
+                                if let Err(error) = socket_sink.send(Message::Text(message.to_string().into())).await {
+                                    finish_error = Some(format!("Unable to finish realtime transcription audio: {error}"));
+                                    break;
+                                }
+                            }
+                            if let Some(message) = finish_error {
                                 let _ = response.send(Err(message.clone()));
                                 terminal_error = Some(message);
                                 break;
@@ -452,7 +623,9 @@ pub async fn start_realtime_transcription_cmd(
                             emit_realtime_event(
                                 &app_handle,
                                 &actor_session_id,
+                                &mut frontend_sequence,
                                 "closed",
+                                None,
                                 None,
                                 None,
                             );
@@ -467,27 +640,51 @@ pub async fn start_realtime_transcription_cmd(
                                 Ok(event) => event,
                                 Err(_) => continue,
                             };
-                            match parse_server_event(&event) {
-                                ParsedRealtimeServerEvent::Delta { item_id, text } => {
-                                    if !text.is_empty() {
+                            match parse_server_event(dialect, &event) {
+                                ParsedRealtimeServerEvent::Interim { utterance_id, text, update } => {
+                                    saw_transcript_activity |= !text.is_empty();
+                                    if update == TranscriptUpdate::ReplaceSnapshot || !text.is_empty() {
                                         emit_realtime_event(
                                             &app_handle,
                                             &actor_session_id,
-                                            "delta",
+                                            &mut frontend_sequence,
+                                            "interim",
                                             Some(&text),
-                                            item_id.as_deref(),
+                                            Some(update),
+                                            utterance_id.as_deref(),
                                         );
                                     }
                                 }
-                                ParsedRealtimeServerEvent::Completed { item_id, text } => {
+                                ParsedRealtimeServerEvent::Final { utterance_id, text } => {
                                     emit_realtime_event(
                                         &app_handle,
                                         &actor_session_id,
-                                        "completed",
+                                        &mut frontend_sequence,
+                                        "final",
                                         Some(&text),
-                                        item_id.as_deref(),
+                                        Some(TranscriptUpdate::ReplaceSnapshot),
+                                        utterance_id.as_deref(),
                                     );
-                                    resolve_pending_final(&mut pending_final, Ok(text));
+                                    if dialect.waits_for_session_finished() {
+                                        final_transcript = Some(text);
+                                    } else {
+                                        resolve_pending_final(&mut pending_final, Ok(text));
+                                        let _ = socket_sink.send(Message::Close(None)).await;
+                                        break;
+                                    }
+                                }
+                                ParsedRealtimeServerEvent::SessionFinished => {
+                                    let transcript = match finished_session_transcript(
+                                        final_transcript.take(),
+                                        saw_transcript_activity,
+                                    ) {
+                                        Ok(transcript) => transcript,
+                                        Err(message) => {
+                                            terminal_error = Some(message);
+                                            break;
+                                        }
+                                    };
+                                    resolve_pending_final(&mut pending_final, Ok(transcript));
                                     let _ = socket_sink.send(Message::Close(None)).await;
                                     break;
                                 }
@@ -500,20 +697,20 @@ pub async fn start_realtime_transcription_cmd(
                         }
                         Some(Ok(Message::Ping(payload))) => {
                             if let Err(error) = socket_sink.send(Message::Pong(payload)).await {
-                                terminal_error = Some(format!("OpenAI Realtime heartbeat failed: {error}"));
+                                terminal_error = Some(format!("Realtime transcription heartbeat failed: {error}"));
                                 break;
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => {
                             terminal_error = Some(if pending_final.is_some() {
-                                "OpenAI Realtime closed before returning a transcript".to_string()
+                                "Realtime transcription closed before returning a transcript".to_string()
                             } else {
-                                "OpenAI Realtime connection closed unexpectedly".to_string()
+                                "Realtime transcription connection closed unexpectedly".to_string()
                             });
                             break;
                         }
                         Some(Err(error)) => {
-                            terminal_error = Some(format!("OpenAI Realtime connection failed: {error}"));
+                            terminal_error = Some(format!("Realtime transcription connection failed: {error}"));
                             break;
                         }
                         Some(Ok(_)) => {}
@@ -526,8 +723,10 @@ pub async fn start_realtime_transcription_cmd(
             emit_realtime_event(
                 &app_handle,
                 &actor_session_id,
+                &mut frontend_sequence,
                 "error",
                 Some(&message),
+                None,
                 None,
             );
             resolve_pending_final(&mut pending_final, Err(message));
@@ -628,9 +827,14 @@ pub async fn cancel_realtime_transcription_cmd(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_realtime_endpoint, build_session_update, parse_server_event, raw_realtime_audio,
-        replay_wav_data_bytes, ParsedRealtimeServerEvent, MAX_AUDIO_CHUNK_BYTES,
+        build_realtime_endpoint, build_session_update, finish_messages,
+        finished_session_transcript, parse_server_event, raw_realtime_audio, replay_wav_data_bytes,
+        transcribe_realtime_spool, ParsedRealtimeServerEvent, RealtimeDialect, TranscriptUpdate,
+        MAX_AUDIO_CHUNK_BYTES,
     };
+    use futures::{SinkExt, StreamExt};
+    use serde_json::Value;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[test]
     fn realtime_audio_requires_bounded_aligned_raw_pcm() {
@@ -665,9 +869,10 @@ mod tests {
         header[36..40].copy_from_slice(b"data");
         header[40..44].copy_from_slice(&128_u32.to_le_bytes());
 
-        assert_eq!(replay_wav_data_bytes(&header).unwrap(), 128);
+        assert_eq!(replay_wav_data_bytes(&header, 24_000).unwrap(), 128);
         header[24..28].copy_from_slice(&16_000_u32.to_le_bytes());
-        assert!(replay_wav_data_bytes(&header).is_err());
+        assert!(replay_wav_data_bytes(&header, 24_000).is_err());
+        assert_eq!(replay_wav_data_bytes(&header, 16_000).unwrap(), 128);
     }
 
     #[test]
@@ -685,8 +890,40 @@ mod tests {
     }
 
     #[test]
+    fn realtime_dialects_reject_models_without_a_verified_wire_contract() {
+        let mut config = nexa_core::app_settings::SpeechToTextConfig {
+            provider: "alibaba_model_studio".to_string(),
+            api_style: "dashscope_realtime_asr".to_string(),
+            api_key: "test-key".to_string(),
+            base_url: Some("https://dashscope.aliyuncs.com/api-ws/v1".to_string()),
+            model: "qwen3-asr-flash".to_string(),
+            ..nexa_core::app_settings::SpeechToTextConfig::default()
+        };
+        assert!(RealtimeDialect::from_config(&config).is_err());
+        config.model = "qwen3-asr-flash-realtime".to_string();
+        assert_eq!(
+            RealtimeDialect::from_config(&config),
+            Ok(RealtimeDialect::DashScope)
+        );
+    }
+
+    #[test]
+    fn session_finish_distinguishes_silence_from_a_missing_final_event() {
+        assert_eq!(finished_session_transcript(None, false), Ok(String::new()));
+        assert!(finished_session_transcript(None, true).is_err());
+        assert_eq!(
+            finished_session_transcript(Some("final text".to_string()), true),
+            Ok("final text".to_string())
+        );
+    }
+
+    #[test]
     fn session_update_uses_live_transcription_pcm_and_language_hints() {
-        let payload = build_session_update("gpt-live-transcribe", Some("zh-cn, en"));
+        let payload = build_session_update(
+            RealtimeDialect::OpenAi,
+            "gpt-live-transcribe",
+            Some("zh-cn, en"),
+        );
         assert_eq!(payload["type"], "session.update");
         assert_eq!(payload["session"]["type"], "transcription");
         assert_eq!(
@@ -706,38 +943,209 @@ mod tests {
             serde_json::json!(["zh-cn", "en"])
         );
         assert!(payload["session"]["audio"]["input"]["turn_detection"].is_null());
+
+        let dashscope = build_session_update(
+            RealtimeDialect::DashScope,
+            "qwen3-asr-flash-realtime",
+            Some("zh"),
+        );
+        assert_eq!(dashscope["session"]["input_audio_format"], "pcm");
+        assert_eq!(dashscope["session"]["sample_rate"], 16_000);
+        assert_eq!(
+            dashscope["session"]["input_audio_transcription"]["language"],
+            "zh"
+        );
+        assert!(dashscope["session"]["turn_detection"].is_null());
+        assert_eq!(finish_messages(RealtimeDialect::OpenAi).len(), 1);
+        assert_eq!(
+            finish_messages(RealtimeDialect::DashScope)[1]["type"],
+            "session.finish"
+        );
     }
 
     #[test]
     fn server_transcript_events_are_normalized_for_the_frontend() {
         assert_eq!(
-            parse_server_event(&serde_json::json!({
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": "item_1",
-                "delta": "hello"
-            })),
-            ParsedRealtimeServerEvent::Delta {
-                item_id: Some("item_1".to_string()),
+            parse_server_event(
+                RealtimeDialect::OpenAi,
+                &serde_json::json!({
+                    "type": "conversation.item.input_audio_transcription.delta",
+                    "item_id": "item_1",
+                    "delta": "hello"
+                })
+            ),
+            ParsedRealtimeServerEvent::Interim {
+                utterance_id: Some("item_1".to_string()),
                 text: "hello".to_string(),
+                update: TranscriptUpdate::AppendDelta,
             }
         );
         assert_eq!(
-            parse_server_event(&serde_json::json!({
-                "type": "conversation.item.input_audio_transcription.completed",
-                "item_id": "item_1",
-                "transcript": "hello world"
-            })),
-            ParsedRealtimeServerEvent::Completed {
-                item_id: Some("item_1".to_string()),
+            parse_server_event(
+                RealtimeDialect::OpenAi,
+                &serde_json::json!({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "item_1",
+                    "transcript": "hello world"
+                })
+            ),
+            ParsedRealtimeServerEvent::Final {
+                utterance_id: Some("item_1".to_string()),
                 text: "hello world".to_string(),
             }
         );
         assert_eq!(
-            parse_server_event(&serde_json::json!({
-                "type": "error",
-                "error": { "message": "bad session" }
-            })),
+            parse_server_event(
+                RealtimeDialect::DashScope,
+                &serde_json::json!({
+                    "type": "conversation.item.input_audio_transcription.text",
+                    "item_id": "item_qwen",
+                    "text": "今天",
+                    "stash": "天气"
+                })
+            ),
+            ParsedRealtimeServerEvent::Interim {
+                utterance_id: Some("item_qwen".to_string()),
+                text: "今天天气".to_string(),
+                update: TranscriptUpdate::ReplaceSnapshot,
+            }
+        );
+        assert_eq!(
+            parse_server_event(
+                RealtimeDialect::DashScope,
+                &serde_json::json!({
+                    "type": "session.finished"
+                })
+            ),
+            ParsedRealtimeServerEvent::SessionFinished
+        );
+        assert_eq!(
+            parse_server_event(
+                RealtimeDialect::OpenAi,
+                &serde_json::json!({
+                    "type": "error",
+                    "error": { "message": "bad session" }
+                })
+            ),
             ParsedRealtimeServerEvent::Error("bad session".to_string())
         );
+    }
+
+    fn canonical_pcm_wav(sample_rate: u32) -> Vec<u8> {
+        let data_bytes = 640_u32;
+        let mut wav = vec![0_u8; 44 + data_bytes as usize];
+        wav[0..4].copy_from_slice(b"RIFF");
+        wav[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav[8..12].copy_from_slice(b"WAVE");
+        wav[12..16].copy_from_slice(b"fmt ");
+        wav[16..20].copy_from_slice(&16_u32.to_le_bytes());
+        wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        wav[22..24].copy_from_slice(&1_u16.to_le_bytes());
+        wav[24..28].copy_from_slice(&sample_rate.to_le_bytes());
+        wav[28..32].copy_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav[32..34].copy_from_slice(&2_u16.to_le_bytes());
+        wav[34..36].copy_from_slice(&16_u16.to_le_bytes());
+        wav[36..40].copy_from_slice(b"data");
+        wav[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        wav
+    }
+
+    #[tokio::test]
+    async fn dashscope_realtime_spool_uses_snapshot_and_session_finish_contract() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock realtime server");
+        let address = listener.local_addr().expect("mock address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept websocket");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upgrade websocket");
+            let mut event_types = Vec::new();
+            while let Some(message) = socket.next().await {
+                let message = message.expect("client websocket message");
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let event: Value = serde_json::from_str(&text).expect("client event json");
+                let event_type = event["type"].as_str().unwrap_or_default().to_string();
+                event_types.push(event_type.clone());
+                if event_type == "session.update" {
+                    assert_eq!(event["session"]["sample_rate"], 16_000);
+                    assert_eq!(event["session"]["input_audio_format"], "pcm");
+                }
+                if event_type == "session.finish" {
+                    socket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "conversation.item.input_audio_transcription.text",
+                                "item_id": "qwen-item",
+                                "text": "实时",
+                                "stash": "转写"
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .expect("send interim");
+                    socket
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "conversation.item.input_audio_transcription.completed",
+                                "item_id": "qwen-item",
+                                "transcript": "实时转写完成"
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await
+                        .expect("send final");
+                    socket
+                        .send(Message::Text(
+                            serde_json::json!({ "type": "session.finished" })
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .expect("send session finish");
+                    break;
+                }
+            }
+            assert_eq!(
+                event_types.first().map(String::as_str),
+                Some("session.update")
+            );
+            assert!(event_types
+                .iter()
+                .any(|value| value == "input_audio_buffer.append"));
+            assert!(event_types
+                .iter()
+                .any(|value| value == "input_audio_buffer.commit"));
+            assert_eq!(
+                event_types.last().map(String::as_str),
+                Some("session.finish")
+            );
+        });
+
+        let wav_path =
+            std::env::temp_dir().join(format!("nexa-qwen-realtime-{}.wav", uuid::Uuid::new_v4()));
+        std::fs::write(&wav_path, canonical_pcm_wav(16_000)).expect("write mock wav");
+        let config = nexa_core::app_settings::SpeechToTextConfig {
+            provider: "alibaba_model_studio".to_string(),
+            api_style: "dashscope_realtime_asr".to_string(),
+            api_key: "test-key".to_string(),
+            base_url: Some(format!("http://{address}/api-ws/v1")),
+            model: "qwen3-asr-flash-realtime".to_string(),
+            language: Some("zh".to_string()),
+            ..nexa_core::app_settings::SpeechToTextConfig::default()
+        };
+
+        let transcript = transcribe_realtime_spool(&wav_path, &config)
+            .await
+            .expect("mock realtime transcript");
+        let _ = std::fs::remove_file(&wav_path);
+        server.await.expect("mock server join");
+
+        assert_eq!(transcript, "实时转写完成");
     }
 }

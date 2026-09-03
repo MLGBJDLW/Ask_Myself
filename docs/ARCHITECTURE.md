@@ -71,6 +71,19 @@ batching, failure, recovery, and wire rules are normative in the
 7. **Bounded presentation.** Streaming and trace surfaces stay responsive,
    preserve reduced-motion behavior, and avoid turning internal diagnostics into
    normal chat content.
+8. **Typed prompt projection.** Conversation history, provider-native replay,
+   controller state, audit records, and the final assistant answer are separate
+   projections. Volatile runtime/controller rows never become durable dialogue;
+   an incompatible legacy tool unit may retain its independent visible assistant
+   answer, but never synthesizes tool names, receipts, or replay diagnostics into
+   an assistant message. A source-aware final-answer guard resets and retries one
+   reserved-header leak, then fails closed without persisting a second leak.
+9. **Truthful speech capability.** Speech-to-text catalogs distinguish complete
+   file input from chunk streams and final-only delivery from interim results.
+   A fast batch engine or rolling-window wrapper is not advertised as realtime;
+   live adapters normalize append deltas versus replaceable snapshots before the
+   composer sees them, and manual composer edits take ownership over provider
+   hypotheses.
 
 ## Normative runtime contracts
 

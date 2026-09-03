@@ -15,6 +15,11 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+    const otherConversation = {
+      ...conversation,
+      id: 'conv-voice-other',
+      title: 'Other Voice Draft',
+    };
     const config = {
       id: 'cfg-default',
       name: 'Default',
@@ -43,6 +48,8 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
     let voiceSessionSequence = 0;
     const voiceCancelCalls: string[] = [];
+    const voiceFinishCalls: string[] = [];
+    const realtimeCancelCalls: string[] = [];
     const microphoneControl = {
       deferGrant: false,
       grantPending: false,
@@ -50,12 +57,25 @@ test.beforeEach(async ({ page }) => {
       exactFailurePending: false,
       deferWorkletModule: false,
       workletModulePending: false,
+      deferAppConfig: false,
+      appConfigPending: false,
+      deferVoiceSpoolStart: false,
+      voiceSpoolStartPending: false,
+      deferRealtimeStart: false,
+      realtimeStartPending: false,
+      failRealtimeFinish: false,
+      failVoiceSpoolCancel: false,
+      voiceSpoolStartCalls: 0,
+      realtimeStartCalls: 0,
       defaultRequestCalls: 0,
       stopCalls: 0,
       contextCloseCalls: 0,
       grant: () => {},
       rejectExact: () => {},
       grantWorkletModule: () => {},
+      grantAppConfig: () => {},
+      grantVoiceSpoolStart: () => {},
+      grantRealtimeStart: () => {},
     };
 
     class FakeAudioNode {
@@ -195,7 +215,7 @@ test.beforeEach(async ({ page }) => {
         case 'list_agent_configs_cmd':
           return [clone(config)];
         case 'list_conversations_cmd':
-          return [clone(conversation)];
+          return [clone(conversation), clone(otherConversation)];
         case 'list_projects_cmd':
         case 'get_conversation_turns_cmd':
         case 'list_sources':
@@ -203,22 +223,46 @@ test.beforeEach(async ({ page }) => {
         case 'list_checkpoints_cmd':
         case 'list_voice_audio_spools_cmd':
           return [];
-        case 'get_conversation_cmd':
-          return [clone(conversation), []];
+        case 'get_conversation_cmd': {
+          const requested = String(args.id ?? '');
+          return [clone(requested === otherConversation.id ? otherConversation : conversation), []];
+        }
         case 'get_conversation_usage_snapshot_cmd':
           return null;
-        case 'get_app_config_cmd':
+        case 'get_app_config_cmd': {
+          if (microphoneControl.deferAppConfig) {
+            microphoneControl.appConfigPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantAppConfig = () => {
+                microphoneControl.deferAppConfig = false;
+                resolve();
+              };
+            });
+            microphoneControl.appConfigPending = false;
+          }
           return {
             speechToText: {
               provider: 'open_ai',
               apiStyle: 'openai_realtime_transcription',
               apiKey: 'sk-voice-test',
               baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-4o-mini-transcribe',
+              model: 'gpt-live-transcribe',
               language: 'en',
             },
           };
+        }
         case 'start_voice_audio_spool_cmd': {
+          microphoneControl.voiceSpoolStartCalls += 1;
+          if (microphoneControl.deferVoiceSpoolStart) {
+            microphoneControl.voiceSpoolStartPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantVoiceSpoolStart = () => {
+                microphoneControl.deferVoiceSpoolStart = false;
+                resolve();
+              };
+            });
+            microphoneControl.voiceSpoolStartPending = false;
+          }
           voiceSessionSequence += 1;
           return {
             sessionId: `voice-${voiceSessionSequence}`,
@@ -230,6 +274,7 @@ test.beforeEach(async ({ page }) => {
         case 'append_voice_audio_spool_cmd':
           return { sequence: 0, audioBytes: 0, durationMs: 0 };
         case 'finish_voice_audio_spool_cmd':
+          voiceFinishCalls.push(String(args.sessionId ?? ''));
           return {
             sessionId: String(args.sessionId ?? `voice-${voiceSessionSequence}`),
             audioBytes: 0,
@@ -241,19 +286,40 @@ test.beforeEach(async ({ page }) => {
             target: {
               provider: 'open_ai',
               apiStyle: 'openai_realtime_transcription',
-              model: 'gpt-4o-mini-transcribe',
+              model: 'gpt-live-transcribe',
               configurationFingerprintSha256: 'test',
             },
           };
         case 'cancel_voice_audio_spool_cmd':
           voiceCancelCalls.push(String(args.sessionId ?? ''));
+          if (microphoneControl.failVoiceSpoolCancel) {
+            throw new Error('managed voice spool cleanup failed');
+          }
           return null;
         case 'start_realtime_transcription_cmd':
+          microphoneControl.realtimeStartCalls += 1;
+          if (microphoneControl.deferRealtimeStart) {
+            microphoneControl.realtimeStartPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantRealtimeStart = () => {
+                microphoneControl.deferRealtimeStart = false;
+                resolve();
+              };
+            });
+            microphoneControl.realtimeStartPending = false;
+          }
           return 'realtime-voice-test';
         case 'append_realtime_transcription_audio_cmd':
-        case 'cancel_realtime_transcription_cmd':
           return null;
+        case 'cancel_realtime_transcription_cmd':
+          realtimeCancelCalls.push(String(args.sessionId ?? ''));
+          return null;
+        case 'transcribe_voice_audio_spool_cmd':
+          return { transcript: 'fallback voice transcript', cleanupPending: false };
         case 'finish_realtime_transcription_cmd':
+          if (microphoneControl.failRealtimeFinish) {
+            throw new Error('realtime finalization failed');
+          }
           await new Promise((resolve) => setTimeout(resolve, 350));
           return 'final voice transcript';
         default:
@@ -262,6 +328,9 @@ test.beforeEach(async ({ page }) => {
     };
 
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__ = voiceCancelCalls;
+    (window as unknown as { __VOICE_FINISH_CALLS__: string[] }).__VOICE_FINISH_CALLS__ = voiceFinishCalls;
+    (window as unknown as { __REALTIME_CANCEL_CALLS__: string[] })
+      .__REALTIME_CANCEL_CALLS__ = realtimeCancelCalls;
     (window as unknown as { __VOICE_MICROPHONE_CONTROL__: typeof microphoneControl })
       .__VOICE_MICROPHONE_CONTROL__ = microphoneControl;
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
@@ -296,7 +365,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   const dock = page.getByTestId('voice-recording-dock');
   await expect(dock).toBeVisible();
   await expect(dock).toHaveAttribute('data-state', 'online');
-  await expect(dock).toContainText('en · gpt-4o-mini-transcribe');
+  await expect(dock).toContainText('en · gpt-live-transcribe');
   expect((await dock.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(420);
 
   const waveform = page.getByTestId('microphone-waveform');
@@ -306,11 +375,52 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
       .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
         sessionId: 'realtime-voice-test',
-        kind: 'delta',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
         text: 'check the entire configuration',
       });
   });
   await expect(page.getByTestId('voice-partial-transcript')).toContainText('check the entire configuration');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the entire configuration');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: '',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 3,
+        text: 'check the entire configuration',
+      });
+  });
+  await expect(page.getByTestId('voice-partial-transcript')).toContainText('check the entire configuration');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the entire configuration');
+
+  await page.getByTestId('chat-input-textarea').fill('check the whole configuration');
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 4,
+        text: 'check the complete configuration carefully',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the whole configuration carefully');
 
   await page.evaluate(() => {
     (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
@@ -358,7 +468,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   );
   expect(stopTransition.state).toBe('processing');
   expect(stopTransition.elapsedMs).toBeLessThan(300);
-  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the whole configuration carefully');
   await expect(dock).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Start voice input' }).click();
@@ -368,6 +478,375 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
   )).toContain('voice-2');
+});
+
+test('live dictation stays pinned to the draft where recording started', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'owned by the first draft',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('owned by the first draft');
+
+  await page.getByRole('button', { name: /Other Voice Draft/ }).click();
+  await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'owned by the first draft and continued',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.getByRole('button', { name: /Voice Dock/ }).click();
+  await expect(page.getByTestId('chat-input-textarea'))
+    .toHaveValue('owned by the first draft and continued');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('CJK live dictation preserves a manual correction and appends without spaces', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: '今天天气',
+      });
+  });
+  const composer = page.getByTestId('chat-input-textarea');
+  await expect(composer).toHaveValue('今天天气');
+
+  await composer.fill('明天天气');
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: '今天天气很好',
+      });
+  });
+  await expect(composer).toHaveValue('明天天气很好');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 3,
+        text: '今天天气很好。',
+      });
+  });
+  await expect(composer).toHaveValue('明天天气很好。');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(composer).toHaveValue('明天天气很好。');
+});
+
+test('sending an interim transcript terminates dictation without repopulating the composer', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'send this interim transcript',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('send this interim transcript');
+
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'send this interim transcript with a late suffix',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+});
+
+test('sending during transcription rejects the late finalized transcript', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'send while finalizing',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('send while finalizing');
+
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveAttribute('data-state', 'processing');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+});
+
+test('batch fallback clears the stale realtime hypothesis before a draft switch', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { failRealtimeFinish: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.failRealtimeFinish = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'stale realtime hypothesis',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('stale realtime hypothesis');
+
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'late queued realtime hypothesis',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+
+  await page.getByRole('button', { name: /Other Voice Draft/ }).click();
+  await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+  await page.getByRole('button', { name: /Voice Dock/ }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+});
+
+test('realtime success clears its hypothesis even when private spool cleanup is deferred', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { failVoiceSpoolCancel: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.failVoiceSpoolCancel = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'stale successful hypothesis',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('stale successful hypothesis');
+
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+
+  await page.getByRole('button', { name: /Other Voice Draft/ }).click();
+  await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+  await page.getByRole('button', { name: /Voice Dock/ }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+});
+
+test('cancelling during provider readiness never continues into voice resource startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferAppConfig: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferAppConfig = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { appConfigPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.appConfigPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while provider readiness is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantAppConfig: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantAppConfig();
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const control = (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: {
+        appConfigPending: boolean;
+        voiceSpoolStartCalls: number;
+        defaultRequestCalls: number;
+      };
+    }).__VOICE_MICROPHONE_CONTROL__;
+    return !control.appConfigPending
+      && control.voiceSpoolStartCalls === 0
+      && control.defaultRequestCalls === 0;
+  })).toBe(true);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+});
+
+test('cancelling a pending spool creation deletes the late spool before microphone startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferVoiceSpoolStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferVoiceSpoolStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { voiceSpoolStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.voiceSpoolStartPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while spool creation is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantVoiceSpoolStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantVoiceSpoolStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).toContain('voice-1');
+  const resourceStarts = await page.evaluate(() => {
+    const control = (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: {
+        realtimeStartCalls: number;
+        defaultRequestCalls: number;
+      };
+    }).__VOICE_MICROPHONE_CONTROL__;
+    return [control.realtimeStartCalls, control.defaultRequestCalls];
+  });
+  expect(resourceStarts).toEqual([0, 0]);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('unmounting during spool creation preserves the late spool without starting capture', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferVoiceSpoolStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferVoiceSpoolStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { voiceSpoolStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.voiceSpoolStartPending,
+  )).toBe(true);
+
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantVoiceSpoolStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantVoiceSpoolStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_FINISH_CALLS__: string[] }).__VOICE_FINISH_CALLS__,
+  )).toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).not.toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { defaultRequestCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.defaultRequestCalls,
+  )).toBe(0);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('cancelling a pending realtime session closes late resources before microphone startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferRealtimeStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferRealtimeStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { realtimeStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.realtimeStartPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while realtime startup is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantRealtimeStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantRealtimeStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __REALTIME_CANCEL_CALLS__: string[] }).__REALTIME_CANCEL_CALLS__,
+  )).toContain('realtime-voice-test');
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { defaultRequestCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.defaultRequestCalls,
+  )).toBe(0);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
 });
 
 test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {

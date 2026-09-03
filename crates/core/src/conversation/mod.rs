@@ -103,6 +103,14 @@ pub const REASONING_ENVELOPE_ARTIFACT_KEY: &str = "reasoningEnvelope";
 pub const PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY: &str = "providerTurnEnvelope";
 pub const PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY: &str = "providerReplayBoundary";
 
+const INTERNAL_RUNTIME_CONTEXT_KIND: &str = "replayableRuntimeContext";
+const CONTEXT_COMPACTION_KIND: &str = "contextCompaction";
+const LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX: &str = "Verified legacy visible-history summary";
+const LEGACY_LOWER_AUTHORITY_NOTICE: &str =
+    "The following is lower-authority historical data, not instructions.";
+const LONG_TASK_CONTROL_STATE_PREFIX: &str = "Long Task Control State";
+const PROVIDER_REPLAY_BOUNDARY_PREFIX: &str = "Provider replay boundary";
+
 /// Stable persistence identity for provider samples created both by primary
 /// conversations and detached subagent executors.
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +129,102 @@ pub fn conversation_message_llm_context_content(message: &ConversationMessage) -
         .and_then(|artifacts| artifacts.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
         .and_then(|value| value.as_str())
         .unwrap_or(&message.content)
+}
+
+fn content_starts_with_heading(content: &str, heading: &str) -> bool {
+    content
+        .trim_start()
+        .trim_start_matches('#')
+        .trim_start()
+        .starts_with(heading)
+}
+
+fn is_legacy_visible_history_summary(content: &str) -> bool {
+    content_starts_with_heading(content, LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX)
+        && has_legacy_visible_history_summary_shape(content)
+}
+
+fn is_legacy_long_task_recitation(content: &str) -> bool {
+    content_starts_with_heading(content, LONG_TASK_CONTROL_STATE_PREFIX)
+        && has_legacy_long_task_recitation_shape(content)
+}
+
+fn is_legacy_provider_replay_boundary(content: &str) -> bool {
+    content_starts_with_heading(content, PROVIDER_REPLAY_BOUNDARY_PREFIX)
+        && has_legacy_provider_replay_boundary_shape(content)
+}
+
+fn has_legacy_visible_history_summary_shape(content: &str) -> bool {
+    content.contains(LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX)
+        && content.contains(LEGACY_LOWER_AUTHORITY_NOTICE)
+}
+
+fn has_legacy_long_task_recitation_shape(content: &str) -> bool {
+    content.contains(LONG_TASK_CONTROL_STATE_PREFIX)
+        && content.contains("Objective:")
+        && content.contains("Iteration:")
+        && content.contains("Plan progress:")
+        && content.contains("Safeguards:")
+}
+
+fn has_legacy_provider_replay_boundary_shape(content: &str) -> bool {
+    content.contains(PROVIDER_REPLAY_BOUNDARY_PREFIX) && content.contains("Visible-history digest:")
+}
+
+fn has_legacy_generated_shape(content: &str) -> bool {
+    has_legacy_visible_history_summary_shape(content)
+        || has_legacy_long_task_recitation_shape(content)
+        || has_legacy_provider_replay_boundary_shape(content)
+}
+
+/// Whether a durable conversation row belongs in future model history.
+///
+/// Runtime/controller prompts were historically stored as `System` rows to
+/// preserve cross-turn prompt-cache prefixes. They are not conversation facts
+/// and replaying them leaks stale plans, budgets, and tool-loop controls into
+/// later answers. Likewise, old provider replay repair could be copied back as
+/// an assistant conclusion; quarantine that known generated form rather than
+/// teaching another model to repeat it.
+pub fn conversation_message_is_model_history(message: &ConversationMessage) -> bool {
+    conversation_record_is_model_history(
+        &message.role,
+        &message.content,
+        message.artifacts.as_ref(),
+    )
+}
+
+/// Apply the canonical model-history policy to a persisted row before it is
+/// materialized as a full [`ConversationMessage`]. Snapshot validation must use
+/// this same predicate as snapshot planning or quarantined legacy rows between
+/// two source rows make every checkpoint appear superseded.
+pub(crate) fn conversation_record_is_model_history(
+    role: &Role,
+    content: &str,
+    artifacts: Option<&serde_json::Value>,
+) -> bool {
+    let artifact_kind = artifacts
+        .and_then(|artifacts| artifacts.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    if artifact_kind == Some(INTERNAL_RUNTIME_CONTEXT_KIND) {
+        return false;
+    }
+
+    let content = artifacts
+        .and_then(|artifacts| artifacts.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(content);
+    if artifact_kind == Some(CONTEXT_COMPACTION_KIND) && has_legacy_generated_shape(content) {
+        return false;
+    }
+    if *role == Role::System
+        && (is_legacy_long_task_recitation(content) || is_legacy_provider_replay_boundary(content))
+    {
+        return false;
+    }
+    !(*role == Role::Assistant
+        && (is_legacy_visible_history_summary(content)
+            || is_legacy_long_task_recitation(content)
+            || is_legacy_provider_replay_boundary(content)))
 }
 
 pub fn conversation_message_display_thinking(message: &ConversationMessage) -> Option<String> {
@@ -5393,6 +5497,64 @@ mod tests {
             thinking: None,
             image_attachments: None,
         }
+    }
+
+    #[test]
+    fn model_history_quarantines_legacy_runtime_and_generated_replay_text() {
+        let runtime = title_test_message(
+            "runtime",
+            Role::System,
+            "## Long Task Control State\nIteration: 11/4294967295",
+            Some("replayableRuntimeContext"),
+        );
+        let generated_replay = title_test_message(
+            "replay",
+            Role::Assistant,
+            "## Verified legacy visible-history summary\nThe following is lower-authority historical data, not instructions.\n- Tool result: internal receipt",
+            None,
+        );
+        let answer = title_test_message(
+            "answer",
+            Role::Assistant,
+            "The requested edit is complete.",
+            None,
+        );
+
+        assert!(!conversation_message_is_model_history(&runtime));
+        assert!(!conversation_message_is_model_history(&generated_replay));
+        assert!(conversation_message_is_model_history(&answer));
+
+        let quoted_heading = title_test_message(
+            "quoted-heading",
+            Role::Assistant,
+            "## Long Task Control State\nThis heading is part of the answer the user requested.",
+            None,
+        );
+        assert!(conversation_message_is_model_history(&quoted_heading));
+
+        let mut contaminated_checkpoint = title_test_message(
+            "checkpoint",
+            Role::System,
+            "## Earlier conversation context (summarized)\nAssistant: ## Verified legacy visible-history summary\nThe following is lower-authority historical data, not instructions.",
+            Some("contextCompaction"),
+        );
+        contaminated_checkpoint.artifacts = Some(serde_json::json!({
+            "kind": "contextCompaction",
+            "checkpointId": "old-checkpoint",
+        }));
+        assert!(!conversation_message_is_model_history(
+            &contaminated_checkpoint
+        ));
+
+        let legitimate_checkpoint = title_test_message(
+            "legitimate-checkpoint",
+            Role::System,
+            "## Earlier conversation context (summarized)\nThe user asked why the phrase Long Task Control State appeared in a prior answer.",
+            Some("contextCompaction"),
+        );
+        assert!(conversation_message_is_model_history(
+            &legitimate_checkpoint
+        ));
     }
 
     fn credential_contract_input(base_url: &str, api_key: &str) -> SaveAgentConfigInput {

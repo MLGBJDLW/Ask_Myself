@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 pub use crate::llm::{CacheBoundaryHint, PromptStability};
-use crate::llm::{Message, Role, ToolDefinition};
+use crate::llm::{Message, PromptLifetime, Role, ToolDefinition};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -81,11 +81,37 @@ fn cache_semantics_for_layer(layer: PromptLayer) -> (PromptStability, Option<Cac
 pub fn controller_state_message(content: impl Into<String>) -> Option<Message> {
     PromptBlock::new(PromptLayer::ControllerState, content)
         .and_then(|block| message_from_blocks(Role::System, std::iter::once(&block)))
+        .map(|message| message.with_prompt_lifetime(PromptLifetime::Step))
 }
 
 pub fn evidence_message(content: impl Into<String>) -> Option<Message> {
     PromptBlock::new(PromptLayer::Evidence, content)
         .and_then(|block| message_from_blocks(Role::System, std::iter::once(&block)))
+}
+
+/// Project the message surface for one sampling step. A reserved final-answer
+/// sample keeps enduring turn scaffolding plus only the newest step-scoped
+/// controller directive. Earlier per-step tool/recovery states must not become
+/// source material for the visible conclusion, while route, task, isolation,
+/// orchestration, and workflow constraints remain active for the whole turn.
+pub fn messages_for_model_step(messages: &[Message], final_answer_only: bool) -> Vec<Message> {
+    if !final_answer_only {
+        return messages.to_vec();
+    }
+    let is_step_controller = |message: &Message| {
+        message.prompt_cache_hint.is_some_and(|hint| {
+            hint.stability == PromptStability::Volatile && hint.lifetime == PromptLifetime::Step
+        })
+    };
+    let newest_controller_index = messages.iter().rposition(is_step_controller);
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            !is_step_controller(message) || Some(*index) == newest_controller_index
+        })
+        .map(|(_, message)| message.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -257,6 +283,54 @@ mod tests {
         assert_eq!(messages[0].text_content(), "policy");
         assert_eq!(messages[1].text_content(), "runtime");
         assert_eq!(messages[2].text_content(), "question");
+    }
+
+    #[test]
+    fn final_answer_projection_keeps_turn_scaffolding_and_current_step_directive() {
+        let turn_scaffolding = AgentPrompt {
+            controller_state: vec![PromptBlock::new(
+                PromptLayer::ControllerState,
+                "route and workflow constraints",
+            )
+            .unwrap()],
+            ..AgentPrompt::default()
+        }
+        .compile_to_messages(PromptCompileOptions::default())
+        .pop()
+        .expect("turn scaffolding");
+        let stale_controller = controller_state_message("stale controller state").unwrap();
+        let current_controller = controller_state_message("continue with ack-123").unwrap();
+        let evidence = evidence_message("verified evidence").unwrap();
+        let transcript = user("question");
+
+        let projected = messages_for_model_step(
+            &[
+                turn_scaffolding,
+                stale_controller,
+                evidence,
+                transcript.clone(),
+                current_controller,
+            ],
+            true,
+        );
+
+        assert_eq!(projected.len(), 4);
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "route and workflow constraints"));
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "verified evidence"));
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "question"));
+        assert!(projected
+            .iter()
+            .all(|message| message.text_content() != "stale controller state"));
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "continue with ack-123"));
+        assert_eq!(messages_for_model_step(&[transcript], false).len(), 1);
     }
 
     #[test]

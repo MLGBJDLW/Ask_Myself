@@ -47,6 +47,22 @@ Provider-native replay envelopes remain backend-only durable state. They are
 never compacted into the public stream payload and are not replaced by this
 presentation protocol.
 
+Provider prompt history is also a projection, not the durable ledger itself.
+Runtime and controller messages marked volatile exist only for the current
+sampling step and are never persisted as conversation transcript. When a
+legacy assistant/tool unit cannot be replayed on the selected provider route,
+the prompt projection drops its calls, results, reasoning, and diagnostics. It
+may retain only a separate non-empty assistant answer that closed that unit; if
+none exists, the unit is omitted. The projection must not manufacture a
+natural-language assistant summary or replay-boundary system message.
+
+Final-answer samples keep only the newest current-step controller directive;
+superseded volatile directives are excluded. If a visible answer nevertheless
+starts a line with a reserved internal replay/controller header that the current
+user did not quote, the sample is contaminated: reset its public stream, retry
+once with tools suppressed, and never persist the discarded text. A second
+contaminated sample fails closed instead of becoming conversation history.
+
 ## Delivery channels
 
 - `agent://run-event` carries only `{ conversationId, runEvent }` to the main

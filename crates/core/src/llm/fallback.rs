@@ -1001,9 +1001,15 @@ mod tests {
         let fallback_history = fallback_history.lock().unwrap();
         let fallback = &fallback_history[0];
         assert!(!fallback.iter().any(|message| message.role == Role::Tool));
-        assert!(fallback
-            .iter()
-            .any(|message| { message.text_content().contains("Provider replay boundary") }));
+        assert!(fallback.iter().any(|message| {
+            message.role == Role::Assistant && message.text_content() == "dependent answer"
+        }));
+        assert!(fallback.iter().all(|message| {
+            !message.text_content().contains("Provider replay boundary")
+                && !message
+                    .text_content()
+                    .contains("Verified legacy visible-history summary")
+        }));
         assert_eq!(
             wrapper.reasoning_replay_policy("ignored"),
             ReasoningReplayPolicy::RequiredOnToolCall
@@ -1054,9 +1060,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         let history = history.lock().unwrap();
         assert!(!history[0].iter().any(|message| message.role == Role::Tool));
+        assert!(history[0].iter().any(|message| {
+            message.role == Role::Assistant && message.text_content() == "dependent answer"
+        }));
         assert!(history[0]
             .iter()
-            .any(|message| message.text_content().contains("Provider replay boundary")));
+            .all(|message| !message.text_content().contains("Provider replay boundary")));
     }
 
     #[tokio::test]
@@ -1193,9 +1202,12 @@ mod tests {
         assert!(!primary_history[0]
             .iter()
             .any(|message| message.role == Role::Tool));
+        assert!(primary_history[0].iter().any(|message| {
+            message.role == Role::Assistant && message.text_content() == "dependent answer"
+        }));
         assert!(primary_history[0]
             .iter()
-            .any(|message| message.text_content().contains("Provider replay boundary")));
+            .all(|message| !message.text_content().contains("Provider replay boundary")));
         let fallback_history = fallback_history.lock().unwrap();
         assert!(fallback_history[0]
             .iter()

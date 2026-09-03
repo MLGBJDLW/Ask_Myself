@@ -238,7 +238,23 @@ impl SpeechToTextConfig {
                             .is_some_and(|value| !value.trim().is_empty())
                 }
             }
-            "openai_transcription" | "openai_realtime_transcription" | "dashscope_asr" => {
+            "openai_realtime_transcription" => {
+                self.model.trim() == "gpt-live-transcribe"
+                    && !self.api_key.trim().is_empty()
+                    && self
+                        .base_url
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+            }
+            "dashscope_realtime_asr" => {
+                self.model.trim() == "qwen3-asr-flash-realtime"
+                    && !self.api_key.trim().is_empty()
+                    && self
+                        .base_url
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+            }
+            "openai_transcription" | "dashscope_asr" => {
                 !self.api_key.trim().is_empty()
                     && !self.model.trim().is_empty()
                     && self
@@ -1343,6 +1359,21 @@ mod tests {
             ..SpeechToTextConfig::default()
         };
         assert!(realtime.is_configured());
+
+        let dashscope_realtime = SpeechToTextConfig {
+            provider: "alibaba_model_studio".to_string(),
+            api_style: "dashscope_realtime_asr".to_string(),
+            api_key: "secret".to_string(),
+            base_url: Some("https://dashscope.aliyuncs.com/api-ws/v1".to_string()),
+            model: "qwen3-asr-flash-realtime".to_string(),
+            ..SpeechToTextConfig::default()
+        };
+        assert!(dashscope_realtime.is_configured());
+        assert!(!SpeechToTextConfig {
+            model: "qwen3-asr-flash".to_string(),
+            ..dashscope_realtime
+        }
+        .is_configured());
 
         let mut sherpa = SpeechToTextConfig {
             api_style: "sherpa_onnx".to_string(),

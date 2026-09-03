@@ -8,7 +8,12 @@ import {
   findSharedProviderCredential,
   providerCredentialScope,
 } from '../../lib/providerCredentials';
-import { defaultSttItem, findSttProviderPreset, STT_PROVIDER_PRESETS } from '../../lib/sttProviderPresets';
+import {
+  defaultSttItem,
+  findSttProviderPreset,
+  STT_PROVIDER_PRESETS,
+  sttRuntimeCapabilities,
+} from '../../lib/sttProviderPresets';
 import type { AgentConfig, AppConfig, SpeechToTextConfig } from '../../types/conversation';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -87,6 +92,7 @@ export function SpeechToTextSettingsPanel({
   const selectedModelDescriptor = activePreset.models.find(
     (model) => model.id === config.model,
   )?.descriptor;
+  const deliversLiveInterim = sttRuntimeCapabilities(config).transcriptDelivery === 'interimAndFinal';
   const isWhisper = config.apiStyle === 'local_whisper';
   const isSherpa = config.apiStyle === 'sherpa_onnx';
   const isZipformer = isSherpa && config.sherpaModelFamily === 'zipformer';
@@ -167,6 +173,13 @@ export function SpeechToTextSettingsPanel({
                     ? t('settings.runtimeNotReady')
                     : t('settings.runtimeChecking')
                 : t('settings.runtimeUnverified')}
+            </Badge>
+            <Badge variant="default" className={deliversLiveInterim
+              ? 'border-accent/25 bg-accent/10 text-accent'
+              : 'border-border/70 bg-surface-1 text-text-tertiary'}>
+              {deliversLiveInterim
+                ? t('settings.sttDeliveryLive')
+                : t('settings.sttDeliveryFinalOnly')}
             </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-text-tertiary">{activePreset.name} · {config.model}</p>
