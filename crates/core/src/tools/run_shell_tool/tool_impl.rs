@@ -868,12 +868,48 @@ pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> b
     false
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadyUrlSource {
+    Explicit,
+    InvocationInference,
+}
+
+#[derive(Clone)]
+struct ReadyUrlCandidate {
+    url: reqwest::Url,
+    source: ReadyUrlSource,
+}
+
+impl ReadyUrlCandidate {
+    fn explicit(url: reqwest::Url) -> Self {
+        Self {
+            url,
+            source: ReadyUrlSource::Explicit,
+        }
+    }
+
+    fn inferred(url: reqwest::Url) -> Self {
+        Self {
+            url,
+            source: ReadyUrlSource::InvocationInference,
+        }
+    }
+
+    fn rejects_preexisting_endpoint(&self) -> bool {
+        self.source == ReadyUrlSource::Explicit
+    }
+}
+
+fn verified_ready_url(candidate: &reqwest::Url, probe_succeeded: bool) -> Option<reqwest::Url> {
+    probe_succeeded.then(|| candidate.clone())
+}
+
 struct ManagedServiceRequest<'a> {
     call_id: &'a str,
     program: &'a str,
     args: &'a [String],
     cwd: &'a Path,
-    requested_ready_url: Option<reqwest::Url>,
+    ready_url_candidate: Option<ReadyUrlCandidate>,
     auto_promoted: bool,
     activity_runtime: ActivityRuntime,
     conversation_id: Option<&'a str>,
@@ -886,20 +922,27 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         program,
         args,
         cwd,
-        requested_ready_url,
+        mut ready_url_candidate,
         auto_promoted,
         activity_runtime,
         conversation_id,
         before_snapshot,
     } = request;
-    if let Some(ready_url) = requested_ready_url.as_ref() {
-        if readiness_probe(ready_url).await {
-            return error_result(
-                call_id,
-                format!(
-                    "ready_url {ready_url} is already responding; choose a free port or check the existing service before starting another process"
-                ),
-            );
+    if let Some(candidate) = ready_url_candidate.as_ref() {
+        if readiness_probe(&candidate.url).await {
+            if candidate.rejects_preexisting_endpoint() {
+                return error_result(
+                    call_id,
+                    format!(
+                        "ready_url {} is already responding; choose a free port or check the existing service before starting another process",
+                        candidate.url
+                    ),
+                );
+            }
+            // An inferred endpoint that was already live cannot be attributed
+            // to the process about to start. Drop the candidate without
+            // rejecting the unrelated command or granting browser authority.
+            ready_url_candidate = None;
         }
     }
 
@@ -975,7 +1018,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     activity_id,
                     process_id,
                     program: program.to_string(),
-                    ready_url: requested_ready_url,
+                    ready_url: None,
                     logs,
                     auto_promoted,
                     started_at,
@@ -1007,11 +1050,13 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         }
 
         let log_snapshot = service_log_snapshot(&logs).await;
-        let ready_url = requested_ready_url
+        let candidate = ready_url_candidate
             .clone()
+            .map(|candidate| candidate.url)
             .or_else(|| discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr));
-        if let Some(ready_url) = ready_url.as_ref() {
-            if readiness_probe(ready_url).await {
+        if let Some(candidate) = candidate.as_ref() {
+            let probe_succeeded = readiness_probe(candidate).await;
+            if let Some(ready_url) = verified_ready_url(candidate, probe_succeeded) {
                 let _ = activity_runtime.append(
                     &activity_id,
                     ActivityEventKind::ReadyUrl,
@@ -1079,7 +1124,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     activity_id: activity_id.clone(),
                     process_id,
                     program: program.to_string(),
-                    ready_url: ready_url.clone(),
+                    ready_url: None,
                     logs,
                     auto_promoted,
                     started_at,
@@ -1096,12 +1141,8 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
             return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
-                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
+                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. No verified loopback URL has been identified yet. The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
                     process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
-                    ready_url.as_ref().map_or_else(
-                        || "No loopback URL has been identified yet; status will keep checking startup logs, or restart with ready_url if the endpoint is selected dynamically.".to_string(),
-                        |url| format!("Ready URL candidate: {url}."),
-                    ),
                 ),
                 is_error: false,
                 artifacts: Some(serde_json::json!({
@@ -1111,7 +1152,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "running",
-                    "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
+                    "readyUrl": null,
                     "program": program,
                     "autoPromoted": auto_promoted,
                     "stdoutTail": log_snapshot.stdout,
@@ -1124,6 +1165,37 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
 
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+async fn promote_discovered_ready_url(
+    service_id: &str,
+    conversation_id: Option<&str>,
+    expected_instance_id: &str,
+    ready_url: &reqwest::Url,
+) -> bool {
+    let mut registry = managed_services().lock().await;
+    let Some(service) = registry.get_mut(service_id) else {
+        return false;
+    };
+    if !belongs_to_conversation(&service.conversation_id, conversation_id)
+        || service.loopback_permit_issuer.service_instance_id != expected_instance_id
+        || !matches!(service.child.try_wait(), Ok(None))
+    {
+        return false;
+    }
+    service.ready_url = Some(ready_url.clone());
+    service.loopback_permit_issuer.refresh();
+    let _ = service.activity_runtime.append(
+        &service.activity_id,
+        ActivityEventKind::ReadyUrl,
+        serde_json::json!({ "url": ready_url.as_str() }),
+    );
+    let _ = service.activity_runtime.transition(
+        &service.activity_id,
+        ActivityState::Ready,
+        serde_json::json!({ "url": ready_url.as_str() }),
+    );
+    true
 }
 
 async fn status_service(
@@ -1169,23 +1241,46 @@ async fn status_service(
         }
         Ok(None) => {
             let log_snapshot = service_log_snapshot(&service.logs).await;
-            if service.ready_url.is_none() {
-                service.ready_url = discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr);
-            }
-            let ready_url = service.ready_url.clone();
+            let ready_url_was_verified = service.ready_url.is_some();
+            let ready_url_candidate = service
+                .ready_url
+                .clone()
+                .or_else(|| discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr));
             let process_id = service.process_id;
             let program = service.program.clone();
             let auto_promoted = service.auto_promoted;
             let uptime_ms = service.started_at.elapsed().as_millis() as u64;
             let activity_id = service.activity_id.clone();
+            let service_instance_id = service.loopback_permit_issuer.service_instance_id.clone();
             let cursor = service
                 .activity_runtime
                 .get(&activity_id)
                 .map(|record| record.last_event_seq);
             drop(registry);
-            let healthy = match ready_url.as_ref() {
+            let candidate_health = match ready_url_candidate.as_ref() {
                 Some(url) => Some(readiness_probe(url).await),
                 None => None,
+            };
+            let promoted = if !ready_url_was_verified && candidate_health == Some(true) {
+                promote_discovered_ready_url(
+                    service_id,
+                    conversation_id,
+                    &service_instance_id,
+                    ready_url_candidate
+                        .as_ref()
+                        .expect("healthy candidate must include a URL"),
+                )
+                .await
+            } else {
+                false
+            };
+            let ready_url = (ready_url_was_verified || promoted)
+                .then(|| ready_url_candidate.clone())
+                .flatten();
+            let healthy = if candidate_health == Some(true) && ready_url.is_none() {
+                None
+            } else {
+                candidate_health
             };
             ToolResult {
                 call_id: call_id.to_string(),
@@ -1525,6 +1620,29 @@ mod review_regression_tests {
     use super::*;
 
     #[test]
+    fn semantically_dead_binding_stays_untrusted_until_a_successful_probe() {
+        let inferred_url = infer_ready_url_from_invocation(
+            "python",
+            &[
+                "-c".to_string(),
+                "def unused(): ThreadingHTTPServer(('127.0.0.1', 8765), H)\nimport time; time.sleep(60)"
+                    .to_string(),
+            ],
+        )
+        .expect("lexical inference may identify only an unverified candidate");
+        let inferred = ReadyUrlCandidate::inferred(inferred_url.clone());
+        let explicit = ReadyUrlCandidate::explicit(inferred_url.clone());
+
+        assert!(!inferred.rejects_preexisting_endpoint());
+        assert!(explicit.rejects_preexisting_endpoint());
+        assert!(verified_ready_url(&inferred_url, false).is_none());
+        assert_eq!(
+            verified_ready_url(&inferred_url, true).as_ref(),
+            Some(&inferred_url)
+        );
+    }
+
+    #[test]
     fn bounded_service_logs_report_when_the_head_is_discarded() {
         let mut output = String::new();
         assert!(!append_bounded_log(&mut output, b"short output"));
@@ -1792,13 +1910,14 @@ impl Tool for RunShellTool {
                 "background run_shell does not accept stdin",
             ));
         }
-        let ready_url = if managed_background {
+        let ready_url_candidate = if managed_background {
             match parsed.ready_url.as_deref() {
                 Some(raw) => match validate_ready_url(raw) {
-                    Ok(url) => Some(url),
+                    Ok(url) => Some(ReadyUrlCandidate::explicit(url)),
                     Err(message) => return Ok(error_result(call_id, message)),
                 },
-                None => infer_ready_url_from_invocation(&canonical_program, &normalized_args),
+                None => infer_ready_url_from_invocation(&canonical_program, &normalized_args)
+                    .map(ReadyUrlCandidate::inferred),
             }
         } else {
             None
@@ -1872,7 +1991,7 @@ impl Tool for RunShellTool {
                 program: &canonical_program,
                 args: &normalized_args,
                 cwd: &cwd_path,
-                requested_ready_url: ready_url,
+                ready_url_candidate,
                 auto_promoted,
                 activity_runtime: activity_runtime.cloned().unwrap_or_default(),
                 conversation_id,
