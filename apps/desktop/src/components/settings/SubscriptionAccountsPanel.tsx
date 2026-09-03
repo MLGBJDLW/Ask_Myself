@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
 import {
   Check,
@@ -132,16 +132,33 @@ export function SubscriptionAccountsPanel() {
   const [action, setAction] = useState<'refresh' | 'browser' | 'deviceCode' | 'cancel' | 'logout' | null>(null);
   const [copied, setCopied] = useState(false);
   const [copilotAction, setCopilotAction] = useState<'refresh' | 'login' | 'cancel' | null>(null);
+  const codexActionRevision = useRef(0);
+  const codexRefreshRevision = useRef(0);
+  const copilotActionRevision = useRef(0);
+  const copilotRefreshRevision = useRef(0);
 
   const refresh = useCallback(async (foreground = false) => {
+    const actionRevision = codexActionRevision.current;
+    const refreshRevision = ++codexRefreshRevision.current;
     if (foreground) setAction('refresh');
     try {
-      setSnapshot(await api.getCodexAccountSnapshot());
+      const next = await api.getCodexAccountSnapshot();
+      if (codexActionRevision.current === actionRevision
+        && codexRefreshRevision.current === refreshRevision) {
+        setSnapshot(next);
+      }
     } catch {
-      toast.error(t('settings.subscriptionRefreshError'));
+      if (codexActionRevision.current === actionRevision
+        && codexRefreshRevision.current === refreshRevision) {
+        toast.error(t('settings.subscriptionRefreshError'));
+      }
     } finally {
-      setLoading(false);
-      if (foreground) setAction(null);
+      if (codexActionRevision.current === actionRevision) {
+        setLoading(false);
+        if (foreground) {
+          setAction((current) => current === 'refresh' ? null : current);
+        }
+      }
     }
   }, [t]);
 
@@ -150,14 +167,27 @@ export function SubscriptionAccountsPanel() {
   }, [refresh]);
 
   const refreshCopilot = useCallback(async (foreground = false) => {
+    const actionRevision = copilotActionRevision.current;
+    const refreshRevision = ++copilotRefreshRevision.current;
     if (foreground) setCopilotAction('refresh');
     try {
-      setCopilotSnapshot(await api.getCopilotAccountSnapshot());
+      const next = await api.getCopilotAccountSnapshot();
+      if (copilotActionRevision.current === actionRevision
+        && copilotRefreshRevision.current === refreshRevision) {
+        setCopilotSnapshot(next);
+      }
     } catch {
-      toast.error(t('settings.copilotRefreshError'));
+      if (copilotActionRevision.current === actionRevision
+        && copilotRefreshRevision.current === refreshRevision) {
+        toast.error(t('settings.copilotRefreshError'));
+      }
     } finally {
-      setCopilotLoading(false);
-      if (foreground) setCopilotAction(null);
+      if (copilotActionRevision.current === actionRevision) {
+        setCopilotLoading(false);
+        if (foreground) {
+          setCopilotAction((current) => current === 'refresh' ? null : current);
+        }
+      }
     }
   }, [t]);
 
@@ -165,8 +195,12 @@ export function SubscriptionAccountsPanel() {
     void refreshCopilot();
   }, [refreshCopilot]);
 
-  useSerialPoll(Boolean(snapshot?.pendingLogin), refresh, LOGIN_POLL_MS);
-  useSerialPoll(Boolean(copilotSnapshot?.loginPending), refreshCopilot, COPILOT_LOGIN_POLL_MS);
+  useSerialPoll(Boolean(snapshot?.pendingLogin) && action === null, refresh, LOGIN_POLL_MS);
+  useSerialPoll(
+    Boolean(copilotSnapshot?.loginPending) && copilotAction === null,
+    refreshCopilot,
+    COPILOT_LOGIN_POLL_MS,
+  );
 
   useEffect(() => {
     if (!snapshot?.lastLogin || snapshot.lastLogin.success) return;
@@ -176,39 +210,60 @@ export function SubscriptionAccountsPanel() {
   }, [snapshot?.lastLogin, t]);
 
   const beginLogin = useCallback(async (kind: 'browser' | 'deviceCode') => {
+    const actionRevision = ++codexActionRevision.current;
     setAction(kind);
     try {
       const pending = await api.startCodexAccountLogin(kind);
+      if (codexActionRevision.current !== actionRevision) return;
       setSnapshot((current) => current ? { ...current, pendingLogin: pending, lastLogin: null } : current);
       await openTrustedUrl(pending.authUrl ?? pending.verificationUrl);
     } catch {
-      toast.error(t('settings.subscriptionLoginError'));
+      if (codexActionRevision.current === actionRevision) {
+        toast.error(t('settings.subscriptionLoginError'));
+      }
     } finally {
-      setAction(null);
+      if (codexActionRevision.current === actionRevision) {
+        setLoading(false);
+        setAction((current) => current === kind ? null : current);
+      }
     }
   }, [t]);
 
   const cancelLogin = useCallback(async (pending: CodexLoginDescriptor) => {
+    const actionRevision = ++codexActionRevision.current;
     setAction('cancel');
     try {
       await api.cancelCodexAccountLogin(pending.loginId);
+      if (codexActionRevision.current !== actionRevision) return;
       setSnapshot((current) => current ? { ...current, pendingLogin: null, lastLogin: null } : current);
     } catch {
-      toast.error(t('settings.subscriptionCancelError'));
+      if (codexActionRevision.current === actionRevision) {
+        toast.error(t('settings.subscriptionCancelError'));
+      }
     } finally {
-      setAction(null);
+      if (codexActionRevision.current === actionRevision) {
+        setAction((current) => current === 'cancel' ? null : current);
+      }
     }
   }, [t]);
 
   const logout = useCallback(async () => {
+    const actionRevision = ++codexActionRevision.current;
     setAction('logout');
     try {
-      setSnapshot(await api.logoutCodexAccount());
-      toast.success(t('settings.subscriptionLoggedOut'));
+      const next = await api.logoutCodexAccount();
+      if (codexActionRevision.current === actionRevision) {
+        setSnapshot(next);
+        toast.success(t('settings.subscriptionLoggedOut'));
+      }
     } catch {
-      toast.error(t('settings.subscriptionLogoutError'));
+      if (codexActionRevision.current === actionRevision) {
+        toast.error(t('settings.subscriptionLogoutError'));
+      }
     } finally {
-      setAction(null);
+      if (codexActionRevision.current === actionRevision) {
+        setAction((current) => current === 'logout' ? null : current);
+      }
     }
   }, [t]);
 
@@ -223,26 +278,39 @@ export function SubscriptionAccountsPanel() {
   }, [t]);
 
   const beginCopilotLogin = useCallback(async () => {
+    const actionRevision = ++copilotActionRevision.current;
     setCopilotAction('login');
     try {
       await api.startCopilotAccountLogin();
+      if (copilotActionRevision.current !== actionRevision) return;
       setCopilotSnapshot((current) => current ? { ...current, loginPending: true, loginError: null } : current);
     } catch {
-      toast.error(t('settings.copilotLoginError'));
+      if (copilotActionRevision.current === actionRevision) {
+        toast.error(t('settings.copilotLoginError'));
+      }
     } finally {
-      setCopilotAction(null);
+      if (copilotActionRevision.current === actionRevision) {
+        setCopilotLoading(false);
+        setCopilotAction((current) => current === 'login' ? null : current);
+      }
     }
   }, [t]);
 
   const cancelCopilotLogin = useCallback(async () => {
+    const actionRevision = ++copilotActionRevision.current;
     setCopilotAction('cancel');
     try {
       await api.cancelCopilotAccountLogin();
+      if (copilotActionRevision.current !== actionRevision) return;
       setCopilotSnapshot((current) => current ? { ...current, loginPending: false, loginError: null } : current);
     } catch {
-      toast.error(t('settings.copilotCancelError'));
+      if (copilotActionRevision.current === actionRevision) {
+        toast.error(t('settings.copilotCancelError'));
+      }
     } finally {
-      setCopilotAction(null);
+      if (copilotActionRevision.current === actionRevision) {
+        setCopilotAction((current) => current === 'cancel' ? null : current);
+      }
     }
   }, [t]);
 

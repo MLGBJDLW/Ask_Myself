@@ -379,6 +379,13 @@ test.beforeEach(async ({ page }) => {
           return [clone(anthropicConfig), clone(qwenConfig)];
         case "get_codex_account_snapshot_cmd": {
           const state = localStorage.getItem("nexa-e2e-codex-account") ?? "signed-in";
+          const oneShotDelayMs = Number(
+            localStorage.getItem("nexa-e2e-codex-next-snapshot-delay-ms") ?? 0,
+          );
+          if (oneShotDelayMs > 0) {
+            localStorage.removeItem("nexa-e2e-codex-next-snapshot-delay-ms");
+            await new Promise((resolve) => window.setTimeout(resolve, oneShotDelayMs));
+          }
           if (state === "pending") {
             const delayMs = Number(localStorage.getItem("nexa-e2e-codex-snapshot-delay-ms") ?? 0);
             if (delayMs > 0) {
@@ -1267,6 +1274,28 @@ test("settings completes the official Codex device-code launch and cancellation 
   await page.evaluate(() => localStorage.removeItem("nexa-e2e-codex-snapshot-delay-ms"));
   await account.getByRole("button", { name: "Cancel" }).click();
   await expect(account.getByTestId("codex-login-pending")).toHaveCount(0);
+});
+
+test("settings discards a stale account refresh after login starts", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("nexa-e2e-codex-account", "signed-out"));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("codex-subscription-account");
+  await expect(account.getByRole("button", { name: "Use device code" })).toBeVisible();
+  await page.evaluate(() => {
+    localStorage.setItem("nexa-e2e-codex-next-snapshot-delay-ms", "600");
+  });
+  await account.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (
+    localStorage.getItem("nexa-e2e-codex-next-snapshot-delay-ms")
+  ))).toBeNull();
+  await account.getByRole("button", { name: "Use device code" }).click();
+  await expect(account.getByTestId("codex-login-pending")).toContainText("ABCD-EFGH");
+
+  await page.waitForTimeout(900);
+  await expect(account.getByTestId("codex-login-pending")).toContainText("ABCD-EFGH");
 });
 
 test("settings verifies GitHub Copilot subscription models and quota through the SDK", async ({ page }) => {
