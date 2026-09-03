@@ -51,27 +51,65 @@ fn visible_line_start(mut line: &str) -> &str {
     }
 }
 
+fn strip_markdown_link_destination(text: &str) -> Option<&str> {
+    let destination = text.strip_prefix("](")?;
+    let mut depth = 1_u32;
+    let mut escaped = false;
+    for (offset, character) in destination.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&destination[offset + character.len_utf8()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn has_visible_heading_boundary(mut remainder: &str) -> bool {
+    remainder = remainder.trim();
+    loop {
+        if remainder.is_empty() {
+            return true;
+        }
+        if remainder.starts_with("](") {
+            let Some(after_destination) = strip_markdown_link_destination(remainder) else {
+                return false;
+            };
+            remainder = after_destination.trim_start();
+            continue;
+        }
+
+        let Some(first) = remainder.chars().next() else {
+            return true;
+        };
+        if matches!(first, '*' | '_' | '`' | '~' | ']' | ')' | '#') {
+            remainder = remainder[first.len_utf8()..].trim_start();
+            continue;
+        }
+
+        // A colon introduces controller payload on the same line. Any other
+        // following character belongs to a longer user-facing heading.
+        return matches!(first, ':' | '：');
+    }
+}
+
 fn line_starts_with_marker(line: &str, marker: &str) -> bool {
     let visible_line = visible_line_start(line);
     let Some(prefix) = visible_line.get(..marker.len()) else {
         return false;
     };
-    if !prefix.eq_ignore_ascii_case(marker) {
-        return false;
-    }
-
-    let remainder = visible_line[marker.len()..].trim();
-    if remainder.is_empty() {
-        return true;
-    }
-
-    // A reserved heading may end in Markdown closing tokens or introduce its
-    // controller payload with a colon. A following word belongs to ordinary
-    // prose (for example, "Provider replay boundary conditions") and must not
-    // be treated as an internal marker.
-    let after_markdown_closers = remainder.trim_start_matches(['*', '_', '`', '~', ']', ')', '#']);
-    after_markdown_closers.is_empty()
-        || matches!(after_markdown_closers.chars().next(), Some(':' | '：'))
+    prefix.eq_ignore_ascii_case(marker)
+        && has_visible_heading_boundary(&visible_line[marker.len()..])
 }
 
 fn contains_marker(text: &str, marker: &str) -> bool {
@@ -211,6 +249,28 @@ mod tests {
         assert_eq!(
             scope.contamination_marker("## **Long Task Control State**: iteration 11"),
             Some("Long Task Control State")
+        );
+    }
+
+    #[test]
+    fn detects_reserved_headers_used_as_markdown_links() {
+        let scope = scope(&["give me the result"]);
+        for answer in [
+            "## [Long Task Control State](https://example.com)",
+            "## [**Provider replay boundary**](https://example.com/docs_(v2)): digest",
+            "## [Verified legacy visible-history summary](https://example.com/a\\)b)",
+        ] {
+            assert_eq!(
+                scope.contamination_marker(answer).is_some(),
+                true,
+                "a link destination must not hide the reserved heading: {answer}"
+            );
+        }
+        assert_eq!(
+            scope.contamination_marker(
+                "## [Long Task Control State](https://example.com) machines\nUser-facing design notes."
+            ),
+            None
         );
     }
 
