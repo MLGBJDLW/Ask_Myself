@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use nexa_core::browser_runtime::{
@@ -19,6 +19,78 @@ const SYNTHETIC_DNS_CANARIES: [&str; 2] = ["www.google.com", "github.com"];
 struct SyntheticDnsProbeCache {
     checked_at: Instant,
     verified: bool,
+}
+
+#[derive(Debug, Default)]
+struct SyntheticDnsProbeState {
+    cached: Option<SyntheticDnsProbeCache>,
+    in_flight: bool,
+}
+
+#[derive(Debug, Default)]
+struct SyntheticDnsProbeCoordinator {
+    state: Mutex<SyntheticDnsProbeState>,
+    completed: Condvar,
+}
+
+fn fresh_synthetic_dns_result(cached: Option<SyntheticDnsProbeCache>) -> Option<bool> {
+    let cached = cached?;
+    let ttl = if cached.verified {
+        SYNTHETIC_DNS_POSITIVE_CACHE_TTL
+    } else {
+        SYNTHETIC_DNS_NEGATIVE_CACHE_TTL
+    };
+    (cached.checked_at.elapsed() < ttl).then_some(cached.verified)
+}
+
+impl SyntheticDnsProbeCoordinator {
+    fn complete(&self, verified: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cached = Some(SyntheticDnsProbeCache {
+                checked_at: Instant::now(),
+                verified,
+            });
+            state.in_flight = false;
+            self.completed.notify_all();
+        }
+    }
+
+    fn verify_with<F>(self: &Arc<Self>, timeout: Duration, probe: F) -> bool
+    where
+        F: FnOnce() -> bool + Send + 'static,
+    {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return false,
+        };
+        if let Some(verified) = fresh_synthetic_dns_result(state.cached) {
+            return verified;
+        }
+
+        if !state.in_flight {
+            state.in_flight = true;
+            drop(state);
+            let coordinator = Arc::clone(self);
+            let spawned = std::thread::Builder::new()
+                .name("nexa-synthetic-dns-probe".to_string())
+                .spawn(move || coordinator.complete(probe()));
+            if spawned.is_err() {
+                self.complete(false);
+            }
+            state = match self.state.lock() {
+                Ok(state) => state,
+                Err(_) => return false,
+            };
+        }
+
+        match self
+            .completed
+            .wait_timeout_while(state, timeout, |state| state.in_flight)
+        {
+            Ok((state, _)) => fresh_synthetic_dns_result(state.cached).unwrap_or(false),
+            Err(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,37 +180,10 @@ fn probe_synthetic_dns_mode() -> bool {
 /// into the synthetic range. Results are briefly cached so the SOCKS boundary
 /// can enforce this on every connection without repeatedly blocking on DNS.
 pub(super) fn verified_synthetic_dns_mode() -> bool {
-    static CACHE: OnceLock<Mutex<Option<SyntheticDnsProbeCache>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(cached) = cache.lock() {
-        if let Some(cached) = *cached {
-            let ttl = if cached.verified {
-                SYNTHETIC_DNS_POSITIVE_CACHE_TTL
-            } else {
-                SYNTHETIC_DNS_NEGATIVE_CACHE_TTL
-            };
-            if cached.checked_at.elapsed() < ttl {
-                return cached.verified;
-            }
-        }
-    }
-
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let _ = std::thread::Builder::new()
-        .name("nexa-synthetic-dns-probe".to_string())
-        .spawn(move || {
-            let _ = sender.send(probe_synthetic_dns_mode());
-        });
-    let verified = receiver
-        .recv_timeout(SYNTHETIC_DNS_PROBE_TIMEOUT)
-        .unwrap_or(false);
-    if let Ok(mut cached) = cache.lock() {
-        *cached = Some(SyntheticDnsProbeCache {
-            checked_at: Instant::now(),
-            verified,
-        });
-    }
-    verified
+    static COORDINATOR: OnceLock<Arc<SyntheticDnsProbeCoordinator>> = OnceLock::new();
+    COORDINATOR
+        .get_or_init(|| Arc::new(SyntheticDnsProbeCoordinator::default()))
+        .verify_with(SYNTHETIC_DNS_PROBE_TIMEOUT, probe_synthetic_dns_mode)
 }
 
 pub fn form_navigation_approval_key(url: &Url) -> String {
@@ -359,6 +404,8 @@ pub fn navigation_preapproved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
 
     #[test]
     fn fake_ip_mode_requires_independent_canary_evidence() {
@@ -383,5 +430,82 @@ mod tests {
             google,
             vec!["127.0.0.1".parse().unwrap(), github[0]],
         ]));
+    }
+
+    #[test]
+    fn synthetic_dns_probe_is_single_flight_across_concurrent_connections() {
+        const CALLERS: usize = 16;
+        let coordinator = Arc::new(SyntheticDnsProbeCoordinator::default());
+        let callers_ready = Arc::new(Barrier::new(CALLERS + 1));
+        let release_probe = Arc::new(Barrier::new(2));
+        let probe_calls = Arc::new(AtomicUsize::new(0));
+        let (probe_started, wait_for_probe) = std::sync::mpsc::sync_channel(1);
+        let mut callers = Vec::new();
+
+        for _ in 0..CALLERS {
+            let coordinator = Arc::clone(&coordinator);
+            let callers_ready = Arc::clone(&callers_ready);
+            let release_probe = Arc::clone(&release_probe);
+            let probe_calls = Arc::clone(&probe_calls);
+            let probe_started = probe_started.clone();
+            callers.push(std::thread::spawn(move || {
+                callers_ready.wait();
+                coordinator.verify_with(Duration::from_secs(1), move || {
+                    probe_calls.fetch_add(1, Ordering::SeqCst);
+                    let _ = probe_started.send(());
+                    release_probe.wait();
+                    true
+                })
+            }));
+        }
+
+        callers_ready.wait();
+        wait_for_probe
+            .recv_timeout(Duration::from_secs(1))
+            .expect("one shared probe should start");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
+        release_probe.wait();
+        assert!(callers.into_iter().all(|caller| caller.join().unwrap()));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
+
+        assert!(coordinator.verify_with(Duration::from_millis(10), || false));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn timed_out_synthetic_dns_probe_does_not_spawn_another_worker() {
+        let coordinator = Arc::new(SyntheticDnsProbeCoordinator::default());
+        let release_probe = Arc::new((Mutex::new(false), Condvar::new()));
+        let probe_calls = Arc::new(AtomicUsize::new(0));
+        let (probe_started, wait_for_probe) = std::sync::mpsc::sync_channel(1);
+        let worker_release = Arc::clone(&release_probe);
+        let worker_calls = Arc::clone(&probe_calls);
+
+        assert!(
+            !coordinator.verify_with(Duration::from_millis(100), move || {
+                worker_calls.fetch_add(1, Ordering::SeqCst);
+                let _ = probe_started.send(());
+                let (released, completed) = &*worker_release;
+                let released = released.lock().unwrap();
+                drop(
+                    completed
+                        .wait_while(released, |released| !*released)
+                        .unwrap(),
+                );
+                true
+            })
+        );
+        wait_for_probe
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the shared probe should have started before timing out");
+        assert!(!coordinator.verify_with(Duration::from_millis(25), || false));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
+
+        let (released, completed) = &*release_probe;
+        *released.lock().unwrap() = true;
+        completed.notify_all();
+        assert!(coordinator.verify_with(Duration::from_secs(1), || false));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 1);
     }
 }
