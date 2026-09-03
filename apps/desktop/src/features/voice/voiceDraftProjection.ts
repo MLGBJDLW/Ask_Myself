@@ -38,20 +38,50 @@ export function startVoiceDraftSession(draft: string): VoiceDraftSession {
   };
 }
 
-function safeProviderExtension(previous: string, next: string): string {
-  if (next.startsWith(previous)) return next.slice(previous.length);
+const MIN_SAFE_ANCHOR_CHARACTERS = 3;
+const MAX_SAFE_ANCHOR_CHARACTERS = 256;
 
-  // A snapshot provider may revise earlier words while adding a new tail. Once
-  // the user owns the draft, use only a sufficiently long trailing anchor from
-  // the previous provider snapshot; never copy the revised prefix back over the
-  // user's correction.
-  const previousCharacters = Array.from(previous);
-  for (let start = 0; start <= previousCharacters.length - 3; start += 1) {
-    const suffix = previousCharacters.slice(start).join('');
+function extensionAfterTrailingAnchor(source: string, next: string): string | null {
+  const sourceCharacters = Array.from(source);
+  const earliestStart = Math.max(0, sourceCharacters.length - MAX_SAFE_ANCHOR_CHARACTERS);
+  for (
+    let start = earliestStart;
+    start <= sourceCharacters.length - MIN_SAFE_ANCHOR_CHARACTERS;
+    start += 1
+  ) {
+    const suffix = sourceCharacters.slice(start).join('');
     const anchor = next.lastIndexOf(suffix);
     if (anchor >= 0) return next.slice(anchor + suffix.length);
   }
-  return '';
+  return null;
+}
+
+function joinsInsideWord(draft: string, extension: string): boolean {
+  const draftCharacters = Array.from(draft);
+  const previous = draftCharacters[draftCharacters.length - 1] ?? '';
+  const next = Array.from(extension)[0] ?? '';
+  return /[\p{L}\p{M}\p{N}]/u.test(previous) && /[\p{L}\p{M}\p{N}]/u.test(next);
+}
+
+function safeProviderExtension(
+  previousProviderText: string,
+  nextProviderText: string,
+  userDraft: string,
+  voiceSpanStart: number,
+): string {
+  // Prefer an anchor in the text the user actually owns. This handles edits at
+  // the end of a provider snapshot ("light" -> "lights") without appending the
+  // provider's old suffix a second time.
+  const userVoiceTail = userDraft.slice(Math.min(voiceSpanStart, userDraft.length));
+  const userAligned = extensionAfterTrailingAnchor(userVoiceTail, nextProviderText);
+  if (userAligned !== null && !joinsInsideWord(userDraft, userAligned)) return userAligned;
+
+  // If a snapshot provider revised an earlier word, a trailing anchor in the
+  // prior snapshot may still prove a genuinely new tail. Refuse an alphanumeric
+  // fragment because it could be the remainder of a word the user corrected.
+  const providerAligned = extensionAfterTrailingAnchor(previousProviderText, nextProviderText);
+  if (providerAligned === null || joinsInsideWord(userDraft, providerAligned)) return '';
+  return providerAligned;
 }
 
 /**
@@ -91,7 +121,10 @@ export function projectVoiceTranscript(
     nextDraft = `${draft.slice(0, session.spanStart)}${replacement}${draft.slice(session.spanEnd)}`;
     spanEnd = session.spanStart + replacement.length;
   } else {
-    nextDraft = appendSpeech(draft, safeProviderExtension(session.providerText, providerText));
+    nextDraft = appendSpeech(
+      draft,
+      safeProviderExtension(session.providerText, providerText, draft, session.spanStart),
+    );
     spanEnd = nextDraft.length;
   }
 
@@ -99,7 +132,7 @@ export function projectVoiceTranscript(
     draft: nextDraft,
     session: final ? null : {
       providerText,
-      spanStart: userOwned ? draft.length : session.spanStart,
+      spanStart: session.spanStart,
       spanEnd,
       projectedDraft: nextDraft,
       userOwned,

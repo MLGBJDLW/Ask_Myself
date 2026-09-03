@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
@@ -11,7 +11,12 @@ interface VoiceInputButtonProps {
   disabled?: boolean;
 }
 
-export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButtonProps) {
+export interface VoiceInputButtonHandle {
+  cancelCapture: () => void;
+}
+
+export const VoiceInputButton = forwardRef<VoiceInputButtonHandle, VoiceInputButtonProps>(
+function VoiceInputButton({ onDictationEvent, disabled }, ref) {
   const { t } = useTranslation();
   const voiceRuntime = useVoiceInputRuntime();
   const {
@@ -39,6 +44,8 @@ export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButto
   } =
     voiceRuntime;
   const lastPublishedPartialRef = useRef('');
+  const captureGenerationRef = useRef(0);
+  const discardAutomaticResultRef = useRef(false);
 
   useEffect(() => {
     if (partialTranscript === lastPublishedPartialRef.current) return;
@@ -46,11 +53,19 @@ export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButto
     onDictationEvent({ kind: 'interim', text: partialTranscript });
   }, [onDictationEvent, partialTranscript]);
 
-  const handleCancel = useCallback(() => {
+  const cancelCapture = useCallback(() => {
+    captureGenerationRef.current += 1;
+    discardAutomaticResultRef.current = true;
     cancelRecording();
     lastPublishedPartialRef.current = '';
+  }, [cancelRecording]);
+
+  const handleCancel = useCallback(() => {
+    cancelCapture();
     onDictationEvent({ kind: 'cancel' });
-  }, [cancelRecording, onDictationEvent]);
+  }, [cancelCapture, onDictationEvent]);
+
+  useImperativeHandle(ref, () => ({ cancelCapture }), [cancelCapture]);
 
   // Cancel on Escape
   useEffect(() => {
@@ -92,6 +107,10 @@ export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButto
 
   useEffect(() => {
     if (!automaticResult) return;
+    if (discardAutomaticResultRef.current) {
+      clearAutomaticResult();
+      return;
+    }
     if (automaticResult.status === 'transcribed') {
       onDictationEvent({ kind: 'final', text: automaticResult.text });
     } else if (automaticResult.status === 'error') {
@@ -112,9 +131,12 @@ export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButto
       // Establish composer ownership before microphone startup can race a fast
       // provider interim event back to React.
       lastPublishedPartialRef.current = '';
+      discardAutomaticResultRef.current = false;
       onDictationEvent({ kind: 'start' });
     }
+    const captureGeneration = captureGenerationRef.current;
     const result = await toggleRecording();
+    if (captureGeneration !== captureGenerationRef.current) return;
     if (result.status === 'transcribed') {
       lastPublishedPartialRef.current = '';
       onDictationEvent({ kind: 'final', text: result.text });
@@ -199,4 +221,4 @@ export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButto
       </button>
     </div>
   );
-}
+});

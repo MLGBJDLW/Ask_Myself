@@ -942,6 +942,38 @@ test('manual correction still accepts a proven tail after provider prefix revisi
   assert.equal(projection.draft, 'check the whole configuration carefully');
 });
 
+test('manual correction at the transcript tail does not duplicate a provider suffix', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'turn on the light',
+  });
+
+  projection = applyVoiceDictationEvent('turn on the lights', projection.session, {
+    kind: 'interim',
+    text: 'turn on the lights in kitchen',
+  });
+
+  assert.equal(projection.draft, 'turn on the lights in kitchen');
+});
+
+test('manual word replacement rejects an unproven provider word fragment', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: 'turn on the light',
+  });
+
+  projection = applyVoiceDictationEvent('turn on the lamp', projection.session, {
+    kind: 'interim',
+    text: 'turn on the lights in kitchen',
+  });
+
+  assert.equal(projection.draft, 'turn on the lamp');
+});
+
 test('voice cancel removes only an untouched provider-owned span', () => {
   const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
   let untouched = applyVoiceDictationEvent('prefix', null, { kind: 'start' });

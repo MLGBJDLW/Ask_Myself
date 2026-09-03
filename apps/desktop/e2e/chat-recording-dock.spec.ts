@@ -344,6 +344,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
         text: 'check the entire configuration',
       });
   });
+  await expect(page.getByTestId('voice-partial-transcript')).toContainText('check the entire configuration');
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the entire configuration');
 
   await page.getByTestId('chat-input-textarea').fill('check the whole configuration');
@@ -455,6 +456,64 @@ test('live dictation stays pinned to the draft where recording started', async (
     .toHaveValue('owned by the first draft and continued');
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('sending an interim transcript terminates dictation without repopulating the composer', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'send this interim transcript',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('send this interim transcript');
+
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'send this interim transcript with a late suffix',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+});
+
+test('sending during transcription rejects the late finalized transcript', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'send while finalizing',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('send while finalizing');
+
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveAttribute('data-state', 'processing');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
 });
 
 test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {

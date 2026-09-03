@@ -43,7 +43,7 @@ import {
   getPastedImageDataUrl,
 } from "../../lib/chatAttachments";
 import { CheckpointMenu } from "./CheckpointMenu";
-import { VoiceInputButton } from "./VoiceInputButton";
+import { VoiceInputButton, type VoiceInputButtonHandle } from "./VoiceInputButton";
 import {
   applyVoiceDictationEvent,
   type VoiceDraftSession,
@@ -415,6 +415,7 @@ export function ChatInput({
   const [sendPending, setSendPending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const voiceInputRef = useRef<VoiceInputButtonHandle>(null);
   const slashOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const slashListRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
@@ -577,30 +578,24 @@ export function ChatInput({
   const handleVoiceDictationEvent = useCallback((event: Parameters<typeof applyVoiceDictationEvent>[2]) => {
     if (event.kind === 'start') voiceDraftOwnerKeyRef.current = draftKey;
     const ownerKey = voiceDraftOwnerKeyRef.current ?? draftKey;
-    if (ownerKey !== draftKey) {
-      const ownerDraft = draftsRef.current[ownerKey] ?? readChatInputDraft(ownerKey);
-      const projected = applyVoiceDictationEvent(
-        ownerDraft.value,
-        voiceDraftSessionRef.current,
-        event,
-      );
-      voiceDraftSessionRef.current = projected.session;
-      voiceDraftOwnerKeyRef.current = projected.session ? ownerKey : null;
-      if (projected.draft !== ownerDraft.value) {
-        const nextOwnerDraft = { ...ownerDraft, value: projected.draft };
-        draftsRef.current[ownerKey] = cloneDraftState(nextOwnerDraft);
-        persistChatInputDraft(ownerKey, nextOwnerDraft);
-      }
-      return;
-    }
-    setValue((current) => {
-      const projected = applyVoiceDictationEvent(current, voiceDraftSessionRef.current, event);
-      voiceDraftSessionRef.current = projected.session;
-      voiceDraftOwnerKeyRef.current = projected.session ? ownerKey : null;
-      if (projected.draft !== current) persistDraft(projected.draft);
-      return projected.draft;
-    });
-  }, [persistDraft]);
+    const ownerDraft = draftsRef.current[ownerKey] ?? readChatInputDraft(ownerKey);
+    const projected = applyVoiceDictationEvent(
+      ownerDraft.value,
+      voiceDraftSessionRef.current,
+      event,
+    );
+    voiceDraftSessionRef.current = projected.session;
+    voiceDraftOwnerKeyRef.current = projected.session ? ownerKey : null;
+    if (projected.draft === ownerDraft.value) return;
+
+    // Keep projection side effects outside React state updaters. Development
+    // Strict Mode may invoke an updater twice; mutating the session ref there
+    // can incorrectly transfer ownership after an empty replacement snapshot.
+    const nextOwnerDraft = { ...ownerDraft, value: projected.draft };
+    draftsRef.current[ownerKey] = cloneDraftState(nextOwnerDraft);
+    persistChatInputDraft(ownerKey, nextOwnerDraft);
+    if (ownerKey === draftKey) setValue(projected.draft);
+  }, [draftKey]);
 
   useEffect(() => {
     const previousKey = previousDraftKeyRef.current;
@@ -934,6 +929,12 @@ export function ChatInput({
   }, [t]);
 
   const clearDraft = useCallback(() => {
+    // A sent or locally consumed draft is a terminal boundary for dictation.
+    // Stop the capture before clearing composer ownership so late provider
+    // events cannot repopulate the next draft.
+    voiceInputRef.current?.cancelCapture();
+    voiceDraftSessionRef.current = null;
+    voiceDraftOwnerKeyRef.current = null;
     clearChatInputDraft(draftKey);
     draftsRef.current[draftKey] = { value: "", attachments: [], activeSlashCommandId: null };
     resetInputHistoryNavigation();
@@ -2050,6 +2051,7 @@ export function ChatInput({
           </div>
 
           <VoiceInputButton
+            ref={voiceInputRef}
             onDictationEvent={handleVoiceDictationEvent}
             disabled={attachmentLocked}
           />
