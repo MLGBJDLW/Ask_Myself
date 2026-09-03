@@ -1043,10 +1043,17 @@ fn ensure_skill_canonical_names(conn: &rusqlite::Connection) -> Result<(), CoreE
         .map(|bundle| {
             (
                 bundle.slug.to_ascii_lowercase(),
-                format!("builtin:{}", bundle.slug),
+                format!("built-in skill `{}`", bundle.slug),
             )
         })
         .collect::<std::collections::HashMap<_, _>>();
+    for (id, _, _) in &skills {
+        if let Some(owner) = used.insert(id.to_ascii_lowercase(), format!("database ID `{id}`")) {
+            return Err(CoreError::Conflict(format!(
+                "Skill database ID `{id}` conflicts with {owner}"
+            )));
+        }
+    }
     let mut updates = Vec::new();
     for (id, display_name, stored) in skills {
         let needs_backfill = stored
@@ -1062,9 +1069,9 @@ fn ensure_skill_canonical_names(conn: &rusqlite::Connection) -> Result<(), CoreE
             canonical_name = migration_canonical_skill_name(&display_name, &id);
             key = canonical_name.to_ascii_lowercase();
         }
-        if let Some(owner) = used.insert(key, id.clone()) {
+        if let Some(owner) = used.insert(key, format!("skill `{id}`")) {
             return Err(CoreError::Conflict(format!(
-                "Skills {owner} and {id} resolve to the same canonical name `{canonical_name}`; rename one before migration"
+                "Skill `{id}` canonical name `{canonical_name}` conflicts with {owner}; rename it before migration"
             )));
         }
         if needs_backfill {
@@ -1169,7 +1176,17 @@ impl Database {
                 existing_id.clone()
             }
             None => {
-                let new_id = Uuid::new_v4().to_string();
+                let new_id = loop {
+                    let candidate = Uuid::new_v4().to_string();
+                    let reserved: bool = conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ?1 OR canonical_name = ?1 COLLATE NOCASE)",
+                        rusqlite::params![&candidate],
+                        |row| row.get(0),
+                    )?;
+                    if !reserved {
+                        break candidate;
+                    }
+                };
                 let canonical_name = derive_canonical_skill_name(&input.name)
                     .unwrap_or_else(|_| migration_canonical_skill_name(&input.name, &new_id));
                 if builtin_skill_bundles()
@@ -1181,13 +1198,13 @@ impl Database {
                     )));
                 }
                 let conflict: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM skills WHERE canonical_name = ?1 COLLATE NOCASE)",
+                    "SELECT EXISTS(SELECT 1 FROM skills WHERE canonical_name = ?1 COLLATE NOCASE OR id = ?1)",
                     rusqlite::params![&canonical_name],
                     |row| row.get(0),
                 )?;
                 if conflict {
                     return Err(CoreError::Conflict(format!(
-                        "A skill with canonical name `{canonical_name}` is already installed"
+                        "Skill canonical name `{canonical_name}` is reserved by an installed skill identity"
                     )));
                 }
                 input.content =

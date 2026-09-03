@@ -1022,6 +1022,36 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_names_cannot_reuse_installed_database_ids() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Existing identity".into(),
+                description: "Owns its database ID".into(),
+                content: "Keep disk identities disjoint.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+
+        let error = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: installed.id.clone(),
+                description: "Must not claim another skill ID".into(),
+                content: "Do not share a materialized directory.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("installed skill identity"));
+        assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_portable_skill_paths_do_not_rewrite_prefixed_skill_names() {
         let root = tempdir().unwrap();
         let report = root.path().join("report");
