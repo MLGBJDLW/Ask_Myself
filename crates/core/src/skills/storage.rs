@@ -307,13 +307,43 @@ pub(crate) fn portable_user_skill_content(
     candidate_dirs.dedup();
     for directory in candidate_dirs {
         let native = directory.to_string_lossy();
-        portable = portable.replace(native.as_ref(), "<SKILL_DIR>");
+        portable = replace_skill_directory_reference(&portable, native.as_ref());
         let slash_normalized = native.replace('\\', "/");
         if slash_normalized != native.as_ref() {
-            portable = portable.replace(&slash_normalized, "<SKILL_DIR>");
+            portable = replace_skill_directory_reference(&portable, &slash_normalized);
         }
     }
     portable
+}
+
+fn replace_skill_directory_reference(content: &str, directory: &str) -> String {
+    if directory.is_empty() {
+        return content.to_string();
+    }
+
+    let mut output = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for (start, _) in content.match_indices(directory) {
+        if start < cursor {
+            continue;
+        }
+        let end = start + directory.len();
+        let has_path_boundary = content[end..]
+            .chars()
+            .next()
+            .is_none_or(|character| matches!(character, '/' | '\\'));
+        if !has_path_boundary {
+            continue;
+        }
+        output.push_str(&content[cursor..start]);
+        output.push_str("<SKILL_DIR>");
+        cursor = end;
+    }
+    if cursor == 0 {
+        return content.to_string();
+    }
+    output.push_str(&content[cursor..]);
+    output
 }
 
 pub fn materialize_user_skill_to_disk(

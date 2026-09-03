@@ -42,6 +42,7 @@ pub use prompt::{
     build_loaded_skills_section_with_budget, build_skills_section, build_skills_section_for_query,
     build_skills_section_for_query_with_budget, export_skill_to_md,
 };
+pub(crate) use registry::split_frontmatter;
 pub use registry::{load_builtin_skills, parse_skill_file};
 pub use resource_access::{
     find_skill_resource, normalize_resource_metadata, normalize_skill_resource_path,
@@ -1018,6 +1019,33 @@ mod tests {
             assert!(validate_canonical_skill_name(&skill.canonical_name).is_ok());
             assert_ne!(skill.id, skill.canonical_name);
         }
+    }
+
+    #[test]
+    fn test_portable_skill_paths_do_not_rewrite_prefixed_skill_names() {
+        let root = tempdir().unwrap();
+        let report = root.path().join("report");
+        let reporting_tool = root.path().join("reporting-tool");
+        let content = format!(
+            "Run `{}/scripts/render.py`; compare `{}/references/check.md`; root {}",
+            report.to_string_lossy(),
+            reporting_tool.to_string_lossy(),
+            report.to_string_lossy()
+        );
+
+        let portable = super::storage::portable_user_skill_content(
+            &content,
+            "report-id",
+            "report",
+            Some(root.path()),
+        );
+
+        assert!(portable.contains("<SKILL_DIR>/scripts/render.py"));
+        assert!(portable.contains(&format!(
+            "{}/references/check.md",
+            reporting_tool.to_string_lossy()
+        )));
+        assert!(portable.ends_with("<SKILL_DIR>"));
     }
 
     #[test]
