@@ -214,7 +214,7 @@ test.beforeEach(async ({ page }) => {
               apiStyle: 'openai_realtime_transcription',
               apiKey: 'sk-voice-test',
               baseUrl: 'https://api.openai.com/v1',
-              model: 'gpt-4o-mini-transcribe',
+              model: 'gpt-live-transcribe',
               language: 'en',
             },
           };
@@ -241,7 +241,7 @@ test.beforeEach(async ({ page }) => {
             target: {
               provider: 'open_ai',
               apiStyle: 'openai_realtime_transcription',
-              model: 'gpt-4o-mini-transcribe',
+              model: 'gpt-live-transcribe',
               configurationFingerprintSha256: 'test',
             },
           };
@@ -296,7 +296,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   const dock = page.getByTestId('voice-recording-dock');
   await expect(dock).toBeVisible();
   await expect(dock).toHaveAttribute('data-state', 'online');
-  await expect(dock).toContainText('en · gpt-4o-mini-transcribe');
+  await expect(dock).toContainText('en · gpt-live-transcribe');
   expect((await dock.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(420);
 
   const waveform = page.getByTestId('microphone-waveform');
@@ -306,11 +306,51 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
       .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
         sessionId: 'realtime-voice-test',
-        kind: 'delta',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
         text: 'check the entire configuration',
       });
   });
   await expect(page.getByTestId('voice-partial-transcript')).toContainText('check the entire configuration');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the entire configuration');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: '',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 3,
+        text: 'check the entire configuration',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the entire configuration');
+
+  await page.getByTestId('chat-input-textarea').fill('check the whole configuration');
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 4,
+        text: 'check the complete configuration carefully',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the whole configuration carefully');
 
   await page.evaluate(() => {
     (window as unknown as { __SET_VOICE_TRACK_MUTED__: (muted: boolean) => void })
@@ -358,7 +398,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   );
   expect(stopTransition.state).toBe('processing');
   expect(stopTransition.elapsedMs).toBeLessThan(300);
-  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('check the whole configuration carefully');
   await expect(dock).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Start voice input' }).click();

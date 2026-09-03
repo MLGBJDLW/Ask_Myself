@@ -24,6 +24,7 @@ function endpointUrl(value: string | null | undefined): URL | null {
 
 const TRUSTED_CREDENTIAL_ENDPOINTS: Readonly<Record<string, string>> = {
   'https://dashscope.aliyuncs.com/compatible-mode/v1': 'alibaba-model-studio:beijing',
+  'https://dashscope.aliyuncs.com/api-ws/v1': 'alibaba-model-studio:beijing',
   'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation': 'alibaba-model-studio:beijing',
   'https://dashscope.aliyuncs.com/api/v1/services/audio/tts': 'alibaba-model-studio:beijing',
   'https://dashscope-intl.aliyuncs.com/compatible-mode/v1': 'alibaba-model-studio:singapore',

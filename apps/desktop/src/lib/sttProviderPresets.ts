@@ -16,6 +16,33 @@ export interface SttCatalogItem {
   descriptor: ModelDescriptor;
 }
 
+export type SttAudioInput = 'completeFile' | 'chunkStream';
+export type SttTranscriptDelivery = 'finalOnly' | 'interimAndFinal';
+export type SttInterimSemantics = 'none' | 'appendDelta' | 'replaceSnapshot';
+export type SttFinalization = 'endOfFile' | 'clientCommit' | 'sessionFinish';
+export type SttTransport = 'httpMultipart' | 'httpJson' | 'websocket' | 'localOffline';
+
+export interface SttRuntimeCapabilities {
+  audioInput: SttAudioInput;
+  transcriptDelivery: SttTranscriptDelivery;
+  interimSemantics: SttInterimSemantics;
+  finalization: SttFinalization;
+  transport: SttTransport;
+  sampleRateHz: number;
+  /** Upstream engine fact; not a claim that Nexa's selected adapter is live. */
+  engineStreamingCapable: boolean;
+}
+
+export const FINAL_ONLY_STT_CAPABILITIES: SttRuntimeCapabilities = {
+  audioInput: 'completeFile',
+  transcriptDelivery: 'finalOnly',
+  interimSemantics: 'none',
+  finalization: 'endOfFile',
+  transport: 'httpMultipart',
+  sampleRateHz: 16_000,
+  engineStreamingCapable: false,
+};
+
 export interface SttProviderPreset {
   id: string;
   name: string;
@@ -26,6 +53,7 @@ export interface SttProviderPreset {
   baseUrl: string;
   sherpaModelFamily?: string;
   description: string;
+  transcription: SttRuntimeCapabilities;
   models: SttCatalogItem[];
 }
 
@@ -62,4 +90,23 @@ export function findSttProviderPreset(config: {
     && preset.apiStyle === config.apiStyle
     && (preset.sherpaModelFamily ?? null) === sherpaFamily,
   ) ?? null;
+}
+
+/** Product/runtime capability for a concrete saved configuration. Unknown and
+ * custom endpoints are final-only until an explicit dialect proves otherwise. */
+export function sttRuntimeCapabilities(config: {
+  provider: string;
+  apiStyle: string;
+  model?: string;
+  sherpaModelFamily?: string | null;
+} | null | undefined): SttRuntimeCapabilities {
+  const preset = findSttProviderPreset(config);
+  if (!preset) return FINAL_ONLY_STT_CAPABILITIES;
+  if (
+    preset.transcription.transcriptDelivery === 'interimAndFinal'
+    && !preset.models.some((model) => model.id === config?.model?.trim())
+  ) {
+    return FINAL_ONLY_STT_CAPABILITIES;
+  }
+  return preset.transcription;
 }

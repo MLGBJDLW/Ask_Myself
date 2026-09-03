@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import * as api from '../../lib/api';
 import { getModelStatus, invalidate as invalidateModelStatus } from '../../lib/modelStatusCache';
 import type { SpeechToTextConfig } from '../../types/conversation';
+import { sttRuntimeCapabilities } from '../../lib/sttProviderPresets';
 import type { VideoConfig, WhisperModel } from '../../types/video';
 import { useMicrophoneDevices } from './useMicrophoneDevices';
 import { useVoiceRecorder } from './useVoiceRecorder';
@@ -40,6 +41,15 @@ export interface VoiceRecordingContext {
   realtime: boolean;
 }
 
+export interface RealtimeTranscriptEvent {
+  sessionId: string;
+  sequence: number;
+  kind: 'interim' | 'final' | 'error' | 'closed';
+  update?: 'appendDelta' | 'replaceSnapshot';
+  text?: string;
+  utteranceId?: string;
+}
+
 export type VoiceRuntimeActionResult =
   | { status: 'started' }
   | { status: 'empty' }
@@ -66,19 +76,36 @@ export function normalizeTranscript(text: string): string {
   return text.trim();
 }
 
+export function projectRealtimeTranscriptText(
+  current: string,
+  event: RealtimeTranscriptEvent,
+): string {
+  if (event.kind === 'final') {
+    return replaceBoundedVoicePartial(event.text ?? '');
+  }
+  if (event.kind !== 'interim') return current;
+  if (event.update === 'replaceSnapshot' && typeof event.text === 'string') {
+    return replaceBoundedVoicePartial(event.text);
+  }
+  return event.text ? appendBoundedVoicePartial(current, event.text) : current;
+}
+
 export function isRealtimeTranscriptionConfig(
   config?: SpeechToTextConfig | null,
 ): boolean {
-  return config?.apiStyle === 'openai_realtime_transcription';
+  const capabilities = sttRuntimeCapabilities(config);
+  return capabilities.audioInput === 'chunkStream'
+    && capabilities.transcriptDelivery === 'interimAndFinal';
 }
 
 export function isSpeechToTextConfigured(config?: SpeechToTextConfig | null): boolean {
   if (!config || config.apiStyle === 'local_whisper') return true;
-  if (
-    config.apiStyle === 'openai_transcription'
-    || config.apiStyle === 'openai_realtime_transcription'
-    || config.apiStyle === 'dashscope_asr'
-  ) {
+  if (config.apiStyle === 'openai_realtime_transcription'
+    || config.apiStyle === 'dashscope_realtime_asr') {
+    return isRealtimeTranscriptionConfig(config)
+      && Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim());
+  }
+  if (config.apiStyle === 'openai_transcription' || config.apiStyle === 'dashscope_asr') {
     return Boolean(config.apiKey.trim() && config.baseUrl?.trim() && config.model.trim());
   }
   if (config.apiStyle === 'sherpa_onnx') {
@@ -154,6 +181,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const realtimeUploadErrorRef = useRef<string | null>(null);
   const realtimeAcceptingAudioRef = useRef(false);
   const realtimeFinishPromiseRef = useRef<Promise<VoiceRuntimeActionResult> | null>(null);
+  const realtimeEventSequenceRef = useRef(0);
   const realtimeSafeStopHandlerRef = useRef<() => void>(() => {});
   const voiceSpoolUploadRef = useRef<NativeVoiceSpoolUpload | null>(null);
   const pendingVoiceSpoolIdsRef = useRef<string[]>([]);
@@ -166,17 +194,12 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<{
-      sessionId: string;
-      kind: 'delta' | 'completed' | 'error' | 'closed';
-      text?: string;
-      itemId?: string;
-    }>('speech-to-text:realtime', (event) => {
+    void listen<RealtimeTranscriptEvent>('speech-to-text:realtime', (event) => {
       if (event.payload.sessionId !== realtimeSessionIdRef.current) return;
-      if (event.payload.kind === 'delta' && event.payload.text) {
-        setPartialTranscript((current) => appendBoundedVoicePartial(current, event.payload.text!));
-      } else if (event.payload.kind === 'completed') {
-        setPartialTranscript(replaceBoundedVoicePartial(event.payload.text ?? ''));
+      if (event.payload.sequence <= realtimeEventSequenceRef.current) return;
+      realtimeEventSequenceRef.current = event.payload.sequence;
+      if (event.payload.kind === 'interim' || event.payload.kind === 'final') {
+        setPartialTranscript((current) => projectRealtimeTranscriptText(current, event.payload));
       } else if (event.payload.kind === 'error') {
         realtimeUploadErrorRef.current = event.payload.text ?? 'Realtime transcription failed';
         realtimeSafeStopHandlerRef.current();
@@ -376,6 +399,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         if (voiceSpool) void voiceSpool.cancel();
         if (realtimeSessionIdRef.current === sessionId) {
           realtimeSessionIdRef.current = null;
+          realtimeEventSequenceRef.current = 0;
           realtimeUploadQueueRef.current?.cancel();
           realtimeUploadQueueRef.current = null;
           realtimeUploadErrorRef.current = null;
@@ -454,6 +478,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       } finally {
         if (realtimeSessionIdRef.current === sessionId) {
           realtimeSessionIdRef.current = null;
+          realtimeEventSequenceRef.current = 0;
           realtimeUploadQueueRef.current = null;
           realtimeUploadErrorRef.current = null;
         }
@@ -475,6 +500,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     if (!sessionId && !realtimeAcceptingAudioRef.current) return;
     realtimeAcceptingAudioRef.current = false;
     realtimeSessionIdRef.current = null;
+    realtimeEventSequenceRef.current = 0;
     realtimeUploadQueueRef.current?.cancel('Realtime provider degraded to native spool');
     realtimeUploadQueueRef.current = null;
     realtimeUploadErrorRef.current = 'Realtime provider degraded to native spool';
@@ -602,7 +628,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       const appConfig = await api.getAppConfig();
       const speechConfig = appConfig.speechToText;
       const realtime = isRealtimeTranscriptionConfig(speechConfig);
-      const sampleRate = realtime ? 24_000 : 16_000;
+      const sampleRate = sttRuntimeCapabilities(speechConfig).sampleRateHz;
       const handleCaptureStateChange = (state: 'capturing' | 'interrupted') => {
         if (state === 'interrupted') {
           setTransportState('buffering');
@@ -639,10 +665,11 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         try {
           sessionId = await api.startRealtimeTranscription();
           realtimeSessionIdRef.current = sessionId;
+          realtimeEventSequenceRef.current = 0;
           realtimeUploadQueueRef.current = new BoundedAudioUploadQueue(
             (chunk) => api.appendRealtimeTranscriptionAudio(sessionId!, chunk),
             {
-              bytesPerSecond: 24_000 * 2,
+              bytesPerSecond: sampleRate * 2,
               maxBufferedDurationMs: 2_000,
               onRejected: () => degradeRealtimeToSpool(true),
               onError: (error) => {
@@ -661,7 +688,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         }
         try {
           await recorder.startRecording({
-            targetSampleRate: 24_000,
+            targetSampleRate: sampleRate,
             onPcmChunk: (chunk) => {
               const accepted = upload.enqueue(chunk);
               if (sessionId) queueRealtimeAudio(sessionId, chunk);
@@ -674,6 +701,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           void microphones.refresh();
         } catch (error) {
           realtimeSessionIdRef.current = null;
+          realtimeEventSequenceRef.current = 0;
           realtimeAcceptingAudioRef.current = false;
           realtimeUploadQueueRef.current?.cancel();
           realtimeUploadQueueRef.current = null;
@@ -685,7 +713,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       } else {
         try {
           await recorder.startRecording({
-            targetSampleRate: 16_000,
+            targetSampleRate: sampleRate,
             onPcmChunk: (chunk) => upload.enqueue(chunk),
             onCaptureIssue: handleCaptureIssue,
             onCaptureStateChange: handleCaptureStateChange,
@@ -779,6 +807,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     recorder.cancelRecording();
     const sessionId = realtimeSessionIdRef.current;
     realtimeSessionIdRef.current = null;
+    realtimeEventSequenceRef.current = 0;
     realtimeAcceptingAudioRef.current = false;
     realtimeUploadQueueRef.current?.cancel();
     realtimeUploadQueueRef.current = null;

@@ -9,10 +9,16 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 }
 
 const alibabaChat = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const alibabaRealtimeSpeech = 'https://dashscope.aliyuncs.com/api-ws/v1';
 assertEqual(
   providerCredentialScope('alibaba_model_studio', alibabaChat),
   'alibaba-model-studio:beijing',
   'canonical Alibaba chat endpoint should share its regional credential',
+);
+assertEqual(
+  providerCredentialScope('alibaba_model_studio', alibabaRealtimeSpeech),
+  'alibaba-model-studio:beijing',
+  'canonical Alibaba realtime speech should share the Beijing credential',
 );
 
 for (const endpoint of [

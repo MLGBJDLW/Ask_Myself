@@ -8,6 +8,7 @@
     "local": true,
     "baseUrl": "",
     "description": "Existing private Candle Whisper transcription. Works offline but is slower to initialize on CPU.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "localOffline", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "whisper-local", "name": "Model selected under Video & Audio", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
@@ -20,6 +21,7 @@
     "requiresApiKey": true,
     "baseUrl": "https://api.openai.com/v1",
     "description": "Hosted GPT-4o transcription with strong multilingual accuracy and fast short-form dictation.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "httpMultipart", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "gpt-4o-mini-transcribe", "name": "GPT-4o Mini Transcribe (Fast)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "gpt-4o-transcribe", "name": "GPT-4o Transcribe" },
@@ -34,6 +36,7 @@
     "requiresApiKey": true,
     "baseUrl": "https://api.openai.com/v1",
     "description": "Streams 24 kHz PCM microphone audio over a Realtime session and returns transcript deltas while you speak.",
+    "transcription": { "audioInput": "chunkStream", "transcriptDelivery": "interimAndFinal", "interimSemantics": "appendDelta", "finalization": "clientCommit", "transport": "websocket", "sampleRateHz": 24000, "engineStreamingCapable": true },
     "models": [
       { "id": "gpt-live-transcribe", "name": "GPT Live Transcribe", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
@@ -46,6 +49,7 @@
     "requiresApiKey": true,
     "baseUrl": "https://api.groq.com/openai/v1",
     "description": "OpenAI-compatible, very low-latency multilingual Whisper inference.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "httpMultipart", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "whisper-large-v3-turbo", "name": "Whisper Large V3 Turbo (Fast)", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "whisper-large-v3", "name": "Whisper Large V3 (Accurate)" }
@@ -58,9 +62,23 @@
     "apiStyle": "dashscope_asr",
     "requiresApiKey": true,
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "description": "Qwen3-ASR-Flash recognition through Alibaba Cloud Model Studio, with Mandarin, Cantonese, English, Japanese, Korean, and broad multilingual coverage.",
+    "description": "Final-only Qwen3-ASR-Flash recognition through Alibaba Cloud Model Studio. This HTTP model waits for a complete recording; choose Qwen Realtime for live text.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "httpJson", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "qwen3-asr-flash", "name": "Qwen3 ASR Flash", "source": "curated", "productReadiness": "known", "recommended": true }
+    ]
+  },
+  {
+    "id": "alibaba-qwen-realtime",
+    "name": "Alibaba Qwen Realtime Transcription",
+    "provider": "alibaba_model_studio",
+    "apiStyle": "dashscope_realtime_asr",
+    "requiresApiKey": true,
+    "baseUrl": "https://dashscope.aliyuncs.com/api-ws/v1",
+    "description": "Native WebSocket transcription with replaceable live hypotheses while you speak. Uses 16 kHz mono PCM and a final session handshake.",
+    "transcription": { "audioInput": "chunkStream", "transcriptDelivery": "interimAndFinal", "interimSemantics": "replaceSnapshot", "finalization": "sessionFinish", "transport": "websocket", "sampleRateHz": 16000, "engineStreamingCapable": true },
+    "models": [
+      { "id": "qwen3-asr-flash-realtime", "name": "Qwen3 ASR Flash Realtime", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
   },
   {
@@ -71,6 +89,7 @@
     "requiresApiKey": true,
     "baseUrl": "https://api.siliconflow.cn/v1",
     "description": "OpenAI-compatible hosted transcription in China using SenseVoice or TeleSpeech ASR.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "httpMultipart", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "FunAudioLLM/SenseVoiceSmall", "name": "SenseVoice Small", "source": "curated", "productReadiness": "known", "recommended": true },
       { "id": "TeleAI/TeleSpeechASR", "name": "TeleSpeech ASR" }
@@ -86,6 +105,7 @@
     "baseUrl": "",
     "sherpaModelFamily": "sense_voice",
     "description": "Fast offline Chinese, English, Japanese, Korean, and Cantonese recognition with inverse text normalization.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "localOffline", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "sense_voice", "name": "SenseVoice", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
@@ -99,7 +119,8 @@
     "local": true,
     "baseUrl": "",
     "sherpaModelFamily": "zipformer",
-    "description": "Streaming-capable local Zipformer models using encoder, decoder, and joiner files.",
+    "description": "Zipformer models support online decoding, but Nexa's current external CLI integration is final-only. Live local partials require a managed OnlineRecognizer runtime.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "localOffline", "sampleRateHz": 16000, "engineStreamingCapable": true },
     "models": [
       { "id": "zipformer", "name": "Streaming Zipformer", "source": "curated", "productReadiness": "known", "recommended": true }
     ]
@@ -112,6 +133,7 @@
     "requiresApiKey": true,
     "baseUrl": "",
     "description": "Any compatible /audio/transcriptions endpoint with an editable base URL and model ID.",
+    "transcription": { "audioInput": "completeFile", "transcriptDelivery": "finalOnly", "interimSemantics": "none", "finalization": "endOfFile", "transport": "httpMultipart", "sampleRateHz": 16000, "engineStreamingCapable": false },
     "models": [
       { "id": "whisper-1", "name": "Custom model", "source": "curated", "productReadiness": "known", "recommended": false }
     ]

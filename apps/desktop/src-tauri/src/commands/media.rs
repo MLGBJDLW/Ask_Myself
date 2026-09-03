@@ -397,7 +397,7 @@ pub async fn transcribe_voice_audio_spool_cmd(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "openai_realtime_transcription" => {
+        "openai_realtime_transcription" | "dashscope_realtime_asr" => {
             super::realtime_transcription::transcribe_realtime_spool(&wav_path, &speech_config)
                 .await
         }
