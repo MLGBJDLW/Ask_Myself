@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 
 import * as api from '../../lib/api';
@@ -189,7 +189,19 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   const voiceSpoolFinishPromiseRef = useRef<Promise<VoiceRuntimeActionResult> | null>(null);
   const voiceSpoolSafeStopHandlerRef = useRef<() => void>(() => {});
   const startInProgressRef = useRef(false);
+  const startupGenerationRef = useRef(0);
+  const startupAbortModeRef = useRef<'active' | 'cancel' | 'preserve'>('active');
   const discardInProgressRef = useRef(false);
+
+  // Invalidate an unresolved high-level startup synchronously with unmount.
+  // Passive cleanup can run after a just-resolved IPC promise has already
+  // advanced into microphone capture.
+  useLayoutEffect(() => () => {
+    if (startupAbortModeRef.current === 'active') {
+      startupAbortModeRef.current = 'preserve';
+    }
+    startupGenerationRef.current += 1;
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -636,18 +648,31 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       return finishActiveRecording();
     }
 
+    const startupGeneration = startupGenerationRef.current + 1;
+    startupGenerationRef.current = startupGeneration;
+    startupAbortModeRef.current = 'active';
+    const startupIsCurrent = () => startupGenerationRef.current === startupGeneration;
+    const releaseStaleUpload = (upload: NativeVoiceSpoolUpload) => {
+      const release = startupAbortModeRef.current === 'preserve'
+        ? upload.preserveAcceptedAudio()
+        : upload.cancel();
+      void release.catch(() => {});
+    };
     startInProgressRef.current = true;
     setStarting(true);
     try {
       const pendingVoiceSpoolId = pendingVoiceSpoolIdsRef.current[0];
       if (pendingVoiceSpoolId) {
-        return await transcribeManagedVoiceSpool(pendingVoiceSpoolId);
+        const result = await transcribeManagedVoiceSpool(pendingVoiceSpoolId);
+        return startupIsCurrent() ? result : { status: 'empty' };
       }
 
       const readinessError = await ensureSpeechProviderReadyForRecording();
+      if (!startupIsCurrent()) return { status: 'empty' };
       if (readinessError) return readinessError;
 
       const appConfig = await api.getAppConfig();
+      if (!startupIsCurrent()) return { status: 'empty' };
       const speechConfig = appConfig.speechToText;
       const realtime = isRealtimeTranscriptionConfig(speechConfig);
       const sampleRate = sttRuntimeCapabilities(speechConfig).sampleRateHz;
@@ -677,6 +702,10 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         sampleRate,
         () => voiceSpoolSafeStopHandlerRef.current(),
       );
+      if (!startupIsCurrent()) {
+        releaseStaleUpload(upload);
+        return { status: 'empty' };
+      }
       voiceSpoolUploadRef.current = upload;
       setRuntimeNotice(null);
       setAutomaticResult(null);
@@ -686,6 +715,12 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         let sessionId: string | null = null;
         try {
           sessionId = await api.startRealtimeTranscription();
+          if (!startupIsCurrent()) {
+            if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+            releaseStaleUpload(upload);
+            void api.cancelRealtimeTranscription(sessionId);
+            return { status: 'empty' };
+          }
           realtimeSessionIdRef.current = sessionId;
           realtimeEventSequenceRef.current = 0;
           realtimeUploadQueueRef.current = new BoundedAudioUploadQueue(
@@ -704,6 +739,12 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           realtimeAcceptingAudioRef.current = true;
           setTransportState('online');
         } catch (error) {
+          if (!startupIsCurrent()) {
+            if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+            releaseStaleUpload(upload);
+            if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+            return { status: 'empty' };
+          }
           realtimeUploadErrorRef.current = String(error);
           setTransportState('degraded');
           setRuntimeNotice('realtime_deferred');
@@ -720,14 +761,31 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
             onCaptureStateChange: handleCaptureStateChange,
             onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
           });
+          if (!startupIsCurrent()) {
+            recorder.cancelRecording();
+            if (realtimeSessionIdRef.current === sessionId) {
+              realtimeSessionIdRef.current = null;
+              realtimeEventSequenceRef.current = 0;
+              realtimeUploadQueueRef.current?.cancel('Cancelled stale voice startup');
+              realtimeUploadQueueRef.current = null;
+              realtimeUploadErrorRef.current = null;
+            }
+            if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+            releaseStaleUpload(upload);
+            if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+            return { status: 'empty' };
+          }
           void microphones.refresh();
         } catch (error) {
-          realtimeSessionIdRef.current = null;
-          realtimeEventSequenceRef.current = 0;
+          if (realtimeSessionIdRef.current === sessionId) {
+            realtimeSessionIdRef.current = null;
+            realtimeEventSequenceRef.current = 0;
+            realtimeUploadQueueRef.current?.cancel();
+            realtimeUploadQueueRef.current = null;
+            realtimeUploadErrorRef.current = null;
+          }
           realtimeAcceptingAudioRef.current = false;
-          realtimeUploadQueueRef.current?.cancel();
-          realtimeUploadQueueRef.current = null;
-          voiceSpoolUploadRef.current = null;
+          if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
           void upload.cancel();
           if (sessionId) void api.cancelRealtimeTranscription(sessionId);
           throw error;
@@ -741,15 +799,22 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
             onCaptureStateChange: handleCaptureStateChange,
             onCaptureReady: ({ label }) => setActiveMicrophoneLabel(label),
           });
+          if (!startupIsCurrent()) {
+            recorder.cancelRecording();
+            if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
+            releaseStaleUpload(upload);
+            return { status: 'empty' };
+          }
           void microphones.refresh();
         } catch (error) {
-          voiceSpoolUploadRef.current = null;
+          if (voiceSpoolUploadRef.current === upload) voiceSpoolUploadRef.current = null;
           void upload.cancel();
           throw error;
         }
       }
       return { status: 'started' };
     } catch (error) {
+      if (!startupIsCurrent()) return { status: 'empty' };
       setRecordingContext(null);
       setActiveMicrophoneLabel(null);
       setTransportState('local');
@@ -826,6 +891,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
   }, []);
 
   const cancelRecording = useCallback(() => {
+    startupAbortModeRef.current = 'cancel';
+    startupGenerationRef.current += 1;
     recorder.cancelRecording();
     const sessionId = realtimeSessionIdRef.current;
     realtimeSessionIdRef.current = null;

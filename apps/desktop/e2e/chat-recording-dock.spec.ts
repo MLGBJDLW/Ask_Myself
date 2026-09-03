@@ -48,6 +48,8 @@ test.beforeEach(async ({ page }) => {
     let listenerSeq = 1;
     let voiceSessionSequence = 0;
     const voiceCancelCalls: string[] = [];
+    const voiceFinishCalls: string[] = [];
+    const realtimeCancelCalls: string[] = [];
     const microphoneControl = {
       deferGrant: false,
       grantPending: false,
@@ -55,14 +57,25 @@ test.beforeEach(async ({ page }) => {
       exactFailurePending: false,
       deferWorkletModule: false,
       workletModulePending: false,
+      deferAppConfig: false,
+      appConfigPending: false,
+      deferVoiceSpoolStart: false,
+      voiceSpoolStartPending: false,
+      deferRealtimeStart: false,
+      realtimeStartPending: false,
       failRealtimeFinish: false,
       failVoiceSpoolCancel: false,
+      voiceSpoolStartCalls: 0,
+      realtimeStartCalls: 0,
       defaultRequestCalls: 0,
       stopCalls: 0,
       contextCloseCalls: 0,
       grant: () => {},
       rejectExact: () => {},
       grantWorkletModule: () => {},
+      grantAppConfig: () => {},
+      grantVoiceSpoolStart: () => {},
+      grantRealtimeStart: () => {},
     };
 
     class FakeAudioNode {
@@ -216,7 +229,17 @@ test.beforeEach(async ({ page }) => {
         }
         case 'get_conversation_usage_snapshot_cmd':
           return null;
-        case 'get_app_config_cmd':
+        case 'get_app_config_cmd': {
+          if (microphoneControl.deferAppConfig) {
+            microphoneControl.appConfigPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantAppConfig = () => {
+                microphoneControl.deferAppConfig = false;
+                resolve();
+              };
+            });
+            microphoneControl.appConfigPending = false;
+          }
           return {
             speechToText: {
               provider: 'open_ai',
@@ -227,7 +250,19 @@ test.beforeEach(async ({ page }) => {
               language: 'en',
             },
           };
+        }
         case 'start_voice_audio_spool_cmd': {
+          microphoneControl.voiceSpoolStartCalls += 1;
+          if (microphoneControl.deferVoiceSpoolStart) {
+            microphoneControl.voiceSpoolStartPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantVoiceSpoolStart = () => {
+                microphoneControl.deferVoiceSpoolStart = false;
+                resolve();
+              };
+            });
+            microphoneControl.voiceSpoolStartPending = false;
+          }
           voiceSessionSequence += 1;
           return {
             sessionId: `voice-${voiceSessionSequence}`,
@@ -239,6 +274,7 @@ test.beforeEach(async ({ page }) => {
         case 'append_voice_audio_spool_cmd':
           return { sequence: 0, audioBytes: 0, durationMs: 0 };
         case 'finish_voice_audio_spool_cmd':
+          voiceFinishCalls.push(String(args.sessionId ?? ''));
           return {
             sessionId: String(args.sessionId ?? `voice-${voiceSessionSequence}`),
             audioBytes: 0,
@@ -261,9 +297,22 @@ test.beforeEach(async ({ page }) => {
           }
           return null;
         case 'start_realtime_transcription_cmd':
+          microphoneControl.realtimeStartCalls += 1;
+          if (microphoneControl.deferRealtimeStart) {
+            microphoneControl.realtimeStartPending = true;
+            await new Promise<void>((resolve) => {
+              microphoneControl.grantRealtimeStart = () => {
+                microphoneControl.deferRealtimeStart = false;
+                resolve();
+              };
+            });
+            microphoneControl.realtimeStartPending = false;
+          }
           return 'realtime-voice-test';
         case 'append_realtime_transcription_audio_cmd':
+          return null;
         case 'cancel_realtime_transcription_cmd':
+          realtimeCancelCalls.push(String(args.sessionId ?? ''));
           return null;
         case 'transcribe_voice_audio_spool_cmd':
           return { transcript: 'fallback voice transcript', cleanupPending: false };
@@ -279,6 +328,9 @@ test.beforeEach(async ({ page }) => {
     };
 
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__ = voiceCancelCalls;
+    (window as unknown as { __VOICE_FINISH_CALLS__: string[] }).__VOICE_FINISH_CALLS__ = voiceFinishCalls;
+    (window as unknown as { __REALTIME_CANCEL_CALLS__: string[] })
+      .__REALTIME_CANCEL_CALLS__ = realtimeCancelCalls;
     (window as unknown as { __VOICE_MICROPHONE_CONTROL__: typeof microphoneControl })
       .__VOICE_MICROPHONE_CONTROL__ = microphoneControl;
     (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
@@ -598,6 +650,155 @@ test('realtime success clears its hypothesis even when private spool cleanup is 
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
   await page.getByRole('button', { name: /Voice Dock/ }).click();
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+});
+
+test('cancelling during provider readiness never continues into voice resource startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferAppConfig: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferAppConfig = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { appConfigPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.appConfigPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while provider readiness is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantAppConfig: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantAppConfig();
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const control = (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: {
+        appConfigPending: boolean;
+        voiceSpoolStartCalls: number;
+        defaultRequestCalls: number;
+      };
+    }).__VOICE_MICROPHONE_CONTROL__;
+    return !control.appConfigPending
+      && control.voiceSpoolStartCalls === 0
+      && control.defaultRequestCalls === 0;
+  })).toBe(true);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+});
+
+test('cancelling a pending spool creation deletes the late spool before microphone startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferVoiceSpoolStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferVoiceSpoolStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { voiceSpoolStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.voiceSpoolStartPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while spool creation is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantVoiceSpoolStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantVoiceSpoolStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).toContain('voice-1');
+  const resourceStarts = await page.evaluate(() => {
+    const control = (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: {
+        realtimeStartCalls: number;
+        defaultRequestCalls: number;
+      };
+    }).__VOICE_MICROPHONE_CONTROL__;
+    return [control.realtimeStartCalls, control.defaultRequestCalls];
+  });
+  expect(resourceStarts).toEqual([0, 0]);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('unmounting during spool creation preserves the late spool without starting capture', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferVoiceSpoolStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferVoiceSpoolStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { voiceSpoolStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.voiceSpoolStartPending,
+  )).toBe(true);
+
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantVoiceSpoolStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantVoiceSpoolStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_FINISH_CALLS__: string[] }).__VOICE_FINISH_CALLS__,
+  )).toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).not.toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { defaultRequestCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.defaultRequestCalls,
+  )).toBe(0);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('cancelling a pending realtime session closes late resources before microphone startup', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { deferRealtimeStart: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.deferRealtimeStart = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { realtimeStartPending: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.realtimeStartPending,
+  )).toBe(true);
+
+  await page.getByTestId('chat-input-textarea').fill('send while realtime startup is pending');
+  await page.getByTestId('chat-send').click();
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { grantRealtimeStart: () => void };
+    }).__VOICE_MICROPHONE_CONTROL__.grantRealtimeStart();
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __REALTIME_CANCEL_CALLS__: string[] }).__REALTIME_CANCEL_CALLS__,
+  )).toContain('realtime-voice-test');
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
+  )).toContain('voice-1');
+  expect(await page.evaluate(() =>
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { defaultRequestCalls: number };
+    }).__VOICE_MICROPHONE_CONTROL__.defaultRequestCalls,
+  )).toBe(0);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
 });
 
 test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {

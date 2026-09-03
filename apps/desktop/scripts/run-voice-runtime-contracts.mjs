@@ -607,6 +607,13 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
   assert.match(runtimeSource, /BoundedAudioUploadQueue/);
   assert.match(runtimeSource, /NativeVoiceSpoolUpload/);
   assert.match(runtimeSource, /startInProgressRef\.current/);
+  assert.match(runtimeSource, /startupGenerationRef\.current/);
+  assert.match(runtimeSource, /startupAbortModeRef\.current/);
+  assert.match(runtimeSource, /releaseStaleUpload/);
+  assert.ok(
+    (runtimeSource.match(/if \(!startupIsCurrent\(\)\)/g) ?? []).length >= 7,
+    'every async startup resource boundary must reject a stale generation',
+  );
   assert.match(runtimeSource, /pendingVoiceCleanupIdsRef/);
   assert.match(runtimeSource, /discardPendingVoiceSpool/);
   assert.match(runtimeSource, /voiceSpool\.preserveAcceptedAudio\(\)/);
