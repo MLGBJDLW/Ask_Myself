@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.13.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.7...nexa-monorepo-v0.13.8) (2026-09-03)
+
+
+### Features
+
+* **stt:** add typed live capabilities and Qwen realtime ([6cc25bd](https://github.com/MLGBJDLW/Nexa/commit/6cc25bd6feb1c55c8ee5e7abb8fa2b8f286f16f1))
+* **voice:** project live dictation into the composer ([441025f](https://github.com/MLGBJDLW/Nexa/commit/441025feb179058b5a9c40589c39440ca97db7e9))
+
+
+### Bug Fixes
+
+* **agent:** account the projected final request once ([9a80024](https://github.com/MLGBJDLW/Nexa/commit/9a80024a6656618b9292ba0e766de31e7b9ef1e4))
+* **agent:** extend conclusion hygiene across steering ([76592c2](https://github.com/MLGBJDLW/Nexa/commit/76592c2ce101b1995011286ad7971e08920d71e2))
+* **agent:** gate assembled recovery answers ([4c25b7d](https://github.com/MLGBJDLW/Nexa/commit/4c25b7d50e7a7aa711873d41f33c5e6d0363ba6e))
+* **agent:** match internal headings case-insensitively ([bd812f6](https://github.com/MLGBJDLW/Nexa/commit/bd812f6d7ed8cbb0b16f927e495d157e976b183e))
+* **agent:** match legacy compaction artifacts by shape ([9cf6429](https://github.com/MLGBJDLW/Nexa/commit/9cf6429d33a5784b039a8e658c4f8f410106bceb))
+* **agent:** normalize visible marker wrappers ([0e18198](https://github.com/MLGBJDLW/Nexa/commit/0e1819872855a796cdad43fc624b3e17caaf8d0b))
+* **agent:** preserve explicitly requested internal headings ([f85bb93](https://github.com/MLGBJDLW/Nexa/commit/f85bb93fa891c13a7a1772dd82d259e26e30a861))
+* **agent:** preserve output hygiene across recovery paths ([9e3351a](https://github.com/MLGBJDLW/Nexa/commit/9e3351a89ab1a8935b9f5a3afda6d18b929a3169))
+* **agent:** preserve scoped control and compaction history ([873d4e2](https://github.com/MLGBJDLW/Nexa/commit/873d4e2a914cefcac27e8b059ac35cfcc29ff460))
+* **agent:** quarantine polluted tool samples before dispatch ([d04120a](https://github.com/MLGBJDLW/Nexa/commit/d04120aad932299ed67aab5c41984f07d03da52c))
+* **agent:** quarantine runtime metadata from conclusions ([629b305](https://github.com/MLGBJDLW/Nexa/commit/629b305bfe41dc12f828922d483611e3da89f266))
+* **agent:** recognize linked reserved headings ([ed88ce2](https://github.com/MLGBJDLW/Nexa/commit/ed88ce2431e7dc853fb77c40de7c264524e36df1))
+* **agent:** recognize punctuated reserved headings ([0de2730](https://github.com/MLGBJDLW/Nexa/commit/0de2730ee8abbdf27e841eeada10fad7cc16a1f5))
+* **agent:** require reserved heading boundaries ([6cab7dc](https://github.com/MLGBJDLW/Nexa/commit/6cab7dca71b119d4355fdcc2acbf8ed487a932d1))
+* keep conclusions clean and stream verified STT partials ([1b97890](https://github.com/MLGBJDLW/Nexa/commit/1b9789094518486b1dad336bddbbab4dbfc316d2))
+* **voice:** cancel stale startup generations ([c3ff88f](https://github.com/MLGBJDLW/Nexa/commit/c3ff88f321a17eb8c4947bb708168a1673a7e4cc))
+* **voice:** clear stale interim before batch fallback ([856de60](https://github.com/MLGBJDLW/Nexa/commit/856de60c9541fa8271a2bbd17f84b036eefc2e3c))
+* **voice:** close sent dictation without duplicate tails ([7490f8a](https://github.com/MLGBJDLW/Nexa/commit/7490f8acb191b485e808f577721192743dc889f1))
+* **voice:** detach realtime session before batch fallback ([cbbe1f0](https://github.com/MLGBJDLW/Nexa/commit/cbbe1f05417939a4f801e07ab6fd4d946e31e499))
+* **voice:** pin dictation to its originating draft ([28e7ba5](https://github.com/MLGBJDLW/Nexa/commit/28e7ba5e4f2f37aa2541637447aac28ca6cb2eb9))
+* **voice:** preserve snapshot suffix separators ([e108061](https://github.com/MLGBJDLW/Nexa/commit/e108061b054fb5e41d9dacb9dc32fa1e9cec95dd))
+* **voice:** preserve unspaced transcript extensions ([e55aa59](https://github.com/MLGBJDLW/Nexa/commit/e55aa59ad3b10856002074fba5dd22ed87120497))
+* **voice:** retire terminal realtime hypotheses ([9913155](https://github.com/MLGBJDLW/Nexa/commit/99131554af99602cb2f7a3bfec48b1b0198a1a18))
+
 ## [0.13.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.6...nexa-monorepo-v0.13.7) (2026-09-03)
 
 
