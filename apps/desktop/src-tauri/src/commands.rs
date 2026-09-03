@@ -121,6 +121,7 @@ mod preview;
 mod realtime_transcription;
 mod skills_mcp;
 mod sources;
+mod subscription_accounts;
 mod terminal;
 mod update;
 mod watcher;
@@ -139,6 +140,7 @@ pub use preview::*;
 pub use realtime_transcription::*;
 pub use skills_mcp::*;
 pub use sources::*;
+pub use subscription_accounts::*;
 pub use terminal::*;
 pub use update::*;
 pub use watcher::*;
@@ -149,6 +151,8 @@ const DEFAULT_MCP_CALL_TIMEOUT_SECS: u64 = 300;
 /// Application state holding the database connection.
 pub struct AppState {
     pub db: Arc<Database>,
+    pub codex_account_runtime: CodexAccountRuntime,
+    pub copilot_account_runtime: CopilotAccountRuntime,
     pub user_extensions: nexa_core::user_extensions::UserExtensionLayout,
     pub db_executor: DatabaseExecutor,
     pub run_event_outboxes: AgentRunEventOutboxes,

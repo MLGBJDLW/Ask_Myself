@@ -675,6 +675,8 @@ fn main() {
             let (background_work, background_work_receiver) = BackgroundWorkGovernor::new();
             app.manage(AppState {
                 db: db.clone(),
+                codex_account_runtime: commands::CodexAccountRuntime::default(),
+                copilot_account_runtime: commands::CopilotAccountRuntime::default(),
                 user_extensions: user_extensions.clone(),
                 db_executor,
                 run_event_outboxes,
@@ -935,6 +937,13 @@ fn main() {
             commands::test_agent_connection_cmd,
             commands::refresh_provider_model_catalog_cmd,
             commands::list_provider_presets_cmd,
+            commands::get_codex_account_snapshot_cmd,
+            commands::start_codex_account_login_cmd,
+            commands::cancel_codex_account_login_cmd,
+            commands::logout_codex_account_cmd,
+            commands::get_copilot_account_snapshot_cmd,
+            commands::start_copilot_account_login_cmd,
+            commands::cancel_copilot_account_login_cmd,
             commands::list_workflow_templates_cmd,
             commands::save_workflow_automation_cmd,
             commands::list_workflow_automations_cmd,
