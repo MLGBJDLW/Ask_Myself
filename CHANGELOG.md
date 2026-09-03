@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.13.7](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.6...nexa-monorepo-v0.13.7) (2026-09-03)
+
+
+### Features
+
+* **models:** support Gemini 3.8 and Muse Spark 1.3 ([f4d3314](https://github.com/MLGBJDLW/Nexa/commit/f4d33148d19683f111781012d769086de4a3be0a))
+* **settings:** connect subscription account runtimes ([130faf4](https://github.com/MLGBJDLW/Nexa/commit/130faf4062a41d37e8c8090cd8cfc76da7cf36a7))
+
+
+### Bug Fixes
+
+* **agent:** keep recovery narration in thinking ([6843579](https://github.com/MLGBJDLW/Nexa/commit/6843579017ba9c84fa5ed3d885aa9f762888a1cb))
+* **agent:** preserve parallel tool result adjacency ([65c67f9](https://github.com/MLGBJDLW/Nexa/commit/65c67f98a462e32cb82f3c4527c9929d74c7f89b))
+* **browser:** publish only verified inferred endpoints ([22167b1](https://github.com/MLGBJDLW/Nexa/commit/22167b17a300f7bc7b4467182351d9e6489ca67c))
+* **browser:** recognize managed services structurally ([b6a3b88](https://github.com/MLGBJDLW/Nexa/commit/b6a3b882733c43b33e3114f3430696cf833040bf))
+* **browser:** single-flight synthetic DNS probes ([3643623](https://github.com/MLGBJDLW/Nexa/commit/36436236c611466334116bee1c3509da9d26ea1e))
+* **browser:** tolerate synthetic DNS safely ([925aa07](https://github.com/MLGBJDLW/Nexa/commit/925aa077c2caaa56cba6f908b2b2bc10e8f61505))
+* **chat:** constrain live thinking layout ([6f560a8](https://github.com/MLGBJDLW/Nexa/commit/6f560a8b1fc521aebeec7181f0a2530e1f24fef2))
+* **chat:** harden Mermaid SVG presentation ([84fb642](https://github.com/MLGBJDLW/Nexa/commit/84fb642a17a8bb2d6b40cfd98579b545bf2e0054))
+* **chat:** preserve Mermaid theme connector metrics ([35cbbd2](https://github.com/MLGBJDLW/Nexa/commit/35cbbd296777ebc3a347683514834cd4d0316409))
+* **chat:** preserve opaque Mermaid theme edges ([4100791](https://github.com/MLGBJDLW/Nexa/commit/41007917f1f1dd9532b9658bd567ec9c36574feb))
+* **chat:** restore sidebar quick actions ([ee9583b](https://github.com/MLGBJDLW/Nexa/commit/ee9583b599ee5c046d59e1de48e5bb86c5f0c320))
+* **chat:** retain terminal stream speech candidate ([4da9fd2](https://github.com/MLGBJDLW/Nexa/commit/4da9fd23b24a46320da13ed521516aff60a5a15c))
+* **chat:** scope cache hit rate to conversation ([3c84952](https://github.com/MLGBJDLW/Nexa/commit/3c84952623d4bb822f1e89b25e942281801e1502))
+* harden agent browser and long-chat runtime ([09026fb](https://github.com/MLGBJDLW/Nexa/commit/09026fbaa8801237e5c89a8754dd55a5e0f1d3a5))
+* **settings:** discard stale account refreshes ([3da4a31](https://github.com/MLGBJDLW/Nexa/commit/3da4a311f22461691a5f9c799f715d5eb0c8bfb1))
+* **skills:** bound portable path canonicalization ([c7a8110](https://github.com/MLGBJDLW/Nexa/commit/c7a8110c888ed803580900afbef58b1943a7e4c8))
+* **skills:** canonicalize portable skill storage ([d51e17c](https://github.com/MLGBJDLW/Nexa/commit/d51e17c13f03b9a1eab0fe777c92d0facd25dc33))
+* **skills:** enforce portable path identities ([6181545](https://github.com/MLGBJDLW/Nexa/commit/618154576d2f66c8941cb9aafdb15c0a9a2caf22))
+* **skills:** make legacy name checks explicit ([b62e292](https://github.com/MLGBJDLW/Nexa/commit/b62e292ceabb1fcb6ba3fbbc41a8443a718edc24))
+* **skills:** preflight package identity conflicts ([cfeafe7](https://github.com/MLGBJDLW/Nexa/commit/cfeafe755d8e7708939959754b1773cb5be7fb8e))
+* **skills:** preserve extended legacy frontmatter ([f8e10dd](https://github.com/MLGBJDLW/Nexa/commit/f8e10dd912adda53adb4a43baae598fe939cd90b))
+* **skills:** preserve portable identities during migration ([b95c7b6](https://github.com/MLGBJDLW/Nexa/commit/b95c7b659220b7c6e7a65f778488909b66cd066b))
+* **skills:** reserve database identities from slugs ([7850f2e](https://github.com/MLGBJDLW/Nexa/commit/7850f2eb9032ee845e29eeb0df671aecf09d34d2))
+* **tools:** infer managed loopback readiness ([4e335bc](https://github.com/MLGBJDLW/Nexa/commit/4e335bc751b4dfd85e031953952288b7b53d8d2e))
+
+
+### Performance Improvements
+
+* **chat:** bound long transcript presentation ([f8654a2](https://github.com/MLGBJDLW/Nexa/commit/f8654a25bef56019a602c54dbe029ea89b42dfa8))
+* **chat:** compact durable transcript projections ([5e1c248](https://github.com/MLGBJDLW/Nexa/commit/5e1c248cb5e03e654b766188d4bcc24396a01ca5))
+
 ## [0.13.6](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.5...nexa-monorepo-v0.13.6) (2026-09-02)
 
 
