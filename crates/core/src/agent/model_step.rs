@@ -146,6 +146,17 @@ struct InterruptedProviderDraftCapture<'a> {
     output_recovery: Option<&'a super::output_recovery::OutputRecovery>,
 }
 
+struct AdmittedInterruptedProviderDraft {
+    message: Message,
+    reasoning_content: Option<String>,
+}
+
+enum InterruptedProviderDraftAdmission {
+    Absent,
+    Quarantined,
+    Admitted(AdmittedInterruptedProviderDraft),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn reset_iteration_capture_for_new_sample(
     accumulated_content: &mut String,
@@ -179,17 +190,35 @@ fn reset_iteration_capture_for_new_sample(
 }
 
 impl AgentExecutor {
-    fn persist_interrupted_provider_draft(
+    async fn admit_interrupted_provider_draft(
         &self,
-        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
         capture: InterruptedProviderDraftCapture<'_>,
-    ) {
+        final_answer_hygiene_scope: &FinalAnswerHygieneScope,
+        tx: &mpsc::Sender<AgentEvent>,
+        persisted_trace_items: &mut Vec<PersistedTraceItem>,
+    ) -> InterruptedProviderDraftAdmission {
         let full_content = match capture.output_recovery {
             Some(recovery) => recovery.canonical_interrupted_content(capture.sample_content),
             None => capture.sample_content.to_string(),
         };
         if full_content.trim().is_empty() && capture.iteration_thinking.trim().is_empty() {
-            return;
+            return InterruptedProviderDraftAdmission::Absent;
+        }
+        if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
+            append_developer_persisted_trace_status(
+                persisted_trace_items,
+                &format!(
+                    "discarded interrupted assistant draft containing reserved internal marker: {marker}"
+                ),
+                "warning",
+            );
+            let _ = tx
+                .send(AgentEvent::StreamReset {
+                    reason: "contaminated_interrupted_answer".to_string(),
+                    discard_sample: true,
+                })
+                .await;
+            return InterruptedProviderDraftAdmission::Quarantined;
         }
 
         let draft_reasoning =
@@ -215,12 +244,54 @@ impl AgentExecutor {
         );
         draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
         draft_message.set_provider_turn(draft_envelope);
+        InterruptedProviderDraftAdmission::Admitted(AdmittedInterruptedProviderDraft {
+            message: draft_message,
+            reasoning_content: draft_reasoning,
+        })
+    }
+
+    fn persist_admitted_interrupted_provider_draft(
+        &self,
+        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
+        draft: AdmittedInterruptedProviderDraft,
+        iteration_thinking: &str,
+    ) {
+        let AdmittedInterruptedProviderDraft {
+            message,
+            reasoning_content,
+        } = draft;
         self.persist_stream_interrupted_assistant_draft(
             ctx,
-            &draft_message,
-            draft_reasoning,
-            capture.iteration_thinking,
+            &message,
+            reasoning_content,
+            iteration_thinking,
         );
+    }
+
+    async fn persist_interrupted_provider_draft(
+        &self,
+        ctx: assistant_turn::AssistantTurnPersistenceContext<'_>,
+        capture: InterruptedProviderDraftCapture<'_>,
+        final_answer_hygiene_scope: &FinalAnswerHygieneScope,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> bool {
+        let iteration_thinking = capture.iteration_thinking;
+        let admitted = self
+            .admit_interrupted_provider_draft(
+                capture,
+                final_answer_hygiene_scope,
+                tx,
+                &mut *ctx.persisted_trace_items,
+            )
+            .await;
+        match admitted {
+            InterruptedProviderDraftAdmission::Admitted(draft) => {
+                self.persist_admitted_interrupted_provider_draft(ctx, draft, iteration_thinking);
+                true
+            }
+            InterruptedProviderDraftAdmission::Absent
+            | InterruptedProviderDraftAdmission::Quarantined => false,
+        }
     }
 
     pub(super) async fn run_model_step(
@@ -544,7 +615,7 @@ impl AgentExecutor {
                     }
                     model_progress_watchdog::ModelProgressDeadlineAction::StopHostedTool => {
                         let trace_message = "model_progress_watchdog: provider-hosted action exceeded its absolute side-effect deadline; no automatic retry was attempted".to_string();
-                        if let Some(accepted) = accepted_attempt.as_ref() {
+                        let draft_preserved = if let Some(accepted) = accepted_attempt.as_ref() {
                             self.persist_interrupted_provider_draft(
                                 assistant_turn::AssistantTurnPersistenceContext {
                                     db,
@@ -563,8 +634,13 @@ impl AgentExecutor {
                                     output_recovery: buffer_answer_projection
                                         .then_some(output_recovery),
                                 },
-                            );
-                        }
+                                final_answer_hygiene_scope,
+                                tx,
+                            )
+                            .await
+                        } else {
+                            false
+                        };
                         append_developer_persisted_trace_status(
                             persisted_trace_items,
                             &trace_message,
@@ -578,7 +654,11 @@ impl AgentExecutor {
                                 route_kind,
                                 persisted_trace_items,
                                 TurnErrorMessages {
-                                    frontend_message: "The provider-hosted action exceeded its 10-minute safety limit. The partial draft was preserved; no automatic retry was attempted because the remote action may have side effects.".to_string(),
+                                    frontend_message: if draft_preserved {
+                                        "The provider-hosted action exceeded its 10-minute safety limit. The partial draft was preserved; no automatic retry was attempted because the remote action may have side effects.".to_string()
+                                    } else {
+                                        "The provider-hosted action exceeded its 10-minute safety limit. No safe assistant draft was preserved, and no automatic retry was attempted because the remote action may have side effects.".to_string()
+                                    },
                                     trace_message: trace_message.clone(),
                                 },
                             )
@@ -881,7 +961,10 @@ impl AgentExecutor {
                             reasoning_was_requested,
                             output_recovery: buffer_answer_projection.then_some(output_recovery),
                         },
-                    );
+                        final_answer_hygiene_scope,
+                        tx,
+                    )
+                    .await;
                     emit_error_and_finalize_turn(
                         tx,
                         db,
@@ -966,7 +1049,8 @@ impl AgentExecutor {
                                 );
                             }
                             accepted_attempt = None;
-                            current_request.messages = messages.to_vec();
+                            current_request.messages =
+                                prompt_ir::messages_for_model_step(messages, force_answer_only);
                             model_attempt = model_attempt::ModelAttempt::new(
                                 self.provider.as_ref(),
                                 current_request.clone(),
@@ -1052,7 +1136,10 @@ impl AgentExecutor {
                                 output_recovery: buffer_answer_projection
                                     .then_some(output_recovery),
                             },
-                        );
+                            final_answer_hygiene_scope,
+                            tx,
+                        )
+                        .await;
                     }
                     warn!("LLM model attempt cancelled: {message}");
                     emit_error_and_finalize_turn(
@@ -1079,52 +1166,40 @@ impl AgentExecutor {
                 .iter()
                 .any(Self::steering_message_has_effective_content);
             if !full_content.trim().is_empty() {
-                let draft_reasoning =
-                    self.reasoning_content_for_iteration(&iteration_thinking, false);
-                let mut draft_message = Message {
-                    role: Role::Assistant,
-                    parts: vec![ContentPart::Text {
-                        text: full_content.clone(),
-                    }],
-                    name: None,
-                    tool_calls: None,
-                    reasoning_content: draft_reasoning.clone(),
-                    prompt_cache_hint: None,
-                };
                 let accepted = accepted_attempt
                     .as_ref()
                     .expect("visible steering draft has accepted provenance");
-                let mut draft_envelope = crate::llm::provider_turn::ProviderTurnEnvelope::capture(
-                    Uuid::new_v4().to_string(),
-                    accepted.sample_id.clone(),
-                    accepted.route_snapshot.clone(),
-                    draft_message.text_content(),
-                    crate::llm::reasoning_replay::sanitize_reasoning_text(Some(
-                        &iteration_thinking,
-                    ))
-                    .as_deref(),
-                    draft_reasoning.as_deref(),
-                    Vec::new(),
-                    reasoning_was_requested,
-                );
-                draft_envelope.capture_status = ReasoningCaptureStatus::Interrupted;
-                draft_message.set_provider_turn(draft_envelope);
-                messages.push(draft_message.clone());
-                if has_effective_steering {
-                    self.persist_stream_interrupted_assistant_draft(
-                        assistant_turn::AssistantTurnPersistenceContext {
-                            db,
-                            conversation_id,
-                            turn_id,
-                            model,
-                            route_kind,
-                            persisted_trace_items: &mut *persisted_trace_items,
-                            sort_order: &mut *sort_order,
+                let admitted = self
+                    .admit_interrupted_provider_draft(
+                        InterruptedProviderDraftCapture {
+                            accepted,
+                            sample_content: &full_content,
+                            iteration_thinking: &iteration_thinking,
+                            reasoning_was_requested,
+                            output_recovery: buffer_answer_projection.then_some(output_recovery),
                         },
-                        &draft_message,
-                        draft_reasoning,
-                        &iteration_thinking,
-                    );
+                        final_answer_hygiene_scope,
+                        tx,
+                        persisted_trace_items,
+                    )
+                    .await;
+                if let InterruptedProviderDraftAdmission::Admitted(draft) = admitted {
+                    messages.push(draft.message.clone());
+                    if has_effective_steering {
+                        self.persist_admitted_interrupted_provider_draft(
+                            assistant_turn::AssistantTurnPersistenceContext {
+                                db,
+                                conversation_id,
+                                turn_id,
+                                model,
+                                route_kind,
+                                persisted_trace_items: &mut *persisted_trace_items,
+                                sort_order: &mut *sort_order,
+                            },
+                            draft,
+                            &iteration_thinking,
+                        );
+                    }
                 }
             }
             let steering_texts = {

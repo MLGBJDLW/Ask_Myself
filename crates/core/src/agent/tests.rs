@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use super::*;
 use crate::approval::{ApprovalDecision, ToolApprovalMode};
 use crate::conversation::{conversation_message_llm_context_content, CreateConversationInput};
-use crate::llm::{CompletionResponse, FinishReason, StreamChunk};
+use crate::llm::{CompletionResponse, FinishReason, PromptLifetime, PromptStability, StreamChunk};
 use crate::tools::{Tool, ToolResult};
 
 #[test]
@@ -1605,6 +1605,7 @@ struct ToolCallThenInterruptedProvider {
 struct CancelledStreamProvider {
     stream_calls: Arc<AtomicUsize>,
     visible_output: bool,
+    contaminate_visible_output: bool,
 }
 
 struct LengthThenCancelledProvider {
@@ -1882,7 +1883,11 @@ impl LlmProvider for CancelledStreamProvider {
                 },
                 ProviderStreamEvent::Chunk {
                     chunk: Box::new(StreamChunk {
-                        delta: "visible answer before cancellation".to_string(),
+                        delta: if self.contaminate_visible_output {
+                            "## Long task control state\nPlan progress: 2/3".to_string()
+                        } else {
+                            "visible answer before cancellation".to_string()
+                        },
                         tool_call_delta: None,
                         finish_reason: None,
                         usage: None,
@@ -2084,6 +2089,8 @@ impl LlmProvider for PendingCancellationProvider {
 struct SteeringInterruptProvider {
     stream_calls: Arc<AtomicUsize>,
     request_texts: Arc<Mutex<Vec<Vec<String>>>>,
+    initial_delta: &'static str,
+    final_delta: &'static str,
 }
 
 #[async_trait]
@@ -2117,34 +2124,38 @@ impl LlmProvider for SteeringInterruptProvider {
         );
 
         if call_no == 0 {
+            let initial_delta = self.initial_delta.to_string();
             return crate::llm::provider_events_from_chunk_stream(Box::pin(stream::unfold(
                 0,
-                |state| async move {
-                    match state {
-                        0 => Some((
-                            Ok(StreamChunk {
-                                delta: "obsolete draft ".to_string(),
-                                tool_call_delta: None,
-                                finish_reason: None,
-                                usage: None,
-                                thinking_delta: None,
-                            }),
-                            1,
-                        )),
-                        1 => {
-                            tokio::time::sleep(Duration::from_secs(30)).await;
-                            Some((
+                move |state| {
+                    let initial_delta = initial_delta.clone();
+                    async move {
+                        match state {
+                            0 => Some((
                                 Ok(StreamChunk {
-                                    delta: "should not be used".to_string(),
+                                    delta: initial_delta,
                                     tool_call_delta: None,
-                                    finish_reason: Some(FinishReason::Stop),
+                                    finish_reason: None,
                                     usage: None,
                                     thinking_delta: None,
                                 }),
-                                2,
-                            ))
+                                1,
+                            )),
+                            1 => {
+                                tokio::time::sleep(Duration::from_secs(30)).await;
+                                Some((
+                                    Ok(StreamChunk {
+                                        delta: "should not be used".to_string(),
+                                        tool_call_delta: None,
+                                        finish_reason: Some(FinishReason::Stop),
+                                        usage: None,
+                                        thinking_delta: None,
+                                    }),
+                                    2,
+                                ))
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     }
                 },
             )));
@@ -2152,7 +2163,7 @@ impl LlmProvider for SteeringInterruptProvider {
 
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
             StreamChunk {
-                delta: "## Long Task Control State\nRequested explanation.".to_string(),
+                delta: self.final_delta.to_string(),
                 tool_call_delta: None,
                 finish_reason: Some(FinishReason::Stop),
                 usage: Some(Usage {
@@ -2570,6 +2581,7 @@ struct ContextLimitTerminalProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_compacted_retry: Arc<Mutex<bool>>,
     draft_tool_on_first_sample: bool,
+    request_step_controller_counts: Option<Arc<Mutex<Vec<usize>>>>,
 }
 
 struct TruncatedToolCallProvider {
@@ -3081,6 +3093,20 @@ impl LlmProvider for ContextLimitTerminalProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        if let Some(counts) = self.request_step_controller_counts.as_ref() {
+            counts.lock().unwrap().push(
+                request
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        message.prompt_cache_hint.is_some_and(|hint| {
+                            hint.stability == PromptStability::Volatile
+                                && hint.lifetime == PromptLifetime::Step
+                        })
+                    })
+                    .count(),
+            );
+        }
         let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
         let chunk = if call_no == 0 {
             StreamChunk {
@@ -7860,6 +7886,7 @@ async fn context_limit_terminal_compacts_unknown_provider_history_before_retry()
             stream_calls: Arc::clone(&stream_calls),
             saw_compacted_retry: Arc::clone(&saw_compacted_retry),
             draft_tool_on_first_sample: false,
+            request_step_controller_counts: None,
         }),
         ToolRegistry::new(),
         AgentConfig {
@@ -7908,6 +7935,68 @@ async fn context_limit_terminal_compacts_unknown_provider_history_before_retry()
 }
 
 #[tokio::test]
+async fn answer_only_context_retry_reapplies_the_step_controller_projection() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let saw_compacted_retry = Arc::new(Mutex::new(false));
+    let request_step_controller_counts = Arc::new(Mutex::new(Vec::new()));
+    let executor = AgentExecutor::new(
+        Box::new(ContextLimitTerminalProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            saw_compacted_retry: Arc::clone(&saw_compacted_retry),
+            draft_tool_on_first_sample: false,
+            request_step_controller_counts: Some(Arc::clone(&request_step_controller_counts)),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("private-model".to_string()),
+            max_iterations: 0,
+            context_window_resolution: Some(crate::conversation::memory::ResolvedContextWindow {
+                capacity_tokens: None,
+                authority: crate::conversation::memory::ContextWindowAuthority::ProviderManaged,
+            }),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+    let mut history = provider_context_limit_history();
+    history.push(
+        prompt_ir::controller_state_message("superseded step controller")
+            .expect("controller message"),
+    );
+    history.push(
+        prompt_ir::controller_state_message("current step controller").expect("controller message"),
+    );
+
+    let final_msg = executor
+        .run(
+            history,
+            vec![ContentPart::Text {
+                text: "synthesize only the final answer".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("the answer-only retry should recover from provider context overflow");
+
+    assert_eq!(
+        final_msg.text_content(),
+        "final answer after context rollover"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert!(*saw_compacted_retry.lock().unwrap());
+    assert_eq!(
+        request_step_controller_counts.lock().unwrap().as_slice(),
+        &[1, 1],
+        "both the initial request and the rebuilt context-overflow retry must retain only the newest step-scoped controller"
+    );
+}
+
+#[tokio::test]
 async fn context_limited_tool_draft_is_rejected_then_compacted_before_replan() {
     let executions = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
@@ -7921,6 +8010,7 @@ async fn context_limited_tool_draft_is_rejected_then_compacted_before_replan() {
             stream_calls: Arc::clone(&stream_calls),
             saw_compacted_retry: Arc::clone(&saw_compacted_retry),
             draft_tool_on_first_sample: true,
+            request_step_controller_counts: None,
         }),
         registry,
         AgentConfig {
@@ -9362,6 +9452,7 @@ async fn visible_cancelled_stream_persists_accepted_interrupted_draft_once() {
         Box::new(CancelledStreamProvider {
             stream_calls: Arc::clone(&stream_calls),
             visible_output: true,
+            contaminate_visible_output: false,
         }),
         registry,
         AgentConfig {
@@ -9477,6 +9568,86 @@ async fn visible_cancelled_stream_persists_accepted_interrupted_draft_once() {
     assert_eq!(db.count_provider_turns().expect("provider turns"), 1);
 }
 
+#[tokio::test]
+async fn contaminated_cancelled_stream_is_reset_and_never_persisted() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(CancelledStreamProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            visible_output: true,
+            contaminate_visible_output: true,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "cancelled-stream-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "start a clean cancellable response".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 5,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_message.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect_err("provider cancellation must terminate the turn");
+
+    assert!(matches!(error, CoreError::Cancelled(_)));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+    let mut saw_contamination_reset = false;
+    while let Ok(event) = rx.try_recv() {
+        saw_contamination_reset |= matches!(
+            event,
+            AgentEvent::StreamReset { ref reason, .. }
+                if reason == "contaminated_interrupted_answer"
+        );
+    }
+    assert!(saw_contamination_reset);
+    assert!(db
+        .get_messages(&conversation.id)
+        .expect("persisted messages")
+        .iter()
+        .all(|message| message.role != Role::Assistant));
+    assert_eq!(db.count_provider_turns().expect("provider turns"), 0);
+}
+
 async fn assert_interrupted_output_recovery_persists_canonical_partial_answer(
     disconnect_after_hosted_tool: bool,
 ) {
@@ -9584,6 +9755,7 @@ async fn previsible_cancelled_stream_does_not_persist_assistant_draft() {
         Box::new(CancelledStreamProvider {
             stream_calls: Arc::clone(&stream_calls),
             visible_output: false,
+            contaminate_visible_output: false,
         }),
         ToolRegistry::new(),
         AgentConfig {
@@ -9952,6 +10124,8 @@ async fn test_steering_restarts_with_message_and_extends_final_hygiene_scope() {
     let provider = SteeringInterruptProvider {
         stream_calls: Arc::clone(&stream_calls),
         request_texts: Arc::clone(&request_texts),
+        initial_delta: "obsolete draft ",
+        final_delta: "## Long Task Control State\nRequested explanation.",
     };
     let (steering_tx, steering_rx) = mpsc::unbounded_channel();
 
@@ -10104,6 +10278,126 @@ async fn test_steering_restarts_with_message_and_extends_final_hygiene_scope() {
     assert!(persisted.iter().any(|message| {
         message.role == Role::Assistant
             && message.content == "## Long Task Control State\nRequested explanation."
+    }));
+}
+
+#[tokio::test]
+async fn contaminated_stream_time_steering_draft_is_not_persisted_or_replayed() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let request_texts = Arc::new(Mutex::new(Vec::new()));
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    let executor = AgentExecutor::new(
+        Box::new(SteeringInterruptProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            request_texts: Arc::clone(&request_texts),
+            initial_delta: "## Long task control state\nPlan progress: 2/3",
+            final_delta: "clean steered answer",
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 3,
+            ..AgentConfig::default()
+        },
+    )
+    .with_steering_receiver(steering_rx);
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "steering-interrupt-mock".to_string(),
+            model: "mock-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .expect("conversation");
+    let user_message = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "give me a clean answer".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 5,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_message).expect("persist user message");
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_message.id, None)
+        .expect("conversation turn");
+    let (tx, mut rx) = mpsc::channel(128);
+    let run_db = db.clone();
+    let conversation_id = conversation.id.clone();
+    let turn_id = turn.id.clone();
+    let user_content = user_message.content.clone();
+    let run = tokio::spawn(async move {
+        executor
+            .run(
+                vec![],
+                vec![ContentPart::Text { text: user_content }],
+                &run_db,
+                Some(&conversation_id),
+                Some(&turn_id),
+                tx,
+                1,
+            )
+            .await
+    });
+
+    loop {
+        match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            Ok(Some(AgentEvent::TextDelta { delta }))
+                if delta.contains("Long task control state") =>
+            {
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("agent event channel closed before contaminated draft"),
+            Err(_) => panic!("timed out waiting for contaminated draft"),
+        }
+    }
+    steering_tx
+        .send(AgentSteeringMessage::text("continue with a clean answer"))
+        .expect("steering send");
+
+    let mut saw_contamination_reset = false;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+        match event {
+            AgentEvent::StreamReset { reason, .. }
+                if reason == "contaminated_interrupted_answer" =>
+            {
+                saw_contamination_reset = true;
+            }
+            AgentEvent::Done { .. } => break,
+            _ => {}
+        }
+    }
+    let final_message = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .expect("run should finish")
+        .expect("join should succeed")
+        .expect("steered run should recover cleanly");
+
+    assert_eq!(final_message.text_content(), "clean steered answer");
+    assert!(saw_contamination_reset);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted.iter().all(|message| {
+        !message.content.contains("Long task control state")
+            && !message.content.contains("Plan progress: 2/3")
+    }));
+    assert!(persisted.iter().any(|message| {
+        message.role == Role::Assistant && message.content == "clean steered answer"
+    }));
+    let requests = request_texts.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].iter().all(|message| {
+        !(message.starts_with("Assistant:") && message.contains("Long task control state"))
     }));
 }
 
