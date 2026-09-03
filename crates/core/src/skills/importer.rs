@@ -181,16 +181,17 @@ pub fn sync_registered_user_skills_from_directory(
             candidate.input.name == installed.canonical_name
         };
         if !expected_name {
+            let display_name_hint = if legacy_id_directory {
+                format!(" or installed display name `{}`", installed.name)
+            } else {
+                String::new()
+            };
             reject_registered_skill(
                 &mut report,
                 skill_id,
                 format!(
                     "SKILL.md name `{}` must match canonical name `{}`{}",
-                    candidate.input.name,
-                    installed.canonical_name,
-                    legacy_id_directory
-                        .then(|| format!(" or installed display name `{}`", installed.name))
-                        .unwrap_or_default()
+                    candidate.input.name, installed.canonical_name, display_name_hint
                 ),
             );
             continue;
