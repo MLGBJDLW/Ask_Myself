@@ -145,7 +145,7 @@ pub(crate) fn parameters_schema() -> Value {
             },
             "ready_url": {
                 "type": "string",
-                "description": "Optional loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted. When omitted, run_shell tries to discover the URL from startup logs."
+                "description": "Optional loopback HTTP(S) URL used to verify a background service, for example http://127.0.0.1:4173. Only localhost and loopback IP addresses are accepted. When omitted, run_shell may infer an exact endpoint declared by a recognized server invocation or discover a full loopback URL in startup logs. Bare port text alone never grants browser network access; pass ready_url when the endpoint is otherwise ambiguous."
             },
             "ready_timeout_secs": {
                 "type": "integer",

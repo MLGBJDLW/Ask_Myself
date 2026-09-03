@@ -42,6 +42,59 @@ fn test_accept_whitelisted_program() {
 }
 
 #[test]
+fn test_infers_loopback_readiness_from_server_binding() {
+    let url = infer_ready_url_from_invocation(
+        "python",
+        &["-c".to_string(), "from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler; server = ThreadingHTTPServer(('127.0.0.1', 8765), SimpleHTTPRequestHandler); print('serving 8765'); server.serve_forever()".to_string()],
+    )
+    .expect("an exact loopback binding owned by the command should be inferred");
+    assert_eq!(url.as_str(), "http://127.0.0.1:8765/");
+}
+
+#[test]
+fn test_does_not_authorize_port_only_process_output() {
+    assert!(infer_ready_url_from_invocation(
+        "python",
+        &["-c".to_string(), "print('serving 8765')".to_string()],
+    )
+    .is_none());
+}
+
+#[test]
+fn test_binding_in_inline_command_data_does_not_publish_loopback_readiness() {
+    for source in [
+        "console.log('server.listen(3000)')",
+        "// server.listen(3000)",
+        "/* server.listen(3000) */ console.log('done')",
+    ] {
+        assert!(
+            infer_ready_url_from_invocation("node", &["-e".to_string(), source.to_string()])
+                .is_none(),
+            "non-executed binding should be ignored: {source}"
+        );
+    }
+    for source in [
+        "print(\"ThreadingHTTPServer(('127.0.0.1', 8765)\")",
+        "# ThreadingHTTPServer(('127.0.0.1', 8765), Handler)",
+        "'''ThreadingHTTPServer(('127.0.0.1', 8765), Handler)'''",
+    ] {
+        assert!(
+            infer_ready_url_from_invocation("python", &["-c".to_string(), source.to_string()],)
+                .is_none()
+        );
+    }
+    assert!(infer_ready_url_from_invocation(
+        "python",
+        &[
+            "script.py".to_string(),
+            "-c".to_string(),
+            "ThreadingHTTPServer(('127.0.0.1', 8765), Handler)".to_string(),
+        ],
+    )
+    .is_none());
+}
+
+#[test]
 fn test_pip_program_normalizes_to_python_module_invocation() {
     let parsed = parse_run_shell_args(
         r#"{"program":"pip","args":["install","python-docx"],"cwd":"C:\\work"}"#,
@@ -592,6 +645,69 @@ async fn test_managed_http_service_start_status_and_stop() {
     );
     assert_eq!(stopped.artifacts.as_ref().unwrap()["status"], "stopped");
     assert!(managed_loopback_permits(conversation_id).await.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires python on PATH"]
+async fn test_managed_python_server_infers_port_without_ready_url_or_url_log() {
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    let tool = RunShellTool;
+    let conversation_id = "managed-inferred-http-conversation";
+    let service_id = format!("managed-inferred-http-{}", uuid::Uuid::new_v4());
+    let script = format!(
+        "from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler; server = ThreadingHTTPServer(('127.0.0.1', {port}), SimpleHTTPRequestHandler); print('serving {port}', flush=True); server.serve_forever()"
+    );
+    let start_args = json!({
+        "program": "python",
+        "args": ["-c", script],
+        "cwd": tmp.path().to_string_lossy(),
+        "background": true,
+    });
+
+    let started = tool
+        .execute(
+            crate::tools::ToolExecutionContext::new(&service_id, &start_args.to_string(), &db, &[])
+                .with_conversation_id(Some(conversation_id)),
+        )
+        .await
+        .expect("managed service should infer its declared binding");
+    assert!(!started.is_error, "unexpected error: {}", started.content);
+    assert_eq!(started.artifacts.as_ref().unwrap()["status"], "ready");
+    assert_eq!(
+        started.artifacts.as_ref().unwrap()["readyUrl"],
+        format!("http://127.0.0.1:{port}/")
+    );
+    let permits = managed_loopback_permits(conversation_id).await;
+    assert_eq!(permits.len(), 1);
+    assert_eq!(permits[0].port, port);
+
+    let stop_args = json!({
+        "service_action": "stop",
+        "service_id": service_id,
+        "cwd": tmp.path().to_string_lossy(),
+    });
+    let stopped = tool
+        .execute(
+            crate::tools::ToolExecutionContext::new(
+                "managed-inferred-http-stop",
+                &stop_args.to_string(),
+                &db,
+                &[],
+            )
+            .with_conversation_id(Some(conversation_id)),
+        )
+        .await
+        .expect("managed service should stop cleanly");
+    assert!(
+        !stopped.is_error,
+        "unexpected stop error: {}",
+        stopped.content
+    );
 }
 
 #[tokio::test]

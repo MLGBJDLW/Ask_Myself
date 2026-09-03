@@ -504,6 +504,16 @@ where
     })
 }
 
+fn server_binding_regex() -> &'static Regex {
+    static BIND_RE: OnceLock<Regex> = OnceLock::new();
+    BIND_RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(?:threadinghttpserver|httpserver|tcpserver)\s*\(\s*\(\s*['\"](localhost|127\.0\.0\.1|0\.0\.0\.0|::1|::)['\"]\s*,\s*(\d{1,5})"#,
+        )
+        .expect("valid managed-service binding regex")
+    })
+}
+
 fn local_url_regex() -> &'static Regex {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     URL_RE.get_or_init(|| {
@@ -526,6 +536,165 @@ fn discover_ready_url(stdout: &str, stderr: &str) -> Option<reqwest::Url> {
             validate_ready_url(&candidate).ok()
         })
         .next()
+}
+
+fn ready_url_for_host_port(host: &str, port: &str) -> Option<reqwest::Url> {
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    let host = match host.trim_matches(['[', ']']) {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    validate_ready_url(&format!("http://{authority}/")).ok()
+}
+
+fn argument_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+    for (index, argument) in args.iter().enumerate() {
+        if names.iter().any(|name| argument == name) {
+            return args.get(index + 1).map(String::as_str);
+        }
+        for name in names {
+            if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn inline_program_source<'a>(program: &str, args: &'a [String]) -> Option<&'a str> {
+    let program = Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let is_python = matches!(program.as_str(), "python" | "python3" | "py")
+        || program
+            .strip_prefix("python3.")
+            .is_some_and(|version| version.chars().all(|character| character.is_ascii_digit()));
+    if !is_python {
+        return None;
+    }
+    for (index, argument) in args.iter().enumerate() {
+        if argument == "-c" {
+            return args.get(index + 1).map(String::as_str);
+        }
+        if argument == "--" || !argument.starts_with('-') {
+            return None;
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InlineCodeState {
+    Executable,
+    SingleQuoted,
+    DoubleQuoted,
+    TripleSingleQuoted,
+    TripleDoubleQuoted,
+    LineComment,
+}
+
+fn inline_code_offset_is_executable(source: &str, target: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut state = InlineCodeState::Executable;
+    let mut index = 0_usize;
+    while index < target && index < bytes.len() {
+        let current = bytes[index];
+        let triple = bytes.get(index..index.saturating_add(3));
+        match state {
+            InlineCodeState::Executable => match (current, triple) {
+                (b'\'', Some(b"'''")) => {
+                    state = InlineCodeState::TripleSingleQuoted;
+                    index += 3;
+                    continue;
+                }
+                (b'"', Some(b"\"\"\"")) => {
+                    state = InlineCodeState::TripleDoubleQuoted;
+                    index += 3;
+                    continue;
+                }
+                (b'\'', _) => state = InlineCodeState::SingleQuoted,
+                (b'"', _) => state = InlineCodeState::DoubleQuoted,
+                (b'#', _) => state = InlineCodeState::LineComment,
+                _ => {}
+            },
+            InlineCodeState::SingleQuoted => {
+                if current == b'\\' {
+                    index += 2;
+                    continue;
+                }
+                if current == b'\'' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+            InlineCodeState::DoubleQuoted => {
+                if current == b'\\' {
+                    index += 2;
+                    continue;
+                }
+                if current == b'"' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+            InlineCodeState::TripleSingleQuoted => {
+                if triple == Some(b"'''") {
+                    state = InlineCodeState::Executable;
+                    index += 3;
+                    continue;
+                }
+            }
+            InlineCodeState::TripleDoubleQuoted => {
+                if triple == Some(b"\"\"\"") {
+                    state = InlineCodeState::Executable;
+                    index += 3;
+                    continue;
+                }
+            }
+            InlineCodeState::LineComment => {
+                if current == b'\n' || current == b'\r' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+        }
+        index += 1;
+    }
+    state == InlineCodeState::Executable
+}
+
+fn executable_inline_captures<'a>(regex: &Regex, source: &'a str) -> Option<regex::Captures<'a>> {
+    regex.captures_iter(source).find(|captures| {
+        captures
+            .get(0)
+            .is_some_and(|matched| inline_code_offset_is_executable(source, matched.start()))
+    })
+}
+
+/// Infer only endpoints that the launched command itself declares. Unlike
+/// parsing arbitrary stdout, this lets startup preflight prove that the
+/// endpoint was not already serving before the managed process was spawned.
+pub(super) fn infer_ready_url_from_invocation(
+    program: &str,
+    args: &[String],
+) -> Option<reqwest::Url> {
+    if let Some(source) = inline_program_source(program, args) {
+        if let Some(captures) = executable_inline_captures(server_binding_regex(), source) {
+            return ready_url_for_host_port(captures.get(1)?.as_str(), captures.get(2)?.as_str());
+        }
+    }
+
+    if !looks_like_persistent_service(program, args) {
+        return None;
+    }
+    let port = argument_value(args, &["--port", "-p", "--server.port"])?;
+    let host = argument_value(args, &["--host", "--bind", "-b"]).unwrap_or("127.0.0.1");
+    ready_url_for_host_port(host, port)
 }
 
 async fn service_log_snapshot(
@@ -560,7 +729,6 @@ async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
-#[cfg(test)]
 fn launches_python_server_script(program: &str, args: &[String]) -> bool {
     let is_python_launcher = matches!(program, "python" | "python3" | "py")
         || program
@@ -593,7 +761,6 @@ fn launches_python_server_script(program: &str, args: &[String]) -> bool {
     false
 }
 
-#[cfg(test)]
 pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let program = Path::new(program)
         .file_stem()
@@ -857,8 +1024,8 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
                     process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
                     ready_url.as_ref().map_or_else(
-                        || "No loopback URL was discovered yet; status will keep checking startup logs.".to_string(),
-                        |url| format!("Discovered URL: {url}."),
+                        || "No loopback URL has been identified yet; status will keep checking startup logs, or restart with ready_url if the endpoint is selected dynamically.".to_string(),
+                        |url| format!("Ready URL candidate: {url}."),
                     ),
                 ),
                 is_error: false,
@@ -957,7 +1124,7 @@ async fn status_service(
                         log_snapshot.stderr,
                     ),
                     _ => format!(
-                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet.\nstdout tail:\n{}\nstderr tail:\n{}",
+                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet. Restart it with ready_url when the endpoint is chosen dynamically.\nstdout tail:\n{}\nstderr tail:\n{}",
                         log_snapshot.stdout,
                         log_snapshot.stderr,
                     ),
@@ -1556,7 +1723,7 @@ impl Tool for RunShellTool {
                     Ok(url) => Some(url),
                     Err(message) => return Ok(error_result(call_id, message)),
                 },
-                None => None,
+                None => infer_ready_url_from_invocation(&canonical_program, &normalized_args),
             }
         } else {
             None
