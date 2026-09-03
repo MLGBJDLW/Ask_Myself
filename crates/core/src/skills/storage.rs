@@ -20,6 +20,7 @@ use super::registry::builtin_skill_bundles;
 /// the model can still reason about relative paths.
 static SKILLS_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
 static USER_SKILLS_DIR: OnceLock<PathBuf> = OnceLock::new();
+pub const MAX_CANONICAL_SKILL_NAME_CHARS: usize = 64;
 
 /// Configure the single user-owned skill source root before skills are loaded
 /// from the database. Reconfiguration to a different path is rejected so
@@ -64,15 +65,15 @@ pub(crate) fn builtin_skill_source_path(slug: &str) -> Option<String> {
 }
 
 /// Materialize all bundled built-in skills (SKILL.md + scripts/references/assets)
-/// onto disk under `<app_data_dir>/skills/<slug>/`. Idempotent: skips files
+/// onto disk under `<app_data_dir>/runtimes/builtin-skills/<slug>/`. Idempotent: skips files
 /// whose on-disk content already matches the embedded content. Per-file
 /// failures are logged but do not abort other skills.
 ///
-/// Returns the base `<app_data_dir>/skills/` path on success. The base path is
+/// Returns the base `<app_data_dir>/runtimes/builtin-skills/` path on success. The base path is
 /// also stored in a process-global `OnceLock` so [`load_builtin_skills`] can
 /// substitute `<SKILL_DIR>` placeholders in skill bodies with real paths.
 pub fn materialize_skills_to_disk(app_data_dir: &Path) -> Result<PathBuf, CoreError> {
-    let base = app_data_dir.join("skills");
+    let base = app_data_dir.join("runtimes").join("builtin-skills");
     fs::create_dir_all(&base).map_err(|e| {
         CoreError::Internal(format!(
             "Failed to create skills base dir {}: {e}",
@@ -108,10 +109,52 @@ pub fn materialize_skills_to_disk(app_data_dir: &Path) -> Result<PathBuf, CoreEr
         }
     }
 
+    cleanup_legacy_builtin_skill_cache(app_data_dir);
+
     // Record the base dir so skill-body rendering can substitute <SKILL_DIR>.
     // `OnceLock::set` returns Err if already set — that's fine; first call wins.
     let _ = SKILLS_BASE_DIR.set(base.clone());
     Ok(base)
+}
+
+fn cleanup_legacy_builtin_skill_cache(app_data_dir: &Path) {
+    let legacy_base = app_data_dir.join("skills");
+    for bundle in builtin_skill_bundles() {
+        let legacy_skill_dir = legacy_base.join(bundle.slug);
+        let mut owned_files = vec![(PathBuf::from("SKILL.md"), bundle.skill_md.as_bytes())];
+        owned_files.extend(
+            bundle
+                .resources
+                .iter()
+                .map(|resource| (PathBuf::from(resource.path), resource.content.as_bytes())),
+        );
+        for (relative, expected) in owned_files {
+            let path = legacy_skill_dir.join(relative);
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), error = %error, "Could not inspect legacy built-in skill cache");
+                    continue;
+                }
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                tracing::warn!(path = %path.display(), "Preserved non-regular legacy built-in skill path");
+                continue;
+            }
+            if !fs::read(&path).is_ok_and(|bytes| bytes == expected) {
+                tracing::warn!(path = %path.display(), "Preserved modified legacy built-in skill cache file");
+                continue;
+            }
+            if let Err(error) = fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), error = %error, "Could not remove verified legacy built-in skill cache file");
+                continue;
+            }
+            remove_empty_resource_parents(&legacy_skill_dir, path.parent());
+        }
+        let _ = fs::remove_dir(&legacy_skill_dir);
+    }
+    let _ = fs::remove_dir(&legacy_base);
 }
 
 /// Return the on-disk directory where a bundled skill is materialized.
@@ -119,7 +162,10 @@ pub fn materialize_skills_to_disk(app_data_dir: &Path) -> Result<PathBuf, CoreEr
 /// This is intentionally path-only: callers that need guaranteed files should
 /// call [`materialize_skills_to_disk`] first.
 pub fn builtin_skill_dir(app_data_dir: &Path, slug: &str) -> PathBuf {
-    app_data_dir.join("skills").join(slug)
+    app_data_dir
+        .join("runtimes")
+        .join("builtin-skills")
+        .join(slug)
 }
 
 fn safe_skill_dir_name(id: &str) -> String {
@@ -140,36 +186,88 @@ fn safe_skill_dir_name(id: &str) -> String {
     }
 }
 
+pub fn validate_canonical_skill_name(name: &str) -> Result<String, CoreError> {
+    let name = name.trim();
+    let valid = !name.is_empty()
+        && name.len() <= MAX_CANONICAL_SKILL_NAME_CHARS
+        && name.is_ascii()
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if !valid {
+        return Err(CoreError::InvalidInput(format!(
+            "Skill canonical name must be 1-{MAX_CANONICAL_SKILL_NAME_CHARS} lowercase ASCII letters, digits, or single hyphens"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+pub fn derive_canonical_skill_name(display_name: &str) -> Result<String, CoreError> {
+    let mut canonical = String::new();
+    let mut pending_separator = false;
+    for character in display_name.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            if pending_separator && !canonical.is_empty() {
+                canonical.push('-');
+            }
+            pending_separator = false;
+            canonical.push(character.to_ascii_lowercase());
+        } else if !canonical.is_empty() {
+            pending_separator = true;
+        }
+        if canonical.len() >= MAX_CANONICAL_SKILL_NAME_CHARS {
+            break;
+        }
+    }
+    canonical.truncate(MAX_CANONICAL_SKILL_NAME_CHARS);
+    while canonical.ends_with('-') {
+        canonical.pop();
+    }
+    validate_canonical_skill_name(&canonical).map_err(|_| {
+        CoreError::InvalidInput(
+            "Skill display name cannot produce a portable canonical name; install a package whose SKILL.md name uses lowercase ASCII kebab-case"
+                .into(),
+        )
+    })
+}
+
+fn canonical_skill_dir_name(skill: &Skill) -> Result<String, CoreError> {
+    validate_canonical_skill_name(&skill.canonical_name)
+}
+
 /// Return the on-disk directory where a user-created skill should be
 /// materialized. User skills are stored separately from built-ins so user
 /// scripts/assets cannot collide with bundled skill resources.
-pub fn user_skill_dir(app_data_dir: &Path, skill_id: &str) -> PathBuf {
+pub fn user_skill_dir(app_data_dir: &Path, canonical_name: &str) -> PathBuf {
     app_data_dir
         .join("skills")
         .join("user")
-        .join(safe_skill_dir_name(skill_id))
+        .join(canonical_name)
 }
 
-fn substitute_user_skill_dir(body: String, skill_id: &str) -> String {
+fn substitute_user_skill_dir(body: String, canonical_name: &str) -> String {
     if !body.contains("<SKILL_DIR>") {
         return body;
     }
     if let Some(base) = USER_SKILLS_DIR.get() {
-        let skill_dir = base.join(safe_skill_dir_name(skill_id));
+        let skill_dir = base.join(canonical_name);
         body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
     } else if let Some(base) = SKILLS_BASE_DIR.get() {
-        let skill_dir = base.join("user").join(safe_skill_dir_name(skill_id));
+        let skill_dir = base.join("user").join(canonical_name);
         body.replace("<SKILL_DIR>", &skill_dir.to_string_lossy())
     } else {
         body
     }
 }
 
-pub(crate) fn user_skill_source_path(skill_id: &str) -> Option<String> {
+pub(crate) fn user_skill_source_path(canonical_name: &str) -> Option<String> {
     USER_SKILLS_DIR
         .get()
         .map(|base| {
-            base.join(safe_skill_dir_name(skill_id))
+            base.join(canonical_name)
                 .join("SKILL.md")
                 .to_string_lossy()
                 .to_string()
@@ -177,7 +275,7 @@ pub(crate) fn user_skill_source_path(skill_id: &str) -> Option<String> {
         .or_else(|| {
             SKILLS_BASE_DIR.get().map(|base| {
                 base.join("user")
-                    .join(safe_skill_dir_name(skill_id))
+                    .join(canonical_name)
                     .join("SKILL.md")
                     .to_string_lossy()
                     .to_string()
@@ -188,17 +286,21 @@ pub(crate) fn user_skill_source_path(skill_id: &str) -> Option<String> {
 pub(crate) fn portable_user_skill_content(
     content: &str,
     skill_id: &str,
+    canonical_name: &str,
     preferred_user_skills_dir: Option<&Path>,
 ) -> String {
     let mut portable = content.to_string();
     let mut candidate_dirs = Vec::new();
     if let Some(base) = preferred_user_skills_dir {
+        candidate_dirs.push(base.join(canonical_name));
         candidate_dirs.push(base.join(safe_skill_dir_name(skill_id)));
     }
     if let Some(base) = USER_SKILLS_DIR.get() {
+        candidate_dirs.push(base.join(canonical_name));
         candidate_dirs.push(base.join(safe_skill_dir_name(skill_id)));
     }
     if let Some(base) = SKILLS_BASE_DIR.get() {
+        candidate_dirs.push(base.join("user").join(canonical_name));
         candidate_dirs.push(base.join("user").join(safe_skill_dir_name(skill_id)));
     }
     candidate_dirs.sort();
@@ -239,20 +341,26 @@ fn materialize_user_skill(
         ));
     }
 
-    let skill_dir = user_skills_dir.join(safe_skill_dir_name(&skill.id));
+    let canonical_name = canonical_skill_dir_name(skill)?;
+    let skill_dir = user_skills_dir.join(&canonical_name);
     fs::create_dir_all(user_skills_dir).map_err(|e| {
         CoreError::Internal(format!(
             "Failed to create user skills dir {}: {e}",
             user_skills_dir.display()
         ))
     })?;
+    migrate_legacy_skill_directory(user_skills_dir, skill, &skill_dir)?;
     for directory in [user_skills_dir, skill_dir.as_path()] {
         ensure_real_user_skill_directory(directory, &skill.id, prune_stale_projection_files)?;
     }
     let mut expected_files = BTreeSet::from([PathBuf::from("SKILL.md")]);
     let mut portable_skill = skill.clone();
-    portable_skill.content =
-        portable_user_skill_content(&skill.content, &skill.id, Some(user_skills_dir));
+    portable_skill.content = portable_user_skill_content(
+        &skill.content,
+        &skill.id,
+        &skill.canonical_name,
+        Some(user_skills_dir),
+    );
     write_user_file_if_changed(
         &skill_dir.join("SKILL.md"),
         export_skill_to_md(&portable_skill).as_bytes(),
@@ -296,6 +404,43 @@ fn materialize_user_skill(
     Ok(skill_dir)
 }
 
+fn migrate_legacy_skill_directory(
+    user_skills_dir: &Path,
+    skill: &Skill,
+    canonical_dir: &Path,
+) -> Result<(), CoreError> {
+    let legacy_dir = user_skills_dir.join(safe_skill_dir_name(&skill.id));
+    if legacy_dir == canonical_dir {
+        return Ok(());
+    }
+    let legacy_metadata = match fs::symlink_metadata(&legacy_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if legacy_metadata.file_type().is_symlink() || !legacy_metadata.is_dir() {
+        return Err(CoreError::Conflict(format!(
+            "Legacy skill path is not a real directory and was preserved: {}",
+            legacy_dir.display()
+        )));
+    }
+    if fs::symlink_metadata(canonical_dir).is_ok() {
+        return Err(CoreError::Conflict(format!(
+            "Cannot migrate skill {} because canonical directory already exists: {}",
+            skill.id,
+            canonical_dir.display()
+        )));
+    }
+    fs::rename(&legacy_dir, canonical_dir).map_err(|error| {
+        CoreError::Internal(format!(
+            "Failed to migrate skill {} from {} to {}: {error}",
+            skill.id,
+            legacy_dir.display(),
+            canonical_dir.display()
+        ))
+    })
+}
+
 pub fn materialize_user_skill_to_configured_directory(
     skill: &Skill,
 ) -> Result<Option<PathBuf>, CoreError> {
@@ -319,7 +464,7 @@ pub fn remove_obsolete_user_skill_resources_from_directory(
         .into_iter()
         .map(|resource| resource.path)
         .collect::<HashSet<_>>();
-    let skill_dir = user_skills_dir.join(safe_skill_dir_name(&next.id));
+    let skill_dir = user_skills_dir.join(canonical_skill_dir_name(next)?);
     for resource in normalize_resource_bundle(&previous.resource_bundle)? {
         if next_paths.contains(&resource.path) {
             continue;
@@ -585,7 +730,7 @@ pub fn materialize_user_skills_to_disk(
         if skill.enabled {
             materialize_user_skill_to_disk(app_data_dir, skill)?;
         } else {
-            remove_materialized_user_skill(app_data_dir, &skill.id)?;
+            remove_materialized_user_skill(app_data_dir, skill)?;
         }
     }
     Ok(())
@@ -619,31 +764,42 @@ pub fn materialize_user_skills_to_directory_except(
     Ok(())
 }
 
-pub fn remove_materialized_user_skill(
-    app_data_dir: &Path,
-    skill_id: &str,
-) -> Result<(), CoreError> {
-    let skill_dir = user_skill_dir(app_data_dir, skill_id);
-    if skill_dir.exists() {
-        fs::remove_dir_all(&skill_dir).map_err(|e| {
-            CoreError::Internal(format!(
-                "Failed to remove user skill dir {}: {e}",
-                skill_dir.display()
-            ))
-        })?;
+pub fn remove_materialized_user_skill(app_data_dir: &Path, skill: &Skill) -> Result<(), CoreError> {
+    let root = app_data_dir.join("skills").join("user");
+    for skill_dir in [
+        root.join(canonical_skill_dir_name(skill)?),
+        root.join(safe_skill_dir_name(&skill.id)),
+    ] {
+        if skill_dir.exists() {
+            fs::remove_dir_all(&skill_dir).map_err(|e| {
+                CoreError::Internal(format!(
+                    "Failed to remove user skill dir {}: {e}",
+                    skill_dir.display()
+                ))
+            })?;
+        }
     }
     Ok(())
 }
 
 pub fn remove_materialized_user_skill_from_directory(
     user_skills_dir: &Path,
-    skill_id: &str,
+    skill: &Skill,
 ) -> Result<(), CoreError> {
-    let skill_dir = user_skills_dir.join(safe_skill_dir_name(skill_id));
-    match fs::symlink_metadata(&skill_dir) {
+    for skill_dir in [
+        user_skills_dir.join(canonical_skill_dir_name(skill)?),
+        user_skills_dir.join(safe_skill_dir_name(&skill.id)),
+    ] {
+        remove_materialized_user_skill_path(&skill_dir)?;
+    }
+    Ok(())
+}
+
+fn remove_materialized_user_skill_path(skill_dir: &Path) -> Result<(), CoreError> {
+    match fs::symlink_metadata(skill_dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            fs::remove_file(&skill_dir)
-                .or_else(|_| fs::remove_dir(&skill_dir))
+            fs::remove_file(skill_dir)
+                .or_else(|_| fs::remove_dir(skill_dir))
                 .map_err(|e| {
                     CoreError::Internal(format!(
                         "Failed to remove user skill link {}: {e}",
@@ -652,7 +808,7 @@ pub fn remove_materialized_user_skill_from_directory(
                 })?;
         }
         Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(&skill_dir).map_err(|e| {
+            fs::remove_dir_all(skill_dir).map_err(|e| {
                 CoreError::Internal(format!(
                     "Failed to remove user skill dir {}: {e}",
                     skill_dir.display()
@@ -660,7 +816,7 @@ pub fn remove_materialized_user_skill_from_directory(
             })?;
         }
         Ok(_) => {
-            fs::remove_file(&skill_dir).map_err(|e| {
+            fs::remove_file(skill_dir).map_err(|e| {
                 CoreError::Internal(format!(
                     "Failed to remove user skill path {}: {e}",
                     skill_dir.display()
@@ -774,6 +930,7 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill, rusqlite::Error> {
     let description: String = row.get(2)?;
     let content: String = row.get(3)?;
     let resource_bundle_raw: Option<String> = row.get(7)?;
+    let canonical_name: String = row.get(8)?;
     let resource_bundle = deserialize_resource_bundle(resource_bundle_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(err))
     })?;
@@ -781,9 +938,10 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill, rusqlite::Error> {
         derive_skill_metadata(&name, &description, &resource_bundle);
     Ok(Skill {
         id: id.clone(),
+        canonical_name: canonical_name.clone(),
         name,
         description,
-        content: substitute_user_skill_dir(content, &id),
+        content: substitute_user_skill_dir(content, &canonical_name),
         enabled: row.get::<_, i32>(4)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
@@ -791,7 +949,7 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill, rusqlite::Error> {
         interface,
         dependencies,
         policy,
-        source_path: user_skill_source_path(&id),
+        source_path: user_skill_source_path(&canonical_name),
         resources: resource_bundle_metadata(&resource_bundle),
         resource_bundle,
     })
@@ -806,11 +964,7 @@ fn normalize_skill_input(input: &SaveSkillInput) -> Result<SaveSkillInput, CoreE
         .collect::<Vec<_>>()
         .join(" ");
     let description = input.description.trim().to_string();
-    let content = input
-        .id
-        .as_deref()
-        .map(|id| portable_user_skill_content(input.content.trim(), id, None))
-        .unwrap_or_else(|| input.content.trim().to_string());
+    let content = input.content.trim().to_string();
 
     if name.is_empty() {
         return Err(CoreError::InvalidInput("Skill name cannot be empty".into()));
@@ -838,13 +992,102 @@ fn normalize_skill_input(input: &SaveSkillInput) -> Result<SaveSkillInput, CoreE
     })
 }
 
+fn ensure_skill_canonical_names(conn: &rusqlite::Connection) -> Result<(), CoreError> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, canonical_name FROM skills ORDER BY created_at ASC, id ASC")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut skills = Vec::new();
+    for row in rows {
+        skills.push(row?);
+    }
+    drop(stmt);
+
+    let mut used = builtin_skill_bundles()
+        .iter()
+        .map(|bundle| {
+            (
+                bundle.slug.to_ascii_lowercase(),
+                format!("builtin:{}", bundle.slug),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut updates = Vec::new();
+    for (id, display_name, stored) in skills {
+        let needs_backfill = stored
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty());
+        let mut canonical_name = match stored.as_deref().filter(|value| !value.trim().is_empty()) {
+            Some(stored) => validate_canonical_skill_name(stored)?,
+            None => derive_canonical_skill_name(&display_name)
+                .unwrap_or_else(|_| migration_canonical_skill_name(&display_name, &id)),
+        };
+        let mut key = canonical_name.to_ascii_lowercase();
+        if needs_backfill && used.contains_key(&key) {
+            canonical_name = migration_canonical_skill_name(&display_name, &id);
+            key = canonical_name.to_ascii_lowercase();
+        }
+        if let Some(owner) = used.insert(key, id.clone()) {
+            return Err(CoreError::Conflict(format!(
+                "Skills {owner} and {id} resolve to the same canonical name `{canonical_name}`; rename one before migration"
+            )));
+        }
+        if needs_backfill {
+            updates.push((id.clone(), canonical_name));
+        }
+    }
+    for (id, canonical_name) in updates {
+        conn.execute(
+            "UPDATE skills SET canonical_name = ?2 WHERE id = ?1 AND (canonical_name IS NULL OR canonical_name = '')",
+            rusqlite::params![id, canonical_name],
+        )?;
+    }
+    Ok(())
+}
+
+/// Older database rows stored only a display name. Agent Skills requires the
+/// portable directory/frontmatter name to be lowercase ASCII kebab-case, so a
+/// fully localized display name cannot be copied verbatim. Preserve a readable
+/// encoding of its Unicode code points and add a short immutable-id digest so
+/// same-named legacy skills migrate independently instead of blocking all skill
+/// reads.
+fn migration_canonical_skill_name(display_name: &str, id: &str) -> String {
+    let digest = blake3::hash(id.as_bytes()).to_hex();
+    let suffix = &digest.as_str()[..8];
+    let suffix_chars = suffix.len() + 1;
+    let base_limit = MAX_CANONICAL_SKILL_NAME_CHARS - suffix_chars;
+    let mut base = String::from("skill");
+    for character in display_name
+        .chars()
+        .filter(|character| !character.is_whitespace())
+    {
+        let segment = if character.is_ascii_alphanumeric() {
+            character.to_ascii_lowercase().to_string()
+        } else {
+            format!("u{:x}", character as u32)
+        };
+        if base.len() + 1 + segment.len() > base_limit {
+            break;
+        }
+        base.push('-');
+        base.push_str(&segment);
+    }
+    format!("{base}-{suffix}")
+}
+
 impl Database {
     /// List all user skills, newest first. Built-ins live in the static registry,
     /// while historical database rows were removed by migration v048.
     pub fn list_skills(&self) -> Result<Vec<Skill>, CoreError> {
         let conn = self.conn();
+        ensure_skill_canonical_names(&conn)?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
+            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json, canonical_name
              FROM skills
              ORDER BY created_at DESC",
         )?;
@@ -858,15 +1101,29 @@ impl Database {
 
     /// Create or update a user skill.
     pub fn save_skill(&self, input: &SaveSkillInput) -> Result<Skill, CoreError> {
-        let input = normalize_skill_input(input)?;
+        let mut input = normalize_skill_input(input)?;
         let conn = self.conn();
+        ensure_skill_canonical_names(&conn)?;
         let resource_bundle_json = serialize_resource_bundle(&input.resource_bundle)?;
         let id = match &input.id {
             Some(existing_id) => {
+                let installed_canonical: String = conn
+                    .query_row(
+                        "SELECT canonical_name FROM skills WHERE id = ?1",
+                        rusqlite::params![existing_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| CoreError::NotFound(format!("Skill {existing_id}")))?;
+                input.content = portable_user_skill_content(
+                    &input.content,
+                    existing_id,
+                    &installed_canonical,
+                    None,
+                );
                 conn.execute(
                     "UPDATE skills
                      SET name = ?2, description = ?3, content = ?4, enabled = ?5,
-                         resource_bundle_json = ?6,
+                         resource_bundle_json = ?6, canonical_name = ?7,
                          updated_at = datetime('now')
                      WHERE id = ?1",
                     rusqlite::params![
@@ -875,18 +1132,41 @@ impl Database {
                         &input.description,
                         &input.content,
                         input.enabled as i32,
-                        &resource_bundle_json
+                        &resource_bundle_json,
+                        &installed_canonical,
                     ],
                 )?;
                 existing_id.clone()
             }
             None => {
                 let new_id = Uuid::new_v4().to_string();
+                let canonical_name = derive_canonical_skill_name(&input.name)?;
+                if builtin_skill_bundles()
+                    .iter()
+                    .any(|bundle| bundle.slug.eq_ignore_ascii_case(&canonical_name))
+                {
+                    return Err(CoreError::Conflict(format!(
+                        "Skill canonical name `{canonical_name}` is reserved by a built-in skill"
+                    )));
+                }
+                let conflict: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM skills WHERE canonical_name = ?1 COLLATE NOCASE)",
+                    rusqlite::params![&canonical_name],
+                    |row| row.get(0),
+                )?;
+                if conflict {
+                    return Err(CoreError::Conflict(format!(
+                        "A skill with canonical name `{canonical_name}` is already installed"
+                    )));
+                }
+                input.content =
+                    portable_user_skill_content(&input.content, &new_id, &canonical_name, None);
                 conn.execute(
-                    "INSERT INTO skills (id, name, description, content, enabled, resource_bundle_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO skills (id, canonical_name, name, description, content, enabled, resource_bundle_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     rusqlite::params![
                         &new_id,
+                        &canonical_name,
                         &input.name,
                         &input.description,
                         &input.content,
@@ -928,8 +1208,9 @@ impl Database {
     /// the caller and exact IDs are deduplicated there.
     pub fn get_enabled_skills(&self) -> Result<Vec<Skill>, CoreError> {
         let conn = self.conn();
+        ensure_skill_canonical_names(&conn)?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
+            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json, canonical_name
              FROM skills
              WHERE enabled = 1
              ORDER BY created_at ASC",
@@ -944,8 +1225,9 @@ impl Database {
 
     fn get_skill(&self, id: &str) -> Result<Skill, CoreError> {
         let conn = self.conn();
+        ensure_skill_canonical_names(&conn)?;
         conn.query_row(
-            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json
+            "SELECT id, name, description, content, enabled, created_at, updated_at, resource_bundle_json, canonical_name
              FROM skills
              WHERE id = ?1",
             rusqlite::params![id],

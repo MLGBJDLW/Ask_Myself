@@ -1013,6 +1013,7 @@ mod tests {
     fn test_skill(id: &str) -> Skill {
         Skill {
             id: id.to_string(),
+            canonical_name: id.to_string(),
             name: id.to_string(),
             description: "Use for tests".to_string(),
             content: "Body".to_string(),

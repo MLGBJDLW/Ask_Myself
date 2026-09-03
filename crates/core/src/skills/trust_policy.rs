@@ -154,6 +154,7 @@ mod tests {
     fn skill_with_source(source_path: Option<&str>, builtin: bool, enabled: bool) -> Skill {
         Skill {
             id: "skill-1".to_string(),
+            canonical_name: "skill".to_string(),
             name: "Skill".to_string(),
             description: "Use for tests".to_string(),
             content: "Body".to_string(),

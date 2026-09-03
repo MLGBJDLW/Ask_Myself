@@ -125,6 +125,7 @@ pub fn build_loaded_skills_section_with_budget(skills: &[Skill], max_chars: usiz
 
         section.push_str(&format!("\n### {display_name}\n"));
         section.push_str(&format!("skill_id: {}\n", skill.id));
+        section.push_str(&format!("canonical_name: {}\n", skill.canonical_name));
         section.push_str(&format!("source: {source}\n"));
         section.push_str(&format!(
             "use_when: {}\n",
@@ -223,7 +224,7 @@ pub fn build_skills_section(skills: &[Skill]) -> String {
 
 /// Serialize a skill to standard SKILL.md text (YAML frontmatter + body).
 pub fn export_skill_to_md(skill: &Skill) -> String {
-    let name = escape_yaml_scalar(&skill.name);
+    let name = escape_yaml_scalar(&skill.canonical_name);
     let description = escape_yaml_scalar(&skill.description);
     format!(
         "---\nname: {name}\ndescription: {description}\n---\n\n{}\n",

@@ -48,7 +48,7 @@ shape:
 
 | Directory | Current behavior |
 | --- | --- |
-| `skills/<database-id>/` | Registered user skills are materialized here. Startup or explicit Reload imports valid edits while preserving the database identity and enabled state. Rejected edits and unmodeled files remain untouched so the user can correct or keep them. Unknown folders are not activated until they pass the explicit import and security-review flow. Disabling a skill never deletes its files. |
+| `skills/<canonical-name>/` | Registered user skills use the Agent Skills canonical name for the folder and `SKILL.md` name while retaining an independent immutable database id and display name. Startup or explicit Reload imports valid edits while preserving database identity and enabled state. Rejected edits and unmodeled files remain untouched so the user can correct or keep them. Unknown folders are not activated until they pass the explicit import and security-review flow. Disabling a skill never deletes its files. |
 | `themes/<theme-id>.json` | Declarative theme resources are schema-validated. Valid files override the same theme id in the persisted projection during hydration, including after registry initialization. After the first migration projection, deleting or renaming a tracked file removes its old theme identity. Rejected files remain untouched for correction. |
 | `connectors/mcp.json` | Versioned MCP declarations are validated as a whole and projected into the runtime store. Invalid updates retain the last valid projection. |
 | `capabilities/`, `workflows/` | Reserved package locations. Merely placing a file here does not grant permissions or activate native code; each package still needs a supported, trust-gated host path. |
@@ -56,7 +56,12 @@ shape:
 On first startup after this layout is introduced, Nexa non-destructively copies
 legacy user skill projections and `mcp-connectors.json` from app data when the
 matching `.nexa` target does not already exist. Existing user-owned files always
-win, and the legacy files remain in place as a rollback source.
+win. After one complete later startup has read and materialized only the
+canonical `.nexa` files, Nexa removes only legacy regular files whose canonical
+copy still verifies. Modified, unknown, linked, conflicting, or in-use paths are
+preserved with diagnostics. Bundled skill runtime assets live under
+`<app-data>/runtimes/builtin-skills`; they are cache/runtime data, not a second
+user skill source.
 
 Workspace-local declarations remain separate under `<workspace>/.nexa`. They
 are scoped to that registered source and its trust decision; they must not be

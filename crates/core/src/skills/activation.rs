@@ -41,7 +41,7 @@ pub fn build_skill_activation_envelope(
     SkillActivationEnvelope {
         version: SKILL_ACTIVATION_ENVELOPE_VERSION,
         skill_id: skill.id.clone(),
-        name: skill.name.clone(),
+        name: skill.canonical_name.clone(),
         source: source.to_string(),
         directory: skill_directory(source),
         trust_state: trust_state_for_skill(skill, worktree_trusted),
@@ -79,6 +79,7 @@ mod tests {
     fn activation_envelope_contains_body_without_resource_content() {
         let skill = Skill {
             id: "skill-1".to_string(),
+            canonical_name: "skill".to_string(),
             name: "Skill".to_string(),
             description: "Use for tests".to_string(),
             content: "Full body".to_string(),

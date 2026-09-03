@@ -60,13 +60,15 @@ pub use spec::{
 };
 pub(crate) use storage::normalize_resource_bundle;
 pub use storage::{
-    builtin_skill_dir, configure_user_skills_directory, materialize_skills_to_disk,
-    materialize_user_skill_to_configured_directory, materialize_user_skill_to_directory,
-    materialize_user_skill_to_disk, materialize_user_skills_to_directory,
-    materialize_user_skills_to_directory_except, materialize_user_skills_to_disk,
-    remove_materialized_user_skill, remove_materialized_user_skill_from_directory,
+    builtin_skill_dir, configure_user_skills_directory, derive_canonical_skill_name,
+    materialize_skills_to_disk, materialize_user_skill_to_configured_directory,
+    materialize_user_skill_to_directory, materialize_user_skill_to_disk,
+    materialize_user_skills_to_directory, materialize_user_skills_to_directory_except,
+    materialize_user_skills_to_disk, remove_materialized_user_skill,
+    remove_materialized_user_skill_from_directory,
     remove_obsolete_user_skill_resources_from_configured_directory,
     remove_obsolete_user_skill_resources_from_directory, user_skill_dir,
+    validate_canonical_skill_name, MAX_CANONICAL_SKILL_NAME_CHARS,
 };
 pub use trust_policy::{
     classify_skill_source, evaluate_skill_trust_policy, trust_state_for_skill, SkillSourceKind,
@@ -185,6 +187,7 @@ mod tests {
     fn test_build_skills_section_with_skills() {
         let skills = vec![Skill {
             id: "1".into(),
+            canonical_name: "concise".into(),
             name: "Concise".into(),
             description: "Be brief".into(),
             content: "Be brief.".into(),
@@ -700,6 +703,7 @@ mod tests {
     fn test_export_skill_to_md_roundtrip() {
         let skill = Skill {
             id: "user-1".into(),
+            canonical_name: "test-name".into(),
             name: "Test Name".into(),
             description: "When to use it".into(),
             content: "## Rules\n\n1. Do X\n".into(),
@@ -716,7 +720,7 @@ mod tests {
         };
         let md = export_skill_to_md(&skill);
         let (fm, body) = parse_skill_file(&md).unwrap();
-        assert_eq!(fm.name, "Test Name");
+        assert_eq!(fm.name, "test-name");
         assert_eq!(fm.description, "When to use it");
         assert!(body.contains("## Rules"));
         assert!(body.contains("Do X"));
@@ -851,6 +855,144 @@ mod tests {
     }
 
     #[test]
+    fn test_uuid_skill_directory_migrates_to_canonical_name_without_losing_unknown_files() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let root = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Readable Skill Name".into(),
+                description: "Use for migration tests".into(),
+                content: "Keep the declaration portable.".into(),
+                enabled: false,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy = root.path().join(&saved.id);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("SKILL.md"), "legacy projection\n").unwrap();
+        fs::write(legacy.join("README.md"), "user-owned notes\n").unwrap();
+
+        let canonical = materialize_user_skill_to_directory(root.path(), &saved).unwrap();
+
+        assert_eq!(canonical, root.path().join("readable-skill-name"));
+        assert!(!legacy.exists());
+        assert_eq!(
+            fs::read_to_string(canonical.join("README.md")).unwrap(),
+            "user-owned notes\n"
+        );
+        let (frontmatter, _) =
+            parse_skill_file(&fs::read_to_string(canonical.join("SKILL.md")).unwrap()).unwrap();
+        assert_eq!(frontmatter.name, "readable-skill-name");
+    }
+
+    #[test]
+    fn test_uuid_skill_directory_conflict_is_preserved_without_merging() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let root = tempdir().unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Conflicting Skill".into(),
+                description: "Use for conflict tests".into(),
+                content: "Do not merge directories.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy = root.path().join(&saved.id);
+        let canonical = root.path().join(&saved.canonical_name);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(legacy.join("legacy.txt"), "legacy").unwrap();
+        fs::write(canonical.join("canonical.txt"), "canonical").unwrap();
+
+        let error = materialize_user_skill_to_directory(root.path(), &saved).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("canonical directory already exists"));
+        assert!(legacy.join("legacy.txt").is_file());
+        assert!(canonical.join("canonical.txt").is_file());
+    }
+
+    #[test]
+    fn test_missing_canonical_name_is_backfilled_without_changing_database_id() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let saved = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Legacy Display Name".into(),
+                description: "Use for database migration tests".into(),
+                content: "Keep the identity.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE skills SET canonical_name = NULL WHERE id = ?1",
+                rusqlite::params![&saved.id],
+            )
+            .unwrap();
+
+        let migrated = db.list_skills().unwrap().remove(0);
+
+        assert_eq!(migrated.id, saved.id);
+        assert_eq!(migrated.name, "Legacy Display Name");
+        assert_eq!(migrated.canonical_name, "legacy-display-name");
+    }
+
+    #[test]
+    fn test_localized_legacy_names_receive_distinct_portable_canonical_names() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let first = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Legacy Writer One".into(),
+                description: "Localized migration".into(),
+                content: "First skill".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let second = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Legacy Writer Two".into(),
+                description: "Localized migration".into(),
+                content: "Second skill".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        for id in [&first.id, &second.id] {
+            db.conn()
+                .execute(
+                    "UPDATE skills SET name = '写作助手', canonical_name = NULL WHERE id = ?1",
+                    rusqlite::params![id],
+                )
+                .unwrap();
+        }
+
+        let migrated = db.list_skills().unwrap();
+        assert_eq!(migrated.len(), 2);
+        assert!(migrated.iter().all(|skill| skill.name == "写作助手"));
+        assert!(migrated.iter().all(|skill| skill
+            .canonical_name
+            .starts_with("skill-u5199-u4f5c-u52a9-u624b-")));
+        assert_ne!(migrated[0].canonical_name, migrated[1].canonical_name);
+        assert!(migrated.iter().all(|skill| {
+            validate_canonical_skill_name(&skill.canonical_name).is_ok()
+                && skill.id != skill.canonical_name
+        }));
+    }
+
+    #[test]
     fn test_materialize_unchanged_user_skill_preserves_files() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -953,7 +1095,7 @@ mod tests {
                 }],
             })
             .unwrap();
-        let skill_dir = user_skill_dir(dir.path(), &saved.id);
+        let skill_dir = user_skill_dir(dir.path(), &saved.canonical_name);
         fs::create_dir_all(&skill_dir).unwrap();
         symlink(outside.path(), skill_dir.join("scripts")).unwrap();
 
@@ -992,13 +1134,13 @@ mod tests {
             })
             .unwrap();
         materialize_user_skill_to_disk(dir.path(), &saved).unwrap();
-        assert!(user_skill_dir(dir.path(), &saved.id).exists());
+        assert!(user_skill_dir(dir.path(), &saved.canonical_name).exists());
 
         db.toggle_skill(&saved.id, false).unwrap();
         let disabled = db.list_skills().unwrap();
         materialize_user_skills_to_disk(dir.path(), &disabled).unwrap();
 
-        assert!(!user_skill_dir(dir.path(), &saved.id).exists());
+        assert!(!user_skill_dir(dir.path(), &saved.canonical_name).exists());
     }
 
     #[test]
@@ -1019,7 +1161,11 @@ mod tests {
 
         materialize_user_skills_to_directory(dir.path(), &[saved.clone()]).unwrap();
 
-        assert!(dir.path().join(&saved.id).join("SKILL.md").is_file());
+        assert!(dir
+            .path()
+            .join(&saved.canonical_name)
+            .join("SKILL.md")
+            .is_file());
     }
 
     #[test]
@@ -1109,11 +1255,11 @@ mod tests {
     #[test]
     fn test_discover_skills_in_directory_recurses_and_loads_resources() {
         let dir = tempdir().unwrap();
-        let nested = dir.path().join("nested/productivity");
+        let nested = dir.path().join("nested/nested-skill");
         fs::create_dir_all(nested.join("references")).unwrap();
         fs::write(
             nested.join("SKILL.md"),
-            "---\nname: Nested Skill\ndescription: Recursive discovery\n---\n\n## Rules\n\nWork carefully.\n",
+            "---\nname: nested-skill\ndescription: Recursive discovery\n---\n\n## Rules\n\nWork carefully.\n",
         )
         .unwrap();
         fs::write(
@@ -1124,7 +1270,7 @@ mod tests {
 
         let discovered = discover_skills_in_directory(dir.path()).unwrap();
         assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].name, "Nested Skill");
+        assert_eq!(discovered[0].name, "nested-skill");
         assert!(discovered[0].skill_file.ends_with("SKILL.md"));
         assert_eq!(discovered[0].resources.len(), 1);
         assert_eq!(discovered[0].resources[0].path, "references/guide.md");
@@ -1137,7 +1283,7 @@ mod tests {
         fs::create_dir_all(skill_dir.join("agents")).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: Custom Skill\ndescription: Use for custom work\n---\n\n## Rules\n\nWork carefully.\n",
+            "---\nname: custom-skill\ndescription: Use for custom work\n---\n\n## Rules\n\nWork carefully.\n",
         )
         .unwrap();
         fs::write(
@@ -1303,6 +1449,29 @@ mod tests {
                 "expected materialized document runtime resource {path}"
             );
         }
+    }
+
+    #[test]
+    fn test_builtin_skill_runtime_moves_out_of_legacy_skills_root_precisely() {
+        let dir = tempdir().unwrap();
+        let bundle = registry::builtin_skill_bundles()
+            .iter()
+            .find(|bundle| bundle.slug == "fiction-writing")
+            .unwrap();
+        let legacy = dir.path().join("skills/fiction-writing");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("SKILL.md"), bundle.skill_md).unwrap();
+        fs::write(legacy.join("user-note.md"), "preserve me\n").unwrap();
+
+        let base = materialize_skills_to_disk(dir.path()).unwrap();
+
+        assert_eq!(base, dir.path().join("runtimes/builtin-skills"));
+        assert!(base.join("fiction-writing/SKILL.md").is_file());
+        assert!(!legacy.join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(legacy.join("user-note.md")).unwrap(),
+            "preserve me\n"
+        );
     }
 
     #[test]

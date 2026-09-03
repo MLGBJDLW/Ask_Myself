@@ -92,6 +92,7 @@ pub fn load_builtin_skills() -> Vec<Skill> {
                     derive_skill_metadata(&fm.name, &fm.description, &resource_bundle);
                 out.push(Skill {
                     id: format!("builtin-{}", bundle.slug),
+                    canonical_name: fm.name.clone(),
                     name: fm.name,
                     description: fm.description,
                     content: body,

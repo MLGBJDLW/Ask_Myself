@@ -291,7 +291,11 @@ pub(crate) fn enrich_tokens(tokens: &[String]) -> Vec<String> {
 }
 
 fn skill_surface_text(skill: &Skill) -> String {
-    let mut parts = vec![skill.name.clone(), skill.description.clone()];
+    let mut parts = vec![
+        skill.canonical_name.clone(),
+        skill.name.clone(),
+        skill.description.clone(),
+    ];
     parts.push(skill.content.chars().take(500).collect());
     for resource in &skill.resources {
         parts.push(resource.path.replace(['/', '-', '_', '.'], " "));
@@ -322,7 +326,12 @@ pub(crate) fn score_skill(skill: &Skill, query_tokens: &[String], query_normaliz
     let content_tokens: HashSet<String> = enrich_tokens(&tokenize(&content_head))
         .into_iter()
         .collect();
-    let name_tokens: HashSet<String> = enrich_tokens(&tokenize(&skill.name)).into_iter().collect();
+    let name_tokens: HashSet<String> = enrich_tokens(&tokenize(&format!(
+        "{} {}",
+        skill.canonical_name, skill.name
+    )))
+    .into_iter()
+    .collect();
     let resource_tokens: HashSet<String> = skill
         .resources
         .iter()
@@ -363,11 +372,7 @@ fn fallback_skill_order(a: &Skill, b: &Skill) -> std::cmp::Ordering {
 }
 
 fn skill_slug(skill: &Skill) -> String {
-    skill
-        .id
-        .strip_prefix("builtin-")
-        .unwrap_or(skill.id.as_str())
-        .to_string()
+    skill.canonical_name.clone()
 }
 
 fn normalize_selector(value: &str) -> String {
@@ -391,6 +396,7 @@ fn selector_matches_skill(skill: &Skill, selector: &str) -> bool {
     let slug = skill_slug(skill);
     selector_normalized == normalize_selector(&skill.id)
         || selector_normalized == normalize_selector(&slug)
+        || selector_normalized == normalize_selector(&skill.canonical_name)
         || selector_normalized == normalize_selector(&skill.name)
         || selector_normalized == normalize_selector(&skill.interface.display_name)
 }
@@ -671,6 +677,7 @@ mod tests {
     fn test_skill(id: &str, name: &str, description: &str) -> Skill {
         Skill {
             id: id.to_string(),
+            canonical_name: crate::skills::derive_canonical_skill_name(name).unwrap(),
             name: name.to_string(),
             description: description.to_string(),
             content: format!("# {name}\n{description}"),

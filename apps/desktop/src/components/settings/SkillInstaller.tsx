@@ -24,11 +24,11 @@ export function SkillInstaller({ skills, onInstalled }: SkillInstallerProps) {
   const [acceptBlocked, setAcceptBlocked] = useState(false);
 
   const installedNames = useMemo(
-    () => new Set(skills.filter((skill) => !skill.builtin).map((skill) => skill.name.toLocaleLowerCase())),
+    () => new Set(skills.filter((skill) => !skill.builtin).map((skill) => skill.canonicalName.toLocaleLowerCase())),
     [skills],
   );
   const builtinNames = useMemo(
-    () => new Set(skills.filter((skill) => skill.builtin).map((skill) => skill.name.toLocaleLowerCase())),
+    () => new Set(skills.filter((skill) => skill.builtin).map((skill) => skill.canonicalName.toLocaleLowerCase())),
     [skills],
   );
   const conflicts = useMemo(

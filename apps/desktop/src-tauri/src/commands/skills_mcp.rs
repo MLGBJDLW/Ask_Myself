@@ -58,10 +58,10 @@ fn materialize_user_skill_resources_except(
     .map_err(|e| e.to_string())
 }
 
-fn remove_user_skill_resource(state: &AppState, skill_id: &str) -> Result<(), String> {
+fn remove_user_skill_resource(state: &AppState, skill: &Skill) -> Result<(), String> {
     nexa_core::skills::remove_materialized_user_skill_from_directory(
         &state.user_extensions.skills_dir(),
-        skill_id,
+        skill,
     )
     .map_err(|e| e.to_string())
 }
@@ -94,8 +94,9 @@ pub async fn save_skill_cmd(
 
 #[tauri::command]
 pub async fn delete_skill_cmd(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let previous = find_user_skill(&state, &id)?.ok_or_else(|| format!("Skill not found: {id}"))?;
     state.db.delete_skill(&id).map_err(|e| e.to_string())?;
-    remove_user_skill_resource(&state, &id)
+    remove_user_skill_resource(&state, &previous)
 }
 
 #[tauri::command]

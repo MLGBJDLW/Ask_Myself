@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::model::Skill;
 use super::resource_access::normalize_skill_resource_path;
+use super::storage::validate_canonical_skill_name;
 
 pub const NEXA_SKILL_SPEC_VERSION: u16 = 1;
 pub const MAX_SKILL_NAME_CHARS: usize = 96;
@@ -37,6 +38,12 @@ pub fn validate_skill_spec(skill: &Skill) -> SkillSpecReport {
     let mut issues = Vec::new();
 
     validate_skill_id(&skill.id, &mut issues);
+    if let Err(error) = validate_canonical_skill_name(&skill.canonical_name) {
+        issues.push(SkillSpecIssue::new(
+            "canonical_name.invalid",
+            error.to_string(),
+        ));
+    }
     validate_skill_name(&skill.name, &mut issues);
     validate_description(&skill.description, &mut issues);
     validate_resources(skill, &mut issues);
@@ -181,6 +188,7 @@ mod tests {
     fn valid_skill() -> Skill {
         Skill {
             id: "custom-skill".to_string(),
+            canonical_name: "custom-skill".to_string(),
             name: "Custom Skill".to_string(),
             description: "Use for custom work".to_string(),
             content: "Body".to_string(),

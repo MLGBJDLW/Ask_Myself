@@ -8,6 +8,11 @@ pub(crate) const OPENAI_AGENT_METADATA_PATH: &str = "agents/openai.yaml";
 #[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub id: String,
+    /// Stable Agent Skills name used for invocation and the package folder.
+    /// Internal database IDs never appear in the portable path.
+    #[serde(default)]
+    pub canonical_name: String,
+    /// User-facing display name. This may be localized or contain spaces.
     pub name: String,
     /// Concise trigger-match description (when to activate this skill).
     #[serde(default)]

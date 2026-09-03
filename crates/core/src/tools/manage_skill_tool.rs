@@ -71,6 +71,7 @@ fn load_skill_for_action(db: &Database, skill_id: &str) -> Result<Skill, CoreErr
         .into_iter()
         .find(|skill| {
             skill.id == skill_id
+                || skill.canonical_name == skill_id
                 || skill.name == skill_id
                 || skill.id.strip_prefix("builtin-") == Some(skill_id)
         })
@@ -328,6 +329,7 @@ impl Tool for ManageSkillTool {
                     .into_iter()
                     .find(|skill| {
                         skill.id == skill_id
+                            || skill.canonical_name == skill_id
                             || skill.name == skill_id
                             || skill.id.strip_prefix("builtin-") == Some(skill_id.as_str())
                     })
@@ -357,8 +359,9 @@ impl Tool for ManageSkillTool {
                     skill.interface.short_description.as_str()
                 };
                 let content = format!(
-                    "Skill: {} ({})\nEnabled: {}\nBuiltin: {}\nSource: {}\nShort description: {}\nDescription: {}\nPolicy: implicit={}\n{}\n\nContent:\n{}",
+                    "Skill: {} ({}, id={})\nEnabled: {}\nBuiltin: {}\nSource: {}\nShort description: {}\nDescription: {}\nPolicy: implicit={}\n{}\n\nContent:\n{}",
                     skill.name,
+                    skill.canonical_name,
                     skill.id,
                     skill.enabled,
                     skill.builtin,

@@ -619,6 +619,7 @@ mod tests {
     fn test_skill(id: &str, name: &str, display_name: &str) -> Skill {
         Skill {
             id: id.to_string(),
+            canonical_name: crate::skills::derive_canonical_skill_name(name).unwrap(),
             name: name.to_string(),
             description: "Use for test work".to_string(),
             content: "Do test work.".to_string(),

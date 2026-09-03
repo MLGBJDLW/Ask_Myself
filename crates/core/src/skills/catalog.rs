@@ -9,6 +9,7 @@ pub const SKILL_CATALOG_ENVELOPE_VERSION: u16 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct SkillCatalogEntry {
     pub skill_id: String,
+    pub canonical_name: String,
     pub name: String,
     pub short_description: String,
     pub use_when: String,
@@ -49,6 +50,7 @@ pub fn build_skill_catalog_entry(skill: &Skill, worktree_trusted: bool) -> Skill
 
     SkillCatalogEntry {
         skill_id: skill.id.clone(),
+        canonical_name: skill.canonical_name.clone(),
         name: display_name.to_string(),
         short_description: truncate_one_line(short_description, 250),
         use_when: truncate_one_line(&skill.description, 250),
@@ -159,7 +161,7 @@ fn render_catalog_entry(entry: &SkillCatalogEntry) -> String {
     };
 
     format!(
-        "<skill id=\"{}\" name=\"{}\" source=\"{}\" trust_state=\"{}\" implicit=\"{}\">\n\
+        "<skill id=\"{}\" name=\"{}\" canonical_name=\"{}\" source=\"{}\" trust_state=\"{}\" implicit=\"{}\">\n\
   <short_description>{}</short_description>\n\
   <use_when>{}</use_when>\n\
   <dependencies>{}</dependencies>\n\
@@ -167,6 +169,7 @@ fn render_catalog_entry(entry: &SkillCatalogEntry) -> String {
 </skill>\n",
         escape_prompt_xml(&entry.skill_id),
         escape_prompt_xml(&entry.name),
+        escape_prompt_xml(&entry.canonical_name),
         escape_prompt_xml(&entry.source),
         entry.trust_state.as_str(),
         entry.policy.allow_implicit_invocation,
@@ -202,6 +205,7 @@ mod tests {
     fn catalog_prompt_envelope_escapes_metadata() {
         let skill = Skill {
             id: "skill-1".to_string(),
+            canonical_name: "a-skill".to_string(),
             name: "A <Skill>".to_string(),
             description: "Use when A & B".to_string(),
             content: "Body should not appear".to_string(),
@@ -241,6 +245,7 @@ mod tests {
         let skills = (0..10)
             .map(|index| Skill {
                 id: format!("skill-{index}"),
+                canonical_name: format!("skill-{index}"),
                 name: format!("Skill {index}"),
                 description: "Use for tests".to_string(),
                 content: "Body".to_string(),
