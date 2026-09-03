@@ -44,6 +44,10 @@ import {
 } from "../../lib/chatAttachments";
 import { CheckpointMenu } from "./CheckpointMenu";
 import { VoiceInputButton } from "./VoiceInputButton";
+import {
+  applyVoiceDictationEvent,
+  type VoiceDraftSession,
+} from "../../features/voice/voiceDraftProjection";
 import { EmojiPicker } from "./EmojiPicker";
 import { Modal } from "../ui/Modal";
 import { CollapsibleMotion } from "../ui/Motion";
@@ -422,6 +426,7 @@ export function ChatInput({
   const previousPowerModeKeyRef = useRef(draftKey);
   const previousDraftKeyRef = useRef(draftKey);
   const sendInFlightRef = useRef(false);
+  const voiceDraftSessionRef = useRef<VoiceDraftSession | null>(null);
   // Compaction only locks actions that mutate conversation history. The draft
   // remains fully editable so the user can keep typing while the checkpoint is
   // being built, then send as soon as compaction completes.
@@ -568,7 +573,17 @@ export function ChatInput({
     persistChatInputDraft(draftKey, draft);
   }, [activeSlashCommandId, attachments, draftKey]);
 
+  const handleVoiceDictationEvent = useCallback((event: Parameters<typeof applyVoiceDictationEvent>[2]) => {
+    setValue((current) => {
+      const projected = applyVoiceDictationEvent(current, voiceDraftSessionRef.current, event);
+      voiceDraftSessionRef.current = projected.session;
+      if (projected.draft !== current) persistDraft(projected.draft);
+      return projected.draft;
+    });
+  }, [persistDraft]);
+
   useEffect(() => {
+    voiceDraftSessionRef.current = null;
     const previousKey = previousDraftKeyRef.current;
     if (
       sendInFlightRef.current
@@ -2013,13 +2028,7 @@ export function ChatInput({
           </div>
 
           <VoiceInputButton
-            onTranscript={(text) => {
-              setValue((prev) => {
-                const nextValue = prev + (prev ? " " : "") + text;
-                persistDraft(nextValue);
-                return nextValue;
-              });
-            }}
+            onDictationEvent={handleVoiceDictationEvent}
             disabled={attachmentLocked}
           />
 

@@ -1,16 +1,17 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
+import type { VoiceDictationEvent } from '../../features/voice/voiceDraftProjection';
 import { VoiceRecordingDock } from '../voice/VoiceRecordingDock';
 
 interface VoiceInputButtonProps {
-  onTranscript: (text: string) => void;
+  onDictationEvent: (event: VoiceDictationEvent) => void;
   disabled?: boolean;
 }
 
-export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonProps) {
+export function VoiceInputButton({ onDictationEvent, disabled }: VoiceInputButtonProps) {
   const { t } = useTranslation();
   const voiceRuntime = useVoiceInputRuntime();
   const {
@@ -37,18 +38,31 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
     analyser,
   } =
     voiceRuntime;
+  const lastPublishedPartialRef = useRef('');
+
+  useEffect(() => {
+    if (partialTranscript === lastPublishedPartialRef.current) return;
+    lastPublishedPartialRef.current = partialTranscript;
+    onDictationEvent({ kind: 'interim', text: partialTranscript });
+  }, [onDictationEvent, partialTranscript]);
+
+  const handleCancel = useCallback(() => {
+    cancelRecording();
+    lastPublishedPartialRef.current = '';
+    onDictationEvent({ kind: 'cancel' });
+  }, [cancelRecording, onDictationEvent]);
 
   // Cancel on Escape
   useEffect(() => {
     if (!isRecording) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        cancelRecording();
+        handleCancel();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [isRecording, cancelRecording]);
+  }, [handleCancel, isRecording]);
 
   const showRuntimeError = useCallback((code: VoiceRuntimeErrorCode, message?: string) => {
     if (code === 'whisper_model_missing') {
@@ -79,23 +93,40 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
   useEffect(() => {
     if (!automaticResult) return;
     if (automaticResult.status === 'transcribed') {
-      onTranscript(automaticResult.text);
+      onDictationEvent({ kind: 'final', text: automaticResult.text });
     } else if (automaticResult.status === 'error') {
+      onDictationEvent({ kind: 'end' });
       showRuntimeError(automaticResult.code, automaticResult.message);
+    } else if (automaticResult.status === 'empty') {
+      onDictationEvent({ kind: 'cancel' });
     }
+    lastPublishedPartialRef.current = '';
     clearAutomaticResult();
-  }, [automaticResult, clearAutomaticResult, onTranscript, showRuntimeError]);
+  }, [automaticResult, clearAutomaticResult, onDictationEvent, showRuntimeError]);
 
   const handleClick = useCallback(async () => {
     if (busy) return;
 
+    const wasRecording = isRecording;
+    if (!wasRecording) {
+      // Establish composer ownership before microphone startup can race a fast
+      // provider interim event back to React.
+      lastPublishedPartialRef.current = '';
+      onDictationEvent({ kind: 'start' });
+    }
     const result = await toggleRecording();
     if (result.status === 'transcribed') {
-      onTranscript(result.text);
+      lastPublishedPartialRef.current = '';
+      onDictationEvent({ kind: 'final', text: result.text });
+    } else if (result.status === 'empty') {
+      lastPublishedPartialRef.current = '';
+      onDictationEvent({ kind: 'cancel' });
     } else if (result.status === 'error') {
+      if (wasRecording) onDictationEvent({ kind: 'end' });
+      else onDictationEvent({ kind: 'cancel' });
       showRuntimeError(result.code, result.message);
     }
-  }, [busy, onTranscript, showRuntimeError, toggleRecording]);
+  }, [busy, isRecording, onDictationEvent, showRuntimeError, toggleRecording]);
 
   const handleDiscard = useCallback(async () => {
     if (busy) return;
@@ -129,7 +160,7 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
           microphoneLabel={activeMicrophoneLabel}
           partialTranscript={partialTranscript}
           transportState={transportState}
-          onCancel={cancelRecording}
+          onCancel={handleCancel}
           onPauseResume={() => { void handlePauseResume(); }}
           onStop={() => { void handleClick(); }}
         />
