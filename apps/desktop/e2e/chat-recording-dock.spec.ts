@@ -546,6 +546,18 @@ test('batch fallback clears the stale realtime hypothesis before a draft switch'
   await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
 
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'late queued realtime hypothesis',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+
   await page.getByRole('button', { name: /Other Voice Draft/ }).click();
   await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');

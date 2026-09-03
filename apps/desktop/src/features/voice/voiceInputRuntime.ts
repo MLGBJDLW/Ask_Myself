@@ -438,8 +438,19 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       setHasPendingVoiceSpool(true);
       const transcribeRealtimeFallback = () => {
         // The managed spool becomes the sole transcript authority once the
-        // realtime terminal path fails. Remove its stale interim hypothesis so
-        // a later callback identity change cannot publish it into another draft.
+        // realtime terminal path fails. Detach the realtime actor before the
+        // slower batch call so queued provider events cannot repopulate its
+        // stale interim hypothesis or publish it into another draft later.
+        uploadQueue?.cancel('Realtime finalization fell back to managed voice spool');
+        if (realtimeSessionIdRef.current === sessionId) {
+          realtimeSessionIdRef.current = null;
+          realtimeEventSequenceRef.current = 0;
+          if (realtimeUploadQueueRef.current === uploadQueue) {
+            realtimeUploadQueueRef.current = null;
+          }
+          realtimeUploadErrorRef.current = null;
+        }
+        if (sessionId) void api.cancelRealtimeTranscription(sessionId);
         setPartialTranscript('');
         return transcribeManagedVoiceSpool(descriptor.sessionId);
       };
@@ -455,7 +466,6 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         }
         transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
       } catch {
-        void api.cancelRealtimeTranscription(sessionId);
         return transcribeRealtimeFallback();
       }
       try {
