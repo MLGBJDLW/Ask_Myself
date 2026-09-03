@@ -53,9 +53,25 @@ fn visible_line_start(mut line: &str) -> &str {
 
 fn line_starts_with_marker(line: &str, marker: &str) -> bool {
     let visible_line = visible_line_start(line);
-    visible_line
-        .get(..marker.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(marker))
+    let Some(prefix) = visible_line.get(..marker.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(marker) {
+        return false;
+    }
+
+    let remainder = visible_line[marker.len()..].trim();
+    if remainder.is_empty() {
+        return true;
+    }
+
+    // A reserved heading may end in Markdown closing tokens or introduce its
+    // controller payload with a colon. A following word belongs to ordinary
+    // prose (for example, "Provider replay boundary conditions") and must not
+    // be treated as an internal marker.
+    let after_markdown_closers = remainder.trim_start_matches(['*', '_', '`', '~', ']', ')', '#']);
+    after_markdown_closers.is_empty()
+        || matches!(after_markdown_closers.chars().next(), Some(':' | '：'))
 }
 
 fn contains_marker(text: &str, marker: &str) -> bool {
@@ -176,6 +192,25 @@ mod tests {
                 "The report explains why **Long Task Control State** appeared in old output."
             ),
             None
+        );
+    }
+
+    #[test]
+    fn reserved_prefixes_do_not_capture_longer_headings() {
+        let scope = scope(&["give me the result"]);
+        for answer in [
+            "## Provider replay boundary conditions\nThese are user-facing details.",
+            "## Long Task Control State machines\nThis discusses state-machine design.",
+        ] {
+            assert_eq!(
+                scope.contamination_marker(answer),
+                None,
+                "a longer user-facing heading must not be reserved: {answer}"
+            );
+        }
+        assert_eq!(
+            scope.contamination_marker("## **Long Task Control State**: iteration 11"),
+            Some("Long Task Control State")
         );
     }
 
