@@ -266,7 +266,7 @@ jobs:
 
       - name: TypeScript check
         working-directory: apps/desktop
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Frontend build
         working-directory: apps/desktop

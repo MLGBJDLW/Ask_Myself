@@ -297,6 +297,10 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Verify native TypeScript 7 runtime
+        working-directory: apps/desktop
+        run: npm run typescript:check
+
       - name: Remove stale native build cache (macOS)
         if: runner.os == 'macOS'
         shell: bash
