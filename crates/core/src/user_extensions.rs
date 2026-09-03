@@ -527,11 +527,52 @@ fn skill_markdown_projection_matches(source: &Path, target: &Path, skill: &Skill
     else {
         return false;
     };
+    let Some(source_raw_frontmatter) = normalized_skill_frontmatter(&source_text) else {
+        return false;
+    };
+    let Some(target_raw_frontmatter) = normalized_skill_frontmatter(&target_text) else {
+        return false;
+    };
     target_frontmatter.name == skill.canonical_name
         && (source_frontmatter.name == skill.canonical_name
             || source_frontmatter.name == skill.name)
         && source_frontmatter.description == target_frontmatter.description
+        && source_raw_frontmatter == target_raw_frontmatter
         && source_body.trim() == target_body.trim()
+}
+
+/// Compare the complete frontmatter instead of the typed projection, while
+/// allowing the one migration-owned change from a display name to its portable
+/// canonical name. Comments and extra keys still have to exist in both copies;
+/// ambiguous name syntax keeps the legacy declaration non-deletable.
+fn normalized_skill_frontmatter(content: &str) -> Option<String> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    let rest = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))?;
+    let (frontmatter, _) = crate::skills::split_frontmatter(rest).ok()?;
+    let normalized = frontmatter.replace("\r\n", "\n").replace('\r', "\n");
+    let mut found_name = false;
+    let mut lines = Vec::new();
+    for line in normalized.split('\n') {
+        if let Some(value) = line.strip_prefix("name:") {
+            let value = value.trim();
+            if found_name
+                || value.is_empty()
+                || value.starts_with(['|', '>'])
+                || value.starts_with(['&', '*', '!'])
+                || value.contains('#')
+                || serde_yaml::from_str::<String>(value).is_err()
+            {
+                return None;
+            }
+            found_name = true;
+            lines.push("name: <canonical-name>");
+        } else {
+            lines.push(line);
+        }
+    }
+    found_name.then(|| lines.join("\n"))
 }
 
 fn verify_legacy_skill_projection(
@@ -911,6 +952,60 @@ mod tests {
         assert_eq!(
             fs::read_to_string(canonical_skill.join("README.md")).unwrap(),
             "copied user note\n"
+        );
+    }
+
+    #[test]
+    fn legacy_skill_with_unprojected_frontmatter_metadata_is_preserved() {
+        let home = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let skill = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Metadata Keeper".into(),
+                description: "Use for cleanup fidelity tests".into(),
+                content: "Preserve this body.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy_skill = app_data.path().join("skills/user").join(&skill.id);
+        fs::create_dir_all(&legacy_skill).unwrap();
+        let legacy_markdown = format!(
+            "---\n# user-owned licensing note\nname: {}\ndescription: {}\nlicense: Proprietary\nmetadata:\n  owner: local-user\n---\n\n{}\n",
+            skill.name, skill.description, skill.content
+        );
+        fs::write(legacy_skill.join("SKILL.md"), &legacy_markdown).unwrap();
+
+        let layout = UserExtensionLayout::resolve(home.path(), app_data.path(), None).unwrap();
+        layout.bootstrap().unwrap();
+        materialize_user_skills_to_directory(&layout.skills_dir(), std::slice::from_ref(&skill))
+            .unwrap();
+        let canonical_markdown = fs::read_to_string(
+            layout
+                .skills_dir()
+                .join(&skill.canonical_name)
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        assert!(!canonical_markdown.contains("license:"));
+
+        let armed = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+        assert!(armed.armed_for_next_start);
+        layout.bootstrap().unwrap();
+        let cleaned = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+
+        assert!(cleaned.preserved_modified >= 1);
+        assert!(legacy_skill.is_dir());
+        assert_eq!(
+            fs::read_to_string(legacy_skill.join("SKILL.md")).unwrap(),
+            legacy_markdown
         );
     }
 
