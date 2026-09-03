@@ -1003,6 +1003,23 @@ test('manual CJK rewrite rejects a provider suffix without a user-owned anchor',
   assert.equal(projection.session, null);
 });
 
+test('manual correction attaches punctuation-only snapshot extensions directly', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  for (const punctuation of ['.', ',', '?', '！']) {
+    let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+    projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+      kind: 'interim',
+      text: 'hello',
+    });
+    projection = applyVoiceDictationEvent('Hello', projection.session, {
+      kind: 'final',
+      text: `hello${punctuation}`,
+    });
+    assert.equal(projection.draft, `Hello${punctuation}`);
+    assert.equal(projection.session, null);
+  }
+});
+
 test('manual correction at the transcript tail does not duplicate a provider suffix', () => {
   const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
   let projection = applyVoiceDictationEvent('', null, { kind: 'start' });

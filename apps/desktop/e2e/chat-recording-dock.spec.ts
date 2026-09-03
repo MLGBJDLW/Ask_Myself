@@ -551,9 +551,21 @@ test('CJK live dictation preserves a manual correction and appends without space
   });
   await expect(composer).toHaveValue('明天天气很好');
 
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 3,
+        text: '今天天气很好。',
+      });
+  });
+  await expect(composer).toHaveValue('明天天气很好。');
+
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
-  await expect(composer).toHaveValue('明天天气很好');
+  await expect(composer).toHaveValue('明天天气很好。');
 });
 
 test('sending an interim transcript terminates dictation without repopulating the composer', async ({ page }) => {

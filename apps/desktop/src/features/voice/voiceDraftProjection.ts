@@ -141,10 +141,16 @@ export function projectVoiceTranscript(
     nextDraft = `${draft.slice(0, session.spanStart)}${replacement}${draft.slice(session.spanEnd)}`;
     spanEnd = session.spanStart + replacement.length;
   } else {
-    nextDraft = appendSpeech(
+    // This is an exact suffix of a cumulative provider snapshot, not a new
+    // utterance. Preserve its own whitespace and punctuation instead of
+    // passing it through the independent-utterance separator.
+    const extension = safeProviderExtension(
+      session.providerText,
+      providerText,
       draft,
-      safeProviderExtension(session.providerText, providerText, draft, session.spanStart),
+      session.spanStart,
     );
+    nextDraft = `${draft}${extension}`;
     spanEnd = nextDraft.length;
   }
 
