@@ -400,6 +400,14 @@ test('keeps the reported linear flow readable in the Xiangnai light resource the
   await expect(page.locator('html')).toHaveClass(/theme-light/);
   await expect(page.locator('html')).toHaveAttribute('data-theme-backdrop', 'true');
   await expect(matchingSurfaces).toHaveCount(2);
+  // Mermaid renders every history block through a shared queue. Wait for the
+  // queue to drain so virtualized transcript remeasurement cannot detach the
+  // target SVG between locator resolution and the computed-style evaluation.
+  await expect(
+    page.getByTestId('mermaid-surface').filter({ hasText: 'Rendering diagram...' }),
+  ).toHaveCount(0);
+  await expect(surface.locator('svg')).toBeVisible();
+  await expect(surface.locator('g.node')).toHaveCount(5);
   const nodes = await surface.locator('g.node').evaluateAll((elements) => elements.map((node) => {
     const shape = node.querySelector<SVGGraphicsElement>('rect, polygon, path, circle, ellipse');
     const label = node.querySelector<SVGGraphicsElement>('.label, .nodeLabel, text');
