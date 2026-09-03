@@ -993,6 +993,34 @@ mod tests {
     }
 
     #[test]
+    fn test_new_localized_names_receive_distinct_portable_canonical_names() {
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let create = || SaveSkillInput {
+            id: None,
+            name: "写作助手".into(),
+            description: "本地写作流程".into(),
+            content: "协助用户完成写作。".into(),
+            enabled: true,
+            resource_bundle: Vec::new(),
+        };
+
+        let first = db.save_skill(&create()).unwrap();
+        let second = db.save_skill(&create()).unwrap();
+
+        assert_eq!(first.name, "写作助手");
+        assert_eq!(second.name, "写作助手");
+        assert_ne!(first.canonical_name, second.canonical_name);
+        for skill in [first, second] {
+            assert!(skill
+                .canonical_name
+                .starts_with("skill-u5199-u4f5c-u52a9-u624b-"));
+            assert!(validate_canonical_skill_name(&skill.canonical_name).is_ok());
+            assert_ne!(skill.id, skill.canonical_name);
+        }
+    }
+
+    #[test]
     fn test_materialize_unchanged_user_skill_preserves_files() {
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();

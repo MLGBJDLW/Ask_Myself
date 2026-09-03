@@ -1140,7 +1140,8 @@ impl Database {
             }
             None => {
                 let new_id = Uuid::new_v4().to_string();
-                let canonical_name = derive_canonical_skill_name(&input.name)?;
+                let canonical_name = derive_canonical_skill_name(&input.name)
+                    .unwrap_or_else(|_| migration_canonical_skill_name(&input.name, &new_id));
                 if builtin_skill_bundles()
                     .iter()
                     .any(|bundle| bundle.slug.eq_ignore_ascii_case(&canonical_name))
