@@ -96,6 +96,10 @@ fn has_visible_heading_boundary(mut remainder: &str) -> bool {
             remainder = remainder[first.len_utf8()..].trim_start();
             continue;
         }
+        if matches!(first, '.' | '。' | '!' | '！' | '?' | '？' | '…') {
+            remainder = remainder[first.len_utf8()..].trim_start();
+            continue;
+        }
 
         // A colon introduces controller payload on the same line. Any other
         // following character belongs to a longer user-facing heading.
@@ -269,6 +273,29 @@ mod tests {
         assert_eq!(
             scope.contamination_marker(
                 "## [Long Task Control State](https://example.com) machines\nUser-facing design notes."
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_reserved_headers_terminated_by_punctuation_only() {
+        let scope = scope(&["give me the result"]);
+        for answer in [
+            "## Long Task Control State.",
+            "## **Provider replay boundary。**",
+            "## [Verified legacy visible-history summary](https://example.com)!",
+            "## Long Task Control State……",
+        ] {
+            assert_eq!(
+                scope.contamination_marker(answer).is_some(),
+                true,
+                "terminal punctuation must not hide the reserved heading: {answer}"
+            );
+        }
+        assert_eq!(
+            scope.contamination_marker(
+                "## Long Task Control State. machines\nUser-facing design notes."
             ),
             None
         );
