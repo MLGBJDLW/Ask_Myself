@@ -56,6 +56,7 @@ test.beforeEach(async ({ page }) => {
       deferWorkletModule: false,
       workletModulePending: false,
       failRealtimeFinish: false,
+      failVoiceSpoolCancel: false,
       defaultRequestCalls: 0,
       stopCalls: 0,
       contextCloseCalls: 0,
@@ -255,6 +256,9 @@ test.beforeEach(async ({ page }) => {
           };
         case 'cancel_voice_audio_spool_cmd':
           voiceCancelCalls.push(String(args.sessionId ?? ''));
+          if (microphoneControl.failVoiceSpoolCancel) {
+            throw new Error('managed voice spool cleanup failed');
+          }
           return null;
         case 'start_realtime_transcription_cmd':
           return 'realtime-voice-test';
@@ -563,6 +567,37 @@ test('batch fallback clears the stale realtime hypothesis before a draft switch'
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
   await page.getByRole('button', { name: /Voice Dock/ }).click();
   await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+});
+
+test('realtime success clears its hypothesis even when private spool cleanup is deferred', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.evaluate(() => {
+    (window as unknown as {
+      __VOICE_MICROPHONE_CONTROL__: { failVoiceSpoolCancel: boolean };
+    }).__VOICE_MICROPHONE_CONTROL__.failVoiceSpoolCancel = true;
+  });
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'stale successful hypothesis',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('stale successful hypothesis');
+
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
+
+  await page.getByRole('button', { name: /Other Voice Draft/ }).click();
+  await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+  await page.getByRole('button', { name: /Voice Dock/ }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('final voice transcript');
 });
 
 test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {

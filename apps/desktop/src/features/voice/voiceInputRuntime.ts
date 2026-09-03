@@ -391,26 +391,36 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     const uploadQueue = realtimeUploadQueueRef.current;
     const voiceSpool = voiceSpoolUploadRef.current;
     realtimeAcceptingAudioRef.current = false;
+    const detachRealtimeProjection = (reason: string) => {
+      uploadQueue?.cancel(reason);
+      if (realtimeSessionIdRef.current === sessionId) {
+        realtimeSessionIdRef.current = null;
+        realtimeEventSequenceRef.current = 0;
+        if (realtimeUploadQueueRef.current === uploadQueue) {
+          realtimeUploadQueueRef.current = null;
+        }
+        realtimeUploadErrorRef.current = null;
+      }
+      setPartialTranscript('');
+    };
     const finishPromise = (async (): Promise<VoiceRuntimeActionResult> => {
       try {
         await recorder.stopRecording();
       } catch (error) {
+        detachRealtimeProjection('Realtime recording stopped with an error');
         if (sessionId) void api.cancelRealtimeTranscription(sessionId);
         if (voiceSpool) void voiceSpool.cancel();
-        if (realtimeSessionIdRef.current === sessionId) {
-          realtimeSessionIdRef.current = null;
-          realtimeEventSequenceRef.current = 0;
-          realtimeUploadQueueRef.current?.cancel();
-          realtimeUploadQueueRef.current = null;
-          realtimeUploadErrorRef.current = null;
-        }
         return {
           status: 'error',
           code: 'recording_failed',
           message: String(error),
         };
       }
-      if (!voiceSpool) return { status: 'empty' };
+      if (!voiceSpool) {
+        detachRealtimeProjection('Realtime recording ended without a managed spool');
+        if (sessionId) void api.cancelRealtimeTranscription(sessionId);
+        return { status: 'empty' };
+      }
 
       setTranscribing(true);
       let descriptor: api.VoiceAudioSpoolDescriptor;
@@ -421,6 +431,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           descriptor = await voiceSpool.finishAcceptedAudio();
         } catch (recoveryError) {
           if (voiceSpoolUploadRef.current === voiceSpool) voiceSpoolUploadRef.current = null;
+          detachRealtimeProjection('Realtime recording could not finalize accepted audio');
           if (sessionId) void api.cancelRealtimeTranscription(sessionId);
           setTranscribing(false);
           return {
@@ -441,17 +452,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         // realtime terminal path fails. Detach the realtime actor before the
         // slower batch call so queued provider events cannot repopulate its
         // stale interim hypothesis or publish it into another draft later.
-        uploadQueue?.cancel('Realtime finalization fell back to managed voice spool');
-        if (realtimeSessionIdRef.current === sessionId) {
-          realtimeSessionIdRef.current = null;
-          realtimeEventSequenceRef.current = 0;
-          if (realtimeUploadQueueRef.current === uploadQueue) {
-            realtimeUploadQueueRef.current = null;
-          }
-          realtimeUploadErrorRef.current = null;
-        }
+        detachRealtimeProjection('Realtime finalization fell back to managed voice spool');
         if (sessionId) void api.cancelRealtimeTranscription(sessionId);
-        setPartialTranscript('');
         return transcribeManagedVoiceSpool(descriptor.sessionId);
       };
 
@@ -465,6 +467,10 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           throw new Error(realtimeUploadErrorRef.current);
         }
         transcript = normalizeTranscript(await api.finishRealtimeTranscription(sessionId));
+        // The accepted terminal transcript becomes the sole text authority
+        // before private-spool cleanup. Cleanup may be slow or retryable, but
+        // it must never keep the final realtime hypothesis publishable.
+        detachRealtimeProjection('Realtime transcription finalized');
       } catch {
         return transcribeRealtimeFallback();
       }
@@ -478,7 +484,6 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
           pendingVoiceSpoolIdsRef.current.length > 0
             || pendingVoiceCleanupIdsRef.current.length > 0,
         );
-        setPartialTranscript('');
         return transcript ? { status: 'transcribed', text: transcript } : { status: 'empty' };
       } catch {
         pendingVoiceSpoolIdsRef.current = forgetPendingVoiceSpool(
