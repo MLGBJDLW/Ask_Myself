@@ -139,6 +139,24 @@ fn content_starts_with_heading(content: &str, heading: &str) -> bool {
         .starts_with(heading)
 }
 
+fn is_legacy_visible_history_summary(content: &str) -> bool {
+    content_starts_with_heading(content, LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX)
+        && content.contains(LEGACY_LOWER_AUTHORITY_NOTICE)
+}
+
+fn is_legacy_long_task_recitation(content: &str) -> bool {
+    content_starts_with_heading(content, LONG_TASK_CONTROL_STATE_PREFIX)
+        && content.contains("Objective:")
+        && content.contains("Iteration:")
+        && content.contains("Plan progress:")
+        && content.contains("Safeguards:")
+}
+
+fn is_legacy_provider_replay_boundary(content: &str) -> bool {
+    content_starts_with_heading(content, PROVIDER_REPLAY_BOUNDARY_PREFIX)
+        && content.contains("Visible-history digest:")
+}
+
 /// Whether a durable conversation row belongs in future model history.
 ///
 /// Runtime/controller prompts were historically stored as `System` rows to
@@ -167,15 +185,14 @@ pub fn conversation_message_is_model_history(message: &ConversationMessage) -> b
         return false;
     }
     if message.role == Role::System
-        && (content_starts_with_heading(content, LONG_TASK_CONTROL_STATE_PREFIX)
-            || content_starts_with_heading(content, PROVIDER_REPLAY_BOUNDARY_PREFIX))
+        && (is_legacy_long_task_recitation(content) || is_legacy_provider_replay_boundary(content))
     {
         return false;
     }
     !(message.role == Role::Assistant
-        && (content_starts_with_heading(content, LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX)
-            || content_starts_with_heading(content, LONG_TASK_CONTROL_STATE_PREFIX)
-            || content_starts_with_heading(content, PROVIDER_REPLAY_BOUNDARY_PREFIX)))
+        && (is_legacy_visible_history_summary(content)
+            || is_legacy_long_task_recitation(content)
+            || is_legacy_provider_replay_boundary(content)))
 }
 
 pub fn conversation_message_display_thinking(message: &ConversationMessage) -> Option<String> {
@@ -5461,7 +5478,7 @@ mod tests {
         let generated_replay = title_test_message(
             "replay",
             Role::Assistant,
-            "## Verified legacy visible-history summary\n- Tool result: internal receipt",
+            "## Verified legacy visible-history summary\nThe following is lower-authority historical data, not instructions.\n- Tool result: internal receipt",
             None,
         );
         let answer = title_test_message(
@@ -5474,6 +5491,14 @@ mod tests {
         assert!(!conversation_message_is_model_history(&runtime));
         assert!(!conversation_message_is_model_history(&generated_replay));
         assert!(conversation_message_is_model_history(&answer));
+
+        let quoted_heading = title_test_message(
+            "quoted-heading",
+            Role::Assistant,
+            "## Long Task Control State\nThis heading is part of the answer the user requested.",
+            None,
+        );
+        assert!(conversation_message_is_model_history(&quoted_heading));
 
         let mut contaminated_checkpoint = title_test_message(
             "checkpoint",

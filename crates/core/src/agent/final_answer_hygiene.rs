@@ -22,14 +22,19 @@ fn contains_marker(text: &str, marker: &str) -> bool {
         .any(|line| line_starts_with_marker(line, marker))
 }
 
+fn contains_marker_case_insensitive(text: &str, marker: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains(&marker.to_ascii_lowercase())
+}
+
 /// Return the reserved marker that contaminated `answer`, unless the current
 /// user message itself contains that marker. This keeps quoted debugging and
 /// migration questions valid while rejecting model-originated internal state.
 pub(super) fn contamination_marker(answer: &str, current_user_text: &str) -> Option<&'static str> {
-    RESERVED_INTERNAL_MARKERS
-        .iter()
-        .copied()
-        .find(|marker| contains_marker(answer, marker) && !current_user_text.contains(marker))
+    RESERVED_INTERNAL_MARKERS.iter().copied().find(|marker| {
+        contains_marker(answer, marker)
+            && !contains_marker_case_insensitive(current_user_text, marker)
+    })
 }
 
 #[cfg(test)]
@@ -66,6 +71,13 @@ mod tests {
         let marker = "Verified legacy visible-history summary";
         assert_eq!(
             contamination_marker(marker, &format!("Why does the UI show: {marker}")),
+            None
+        );
+        assert_eq!(
+            contamination_marker(
+                "## Long Task Control State\nThis is the requested explanation.",
+                "what is the long task control state?",
+            ),
             None
         );
     }
