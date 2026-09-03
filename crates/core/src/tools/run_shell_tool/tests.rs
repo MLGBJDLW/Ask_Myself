@@ -95,6 +95,26 @@ fn test_binding_in_inline_command_data_does_not_publish_loopback_readiness() {
 }
 
 #[test]
+fn test_service_markers_in_argument_data_do_not_publish_loopback_readiness() {
+    for (program, args) in [
+        ("python", vec!["-c", "print('next dev')", "--port", "3000"]),
+        (
+            "python",
+            vec!["scripts/check.py", "webpack serve", "--port", "3000"],
+        ),
+        (
+            "node",
+            vec!["-e", "console.log('uvicorn')", "--port", "3000"],
+        ),
+        ("npx", vec!["echo", "next", "dev", "--port", "3000"]),
+    ] {
+        let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+        assert!(!looks_like_persistent_service(program, &args));
+        assert!(infer_ready_url_from_invocation(program, &args).is_none());
+    }
+}
+
+#[test]
 fn test_pip_program_normalizes_to_python_module_invocation() {
     let parsed = parse_run_shell_args(
         r#"{"program":"pip","args":["install","python-docx"],"cwd":"C:\\work"}"#,
@@ -348,6 +368,14 @@ fn test_persistent_servers_are_recognized_for_automatic_backgrounding() {
     assert!(looks_like_persistent_service(
         "npm",
         &["run".to_string(), "dev".to_string()]
+    ));
+    assert!(looks_like_persistent_service(
+        "npx",
+        &["next".to_string(), "dev".to_string()]
+    ));
+    assert!(looks_like_persistent_service(
+        "python",
+        &["-m".to_string(), "flask".to_string(), "run".to_string()]
     ));
     assert!(!looks_like_persistent_service(
         "python",

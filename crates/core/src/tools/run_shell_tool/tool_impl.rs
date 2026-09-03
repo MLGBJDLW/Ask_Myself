@@ -567,17 +567,20 @@ fn argument_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
     None
 }
 
+fn is_python_launcher(program: &str) -> bool {
+    matches!(program, "python" | "python3" | "py")
+        || program
+            .strip_prefix("python3.")
+            .is_some_and(|version| version.chars().all(|character| character.is_ascii_digit()))
+}
+
 fn inline_program_source<'a>(program: &str, args: &'a [String]) -> Option<&'a str> {
     let program = Path::new(program)
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(program)
         .to_ascii_lowercase();
-    let is_python = matches!(program.as_str(), "python" | "python3" | "py")
-        || program
-            .strip_prefix("python3.")
-            .is_some_and(|version| version.chars().all(|character| character.is_ascii_digit()));
-    if !is_python {
+    if !is_python_launcher(&program) {
         return None;
     }
     for (index, argument) in args.iter().enumerate() {
@@ -729,36 +732,98 @@ async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
-fn launches_python_server_script(program: &str, args: &[String]) -> bool {
-    let is_python_launcher = matches!(program, "python" | "python3" | "py")
-        || program
-            .strip_prefix("python3.")
-            .is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()));
-    if !is_python_launcher {
-        return false;
+fn python_script_invocation<'a>(
+    program: &str,
+    args: &'a [String],
+) -> Option<(&'a str, &'a [String])> {
+    if !is_python_launcher(program) {
+        return None;
     }
 
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         match arg.as_str() {
-            "-c" | "-m" => return false,
+            "-c" | "-m" => return None,
             "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
             "--" => {
-                return args
-                    .get(index + 1)
-                    .and_then(|value| value.rsplit(['/', '\\']).next())
-                    .is_some_and(|name| name == "server.py");
+                let script = args.get(index + 1)?;
+                return Some((script, &args[index + 2..]));
             }
             value if value.starts_with('-') => index += 1,
-            value => {
-                return value
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .is_some_and(|name| name == "server.py");
-            }
+            value => return Some((value, &args[index + 1..])),
         }
     }
-    false
+    None
+}
+
+fn launches_python_server_script(program: &str, args: &[String]) -> bool {
+    python_script_invocation(program, args)
+        .and_then(|(script, _)| script.rsplit(['/', '\\']).next())
+        .is_some_and(|name| name == "server.py")
+}
+
+fn python_module_invocation<'a>(
+    program: &str,
+    args: &'a [String],
+) -> Option<(&'a str, &'a [String])> {
+    if !is_python_launcher(program) {
+        return None;
+    }
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        match argument.as_str() {
+            "-m" => {
+                let module = args.get(index + 1)?;
+                return Some((module, &args[index + 2..]));
+            }
+            "-c" | "--" => return None,
+            "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
+            value if value.starts_with("-w") || value.starts_with("-x") => index += 1,
+            value if value.starts_with('-') => index += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn executable_starts_service(program: &str, args: &[String]) -> bool {
+    match program {
+        "vite" => args.first().is_none_or(|argument| {
+            argument.starts_with('-') || matches!(argument.as_str(), "dev" | "serve" | "preview")
+        }),
+        "uvicorn" | "gunicorn" => true,
+        "flask" => args.first().is_some_and(|argument| argument == "run"),
+        "fastapi" => args
+            .first()
+            .is_some_and(|argument| matches!(argument.as_str(), "dev" | "run")),
+        "streamlit" => args.first().is_some_and(|argument| argument == "run"),
+        "webpack" => args.first().is_some_and(|argument| argument == "serve"),
+        "next" => args.first().is_some_and(|argument| argument == "dev"),
+        "django-admin" => args.first().is_some_and(|argument| argument == "runserver"),
+        _ => false,
+    }
+}
+
+fn python_module_starts_service(module: &str, args: &[String]) -> bool {
+    match module {
+        "http.server" | "uvicorn" | "gunicorn" => true,
+        "flask" | "streamlit" => args.first().is_some_and(|argument| argument == "run"),
+        "fastapi" => args
+            .first()
+            .is_some_and(|argument| matches!(argument.as_str(), "dev" | "run")),
+        _ => false,
+    }
+}
+
+fn package_script_starts_service(args: &[String]) -> bool {
+    let args = args
+        .iter()
+        .position(|argument| !argument.starts_with('-'))
+        .map(|index| &args[index..])
+        .unwrap_or_default();
+    matches!(args, [command, script, ..]
+        if command == "run"
+            && matches!(script.as_str(), "dev" | "start" | "serve" | "preview"))
 }
 
 pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
@@ -768,29 +833,39 @@ pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> b
         .unwrap_or(program)
         .to_ascii_lowercase();
     let normalized_args: Vec<String> = args.iter().map(|arg| arg.to_ascii_lowercase()).collect();
-    let joined = normalized_args.join(" ");
 
-    joined.contains("http.server")
-        || launches_python_server_script(&program, &normalized_args)
-        || joined.contains("manage.py runserver")
-        || joined.contains("uvicorn")
-        || joined.contains("flask run")
-        || joined.contains("fastapi dev")
-        || joined.contains("fastapi run")
-        || joined.contains("streamlit run")
-        || joined.contains("webpack serve")
-        || joined.contains("next dev")
-        || matches!(program.as_str(), "vite" | "uvicorn" | "gunicorn")
-        || (matches!(
-            program.as_str(),
-            "npm" | "npm.cmd" | "pnpm" | "yarn" | "bun"
-        ) && normalized_args.windows(2).any(|pair| {
-            pair[0] == "run" && matches!(pair[1].as_str(), "dev" | "start" | "serve" | "preview")
-        }))
-        || (matches!(program.as_str(), "npx" | "npx.cmd")
-            && normalized_args
-                .first()
-                .is_some_and(|arg| matches!(arg.as_str(), "vite" | "webpack" | "next")))
+    if launches_python_server_script(&program, &normalized_args) {
+        return true;
+    }
+    if let Some((module, module_args)) = python_module_invocation(&program, &normalized_args) {
+        return python_module_starts_service(module, module_args);
+    }
+    if is_python_launcher(&program) {
+        return python_script_invocation(&program, &normalized_args).is_some_and(
+            |(script, args)| {
+                script.rsplit(['/', '\\']).next() == Some("manage.py")
+                    && args.first().is_some_and(|command| command == "runserver")
+            },
+        );
+    }
+    if executable_starts_service(&program, &normalized_args) {
+        return true;
+    }
+    if matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
+        return package_script_starts_service(&normalized_args);
+    }
+    if program == "npx" {
+        let executable_index = normalized_args
+            .iter()
+            .take_while(|argument| matches!(argument.as_str(), "-y" | "--yes" | "--no-install"))
+            .count();
+        return normalized_args[executable_index..]
+            .split_first()
+            .is_some_and(|(executable, executable_args)| {
+                executable_starts_service(executable, executable_args)
+            });
+    }
+    false
 }
 
 struct ManagedServiceRequest<'a> {
