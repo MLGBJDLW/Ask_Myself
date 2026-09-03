@@ -49,6 +49,26 @@ pub enum PromptStability {
     Volatile,
 }
 
+/// Lifetime of compiler-owned prompt material within one agent turn.
+///
+/// `PromptStability` controls provider caching; it does not say whether a
+/// volatile instruction is enduring turn scaffolding or a replaceable
+/// per-sample directive. Keeping that distinction typed prevents answer-only
+/// projection from discarding route, orchestration, and workflow constraints.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptLifetime {
+    #[default]
+    Turn,
+    Step,
+}
+
+impl PromptLifetime {
+    fn is_turn(&self) -> bool {
+        *self == Self::Turn
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
 pub enum CacheBoundaryHint {
@@ -63,6 +83,8 @@ pub enum CacheBoundaryHint {
 pub struct PromptCacheHint {
     pub stability: PromptStability,
     pub boundary: CacheBoundaryHint,
+    #[serde(default, skip_serializing_if = "PromptLifetime::is_turn")]
+    pub lifetime: PromptLifetime,
 }
 
 /// A single part of a multimodal message content.
@@ -147,13 +169,27 @@ impl Message {
         self.prompt_cache_hint = Some(PromptCacheHint {
             stability,
             boundary,
+            lifetime: PromptLifetime::Turn,
         });
+        self
+    }
+
+    pub fn with_prompt_lifetime(mut self, lifetime: PromptLifetime) -> Self {
+        if let Some(hint) = self.prompt_cache_hint.as_mut() {
+            hint.lifetime = lifetime;
+        }
         self
     }
 
     pub fn prompt_cache_hint(&self) -> Option<(PromptStability, CacheBoundaryHint)> {
         self.prompt_cache_hint
             .map(|hint| (hint.stability, hint.boundary))
+    }
+
+    pub fn prompt_lifetime(&self) -> PromptLifetime {
+        self.prompt_cache_hint
+            .map(|hint| hint.lifetime)
+            .unwrap_or_default()
     }
 
     /// Get the combined text content from all text parts.

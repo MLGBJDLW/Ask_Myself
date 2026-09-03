@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conversation::memory::estimate_tokens_for_model;
 use crate::conversation::{
-    conversation_message_is_model_history, ConversationMessage, ImageAttachment,
-    LLM_CONTEXT_CONTENT_ARTIFACT_KEY,
+    conversation_message_is_model_history, conversation_record_is_model_history,
+    ConversationMessage, ImageAttachment, LLM_CONTEXT_CONTENT_ARTIFACT_KEY,
 };
 use crate::db::Database;
 use crate::error::CoreError;
@@ -235,22 +235,24 @@ fn source_prefix_matches(
     let mut hash = blake3::Hasher::new();
     for row in rows {
         let (id, sort_order, role, content, tool_call_id, tool_calls_json, artifacts_json) = row?;
-        let canonical_content = artifacts_json
+        let artifacts = artifacts_json
             .as_deref()
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-            .and_then(|value| {
-                value
-                    .get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY)
-                    .and_then(|item| item.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or(content);
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
+        let stored_role = role_from_storage(&role);
+        if !conversation_record_is_model_history(&stored_role, &content, artifacts.as_ref()) {
+            continue;
+        }
+        let canonical_content = artifacts
+            .as_ref()
+            .and_then(|value| value.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&content);
         hash_source_message(
             &mut hash,
             &id,
             sort_order,
             &role,
-            &canonical_content,
+            canonical_content,
             tool_call_id.as_deref(),
             tool_calls_json.as_deref().unwrap_or("[]"),
         );
@@ -877,6 +879,66 @@ mod tests {
         let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
             .expect("volatile update commit");
         assert_eq!(outcome, CommitOutcome::Committed { messages_after: 2 });
+    }
+
+    #[test]
+    fn quarantined_legacy_row_between_sources_does_not_supersede_checkpoint() {
+        let database = Database::open_memory().expect("open database");
+        let conversation = database
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        for (sort_order, role) in [
+            (0, Role::User),
+            (1, Role::System),
+            (2, Role::Assistant),
+            (3, Role::User),
+        ] {
+            add_message(&database, &conversation.id, sort_order, role);
+        }
+        database
+            .conn()
+            .execute(
+                "UPDATE messages
+                 SET content = 'stale runtime controller',
+                     artifacts_json = '{\"kind\":\"replayableRuntimeContext\"}'
+                 WHERE id = 'message-1'",
+                [],
+            )
+            .expect("mark legacy runtime row");
+
+        let snapshot =
+            load_compaction_snapshot(&database, &conversation.id).expect("load filtered snapshot");
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["message-0", "message-2", "message-3"]
+        );
+        let input = checkpoint_input(
+            &conversation.id,
+            "ctx-filtered-source",
+            &snapshot.messages[..2],
+            vec!["message-3".to_string()],
+            3,
+        );
+
+        let outcome = commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("commit filtered snapshot");
+        assert_eq!(outcome, CommitOutcome::Committed { messages_after: 2 });
+        let projection = load_context_projection(&database, &conversation.id)
+            .expect("load compacted projection");
+        assert!(projection.projected);
+        assert_eq!(projection.messages.len(), 2);
+        assert_eq!(projection.messages[1].id, "message-3");
     }
 
     #[test]

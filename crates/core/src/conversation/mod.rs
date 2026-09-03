@@ -166,16 +166,33 @@ fn is_legacy_provider_replay_boundary(content: &str) -> bool {
 /// an assistant conclusion; quarantine that known generated form rather than
 /// teaching another model to repeat it.
 pub fn conversation_message_is_model_history(message: &ConversationMessage) -> bool {
-    let artifact_kind = message
-        .artifacts
-        .as_ref()
+    conversation_record_is_model_history(
+        &message.role,
+        &message.content,
+        message.artifacts.as_ref(),
+    )
+}
+
+/// Apply the canonical model-history policy to a persisted row before it is
+/// materialized as a full [`ConversationMessage`]. Snapshot validation must use
+/// this same predicate as snapshot planning or quarantined legacy rows between
+/// two source rows make every checkpoint appear superseded.
+pub(crate) fn conversation_record_is_model_history(
+    role: &Role,
+    content: &str,
+    artifacts: Option<&serde_json::Value>,
+) -> bool {
+    let artifact_kind = artifacts
         .and_then(|artifacts| artifacts.get("kind"))
         .and_then(serde_json::Value::as_str);
     if artifact_kind == Some(INTERNAL_RUNTIME_CONTEXT_KIND) {
         return false;
     }
 
-    let content = conversation_message_llm_context_content(message);
+    let content = artifacts
+        .and_then(|artifacts| artifacts.get(LLM_CONTEXT_CONTENT_ARTIFACT_KEY))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(content);
     if artifact_kind == Some(CONTEXT_COMPACTION_KIND)
         && (content.contains(LEGACY_VISIBLE_HISTORY_SUMMARY_PREFIX)
             || content.contains(LEGACY_LOWER_AUTHORITY_NOTICE)
@@ -184,12 +201,12 @@ pub fn conversation_message_is_model_history(message: &ConversationMessage) -> b
     {
         return false;
     }
-    if message.role == Role::System
+    if *role == Role::System
         && (is_legacy_long_task_recitation(content) || is_legacy_provider_replay_boundary(content))
     {
         return false;
     }
-    !(message.role == Role::Assistant
+    !(*role == Role::Assistant
         && (is_legacy_visible_history_summary(content)
             || is_legacy_long_task_recitation(content)
             || is_legacy_provider_replay_boundary(content)))
