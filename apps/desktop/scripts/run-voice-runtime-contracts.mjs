@@ -949,6 +949,60 @@ test('manual correction still accepts a proven tail after provider prefix revisi
   assert.equal(projection.draft, 'check the whole configuration carefully');
 });
 
+test('manual CJK correction retains proven no-space transcript extensions', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今天天气',
+  });
+
+  projection = applyVoiceDictationEvent('明天天气', projection.session, {
+    kind: 'interim',
+    text: '今天天气很好',
+  });
+  assert.equal(projection.draft, '明天天气很好');
+
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'final',
+    text: '今天天气很好啊',
+  });
+  assert.equal(projection.draft, '明天天气很好啊');
+  assert.equal(projection.session, null);
+});
+
+test('manual Japanese correction retains proven no-space transcript extensions', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今日は晴れ',
+  });
+
+  projection = applyVoiceDictationEvent('明日は晴れ', projection.session, {
+    kind: 'final',
+    text: '今日は晴れです',
+  });
+  assert.equal(projection.draft, '明日は晴れです');
+  assert.equal(projection.session, null);
+});
+
+test('manual CJK rewrite rejects a provider suffix without a user-owned anchor', () => {
+  const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
+  let projection = applyVoiceDictationEvent('', null, { kind: 'start' });
+  projection = applyVoiceDictationEvent(projection.draft, projection.session, {
+    kind: 'interim',
+    text: '今天天气',
+  });
+
+  projection = applyVoiceDictationEvent('彻底改写', projection.session, {
+    kind: 'final',
+    text: '今天天气很好',
+  });
+  assert.equal(projection.draft, '彻底改写');
+  assert.equal(projection.session, null);
+});
+
 test('manual correction at the transcript tail does not duplicate a provider suffix', () => {
   const { applyVoiceDictationEvent } = loadVoiceDraftProjection();
   let projection = applyVoiceDictationEvent('', null, { kind: 'start' });

@@ -520,6 +520,42 @@ test('live dictation stays pinned to the draft where recording started', async (
   await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
 });
 
+test('CJK live dictation preserves a manual correction and appends without spaces', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: '今天天气',
+      });
+  });
+  const composer = page.getByTestId('chat-input-textarea');
+  await expect(composer).toHaveValue('今天天气');
+
+  await composer.fill('明天天气');
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: '今天天气很好',
+      });
+  });
+  await expect(composer).toHaveValue('明天天气很好');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+  await expect(composer).toHaveValue('明天天气很好');
+});
+
 test('sending an interim transcript terminates dictation without repopulating the composer', async ({ page }) => {
   await page.goto('/chat/conv-voice-dock');
   await page.getByRole('button', { name: 'Start voice input' }).click();

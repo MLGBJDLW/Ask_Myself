@@ -18,13 +18,24 @@ export interface VoiceDraftProjection {
   session: VoiceDraftSession | null;
 }
 
+const UNSPACED_SCRIPT_CHARACTER = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Thai}\p{Script_Extensions=Lao}\p{Script_Extensions=Khmer}\p{Script_Extensions=Myanmar}]/u;
+
 function separatorBeforeSpeech(draft: string): string {
   return draft.length > 0 && !/\s$/u.test(draft) ? ' ' : '';
 }
 
+function joinsUnspacedScript(draft: string, extension: string): boolean {
+  const draftCharacters = Array.from(draft);
+  const previous = draftCharacters[draftCharacters.length - 1] ?? '';
+  const next = Array.from(extension)[0] ?? '';
+  return UNSPACED_SCRIPT_CHARACTER.test(previous) && UNSPACED_SCRIPT_CHARACTER.test(next);
+}
+
 function appendSpeech(draft: string, text: string): string {
   if (!text) return draft;
-  const separator = /^\s/u.test(text) ? '' : separatorBeforeSpeech(draft);
+  const separator = /^\s/u.test(text) || joinsUnspacedScript(draft, text)
+    ? ''
+    : separatorBeforeSpeech(draft);
   return `${draft}${separator}${text}`;
 }
 
@@ -60,7 +71,16 @@ function joinsInsideWord(draft: string, extension: string): boolean {
   const draftCharacters = Array.from(draft);
   const previous = draftCharacters[draftCharacters.length - 1] ?? '';
   const next = Array.from(extension)[0] ?? '';
-  return /[\p{L}\p{M}\p{N}]/u.test(previous) && /[\p{L}\p{M}\p{N}]/u.test(next);
+  return /[\p{L}\p{M}\p{N}]/u.test(previous)
+    && /[\p{L}\p{M}\p{N}]/u.test(next);
+}
+
+function joinsInsideDelimitedWord(draft: string, extension: string): boolean {
+  // Latin-like scripts need the fragment guard (`light` -> `lights`) because
+  // a suffix can be part of a corrected word. CJK and other scripts that
+  // commonly continue without spaces have no such boundary; once a trailing
+  // user-owned anchor proves the extension, retaining it is the safe choice.
+  return joinsInsideWord(draft, extension) && !joinsUnspacedScript(draft, extension);
 }
 
 function safeProviderExtension(
@@ -74,7 +94,7 @@ function safeProviderExtension(
   // provider's old suffix a second time.
   const userVoiceTail = userDraft.slice(Math.min(voiceSpanStart, userDraft.length));
   const userAligned = extensionAfterTrailingAnchor(userVoiceTail, nextProviderText);
-  if (userAligned !== null && !joinsInsideWord(userDraft, userAligned)) return userAligned;
+  if (userAligned !== null && !joinsInsideDelimitedWord(userDraft, userAligned)) return userAligned;
 
   // If a snapshot provider revised an earlier word, a trailing anchor in the
   // prior snapshot may still prove a genuinely new tail. Refuse an alphanumeric
