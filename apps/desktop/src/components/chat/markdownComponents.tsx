@@ -549,6 +549,33 @@ function mermaidStyleDeclares(element: Element, property: string): boolean {
     .some((declaration) => declaration.split(':', 1)[0]?.trim().toLowerCase() === property);
 }
 
+function mermaidStylesheetDeclares(root: Element, element: Element, property: string): boolean {
+  const rulesDeclareProperty = (rules: CSSRuleList): boolean => Array.from(rules).some((rule) => {
+    if (rule instanceof CSSStyleRule && rule.style.getPropertyValue(property)) {
+      const matches = rule.selectorText.split(',').some((selector) => {
+        try {
+          return element.matches(selector.trim());
+        } catch {
+          return false;
+        }
+      });
+      if (matches) return true;
+    }
+    if ('cssRules' in rule) {
+      return rulesDeclareProperty((rule as CSSGroupingRule).cssRules);
+    }
+    return false;
+  });
+
+  return Array.from(root.querySelectorAll<SVGStyleElement>('style')).some((style) => {
+    try {
+      return style.sheet ? rulesDeclareProperty(style.sheet.cssRules) : false;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function isBrowserBlack(value: string | null): boolean {
   const normalized = (value ?? '').trim().toLowerCase().replace(/\s+/g, '');
   return normalized === 'black'
@@ -602,6 +629,7 @@ function normalizeMermaidSemanticPresentation(root: Element): void {
       edge.setAttribute('stroke-width', MERMAID_EDGE_STROKE_WIDTH);
     }
     if (!mermaidStyleDeclares(edge, 'stroke-opacity')
+      && !mermaidStylesheetDeclares(root, edge, 'stroke-opacity')
       && !hasMeaningfulMaterializedConnectorOpacity(edge)) {
       edge.setAttribute('stroke-opacity', MERMAID_EDGE_STROKE_OPACITY);
     }

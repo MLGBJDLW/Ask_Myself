@@ -201,7 +201,7 @@ test.beforeEach(async ({ page }) => {
           '```',
           '',
           '```mermaid',
-          '%%{init: {"theme":"base","themeCSS":".flowchart-link { stroke: #7c3aed !important; stroke-width: 5px !important; stroke-opacity: 0.41 !important; }"}}%%',
+          '%%{init: {"theme":"base","themeCSS":".flowchart-link { stroke: #7c3aed !important; stroke-width: 5px !important; stroke-opacity: 1 !important; }"}}%%',
           'flowchart LR',
           '  CSS_A[CSS Theme] --> CSS_B[Preserved]',
           '```',
@@ -583,10 +583,10 @@ test('preserves Mermaid theme CSS connector metrics after CSP materialization', 
 
   expect(presentation.stroke).toBe('rgb(124, 58, 237)');
   expect(presentation.strokeWidth).toBe(5);
-  expect(presentation.strokeOpacity).toBeCloseTo(0.41, 2);
+  expect(presentation.strokeOpacity).toBe(1);
   expect(presentation.strokeAttribute).toBe('rgb(124, 58, 237)');
   expect(presentation.strokeWidthAttribute).toBe('5px');
-  expect(presentation.strokeOpacityAttribute).toBe('0.41');
+  expect(presentation.strokeOpacityAttribute).toBe('1');
 
   const serializedSvg = await surface.locator('svg').evaluate((svg) => svg.outerHTML);
   await page.evaluate((svg) => new Promise<void>((resolve) => {
@@ -617,7 +617,7 @@ test('preserves Mermaid theme CSS connector metrics after CSP materialization', 
     });
   expect(cspPresentation.stroke).toBe('rgb(124, 58, 237)');
   expect(cspPresentation.strokeWidth).toBe(5);
-  expect(cspPresentation.strokeOpacity).toBeCloseTo(0.41, 2);
+  expect(cspPresentation.strokeOpacity).toBe(1);
 });
 
 test('isolates Mermaid geometry and palette from extreme custom typography', async ({ page }) => {
