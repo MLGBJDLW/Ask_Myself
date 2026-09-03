@@ -558,6 +558,26 @@ function isBrowserBlack(value: string | null): boolean {
     || normalized === 'rgba(0,0,0,1)';
 }
 
+function hasMeaningfulMaterializedConnectorWidth(edge: Element): boolean {
+  const width = edge.getAttribute('stroke-width')?.trim().toLowerCase();
+  if (!width) return false;
+  return !['1', '1px', '2', '2px'].includes(width);
+}
+
+function hasMeaningfulMaterializedConnectorOpacity(edge: Element): boolean {
+  const opacity = Number.parseFloat(edge.getAttribute('stroke-opacity') ?? '');
+  return Number.isFinite(opacity) && opacity >= 0 && opacity < 1;
+}
+
+function hasMeaningfulMaterializedConnectorKeyword(
+  edge: Element,
+  property: 'stroke-linecap' | 'stroke-linejoin',
+  browserDefault: string,
+): boolean {
+  const value = edge.getAttribute(property)?.trim().toLowerCase();
+  return Boolean(value && value !== browserDefault);
+}
+
 /**
  * Mermaid's layout engine assumes semantic SVG defaults that normally arrive
  * through its generated stylesheet. Strict production CSP can reject that
@@ -568,14 +588,6 @@ function isBrowserBlack(value: string | null): boolean {
 function normalizeMermaidSemanticPresentation(root: Element): void {
   root.querySelectorAll<SVGPathElement>('.edgePaths path, path.flowchart-link').forEach((edge) => {
     if (edge.closest('marker')) return;
-    const authoredConnectorStyle = [
-      'stroke',
-      'stroke-width',
-      'stroke-opacity',
-      'stroke-dasharray',
-      'stroke-linecap',
-      'stroke-linejoin',
-    ].some((property) => mermaidStyleDeclares(edge, property));
     const brokenStroke = !edge.getAttribute('stroke')
       || edge.getAttribute('stroke') === 'none'
       || isBrowserBlack(edge.getAttribute('stroke'));
@@ -585,10 +597,20 @@ function normalizeMermaidSemanticPresentation(root: Element): void {
     if (!mermaidStyleDeclares(edge, 'stroke') && brokenStroke) {
       edge.setAttribute('stroke', MERMAID_EDGE_STROKE);
     }
-    if (!authoredConnectorStyle) {
+    if (!mermaidStyleDeclares(edge, 'stroke-width')
+      && !hasMeaningfulMaterializedConnectorWidth(edge)) {
       edge.setAttribute('stroke-width', MERMAID_EDGE_STROKE_WIDTH);
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-opacity')
+      && !hasMeaningfulMaterializedConnectorOpacity(edge)) {
       edge.setAttribute('stroke-opacity', MERMAID_EDGE_STROKE_OPACITY);
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-linecap')
+      && !hasMeaningfulMaterializedConnectorKeyword(edge, 'stroke-linecap', 'butt')) {
       edge.setAttribute('stroke-linecap', 'round');
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-linejoin')
+      && !hasMeaningfulMaterializedConnectorKeyword(edge, 'stroke-linejoin', 'miter')) {
       edge.setAttribute('stroke-linejoin', 'round');
     }
   });

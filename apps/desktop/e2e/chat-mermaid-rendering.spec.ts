@@ -199,6 +199,12 @@ test.beforeEach(async ({ page }) => {
           '  linkStyle 0 stroke:#dc2626,stroke-width:4px,stroke-opacity:0.9',
           '  linkStyle 1 stroke:#16a34a,stroke-width:3px,stroke-dasharray:6 3',
           '```',
+          '',
+          '```mermaid',
+          '%%{init: {"theme":"base","themeCSS":".flowchart-link { stroke: #7c3aed !important; stroke-width: 5px !important; stroke-opacity: 0.41 !important; }"}}%%',
+          'flowchart LR',
+          '  CSS_A[CSS Theme] --> CSS_B[Preserved]',
+          '```',
         ].join('\n'),
         toolCallId: null,
         toolCalls: [],
@@ -336,7 +342,7 @@ test('renders Mermaid code blocks as SVG diagrams', async ({ page }) => {
   await expect(page.locator('svg[id^="mermaid-"]').first()).toBeVisible();
   await expect(page.locator('.timeline-node')).toHaveCount(8);
   await page.getByRole('button', { name: /Thinking completed/ }).click();
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(8);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(9);
   await expect(page.getByText('Could not render this Mermaid diagram')).toHaveCount(0);
 });
 
@@ -346,9 +352,9 @@ test('keeps sanitized Mermaid structure readable across application themes', asy
 
   const surfaces = page.getByTestId('mermaid-surface');
   await expect(page.locator('html')).toHaveAttribute('data-custom-theme', 'true');
-  await expect(surfaces).toHaveCount(7);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(7);
-  await expect(page.locator('svg style')).toHaveCount(7);
+  await expect(surfaces).toHaveCount(8);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(8);
+  await expect(page.locator('svg style')).toHaveCount(8);
   await expect(page.locator('svg foreignObject')).toHaveCount(0);
   await expect(page.locator('svg [href^="http"], svg [xlink\\:href^="http"]')).toHaveCount(0);
 
@@ -557,12 +563,69 @@ test('preserves Mermaid-authored connector colors, widths, and dash patterns', a
   expect(styles[1].dasharray.replace(/px/g, '')).toContain('6');
 });
 
+test('preserves Mermaid theme CSS connector metrics after CSP materialization', async ({ page }) => {
+  await page.goto('/chat/conv-mermaid');
+
+  const surface = page.getByTestId('mermaid-surface').filter({ hasText: 'CSS Theme' });
+  await expect(surface).toHaveCount(1);
+  const edge = surface.locator('.edgePaths path, path.flowchart-link').first();
+  const presentation = await edge.evaluate((element) => {
+    const computed = getComputedStyle(element);
+    return {
+      stroke: computed.stroke,
+      strokeWidth: Number.parseFloat(computed.strokeWidth),
+      strokeOpacity: Number.parseFloat(computed.strokeOpacity),
+      strokeAttribute: element.getAttribute('stroke'),
+      strokeWidthAttribute: element.getAttribute('stroke-width'),
+      strokeOpacityAttribute: element.getAttribute('stroke-opacity'),
+    };
+  });
+
+  expect(presentation.stroke).toBe('rgb(124, 58, 237)');
+  expect(presentation.strokeWidth).toBe(5);
+  expect(presentation.strokeOpacity).toBeCloseTo(0.41, 2);
+  expect(presentation.strokeAttribute).toBe('rgb(124, 58, 237)');
+  expect(presentation.strokeWidthAttribute).toBe('5px');
+  expect(presentation.strokeOpacityAttribute).toBe('0.41');
+
+  const serializedSvg = await surface.locator('svg').evaluate((svg) => svg.outerHTML);
+  await page.evaluate((svg) => new Promise<void>((resolve) => {
+    const frame = document.createElement('iframe');
+    frame.name = 'mermaid-theme-css-csp-probe';
+    frame.hidden = true;
+    frame.addEventListener('load', () => resolve(), { once: true });
+    frame.srcdoc = [
+      '<!doctype html>',
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\'">',
+      '<body>',
+      svg,
+    ].join('');
+    document.body.appendChild(frame);
+  }), serializedSvg);
+  const cspFrame = page.frame({ name: 'mermaid-theme-css-csp-probe' });
+  if (!cspFrame) throw new Error('CSP Mermaid theme probe frame was not created');
+  const cspPresentation = await cspFrame
+    .locator('.edgePaths path, path.flowchart-link')
+    .first()
+    .evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return {
+        stroke: computed.stroke,
+        strokeWidth: Number.parseFloat(computed.strokeWidth),
+        strokeOpacity: Number.parseFloat(computed.strokeOpacity),
+      };
+    });
+  expect(cspPresentation.stroke).toBe('rgb(124, 58, 237)');
+  expect(cspPresentation.strokeWidth).toBe(5);
+  expect(cspPresentation.strokeOpacity).toBeCloseTo(0.41, 2);
+});
+
 test('isolates Mermaid geometry and palette from extreme custom typography', async ({ page }) => {
   await page.goto('/chat/conv-mermaid');
 
   const surfaces = page.getByTestId('mermaid-surface');
-  await expect(surfaces).toHaveCount(7);
-  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(7);
+  await expect(surfaces).toHaveCount(8);
+  await expect(page.locator('svg[id^="mermaid-"]')).toHaveCount(8);
   const diagnostics = await surfaces.evaluateAll((elements) => elements.map((surface) => {
     const luminance = (value: string) => {
       const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
