@@ -11,10 +11,10 @@ const RESERVED_INTERNAL_MARKERS: &[&str] = &[
 ];
 
 fn line_starts_with_marker(line: &str, marker: &str) -> bool {
-    line.trim_start()
-        .trim_start_matches('#')
-        .trim_start()
-        .starts_with(marker)
+    let visible_line = line.trim_start().trim_start_matches('#').trim_start();
+    visible_line
+        .get(..marker.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(marker))
 }
 
 fn contains_marker(text: &str, marker: &str) -> bool {
@@ -98,6 +98,21 @@ mod tests {
             scope(&["answer"])
                 .contamination_marker("## Provider replay boundary\nVisible-history digest: abc"),
             Some("Provider replay boundary")
+        );
+    }
+
+    #[test]
+    fn detects_reserved_internal_headers_case_insensitively() {
+        assert_eq!(
+            scope(&["give me the result"])
+                .contamination_marker("Answer\n\n## Long task control state\nPlan progress: 2/3"),
+            Some("Long Task Control State")
+        );
+        assert_eq!(
+            scope(&["give me the result"]).contamination_marker(
+                "VERIFIED LEGACY VISIBLE-HISTORY SUMMARY\nAssistant requested tools: edit_file"
+            ),
+            Some("Verified legacy visible-history summary")
         );
     }
 
