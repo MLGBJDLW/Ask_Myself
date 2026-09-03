@@ -284,8 +284,12 @@ pub fn import_skills_from_source(
         }
     }
 
-    let existing = db
-        .list_skills()?
+    let installed_skills = db.list_skills()?;
+    let existing_ids = installed_skills
+        .iter()
+        .map(|skill| skill.id.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let existing = installed_skills
         .into_iter()
         .map(|skill| (skill.canonical_name.to_ascii_lowercase(), skill))
         .collect::<HashMap<_, _>>();
@@ -302,6 +306,17 @@ pub fn import_skills_from_source(
         return Err(CoreError::InvalidInput(format!(
             "Skill names reserved by built-in skills: {}",
             builtin_conflicts.join(", ")
+        )));
+    }
+    let identity_conflicts = candidates
+        .iter()
+        .filter(|candidate| existing_ids.contains(&candidate.input.name.to_ascii_lowercase()))
+        .map(|candidate| candidate.input.name.clone())
+        .collect::<Vec<_>>();
+    if !identity_conflicts.is_empty() {
+        return Err(CoreError::InvalidInput(format!(
+            "Skill names reserved by installed database identities: {}",
+            identity_conflicts.join(", ")
         )));
     }
     let conflicts = candidates
@@ -782,6 +797,43 @@ mod tests {
         assert!(!replaced[0].enabled);
         assert_eq!(replaced[0].content, "Version two.");
         assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn multi_skill_import_preflights_database_identity_conflicts_atomically() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("package");
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Installed skill".into(),
+                description: "Owns a database identity".into(),
+                content: "Keep this skill unchanged.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        for name in ["first-package-skill", installed.id.as_str()] {
+            let skill_dir = package.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Package skill\n---\n\nPackage body.\n"),
+            )
+            .unwrap();
+        }
+
+        let error = import_skills_from_source(&db, &package, false, false).unwrap_err();
+
+        assert!(error.to_string().contains("database identities"));
+        let saved = db.list_skills().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, installed.id);
+        assert!(!saved
+            .iter()
+            .any(|skill| skill.canonical_name == "first-package-skill"));
     }
 
     #[test]
