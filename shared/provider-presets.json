@@ -605,6 +605,68 @@
         }
       },
       {
+        "id": "google/gemini-3.8-flash",
+        "name": "Google: Gemini 3.8 Flash",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "lastVerifiedAt": "2026-09-03",
+        "releaseDate": "2026-09-02",
+        "modalities": ["text", "image"],
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["low", "medium", "high"],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "meta/muse-spark-1.3",
+        "name": "Meta: Muse Spark 1.3",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 943718,
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "lastVerifiedAt": "2026-09-03",
+        "releaseDate": "2026-09-02",
+        "modalities": ["text", "image"],
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "parallelToolCalling": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": ["minimal", "low", "medium", "high"],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
         "id": "x-ai/grok-4.6",
         "name": "xAI: Grok 4.6",
         "tagKey": "providers.tagLatest",
@@ -1194,12 +1256,12 @@
       {
         "id": "google/gemini-3.7-flash",
         "name": "Google: Gemini 3.7 Flash",
-        "tagKey": "providers.tagLatest",
+        "tagKey": "providers.tagBestBalance",
         "contextTokens": 1048576,
         "maxOutputTokens": 65536,
         "source": "official",
         "status": "active",
-        "lastVerifiedAt": "2026-08-28",
+        "lastVerifiedAt": "2026-09-03",
         "modalities": ["text", "image", "video", "audio"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
@@ -6908,7 +6970,7 @@
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "requiresApiKey": true,
     "icon": "✨",
-    "description": "Direct Gemini API for Google-supported locations. Includes Gemini 3.7/3.6/3.5/3.1/2.5; for an unsupported Google location, select an authorized Gemini route under OpenRouter instead.",
+    "description": "Direct Gemini API for Google-supported locations. Includes Gemini 3.8/3.7/3.6/3.5/3.1/2.5; for an unsupported Google location, select an authorized Gemini route under OpenRouter instead.",
     "nativeWebSearch": {
       "dialect": "geminiGoogleSearch",
       "supportsDomains": false,
@@ -6924,8 +6986,8 @@
     },
     "models": [
       {
-        "id": "gemini-3.7-flash",
-        "name": "Gemini 3.7 Flash",
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
         "nativeWebSearch": {
           "dialect": "geminiGoogleSearch",
           "supportsDomains": false,
@@ -6941,12 +7003,57 @@
         "maxOutputTokens": 65536,
         "source": "official",
         "status": "active",
-        "lastVerifiedAt": "2026-08-28",
-        "modalities": ["text", "image", "video", "audio"],
+        "access": "public",
+        "lastVerifiedAt": "2026-09-03",
+        "releaseDate": "2026-09-02",
+        "modalities": ["text", "image"],
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
         "supportsTools": true,
         "supportsStructuredOutput": true,
         "productReadiness": "product_ready",
         "recommended": true,
+        "capabilities": {
+          "vision": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "defaultEffort": "medium",
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      {
+        "id": "gemini-3.7-flash",
+        "name": "Gemini 3.7 Flash",
+        "nativeWebSearch": {
+          "dialect": "geminiGoogleSearch",
+          "supportsDomains": false,
+          "supportsRecency": false,
+          "supportsLocale": false,
+          "supportsLocation": false,
+          "supportsCitations": true,
+          "supportsStreamEvents": true,
+          "canMixClientTools": true
+        },
+        "tagKey": "providers.tagBestBalance",
+        "contextTokens": 1048576,
+        "maxOutputTokens": 65536,
+        "source": "official",
+        "status": "active",
+        "lastVerifiedAt": "2026-09-03",
+        "modalities": ["text", "image", "video", "audio"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "productReadiness": "product_ready",
+        "recommended": false,
         "capabilities": {
           "vision": true,
           "reasoning": {
@@ -7483,6 +7590,55 @@
         "capabilities": {
           "vision": true,
           "reasoning": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "meta-model-api",
+    "name": "Meta Model API",
+    "provider": "open_ai",
+    "baseUrl": "https://api.meta.ai/v1",
+    "requiresApiKey": true,
+    "icon": "♾️",
+    "description": "Muse Spark 1.3 through Meta's OpenAI-compatible Model API public preview",
+    "capabilities": {
+      "vision": true
+    },
+    "models": [
+      {
+        "id": "muse-spark-1.3",
+        "name": "Muse Spark 1.3",
+        "tagKey": "providers.tagLatest",
+        "contextTokens": 1048576,
+        "source": "official",
+        "status": "active",
+        "access": "public",
+        "productReadiness": "product_ready",
+        "recommended": true,
+        "lastVerifiedAt": "2026-09-03",
+        "releaseDate": "2026-09-02",
+        "modalities": ["text", "image"],
+        "inputModalities": ["text", "image"],
+        "outputModalities": ["text"],
+        "supportsTools": true,
+        "supportsStructuredOutput": true,
+        "capabilities": {
+          "vision": true,
+          "parallelToolCalling": true,
+          "promptCache": true,
+          "reasoning": {
+            "mode": "always",
+            "effortLevels": [
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ],
+            "thinkingBudget": {
+              "enabled": false
+            }
+          }
         }
       }
     ]

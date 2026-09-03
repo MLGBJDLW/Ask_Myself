@@ -1189,6 +1189,14 @@ mod tests {
     #[test]
     fn vision_support_prefers_provider_catalog_then_fallback() {
         assert!(model_supports_vision(&ProviderType::OpenAi, "gpt-5.5"));
+        assert!(model_supports_vision(
+            &ProviderType::OpenAi,
+            "muse-spark-1.3"
+        ));
+        assert!(model_supports_vision(
+            &ProviderType::Google,
+            "gemini-3.8-flash"
+        ));
         assert!(!model_supports_vision(
             &ProviderType::DeepSeek,
             "deepseek-v4-pro"

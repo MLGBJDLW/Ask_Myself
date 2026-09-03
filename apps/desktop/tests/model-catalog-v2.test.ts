@@ -342,6 +342,66 @@ function testGlm53AndDeepSeekCurrentModelsExposeOfficialCapabilities(): void {
     );
   }
 
+  const google = findPreset('google', 'https://generativelanguage.googleapis.com/v1beta');
+  assert(google, 'the direct Gemini API preset should exist');
+  const googleModels = attachModelDescriptors(google.models, {
+    surface: 'text',
+    providerId: google.id,
+    endpointId: `text:${google.id}`,
+    apiStyle: 'gemini',
+  });
+  const gemini38 = googleModels.find(candidate => candidate.id === 'gemini-3.8-flash');
+  assert(gemini38, 'Gemini 3.8 Flash should be listed by the direct API');
+  assertEqual(selectImplicitDefault(googleModels)?.id, 'gemini-3.8-flash', 'latest Gemini default');
+  assertEqual(gemini38.descriptor.limits.contextTokens, 1_048_576, 'Gemini 3.8 context');
+  assertEqual(gemini38.descriptor.limits.maxOutputTokens, 65_536, 'Gemini 3.8 output');
+  assertEqual(gemini38.descriptor.capabilities.promptCache, true, 'Gemini 3.8 cache');
+  assertEqual(gemini38.descriptor.capabilities.toolCalling, true, 'Gemini 3.8 tools');
+  assertEqual(
+    gemini38.descriptor.inputModalities.join(','),
+    'text,image',
+    'catalog claims should stop at Nexa supported Gemini wire inputs',
+  );
+
+  const meta = findPreset('open_ai', 'https://api.meta.ai/v1');
+  assert(meta, 'the direct Meta Model API preset should exist');
+  const metaModels = attachModelDescriptors(meta.models, {
+    surface: 'text',
+    providerId: meta.id,
+    endpointId: `text:${meta.id}`,
+    apiStyle: 'openai_chat',
+  });
+  const muse13 = metaModels.find(candidate => candidate.id === 'muse-spark-1.3');
+  assert(muse13, 'Muse Spark 1.3 should be listed by Meta Model API');
+  assertEqual(selectImplicitDefault(metaModels)?.id, 'muse-spark-1.3', 'latest Muse default');
+  assertEqual(muse13.descriptor.limits.contextTokens, 1_048_576, 'Muse 1.3 context');
+  assertEqual(muse13.descriptor.limits.maxOutputTokens, null, 'unknown direct Muse output limit');
+  assertEqual(muse13.descriptor.capabilities.vision, true, 'Muse 1.3 vision');
+  assertEqual(muse13.descriptor.capabilities.toolCalling, true, 'Muse 1.3 tools');
+  assertEqual(muse13.descriptor.capabilities.parallelToolCalling, true, 'Muse 1.3 parallel tools');
+  assertEqual(muse13.descriptor.capabilities.promptCache, true, 'Muse 1.3 cache');
+  const museReasoning = muse13.capabilities?.reasoning as {
+    mode?: string;
+    effortLevels?: string[];
+  } | null | undefined;
+  assertEqual(museReasoning?.mode, 'always', 'Muse 1.3 reasoning is always on');
+  assertEqual(
+    museReasoning?.effortLevels?.join(','),
+    'minimal,low,medium,high',
+    'Muse 1.3 must not expose the not-yet-released max mode',
+  );
+
+  for (const [id, expectedOutput] of [
+    ['google/gemini-3.8-flash', 65_536],
+    ['meta/muse-spark-1.3', 943_718],
+  ] as const) {
+    const routed = openrouterModels.find(candidate => candidate.id === id);
+    assert(routed, `${id} should be listed by OpenRouter`);
+    assertEqual(routed.descriptor.limits.contextTokens, 1_048_576, `${id} routed context`);
+    assertEqual(routed.descriptor.limits.maxOutputTokens, expectedOutput, `${id} routed output`);
+    assertEqual(routed.descriptor.capabilities.toolCalling, true, `${id} routed tools`);
+  }
+
   const alibaba = findPreset(
     'alibaba_model_studio',
     'https://dashscope.aliyuncs.com/compatible-mode/v1',

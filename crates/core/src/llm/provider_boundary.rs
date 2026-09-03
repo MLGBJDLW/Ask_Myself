@@ -95,6 +95,11 @@ pub(super) fn is_mistral_public_endpoint(provider: ProviderType, base_url: Optio
         && endpoint_matches(provider, base_url, &["api.mistral.ai"], &["/v1"])
 }
 
+pub(super) fn is_meta_model_api_endpoint(provider: ProviderType, base_url: Option<&str>) -> bool {
+    provider == ProviderType::OpenAi
+        && endpoint_matches(provider, base_url, &["api.meta.ai"], &["/v1"])
+}
+
 pub(super) fn is_openrouter_public_endpoint(
     provider: ProviderType,
     base_url: Option<&str>,
@@ -200,6 +205,7 @@ pub(super) fn endpoint_id(provider: ProviderType, base_url: Option<&str>) -> Str
         "api.x.ai" if path_is(&url, &["/v1"]) => Some("xai-public"),
         "api.minimax.io" if path_is(&url, &["/v1"]) => Some("minimax-public"),
         "api.mistral.ai" if path_is(&url, &["/v1"]) => Some("mistral-public"),
+        "api.meta.ai" if path_is(&url, &["/v1"]) => Some("meta-model-api-public"),
         "openrouter.ai" if path_is(&url, &["/api/v1"]) => Some("openrouter-public"),
         "api.deepseek.com" if path_is(&url, &["", "/v1"]) => Some("deepseek-public"),
         "api.deepseek.com" if path_is(&url, &["/anthropic"]) => Some("deepseek-anthropic-public"),
@@ -257,6 +263,14 @@ mod tests {
         assert!(is_deepseek_anthropic_endpoint(
             ProviderType::DeepSeek,
             Some("https://api.deepseek.com/anthropic")
+        ));
+        assert_eq!(
+            endpoint_id(ProviderType::OpenAi, Some("https://api.meta.ai/v1/")),
+            "meta-model-api-public"
+        );
+        assert!(is_meta_model_api_endpoint(
+            ProviderType::OpenAi,
+            Some("https://api.meta.ai/v1")
         ));
         assert_eq!(
             endpoint_id(
@@ -319,6 +333,11 @@ mod tests {
                 ProviderType::OpenAi,
                 "https://api.mistral.ai:8443/v1",
                 is_mistral_public_endpoint,
+            ),
+            (
+                ProviderType::OpenAi,
+                "https://api.meta.ai/v2",
+                is_meta_model_api_endpoint,
             ),
             (
                 ProviderType::OpenRouter,

@@ -889,6 +889,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "google");
   modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
+    "Gemini 3.8 Flash",
     "Gemini 3.7 Flash",
     "Gemini 3.6 Flash",
     "Gemini 3.5 Flash-Lite",
@@ -1152,6 +1153,43 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   const minimaxGlyph = minimaxCard.locator('[title="MiniMax"] > span');
   await expect(minimaxGlyph).toHaveAttribute("style", /provider-icons\/minimax\.svg/);
   await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
+});
+
+test("settings exposes Meta Model API with Muse Spark 1.3 as its verified default", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const metaCard = page.getByRole("button", { name: /^Meta Model API/ });
+  await expect(metaCard).toBeVisible();
+  await expect(metaCard.locator('[title="Meta"]')).toBeVisible();
+  await metaCard.click();
+
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await expect(baseUrlField.getByRole("textbox")).toHaveValue("https://api.meta.ai/v1");
+
+  const modelField = page.getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "muse-spark-1.3");
+  await expectNexaOptions(modelSelect, ["Muse Spark 1.3"]);
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("text+image→text");
+
+  await page.getByRole("button", { name: /^Advanced Settings/ }).click();
+  const alwaysOn = page.getByRole("checkbox", {
+    name: "Reasoning is always on for this model.",
+  });
+  await expect(alwaysOn).toBeChecked();
+  await expect(alwaysOn).toBeDisabled();
+  const effortSelect = page
+    .locator("label")
+    .filter({ hasText: "Reasoning Effort" })
+    .locator("xpath=..")
+    .locator("[data-nexa-select-trigger]");
+  await expectNexaOptions(effortSelect, ["Minimal", "Low", "Medium", "High"]);
+  await expectNexaOptionCount(effortSelect, 4);
 });
 
 test("settings exposes current Qwen3.8 Token Plan models with the retired preview disabled", async ({ page }) => {

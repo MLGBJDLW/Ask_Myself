@@ -503,7 +503,7 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
     for (provider_type, model) in [
         (ProviderType::OpenAi, "gpt-5.6"),
         (ProviderType::Anthropic, "claude-fable-5"),
-        (ProviderType::Google, "gemini-3.7-flash"),
+        (ProviderType::Google, "gemini-3.8-flash"),
         (ProviderType::DeepSeek, "deepseek-v4-pro"),
     ] {
         let plan = AgentConfig {

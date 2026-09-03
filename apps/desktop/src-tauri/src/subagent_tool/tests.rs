@@ -1033,7 +1033,7 @@ fn nexus_reasoning_policy_is_catalog_driven_across_provider_families() {
     for (provider, model) in [
         (ProviderType::OpenAi, "gpt-5.6"),
         (ProviderType::Anthropic, "claude-fable-5"),
-        (ProviderType::Google, "gemini-3.7-flash"),
+        (ProviderType::Google, "gemini-3.8-flash"),
         (ProviderType::DeepSeek, "deepseek-v4-pro"),
         (ProviderType::Moonshot, "kimi-k3"),
         (ProviderType::Qwen, "qwen3.8-max"),
@@ -1320,7 +1320,7 @@ async fn test_delegation_runtime_uses_distinct_connection_and_first_token_deadli
     for (provider, model) in [
         (ProviderType::OpenAi, "gpt-5.6"),
         (ProviderType::Anthropic, "claude-fable-5"),
-        (ProviderType::Google, "gemini-3.7-flash"),
+        (ProviderType::Google, "gemini-3.8-flash"),
         (ProviderType::DeepSeek, "deepseek-v4-pro"),
         (ProviderType::Zhipu, "glm-5.3"),
     ] {
