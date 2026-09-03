@@ -88,6 +88,34 @@ pub fn evidence_message(content: impl Into<String>) -> Option<Message> {
         .and_then(|block| message_from_blocks(Role::System, std::iter::once(&block)))
 }
 
+/// Project the message surface for one sampling step. A reserved final-answer
+/// sample keeps only the newest controller directive. Earlier volatile
+/// instructions describe superseded tool/recovery states and must not become
+/// source material for the visible conclusion, while the current directive
+/// (for example an output-continuation acknowledgement) still has to reach the
+/// provider.
+pub fn messages_for_model_step(messages: &[Message], final_answer_only: bool) -> Vec<Message> {
+    if !final_answer_only {
+        return messages.to_vec();
+    }
+    let newest_controller_index = messages.iter().rposition(|message| {
+        message
+            .prompt_cache_hint
+            .is_some_and(|hint| hint.stability == PromptStability::Volatile)
+    });
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            message
+                .prompt_cache_hint
+                .is_none_or(|hint| hint.stability != PromptStability::Volatile)
+                || Some(*index) == newest_controller_index
+        })
+        .map(|(_, message)| message.clone())
+        .collect()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ToolSurface {
     pub definitions: Vec<ToolDefinition>,
@@ -257,6 +285,39 @@ mod tests {
         assert_eq!(messages[0].text_content(), "policy");
         assert_eq!(messages[1].text_content(), "runtime");
         assert_eq!(messages[2].text_content(), "question");
+    }
+
+    #[test]
+    fn final_answer_projection_keeps_only_the_current_controller_directive() {
+        let stale_controller = controller_state_message("stale controller state").unwrap();
+        let current_controller = controller_state_message("continue with ack-123").unwrap();
+        let evidence = evidence_message("verified evidence").unwrap();
+        let transcript = user("question");
+
+        let projected = messages_for_model_step(
+            &[
+                stale_controller,
+                evidence,
+                transcript.clone(),
+                current_controller,
+            ],
+            true,
+        );
+
+        assert_eq!(projected.len(), 3);
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "verified evidence"));
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "question"));
+        assert!(projected
+            .iter()
+            .all(|message| message.text_content() != "stale controller state"));
+        assert!(projected
+            .iter()
+            .any(|message| message.text_content() == "continue with ack-123"));
+        assert_eq!(messages_for_model_step(&[transcript], false).len(), 1);
     }
 
     #[test]

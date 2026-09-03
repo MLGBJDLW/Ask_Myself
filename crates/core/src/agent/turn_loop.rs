@@ -15,16 +15,6 @@ use super::usage_accounting;
 use super::*;
 use crate::llm::FinishReason;
 
-struct ReplayableSystemPersistenceContext<'a> {
-    db: &'a Database,
-    conversation_id: Option<&'a str>,
-    model: &'a str,
-    layout: prompt_layout::PromptLayout,
-    messages: &'a [Message],
-    sort_order: &'a mut i64,
-    persisted_contents: &'a mut Vec<String>,
-}
-
 struct ProviderContextLimitRecoveryContext<'a> {
     db: &'a Database,
     tx: &'a mpsc::Sender<AgentEvent>,
@@ -835,7 +825,6 @@ impl AgentExecutor {
             &output_budget_plan.diagnostic(),
             "info",
         );
-        let mut persisted_replayable_system_contents: Vec<String> = Vec::new();
         for event in loop_recorder.events().iter().cloned() {
             append_persisted_trace_loop_event(&mut persisted_trace_items, event);
         }
@@ -969,7 +958,6 @@ impl AgentExecutor {
                     turn_id,
                     model,
                     &mut sort_order,
-                    &mut persisted_replayable_system_contents,
                     &mut messages,
                     &mut persisted_trace_items,
                     &mut task_plan,
@@ -1273,9 +1261,12 @@ impl AgentExecutor {
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
+        let mut contaminated_final_retries = 0u8;
+        let mut clean_final_retry_active = false;
         let mut next_step_purpose = TurnStepPurpose::Normal;
         'react_loop: loop {
-            let Some(step_permit) = turn_budget.permit(next_step_purpose) else {
+            let step_purpose = next_step_purpose;
+            let Some(step_permit) = turn_budget.permit(step_purpose) else {
                 break 'react_loop;
             };
             next_step_purpose = TurnStepPurpose::Normal;
@@ -1334,7 +1325,9 @@ impl AgentExecutor {
             // A finite tool-round policy reserves a distinct answer-only sample
             // after the final verified tool round. Recovery samples retain that
             // mode without spending another logical tool round.
-            if iteration > 0 || step_permit.mode == TurnStepMode::FinalAnswerOnly {
+            if step_purpose != TurnStepPurpose::Recovery
+                && (iteration > 0 || step_permit.mode == TurnStepMode::FinalAnswerOnly)
+            {
                 let budget_hint = if step_permit.mode == TurnStepMode::FinalAnswerOnly {
                     "[System: The configured tool-round budget is complete. This is the reserved final-answer step. Do not call tools. Synthesize the complete answer from the evidence and tool results already available.]".to_string()
                 } else if step_permit
@@ -1361,14 +1354,6 @@ impl AgentExecutor {
                 }
             }
 
-            long_task_state.refresh_plan_recitation(
-                &mut messages,
-                &task_plan,
-                step_permit.tool_rounds_used,
-                self.config.max_iterations,
-                layout.append_volatile_system_prompt_to_tail,
-            );
-
             // Tool discovery and steering can expand the surface between model
             // steps. Re-apply the isolation boundary before any request
             // accounting so the estimated and transmitted surfaces stay
@@ -1376,7 +1361,7 @@ impl AgentExecutor {
             if workspace_isolation.is_some() {
                 WorkspaceIsolationRuntime::retain_safe_tool_definitions(&mut tool_defs);
             }
-            let suppress_tools_for_step = !step_permit.allows_tools();
+            let suppress_tools_for_step = clean_final_retry_active || !step_permit.allows_tools();
             let effective_tool_defs =
                 effective_tool_surface(tool_defs.as_slice(), suppress_tools_for_step);
             prompt_was_compacted |= self
@@ -1395,21 +1380,10 @@ impl AgentExecutor {
                     total_usage: &mut total_usage,
                 })
                 .await;
-            self.persist_unpersisted_replayable_system_messages(
-                ReplayableSystemPersistenceContext {
-                    db,
-                    conversation_id,
-                    model,
-                    layout,
-                    messages: &messages,
-                    sort_order: &mut sort_order,
-                    persisted_contents: &mut persisted_replayable_system_contents,
-                },
-            );
-
             let buffer_answer_projection = output_recovery.reserves_answer_channel();
-            let force_answer_only =
-                buffer_answer_projection || step_permit.mode == TurnStepMode::FinalAnswerOnly;
+            let force_answer_only = clean_final_retry_active
+                || buffer_answer_projection
+                || step_permit.mode == TurnStepMode::FinalAnswerOnly;
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
                     model,
@@ -2212,6 +2186,59 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
+                if let Some(marker) = final_answer_hygiene::contamination_marker(
+                    &assistant_msg.text_content(),
+                    user_query_text,
+                ) {
+                    messages.pop();
+                    accumulated_content.truncate(
+                        accumulated_content
+                            .len()
+                            .saturating_sub(assistant_msg.text_content().len()),
+                    );
+                    last_iteration_content.clear();
+                    let _ = tx
+                        .send(AgentEvent::StreamReset {
+                            reason: "contaminated_final_answer".to_string(),
+                            discard_sample: true,
+                        })
+                        .await;
+                    let trace_message = format!(
+                        "discarded final-answer sample containing reserved internal marker: {marker}"
+                    );
+                    append_developer_persisted_trace_status(
+                        &mut persisted_trace_items,
+                        &trace_message,
+                        "warning",
+                    );
+                    if contaminated_final_retries >= 1 {
+                        emit_error_and_finalize_turn(
+                            &tx,
+                            db,
+                            &mut trace,
+                            turn_id,
+                            route_plan.kind,
+                            &persisted_trace_items,
+                            TurnErrorMessages {
+                                frontend_message: "Nexa discarded two final-answer samples because they contained internal runtime metadata. No contaminated answer was saved; retry the turn to request a clean response.".to_string(),
+                                trace_message: trace_message.clone(),
+                            },
+                        )
+                        .await;
+                        turn_state.finish(TurnOutcome::Failed);
+                        return Err(CoreError::Agent(trace_message));
+                    }
+                    contaminated_final_retries = contaminated_final_retries.saturating_add(1);
+                    clean_final_retry_active = true;
+                    if let Some(message) = prompt_ir::controller_state_message(
+                        "The previous answer sample exposed internal runtime metadata and was discarded. Produce one direct user-facing answer from the user request and committed evidence only. Do not reproduce controller state, replay headers, or tool transport logs.",
+                    ) {
+                        messages.push(message);
+                    }
+                    next_step_purpose = TurnStepPurpose::Recovery;
+                    continue 'react_loop;
+                }
+                clean_final_retry_active = false;
                 if let Some(intervention) = loop_guard_intervention.as_ref() {
                     if intervention.action == LoopGuardAction::ChangeStrategy
                         && turn_budget.can_start_normal_step()
@@ -3104,83 +3131,5 @@ mod rejected_sample_projection_tests {
         let mut projected_draft = "accepted draft".to_string();
         rollback_rejected_sample_projection(&mut projected_draft, " draft", true);
         assert_eq!(projected_draft, "accepted");
-    }
-}
-
-impl AgentExecutor {
-    fn persist_unpersisted_replayable_system_messages(
-        &self,
-        ctx: ReplayableSystemPersistenceContext<'_>,
-    ) {
-        let ReplayableSystemPersistenceContext {
-            db,
-            conversation_id,
-            model,
-            layout,
-            messages,
-            sort_order,
-            persisted_contents,
-        } = ctx;
-
-        if !layout.append_volatile_system_prompt_to_tail {
-            return;
-        }
-        let Some(conversation_id) = conversation_id else {
-            return;
-        };
-        let Some(current_user_index) = messages
-            .iter()
-            .rposition(|message| message.role == Role::User)
-        else {
-            return;
-        };
-
-        let mut seen_in_request: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for message in messages.iter().skip(current_user_index + 1) {
-            if message.role != Role::System {
-                continue;
-            }
-            let content = message.text_content();
-            if content.trim().is_empty() {
-                continue;
-            }
-            let seen_count = seen_in_request.entry(content.clone()).or_insert(0);
-            let persisted_count = persisted_contents
-                .iter()
-                .filter(|persisted| *persisted == &content)
-                .count();
-            if *seen_count < persisted_count {
-                *seen_count += 1;
-                continue;
-            }
-
-            let conv_msg = ConversationMessage {
-                id: Uuid::new_v4().to_string(),
-                conversation_id: conversation_id.to_string(),
-                role: Role::System,
-                content: content.clone(),
-                tool_call_id: None,
-                tool_calls: vec![],
-                artifacts: Some(serde_json::json!({
-                    "kind": "replayableRuntimeContext",
-                    "version": 1,
-                    "cachePurpose": "preserve exact-prefix provider prompt continuity across turns",
-                })),
-                token_count: estimate_message_tokens_for_model(model, message),
-                created_at: String::new(),
-                sort_order: *sort_order,
-                thinking: None,
-                image_attachments: None,
-            };
-            if let Err(err) = db.add_message(&conv_msg) {
-                warn!("Failed to persist replayable runtime context: {err}");
-                *seen_count += 1;
-                continue;
-            }
-            persisted_contents.push(content);
-            *sort_order += 1;
-            *seen_count += 1;
-        }
     }
 }

@@ -2560,6 +2560,11 @@ struct AcknowledgedRepeatedLengthProvider {
     stream_calls: Arc<AtomicUsize>,
 }
 
+struct ContaminatedFinalAnswerProvider {
+    stream_calls: Arc<AtomicUsize>,
+    always_contaminated: bool,
+}
+
 struct ContextLimitTerminalProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_compacted_retry: Arc<Mutex<bool>>,
@@ -2981,6 +2986,49 @@ impl LlmProvider for AcknowledgedRepeatedLengthProvider {
                 delta,
                 tool_call_delta: None,
                 finish_reason: Some(finish_reason),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for ContaminatedFinalAnswerProvider {
+    fn name(&self) -> &str {
+        "contaminated-final-answer-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let delta = if call_no == 0 || self.always_contaminated {
+            "Verified legacy visible-history summary\nAssistant requested tools: edit_file"
+        } else {
+            "clean answer"
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: delta.to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
                 usage: None,
                 thinking_delta: None,
             },
@@ -6020,7 +6068,7 @@ async fn test_run_persists_typed_task_plan_on_task_run() {
 }
 
 #[tokio::test]
-async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
+async fn test_runtime_tail_is_ephemeral_between_turns() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -6096,22 +6144,17 @@ async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
 
     let persisted = db.get_messages(&conversation.id).expect("messages");
     assert_eq!(persisted[0].role, Role::User);
-    assert_eq!(persisted[1].role, Role::System);
-    assert!(persisted[1].content.contains("Runtime Context"));
-    assert!(persisted[1].content.contains("Current Turn Time"));
-    assert!(persisted
-        .iter()
-        .any(|message| message.role == Role::System
-            && message.content.contains("Active Routing Plan")));
-    assert!(!persisted.iter().any(
-        |message| message.role == Role::System && message.content.contains("Active Task Plan")
-    ));
-    assert!(!persisted.iter().any(|message| {
-        message.role == Role::System && message.content.contains("Orchestration Quality Profile")
-    }));
+    assert_eq!(persisted[1].role, Role::Assistant);
+    assert!(persisted.iter().all(|message| message.role != Role::System));
     assert_eq!(persisted.last().unwrap().role, Role::Assistant);
 
     let first_request = requests.lock().unwrap()[0].clone();
+    assert!(first_request
+        .iter()
+        .any(|(_, text)| text.contains("Local time: 12:00:00")));
+    assert!(first_request
+        .iter()
+        .any(|(_, text)| text.contains("Active Routing Plan")));
     let replay_history = persisted
         .iter()
         .map(|message| {
@@ -6152,10 +6195,17 @@ async fn test_exact_prefix_runtime_tail_is_persisted_for_next_turn_replay() {
         let text = message.text_content();
         (message.role, text)
     })
-    .take(first_request.len())
     .collect::<Vec<_>>();
 
-    assert_eq!(first_request, second_request);
+    assert!(second_request
+        .iter()
+        .any(|(_, text)| text.contains("first answer")));
+    assert!(second_request
+        .iter()
+        .any(|(_, text)| text.contains("Local time: 12:01:00")));
+    assert!(second_request
+        .iter()
+        .all(|(_, text)| !text.contains("Local time: 12:00:00")));
 }
 
 #[tokio::test]
@@ -6339,13 +6389,11 @@ async fn test_prompt_cache_trace_compares_previous_turn_snapshot_with_new_execut
         observation["previousSnapshotSource"]["turnId"],
         first_turn.id
     );
-    assert_eq!(observation["sampleKind"], "warmAppend");
-    assert_eq!(observation["prefixChanged"], false);
-    assert_eq!(
-        observation["changes"].as_array().map(Vec::len),
-        Some(0),
-        "append-only conversation growth must not be reported as a prefix rewrite"
-    );
+    assert_eq!(observation["sampleKind"], "prefixRewrite");
+    assert_eq!(observation["prefixChanged"], true);
+    assert!(observation["changes"]
+        .as_array()
+        .is_some_and(|changes| !changes.is_empty()));
     assert!(observation["commonPrefixMessageCount"]
         .as_u64()
         .is_some_and(|count| count > 0));
@@ -6453,7 +6501,7 @@ async fn test_tool_result_replay_matches_current_llm_context() {
 }
 
 #[tokio::test]
-async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
+async fn test_exact_prefix_tool_loop_control_state_is_not_persisted_or_replayed() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool));
     let stream_calls = Arc::new(AtomicUsize::new(0));
@@ -6536,12 +6584,12 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
 
     let request_log = requests.lock().unwrap().clone();
     assert_eq!(request_log.len(), 2);
-    assert!(request_log[1]
+    assert!(!request_log[1]
         .iter()
         .any(|(role, text)| *role == Role::System && text.contains("Long Task Control State")));
 
     let persisted = db.get_messages(&conversation.id).expect("messages");
-    assert!(persisted.iter().any(|message| message.role == Role::System
+    assert!(!persisted.iter().any(|message| message.role == Role::System
         && message.content.contains("Long Task Control State")));
     let replay_history = persisted
         .iter()
@@ -6583,10 +6631,13 @@ async fn test_exact_prefix_tool_loop_system_state_is_persisted_for_replay() {
         let text = message.text_content();
         (message.role, text)
     })
-    .take(request_log[1].len())
     .collect::<Vec<_>>();
 
-    assert_eq!(request_log[1], second_turn);
+    assert!(second_turn.iter().all(|(_, text)| {
+        !text.contains("Long Task Control State")
+            && !text.contains("Plan progress:")
+            && !text.contains("Evidence sufficiency:")
+    }));
 }
 
 #[tokio::test]
@@ -6835,7 +6886,7 @@ async fn loop_guard_blocked_batch_does_not_consume_the_remaining_tool_round() {
 }
 
 #[tokio::test]
-async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry() {
+async fn test_loop_guard_change_strategy_keeps_control_state_ephemeral() {
     let registry = ToolRegistry::new();
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -6918,17 +6969,9 @@ async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry()
         })
         .count();
     assert_eq!(repeated_draft_count, 3);
-    let third_draft_index = persisted
-        .iter()
-        .rposition(|message| {
-            message.role == Role::Assistant && message.content == LOOP_GUARD_REPEATED_DRAFT
-        })
-        .expect("third repeated draft should be persisted");
-    let loop_guard_index = persisted
-        .iter()
-        .position(|message| message.role == Role::System && message.content.contains("Loop Guard"))
-        .expect("loop guard prompt should be persisted");
-    assert!(third_draft_index < loop_guard_index);
+    assert!(persisted.iter().all(|message| {
+        message.role != Role::System || !message.content.contains("Loop Guard")
+    }));
 
     let replay_history = persisted
         .iter()
@@ -6970,10 +7013,11 @@ async fn test_loop_guard_change_strategy_persists_assistant_draft_before_retry()
         let text = message.text_content();
         (message.role, text)
     })
-    .take(request_log[3].len())
     .collect::<Vec<_>>();
 
-    assert_eq!(request_log[3], replay_prefix);
+    assert!(replay_prefix
+        .iter()
+        .all(|(_, text)| !text.contains("Loop Guard")));
 }
 
 #[tokio::test]
@@ -7556,6 +7600,144 @@ async fn acknowledged_repeated_continuations_are_preserved_without_control_marke
         }
     }
     assert_eq!(streamed, "foofoobar");
+}
+
+#[tokio::test]
+async fn contaminated_final_answer_is_reset_retried_and_never_persisted() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ContaminatedFinalAnswerProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            always_contaminated: false,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".to_string(),
+            model: "reasoning-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "give me the clean conclusion".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("one clean retry should recover the turn");
+
+    assert_eq!(final_message.text_content(), "clean answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    let mut visible_text = String::new();
+    let mut saw_contamination_reset = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => visible_text.push_str(&delta),
+            AgentEvent::StreamReset { reason, .. } if reason == "contaminated_final_answer" => {
+                visible_text.clear();
+                saw_contamination_reset = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_contamination_reset);
+    assert_eq!(visible_text, "clean answer");
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted.iter().all(|message| {
+        !message
+            .content
+            .contains("Verified legacy visible-history summary")
+    }));
+    assert!(persisted
+        .iter()
+        .any(|message| { message.role == Role::Assistant && message.content == "clean answer" }));
+}
+
+#[tokio::test]
+async fn repeatedly_contaminated_final_answer_fails_closed_after_one_retry() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ContaminatedFinalAnswerProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            always_contaminated: true,
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let error = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "give me the clean conclusion".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect_err("a second contaminated answer must fail closed");
+
+    assert!(error.to_string().contains("reserved internal marker"));
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    let mut resets = 0;
+    let mut errors = 0;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::StreamReset { reason, .. } if reason == "contaminated_final_answer" => {
+                resets += 1;
+            }
+            AgentEvent::Error { .. } => errors += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(resets, 2);
+    assert_eq!(errors, 1);
 }
 
 #[tokio::test]
@@ -9777,6 +9959,7 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
 
     let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted.iter().all(|message| message.role != Role::System));
     let obsolete_draft_index = persisted
         .iter()
         .position(|message| {
@@ -9802,46 +9985,9 @@ async fn test_steering_interrupts_active_stream_and_restarts_with_message() {
             .any(|message| message.contains("focus on edge cases instead")),
         "second LLM request should include steering text"
     );
-    let replay_history = persisted
+    assert!(persisted
         .iter()
-        .map(|message| {
-            let mut replay = Message::text(
-                message.role.clone(),
-                conversation_message_llm_context_content(message),
-            );
-            replay.name = message.tool_call_id.clone();
-            replay.tool_calls = if message.tool_calls.is_empty() {
-                None
-            } else {
-                Some(message.tool_calls.clone())
-            };
-            replay
-        })
-        .collect::<Vec<_>>();
-    let replay_prefix = context::prepare_messages_with_options(
-        "stable system",
-        &replay_history,
-        &[ContentPart::Text {
-            text: "next turn".to_string(),
-        }],
-        "deepseek-chat",
-        4096,
-        None,
-        &[],
-        &[],
-        &[],
-        context::PrepareMessagesOptions {
-            include_skill_system_prompt: false,
-            volatile_system_sections: &[],
-            append_volatile_system_prompt_to_tail: true,
-            ..context::PrepareMessagesOptions::default()
-        },
-    )
-    .into_iter()
-    .map(|message| format!("{:?}:{}", message.role, message.text_content()))
-    .take(requests[1].len())
-    .collect::<Vec<_>>();
-    assert_eq!(requests[1], replay_prefix);
+        .any(|message| { message.role == Role::Assistant && message.content == "steered answer" }));
 }
 
 #[derive(Clone, Copy)]

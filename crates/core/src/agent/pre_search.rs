@@ -18,7 +18,6 @@ impl AgentExecutor {
         turn_id: Option<&str>,
         model: &str,
         sort_order: &mut i64,
-        persisted_replayable_system_contents: &mut Vec<String>,
         messages: &mut Vec<Message>,
         persisted_trace_items: &mut Vec<PersistedTraceItem>,
         task_plan: &mut AgentTaskPlan,
@@ -184,7 +183,6 @@ impl AgentExecutor {
             };
             match db.add_message(&conv_msg) {
                 Ok(()) => {
-                    persisted_replayable_system_contents.push(content);
                     *sort_order += 1;
                 }
                 Err(err) => warn!("Failed to persist pre-search evidence context: {err}"),

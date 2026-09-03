@@ -296,7 +296,7 @@ impl AgentExecutor {
         }
         let mut current_request = CompletionRequest {
             model: model.to_string(),
-            messages: messages.to_vec(),
+            messages: prompt_ir::messages_for_model_step(messages, force_answer_only),
             temperature: self.config.temperature,
             // Local context accounting always has a deterministic reserve.
             // Only explicit, catalog-verified, or cumulative-worker limits
@@ -332,7 +332,7 @@ impl AgentExecutor {
         // route without inheriting a lossy primary-route projection.
         let mut reasoning_was_requested = request_reasoning_was_requested(&current_request);
         let mut accepted_attempt: Option<model_attempt::AcceptedModelAttempt> = None;
-        self.begin_prompt_cache_observation(model, messages, tool_defs);
+        self.begin_prompt_cache_observation(model, &current_request.messages, tool_defs);
         let accumulated_len_before_iteration = accumulated_content.len();
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCallRequest> = Vec::new();

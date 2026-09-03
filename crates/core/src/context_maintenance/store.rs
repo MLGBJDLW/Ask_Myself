@@ -4,7 +4,10 @@ use rusqlite::{OptionalExtension, TransactionBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::conversation::memory::estimate_tokens_for_model;
-use crate::conversation::{ConversationMessage, ImageAttachment, LLM_CONTEXT_CONTENT_ARTIFACT_KEY};
+use crate::conversation::{
+    conversation_message_is_model_history, ConversationMessage, ImageAttachment,
+    LLM_CONTEXT_CONTENT_ARTIFACT_KEY,
+};
 use crate::db::Database;
 use crate::error::CoreError;
 use crate::llm::{Role, ToolCallRequest};
@@ -44,9 +47,16 @@ pub(crate) fn load_compaction_snapshot(
         .ok_or_else(|| CoreError::NotFound(format!("Conversation {conversation_id}")))?
     };
     Ok(CompactionSnapshot {
-        messages: database.get_messages(conversation_id)?,
+        messages: model_history_messages(database.get_messages(conversation_id)?),
         checkpoint_generation,
     })
+}
+
+fn model_history_messages(messages: Vec<ConversationMessage>) -> Vec<ConversationMessage> {
+    messages
+        .into_iter()
+        .filter(conversation_message_is_model_history)
+        .collect()
 }
 
 pub(crate) fn commit_context_checkpoint(
@@ -269,7 +279,7 @@ pub fn load_context_projection(
     let checkpoint = active_checkpoint(database, conversation_id)?;
     let Some(checkpoint) = checkpoint else {
         return Ok(ContextProjection {
-            messages: database.get_messages(conversation_id)?,
+            messages: model_history_messages(database.get_messages(conversation_id)?),
             checkpoint_id: None,
             projected: false,
         });
@@ -294,7 +304,7 @@ pub fn load_context_projection(
                 "Active context checkpoint source changed; falling back to canonical transcript"
             );
             return Ok(ContextProjection {
-                messages: database.get_messages(conversation_id)?,
+                messages: model_history_messages(database.get_messages(conversation_id)?),
                 checkpoint_id: None,
                 projected: false,
             });
@@ -323,7 +333,7 @@ pub fn load_context_projection(
             "Active context checkpoint tail changed; falling back to canonical transcript"
         );
         return Ok(ContextProjection {
-            messages: database.get_messages(conversation_id)?,
+            messages: model_history_messages(database.get_messages(conversation_id)?),
             checkpoint_id: None,
             projected: false,
         });
@@ -346,6 +356,19 @@ pub fn load_context_projection(
         thinking: None,
         image_attachments: None,
     };
+    if !conversation_message_is_model_history(&summary) {
+        tracing::warn!(
+            conversation_id,
+            checkpoint_id = %checkpoint.id,
+            "Active context checkpoint contains legacy runtime metadata; falling back to canonical transcript"
+        );
+        return Ok(ContextProjection {
+            messages: model_history_messages(database.get_messages(conversation_id)?),
+            checkpoint_id: None,
+            projected: false,
+        });
+    }
+    let tail = model_history_messages(tail);
     let mut messages = Vec::with_capacity(tail.len() + 1);
     messages.push(summary);
     messages.extend(tail);
@@ -649,6 +672,55 @@ mod tests {
             .expect("load invalidated projection");
         assert!(!invalidated.projected);
         assert_eq!(invalidated.messages.len(), 5);
+    }
+
+    #[test]
+    fn legacy_runtime_metadata_in_checkpoint_falls_back_to_clean_canonical_history() {
+        let database = Database::open_memory().expect("open database");
+        let conversation = database
+            .create_conversation(&CreateConversationInput {
+                provider: "open_ai".to_string(),
+                model: "gpt-4o".to_string(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .expect("create conversation");
+        for (sort_order, role) in [
+            (0, Role::User),
+            (1, Role::Assistant),
+            (2, Role::User),
+            (3, Role::Assistant),
+        ] {
+            add_message(&database, &conversation.id, sort_order, role);
+        }
+        let canonical = database
+            .get_messages(&conversation.id)
+            .expect("canonical transcript");
+        let mut input = checkpoint_input(
+            &conversation.id,
+            "legacy-contaminated-checkpoint",
+            &canonical[..2],
+            vec!["message-2".to_string(), "message-3".to_string()],
+            2,
+        );
+        input.snapshot_high_watermark = 3;
+        input.summary = "## Earlier conversation context (summarized)\nAssistant: ## Verified legacy visible-history summary\nAssistant requested tools: edit_file".to_string();
+        commit_context_checkpoint(&database, &input, &CancellationToken::new())
+            .expect("commit legacy checkpoint");
+
+        let projection =
+            load_context_projection(&database, &conversation.id).expect("clean fallback");
+
+        assert!(!projection.projected);
+        assert_eq!(projection.checkpoint_id, None);
+        assert_eq!(projection.messages.len(), canonical.len());
+        assert!(projection.messages.iter().all(|message| {
+            !message
+                .content
+                .contains("Verified legacy visible-history summary")
+        }));
     }
 
     #[test]
