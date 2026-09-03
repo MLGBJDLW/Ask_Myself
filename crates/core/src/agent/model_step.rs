@@ -94,6 +94,9 @@ pub(super) struct ModelStepContext<'a> {
     pub(super) has_sources: bool,
     pub(super) privacy_cfg: &'a privacy::PrivacyConfig,
     pub(super) messages: &'a mut Vec<Message>,
+    /// Exact canonical message projection used for the initial physical
+    /// request. Context-recovery rebuilds replace this snapshot in-place.
+    pub(super) request_messages: Vec<Message>,
     pub(super) final_answer_hygiene_scope: &'a mut FinalAnswerHygieneScope,
     pub(super) tool_defs: &'a mut Vec<ToolDefinition>,
     pub(super) accumulated_content: &'a mut String,
@@ -119,6 +122,9 @@ pub(super) enum ModelStepOutcome {
 }
 
 pub(super) struct ModelStepOutput {
+    /// Exact canonical message projection used by the accepted physical
+    /// request, before provider-specific replay projection.
+    pub(super) request_messages: Vec<Message>,
     pub(super) full_content: String,
     pub(super) tool_calls: Vec<ToolCallRequest>,
     pub(super) tool_call_assembly_rejected: bool,
@@ -310,6 +316,7 @@ impl AgentExecutor {
             has_sources,
             privacy_cfg,
             messages,
+            request_messages,
             final_answer_hygiene_scope,
             tool_defs,
             accumulated_content,
@@ -370,7 +377,7 @@ impl AgentExecutor {
         }
         let mut current_request = CompletionRequest {
             model: model.to_string(),
-            messages: prompt_ir::messages_for_model_step(messages, force_answer_only),
+            messages: request_messages,
             temperature: self.config.temperature,
             // Local context accounting always has a deterministic reserve.
             // Only explicit, catalog-verified, or cumulative-worker limits
@@ -1457,7 +1464,8 @@ impl AgentExecutor {
                                     .await;
                                     return Err(error);
                                 }
-                                safe_request.messages = messages.to_vec();
+                                safe_request.messages =
+                                    prompt_ir::messages_for_model_step(messages, force_answer_only);
                             }
                             ContextOverflowRecoveryDecision::GiveUp { user_message } => {
                                 emit_error_and_finalize_turn(
@@ -1700,6 +1708,7 @@ impl AgentExecutor {
             accepted_sample_id = safe_accepted.sample_id;
             accepted_route_snapshot = safe_route;
             attempt_timing = safe_timing;
+            current_request.messages = safe_request.messages;
             if completion_has_semantic_output(&response) {
                 *context_recovery_attempts = 0;
             }
@@ -1766,6 +1775,7 @@ impl AgentExecutor {
         }
 
         Ok(ModelStepOutcome::Completed(Box::new(ModelStepOutput {
+            request_messages: current_request.messages,
             full_content,
             tool_calls,
             tool_call_assembly_rejected,

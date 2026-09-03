@@ -4011,6 +4011,62 @@ async fn reserved_final_sample_excludes_suppressed_schemas_from_cumulative_accou
 }
 
 #[tokio::test]
+async fn reserved_final_sample_budgets_and_accounts_only_its_projected_prompt() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ScriptedProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            first_chunks: vec![StreamChunk {
+                delta: "projected final answer".to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                thinking_delta: None,
+            }],
+            final_answer: "unused fallback answer",
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("mock-model".to_string()),
+            max_iterations: 0,
+            max_tokens: Some(512),
+            context_window: Some(1_000_000),
+            max_actual_tokens_per_run: Some(6_000),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let (tx, _rx) = mpsc::channel(128);
+    let history = vec![
+        prompt_ir::controller_state_message(format!(
+            "superseded step controller: {}",
+            "x".repeat(12_000)
+        ))
+        .expect("superseded controller"),
+        prompt_ir::controller_state_message("current final-answer controller")
+            .expect("current controller"),
+    ];
+
+    let final_message = executor
+        .run(
+            history,
+            vec![ContentPart::Text {
+                text: "Return only the concise final answer.".to_string(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .expect("superseded controllers must not consume the projected final request budget");
+
+    assert_eq!(final_message.text_content(), "projected final answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn nexus_keeps_delegation_tools_visible_on_the_first_model_step() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::tool_search_tool::ToolSearchTool));

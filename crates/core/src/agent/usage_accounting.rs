@@ -10,6 +10,9 @@ pub(super) struct UsageAccountingContext<'a> {
     pub(super) turn_id: Option<&'a str>,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
     pub(super) model: &'a str,
+    /// Message projection used by the accepted physical request. This remains
+    /// stable while `messages` may be compacted for the following step.
+    pub(super) request_messages: &'a [Message],
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) context_pipeline: ContextPipeline,
     pub(super) tool_defs: &'a [ToolDefinition],
@@ -154,6 +157,7 @@ impl AgentExecutor {
             turn_id,
             tx,
             model,
+            request_messages,
             messages,
             context_pipeline,
             tool_defs,
@@ -182,7 +186,7 @@ impl AgentExecutor {
             .and_then(|usage| normalized_cache_miss_tokens(self.config.provider_type, usage));
         let context_breakdown = context::estimate_context_usage_breakdown_for_model(
             model,
-            messages,
+            request_messages,
             tool_defs,
             actual_prompt_tokens,
         );

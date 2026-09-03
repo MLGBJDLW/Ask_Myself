@@ -1388,10 +1388,14 @@ impl AgentExecutor {
             let force_answer_only = clean_final_retry_active
                 || buffer_answer_projection
                 || step_permit.mode == TurnStepMode::FinalAnswerOnly;
+            // Budget the exact canonical projection that the model step will
+            // send. Superseded step-scoped controls are not part of a reserved
+            // final-answer request and must not consume its output allowance.
+            let request_messages = prompt_ir::messages_for_model_step(&messages, force_answer_only);
             let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
                 context::estimate_context_usage_breakdown_for_model(
                     model,
-                    &messages,
+                    &request_messages,
                     effective_tool_defs,
                     None,
                 )
@@ -1454,6 +1458,7 @@ impl AgentExecutor {
                     has_sources,
                     privacy_cfg: &privacy_cfg,
                     messages: &mut messages,
+                    request_messages,
                     final_answer_hygiene_scope: &mut final_answer_hygiene_scope,
                     tool_defs: &mut tool_defs,
                     accumulated_content: &mut accumulated_content,
@@ -1486,6 +1491,7 @@ impl AgentExecutor {
                 }
             };
             let model_step::ModelStepOutput {
+                request_messages,
                 mut full_content,
                 mut tool_calls,
                 tool_call_assembly_rejected,
@@ -1548,6 +1554,7 @@ impl AgentExecutor {
                         tx: &tx,
                         model,
                         messages: &mut messages,
+                        request_messages: &request_messages,
                         context_pipeline,
                         tool_defs: effective_tool_surface(
                             tool_defs.as_slice(),
