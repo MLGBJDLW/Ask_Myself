@@ -20,25 +20,17 @@ import {
   CheckCircle2,
   Play,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import {
-  markdownRemarkPlugins,
-  rehypePlugins,
-} from "../../components/chat/markdownComponents";
 import { useTranslation } from "../../i18n";
 import { useLiveTranscriptProjection } from "../../lib/useLiveTranscriptProjection";
 import { useDeveloperMode } from "../../lib/developerMode";
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
-  preprocessChunkCitations,
-  preprocessInlineCitations,
   buildCitationMap,
 } from "../../lib/citationParser";
 import type { CitationCardData } from "../../lib/citationParser";
 import { SOFT_FADE_TRANSITION } from "../../lib/uiMotion";
 import { isCompactionSummaryMessage, isGoalMessage, isSteeringMessage } from "../../lib/chatMessageGuards";
 import { getActiveGoalContext } from "../../lib/goalContext";
-import { buildEvidenceItemsFromContent } from "../../lib/evidenceItems";
 import type {
   StreamRoundEvent,
   ToolCallEvent,
@@ -82,15 +74,8 @@ import {
 } from "../../components/chat/FileDiffPreview";
 import { ThinkingBlock } from "../../components/chat/ThinkingBlock";
 import type { ThinkingSection } from "../../components/chat/ThinkingBlock";
-import {
-  markdownComponents,
-  preprocessFilePaths,
-  preprocessCitations,
-  CitationContext,
-  MarkdownRenderStateProvider,
-} from "../../components/chat/markdownComponents";
 import { MessageBubble } from "../../components/chat/MessageBubble";
-import { CitationChip } from "../../components/chat/EvidenceCard";
+import { StreamingMarkdown } from "../../components/chat/StreamingMarkdown";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type {
   AgentTaskRun,
@@ -137,6 +122,43 @@ interface TurnNavigationItem {
   preview: string;
 }
 
+interface RenderedTurnNavigationItem {
+  item: TurnNavigationItem;
+  index: number;
+}
+
+const MAX_TURN_NAVIGATION_MARKERS = 160;
+const ACTIVE_TURN_NAVIGATION_RADIUS = 8;
+
+function sampleTurnNavigationItems(
+  items: TurnNavigationItem[],
+  activeIndex: number,
+): RenderedTurnNavigationItem[] {
+  if (items.length <= MAX_TURN_NAVIGATION_MARKERS) {
+    return items.map((item, index) => ({ item, index }));
+  }
+
+  const indexes = new Set<number>([0, items.length - 1, activeIndex]);
+  for (
+    let index = Math.max(0, activeIndex - ACTIVE_TURN_NAVIGATION_RADIUS);
+    index <= Math.min(items.length - 1, activeIndex + ACTIVE_TURN_NAVIGATION_RADIUS);
+    index += 1
+  ) {
+    indexes.add(index);
+  }
+
+  const remaining = MAX_TURN_NAVIGATION_MARKERS - indexes.size;
+  for (let slot = 0; slot < remaining; slot += 1) {
+    const ratio = remaining <= 1 ? 0 : slot / (remaining - 1);
+    indexes.add(Math.round(ratio * (items.length - 1)));
+  }
+
+  return [...indexes]
+    .sort((left, right) => left - right)
+    .slice(0, MAX_TURN_NAVIGATION_MARKERS)
+    .map((index) => ({ item: items[index], index }));
+}
+
 function turnNavigationPreview(content: string): string {
   const compact = content.replace(/\s+/g, ' ').trim();
   if (!compact) return '…';
@@ -155,9 +177,25 @@ function TurnNavigator({
   messageAreaLabel: string;
 }) {
   const shouldReduceMotion = useReducedMotion();
-  if (items.length < 2) return null;
+  const navigatorRef = useRef<HTMLElement>(null);
+  const pendingKeyboardFocusIndex = useRef<number | null>(null);
   const activeIndex = Math.max(0, items.findIndex((item) => item.id === activeId));
   const progress = items.length <= 1 ? 0 : activeIndex / (items.length - 1);
+  const renderedItems = useMemo(
+    () => sampleTurnNavigationItems(items, activeIndex),
+    [activeIndex, items],
+  );
+  useEffect(() => {
+    const pendingIndex = pendingKeyboardFocusIndex.current;
+    if (pendingIndex == null) return;
+    const target = navigatorRef.current?.querySelector<HTMLButtonElement>(
+      `[data-turn-navigation-index="${pendingIndex}"]`,
+    );
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    pendingKeyboardFocusIndex.current = null;
+  }, [renderedItems]);
+  if (items.length < 2) return null;
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -180,14 +218,13 @@ function TurnNavigator({
 
     event.preventDefault();
     const nextItem = items[nextIndex];
-    event.currentTarget
-      .querySelector<HTMLButtonElement>(`[data-turn-navigation-index="${nextIndex}"]`)
-      ?.focus({ preventScroll: true });
+    pendingKeyboardFocusIndex.current = nextIndex;
     onSelect(nextItem.id);
   };
 
   return (
     <nav
+      ref={navigatorRef}
       aria-label={`${messageAreaLabel} · ${items.length}`}
       aria-orientation="vertical"
       data-active-index={activeIndex}
@@ -209,7 +246,7 @@ function TurnNavigator({
               transition={shouldReduceMotion ? INSTANT_TRANSITION : { duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             />
           </span>
-          {items.map((item, index) => {
+          {renderedItems.map(({ item, index }) => {
             const active = item.id === activeId;
             const distance = Math.abs(index - activeIndex);
             const proximity = Math.max(0, 1 - distance / 5);
@@ -221,6 +258,8 @@ function TurnNavigator({
                 type="button"
                 aria-label={label}
                 aria-current={active ? 'step' : undefined}
+                aria-posinset={index + 1}
+                aria-setsize={items.length}
                 title={label}
                 data-turn-navigation-id={item.id}
                 data-turn-navigation-index={index}
@@ -761,16 +800,6 @@ export function ChatMessages(props: ChatMessagesProps) {
   const displayedText = liveTranscript.answer;
   const displayedThinkingText = liveTranscript.thinking;
 
-  const remarkPlugins = useMemo(() => markdownRemarkPlugins, []);
-
-  const preprocessStreamingMarkdown = useCallback(
-    (content: string) =>
-      preprocessFilePaths(
-        preprocessCitations(preprocessInlineCitations(preprocessChunkCitations(content))),
-      ),
-    [],
-  );
-
   const streamingCitationLookup = useMemo(() => {
     const map = buildCitationMap(toolCalls);
     return { getCard: (id: string) => map.get(id) };
@@ -836,70 +865,22 @@ export function ChatMessages(props: ChatMessagesProps) {
       citationLookup?: { getCard: (id: string) => CitationCardData | undefined },
     ) => {
       const effectiveCitationLookup = citationLookup ?? allToolCitationLookup;
-      const evidenceItems = buildEvidenceItemsFromContent(
-        content,
-        effectiveCitationLookup,
-        (index) => t("chat.evidenceSourceLabel", { index: String(index) }),
-      );
-
       return (
         <div key={key} className="flex justify-start mb-4">
           <div className="chat-assistant-reply w-full min-w-0 text-sm leading-relaxed">
-            {evidenceItems.length > 0 && (
-              <div className="mb-3 rounded-xl border border-border/70 bg-surface-1/70 px-2.5 py-2">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-medium text-text-secondary">
-                    {t("chat.answerEvidence")}
-                  </span>
-                  <span className="text-[10px] text-text-tertiary">
-                    {t("chat.answerEvidenceSummary", {
-                      count: String(evidenceItems.length),
-                    })}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {evidenceItems.map((item) => (
-                    <CitationChip
-                      key={item.chunkId}
-                      chunkId={item.chunkId}
-                      displayText={item.displayText}
-                      card={item.card}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            <CitationContext.Provider value={effectiveCitationLookup}>
-              <MarkdownRenderStateProvider isStreaming={isStreaming}>
-                <div className="relative">
-                  <div className="prose-chat">
-                    <ReactMarkdown
-                      remarkPlugins={remarkPlugins}
-                      rehypePlugins={rehypePlugins}
-                      components={markdownComponents}
-                      urlTransform={(url) => url}
-                    >
-                      {preprocessStreamingMarkdown(content)}
-                    </ReactMarkdown>
-                  </div>
-                  {isStreaming && (
-                    <span
-                      className={`streaming-caret-overlay ${shouldReduceMotion ? "" : "animate-pulse"}`}
-                    />
-                  )}
-                </div>
-              </MarkdownRenderStateProvider>
-            </CitationContext.Provider>
+            <StreamingMarkdown
+              content={content}
+              isStreaming={isStreaming}
+              citationLookup={effectiveCitationLookup}
+              reduceMotion={Boolean(shouldReduceMotion)}
+            />
           </div>
         </div>
       );
     },
     [
       allToolCitationLookup,
-      preprocessStreamingMarkdown,
-      remarkPlugins,
       shouldReduceMotion,
-      t,
     ],
   );
 
@@ -1018,6 +999,11 @@ export function ChatMessages(props: ChatMessagesProps) {
             request: NonNullable<ReturnType<typeof extractQuestionRequest>>;
             response: Record<string, unknown>;
           }
+        | {
+            kind: 'pendingQuestion';
+            id: string;
+            section: Extract<TimelineSection, { kind: 'tool' }>;
+          }
       > = [];
       const seenQuestions = new Set<string>();
       let traceSegment: TimelineSection[] = [];
@@ -1037,26 +1023,32 @@ export function ChatMessages(props: ChatMessagesProps) {
           continue;
         }
         const response = questionResponses.get(section.toolCall.callId);
-        const request = response
-          ? extractQuestionRequest(
-              section.toolCall.callId,
-              section.toolCall.arguments,
-              section.toolCall.artifacts,
-            )
-          : null;
-        if (!request?.interactionId || !response) {
+        const request = extractQuestionRequest(
+          section.toolCall.callId,
+          section.toolCall.arguments,
+          section.toolCall.artifacts,
+        );
+        if (!request) {
           traceSegment.push(section);
           continue;
         }
         if (seenQuestions.has(request.callId)) continue;
         seenQuestions.add(request.callId);
         flushTrace();
-        ordered.push({
-          kind: 'answeredQuestion',
-          id: `${key}-answered-${request.interactionId}`,
-          request,
-          response,
-        });
+        if (response && request.interactionId) {
+          ordered.push({
+            kind: 'answeredQuestion',
+            id: `${key}-answered-${request.interactionId}`,
+            request,
+            response,
+          });
+        } else {
+          ordered.push({
+            kind: 'pendingQuestion',
+            id: `${key}-pending-${request.callId}`,
+            section,
+          });
+        }
       }
       flushTrace();
       let lastTraceIndex = -1;
@@ -1074,7 +1066,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                 false,
                 index === lastTraceIndex ? durationLabel : null,
               )
-            : (
+            : item.kind === 'answeredQuestion' ? (
                 <div key={item.id} className="mb-1 flex justify-start">
                   <div className="w-full min-w-0">
                     <QuestionRequestTimelineRecord
@@ -1082,6 +1074,12 @@ export function ChatMessages(props: ChatMessagesProps) {
                       answered
                       response={item.response}
                     />
+                  </div>
+                </div>
+              ) : (
+                <div key={item.id} className="mb-1 flex justify-start">
+                  <div className="w-full min-w-0">
+                    {renderTimelineSections([item.section])[0]?.node}
                   </div>
                 </div>
               ))}
