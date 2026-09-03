@@ -111,7 +111,7 @@ impl AgentExecutor {
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: build_trace_artifacts(persisted_trace_items),
+                artifacts: trace_artifacts_for_message(persisted_trace_items, turn_id),
                 token_count: estimate_message_tokens_for_model(model, &final_msg),
                 created_at: String::new(),
                 sort_order: *sort_order,
@@ -292,7 +292,11 @@ impl AgentExecutor {
                 .as_ref()
                 .and_then(|envelope| envelope.display_text.clone());
             let mut artifacts = merge_reasoning_envelope_artifact(
-                build_assistant_artifacts(persisted_trace_items, proposed_plan_artifact.as_ref()),
+                build_assistant_artifacts(
+                    persisted_trace_items,
+                    proposed_plan_artifact.as_ref(),
+                    turn_id,
+                ),
                 reasoning_envelope,
             );
             if let Some(envelope) = provider_turn.as_ref() {
@@ -491,7 +495,7 @@ impl AgentExecutor {
                 content: final_msg.text_content(),
                 tool_call_id: None,
                 tool_calls: vec![],
-                artifacts: build_trace_artifacts(persisted_trace_items),
+                artifacts: trace_artifacts_for_message(persisted_trace_items, turn_id),
                 token_count: estimate_message_tokens_for_model(model, &final_msg),
                 created_at: String::new(),
                 sort_order,
@@ -550,8 +554,9 @@ fn verification_artifact_tone(artifact: &serde_json::Value) -> &'static str {
 fn build_assistant_artifacts(
     trace_items: &[PersistedTraceItem],
     proposed_plan: Option<&serde_json::Value>,
+    turn_id: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let trace_artifacts = build_trace_artifacts(trace_items);
+    let trace_artifacts = trace_artifacts_for_message(trace_items, turn_id);
     match (trace_artifacts, proposed_plan) {
         (None, None) => None,
         (Some(trace), None) => Some(trace),
@@ -570,6 +575,23 @@ fn build_assistant_artifacts(
             "trace": trace,
             "proposedPlan": plan,
         })),
+    }
+}
+
+fn trace_artifacts_for_message(
+    trace_items: &[PersistedTraceItem],
+    turn_id: Option<&str>,
+) -> Option<serde_json::Value> {
+    match turn_id {
+        Some(turn_id) => Some(serde_json::json!({
+            "kind": "assistantArtifacts",
+            "version": 2,
+            "traceRef": {
+                "kind": "conversationTurn",
+                "turnId": turn_id,
+            },
+        })),
+        None => build_trace_artifacts(trace_items),
     }
 }
 
@@ -622,6 +644,22 @@ fn proposed_plan_title(markdown: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_turn_messages_store_a_reference_instead_of_a_duplicate_trace() {
+        let items = vec![PersistedTraceItem::Thinking {
+            text: "a large trace payload".to_string(),
+        }];
+
+        let artifacts = trace_artifacts_for_message(&items, Some("turn-1")).unwrap();
+        assert_eq!(artifacts["kind"], "assistantArtifacts");
+        assert_eq!(artifacts["traceRef"]["turnId"], "turn-1");
+        assert!(artifacts.get("items").is_none());
+
+        let legacy = trace_artifacts_for_message(&items, None).unwrap();
+        assert_eq!(legacy["kind"], "traceTimeline");
+        assert_eq!(legacy["items"].as_array().unwrap().len(), 1);
+    }
 
     #[test]
     fn verification_completion_requires_passed_status() {
