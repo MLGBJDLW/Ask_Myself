@@ -427,6 +427,7 @@ export function ChatInput({
   const previousDraftKeyRef = useRef(draftKey);
   const sendInFlightRef = useRef(false);
   const voiceDraftSessionRef = useRef<VoiceDraftSession | null>(null);
+  const voiceDraftOwnerKeyRef = useRef<string | null>(null);
   // Compaction only locks actions that mutate conversation history. The draft
   // remains fully editable so the user can keep typing while the checkpoint is
   // being built, then send as soon as compaction completes.
@@ -574,16 +575,34 @@ export function ChatInput({
   }, [activeSlashCommandId, attachments, draftKey]);
 
   const handleVoiceDictationEvent = useCallback((event: Parameters<typeof applyVoiceDictationEvent>[2]) => {
+    if (event.kind === 'start') voiceDraftOwnerKeyRef.current = draftKey;
+    const ownerKey = voiceDraftOwnerKeyRef.current ?? draftKey;
+    if (ownerKey !== draftKey) {
+      const ownerDraft = draftsRef.current[ownerKey] ?? readChatInputDraft(ownerKey);
+      const projected = applyVoiceDictationEvent(
+        ownerDraft.value,
+        voiceDraftSessionRef.current,
+        event,
+      );
+      voiceDraftSessionRef.current = projected.session;
+      voiceDraftOwnerKeyRef.current = projected.session ? ownerKey : null;
+      if (projected.draft !== ownerDraft.value) {
+        const nextOwnerDraft = { ...ownerDraft, value: projected.draft };
+        draftsRef.current[ownerKey] = cloneDraftState(nextOwnerDraft);
+        persistChatInputDraft(ownerKey, nextOwnerDraft);
+      }
+      return;
+    }
     setValue((current) => {
       const projected = applyVoiceDictationEvent(current, voiceDraftSessionRef.current, event);
       voiceDraftSessionRef.current = projected.session;
+      voiceDraftOwnerKeyRef.current = projected.session ? ownerKey : null;
       if (projected.draft !== current) persistDraft(projected.draft);
       return projected.draft;
     });
   }, [persistDraft]);
 
   useEffect(() => {
-    voiceDraftSessionRef.current = null;
     const previousKey = previousDraftKeyRef.current;
     if (
       sendInFlightRef.current
@@ -596,6 +615,9 @@ export function ChatInput({
       const draft = draftsRef.current[previousKey] ?? readChatInputDraft(previousKey);
       draftsRef.current[draftKey] = cloneDraftState(draft);
       persistChatInputDraft(draftKey, draft);
+      if (voiceDraftOwnerKeyRef.current === previousKey) {
+        voiceDraftOwnerKeyRef.current = draftKey;
+      }
       resetInputHistoryNavigation();
       setLoadedDraftKey(draftKey);
       previousDraftKeyRef.current = draftKey;

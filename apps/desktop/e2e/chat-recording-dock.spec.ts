@@ -15,6 +15,11 @@ test.beforeEach(async ({ page }) => {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+    const otherConversation = {
+      ...conversation,
+      id: 'conv-voice-other',
+      title: 'Other Voice Draft',
+    };
     const config = {
       id: 'cfg-default',
       name: 'Default',
@@ -195,7 +200,7 @@ test.beforeEach(async ({ page }) => {
         case 'list_agent_configs_cmd':
           return [clone(config)];
         case 'list_conversations_cmd':
-          return [clone(conversation)];
+          return [clone(conversation), clone(otherConversation)];
         case 'list_projects_cmd':
         case 'get_conversation_turns_cmd':
         case 'list_sources':
@@ -203,8 +208,10 @@ test.beforeEach(async ({ page }) => {
         case 'list_checkpoints_cmd':
         case 'list_voice_audio_spools_cmd':
           return [];
-        case 'get_conversation_cmd':
-          return [clone(conversation), []];
+        case 'get_conversation_cmd': {
+          const requested = String(args.id ?? '');
+          return [clone(requested === otherConversation.id ? otherConversation : conversation), []];
+        }
         case 'get_conversation_usage_snapshot_cmd':
           return null;
         case 'get_app_config_cmd':
@@ -408,6 +415,46 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
   )).toContain('voice-2');
+});
+
+test('live dictation stays pinned to the draft where recording started', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 1,
+        text: 'owned by the first draft',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('owned by the first draft');
+
+  await page.getByRole('button', { name: /Other Voice Draft/ }).click();
+  await expect(page).toHaveURL(/\/chat\/conv-voice-other$/);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test',
+        kind: 'interim',
+        update: 'replaceSnapshot',
+        sequence: 2,
+        text: 'owned by the first draft and continued',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('');
+
+  await page.getByRole('button', { name: /Voice Dock/ }).click();
+  await expect(page.getByTestId('chat-input-textarea'))
+    .toHaveValue('owned by the first draft and continued');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
 });
 
 test('a delayed microphone grant is released after the chat recorder unmounts', async ({ page }) => {
