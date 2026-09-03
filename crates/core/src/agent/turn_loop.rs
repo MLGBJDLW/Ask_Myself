@@ -1262,7 +1262,7 @@ impl AgentExecutor {
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
-        let mut contaminated_final_retries = 0u8;
+        let mut contaminated_sample_retries = 0u8;
         let mut clean_final_retry_active = false;
         let mut next_step_purpose = TurnStepPurpose::Normal;
         let mut final_answer_hygiene_scope =
@@ -1440,6 +1440,7 @@ impl AgentExecutor {
                 } else {
                     output_budget_plan.wire_max_tokens()
                 };
+            let accumulated_content_before_model_step = accumulated_content.len();
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
                     db,
@@ -1583,6 +1584,55 @@ impl AgentExecutor {
                 }
             }
             prompt_was_compacted = usage_report.compacted_after_step;
+
+            // Every completed answer-channel sample crosses the same
+            // visibility and persistence gate, including samples that also
+            // contain tool calls or would otherwise enter output recovery.
+            // Streaming stays responsive, but rejection resets the exact
+            // physical sample before persistence or client-tool execution.
+            if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
+                accumulated_content.truncate(accumulated_content_before_model_step);
+                let _ = tx
+                    .send(AgentEvent::StreamReset {
+                        reason: "contaminated_final_answer".to_string(),
+                        discard_sample: true,
+                    })
+                    .await;
+                let trace_message = format!(
+                    "discarded assistant sample containing reserved internal marker: {marker}"
+                );
+                append_developer_persisted_trace_status(
+                    &mut persisted_trace_items,
+                    &trace_message,
+                    "warning",
+                );
+                if contaminated_sample_retries >= 1 {
+                    emit_error_and_finalize_turn(
+                        &tx,
+                        db,
+                        &mut trace,
+                        turn_id,
+                        route_plan.kind,
+                        &persisted_trace_items,
+                        TurnErrorMessages {
+                            frontend_message: "Nexa discarded two assistant samples because they contained internal runtime metadata. No contaminated text or client tool call was saved or executed; retry the turn to request a clean response.".to_string(),
+                            trace_message: trace_message.clone(),
+                        },
+                    )
+                    .await;
+                    turn_state.finish(TurnOutcome::Failed);
+                    return Err(CoreError::Agent(trace_message));
+                }
+                contaminated_sample_retries = contaminated_sample_retries.saturating_add(1);
+                clean_final_retry_active = tool_calls.is_empty();
+                if let Some(message) = prompt_ir::controller_state_message(
+                    "The previous assistant sample exposed internal runtime metadata and was discarded before persistence or client-tool execution. Continue from the user request and committed evidence without reproducing controller state, replay headers, or tool transport logs.",
+                ) {
+                    messages.push(message);
+                }
+                next_step_purpose = TurnStepPurpose::Recovery;
+                continue 'react_loop;
+            }
 
             if self.config.max_actual_tokens_per_run.is_some_and(|limit| {
                 total_usage.total_tokens > limit
@@ -2191,57 +2241,6 @@ impl AgentExecutor {
 
             // -- 4d. Check termination -----------------------------------------
             if tool_calls.is_empty() {
-                if let Some(marker) =
-                    final_answer_hygiene_scope.contamination_marker(&assistant_msg.text_content())
-                {
-                    messages.pop();
-                    accumulated_content.truncate(
-                        accumulated_content
-                            .len()
-                            .saturating_sub(assistant_msg.text_content().len()),
-                    );
-                    last_iteration_content.clear();
-                    let _ = tx
-                        .send(AgentEvent::StreamReset {
-                            reason: "contaminated_final_answer".to_string(),
-                            discard_sample: true,
-                        })
-                        .await;
-                    let trace_message = format!(
-                        "discarded final-answer sample containing reserved internal marker: {marker}"
-                    );
-                    append_developer_persisted_trace_status(
-                        &mut persisted_trace_items,
-                        &trace_message,
-                        "warning",
-                    );
-                    if contaminated_final_retries >= 1 {
-                        emit_error_and_finalize_turn(
-                            &tx,
-                            db,
-                            &mut trace,
-                            turn_id,
-                            route_plan.kind,
-                            &persisted_trace_items,
-                            TurnErrorMessages {
-                                frontend_message: "Nexa discarded two final-answer samples because they contained internal runtime metadata. No contaminated answer was saved; retry the turn to request a clean response.".to_string(),
-                                trace_message: trace_message.clone(),
-                            },
-                        )
-                        .await;
-                        turn_state.finish(TurnOutcome::Failed);
-                        return Err(CoreError::Agent(trace_message));
-                    }
-                    contaminated_final_retries = contaminated_final_retries.saturating_add(1);
-                    clean_final_retry_active = true;
-                    if let Some(message) = prompt_ir::controller_state_message(
-                        "The previous answer sample exposed internal runtime metadata and was discarded. Produce one direct user-facing answer from the user request and committed evidence only. Do not reproduce controller state, replay headers, or tool transport logs.",
-                    ) {
-                        messages.push(message);
-                    }
-                    next_step_purpose = TurnStepPurpose::Recovery;
-                    continue 'react_loop;
-                }
                 clean_final_retry_active = false;
                 if let Some(intervention) = loop_guard_intervention.as_ref() {
                     if intervention.action == LoopGuardAction::ChangeStrategy

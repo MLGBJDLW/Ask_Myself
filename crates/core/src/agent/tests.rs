@@ -2563,6 +2563,7 @@ struct AcknowledgedRepeatedLengthProvider {
 struct ContaminatedFinalAnswerProvider {
     stream_calls: Arc<AtomicUsize>,
     always_contaminated: bool,
+    contaminate_first_tool_sample: bool,
 }
 
 struct ContextLimitTerminalProvider {
@@ -3024,11 +3025,23 @@ impl LlmProvider for ContaminatedFinalAnswerProvider {
         } else {
             "clean answer"
         };
+        let tool_call_delta =
+            (call_no == 0 && self.contaminate_first_tool_sample).then(|| ToolCallDelta {
+                id: "contaminated-call".to_string(),
+                name: Some("recording_tool".to_string()),
+                arguments_delta: r#"{"value":"must-not-run"}"#.to_string().into(),
+                index: Some(0),
+                thought_signature: None,
+            });
         crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
             StreamChunk {
                 delta: delta.to_string(),
-                tool_call_delta: None,
-                finish_reason: Some(FinishReason::Stop),
+                tool_call_delta,
+                finish_reason: Some(if call_no == 0 && self.contaminate_first_tool_sample {
+                    FinishReason::ToolCalls
+                } else {
+                    FinishReason::Stop
+                }),
                 usage: None,
                 thinking_delta: None,
             },
@@ -7609,6 +7622,7 @@ async fn contaminated_final_answer_is_reset_retried_and_never_persisted() {
         Box::new(ContaminatedFinalAnswerProvider {
             stream_calls: Arc::clone(&stream_calls),
             always_contaminated: false,
+            contaminate_first_tool_sample: false,
         }),
         ToolRegistry::new(),
         AgentConfig {
@@ -7691,12 +7705,109 @@ async fn contaminated_final_answer_is_reset_retried_and_never_persisted() {
 }
 
 #[tokio::test]
+async fn contaminated_tool_sample_is_reset_before_persistence_or_execution() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RecordingTool {
+        executions: Arc::clone(&executions),
+    }));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let executor = AgentExecutor::new(
+        Box::new(ContaminatedFinalAnswerProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            always_contaminated: false,
+            contaminate_first_tool_sample: true,
+        }),
+        registry,
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".to_string(),
+            model: "reasoning-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "Give me a clean conclusion after any necessary checks.".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 8,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("a clean retry should replace the contaminated tool sample");
+
+    assert_eq!(final_message.text_content(), "clean answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    let mut visible_text = String::new();
+    let mut saw_contamination_reset = false;
+    let mut tool_runs_completed = 0;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => visible_text.push_str(&delta),
+            AgentEvent::StreamReset { reason, .. } if reason == "contaminated_final_answer" => {
+                visible_text.clear();
+                saw_contamination_reset = true;
+            }
+            AgentEvent::ToolRunCompleted { .. } => tool_runs_completed += 1,
+            _ => {}
+        }
+    }
+    assert!(saw_contamination_reset);
+    assert_eq!(visible_text, "clean answer");
+    assert_eq!(tool_runs_completed, 0);
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted.iter().all(|message| {
+        !message
+            .content
+            .contains("Verified legacy visible-history summary")
+            && message.tool_calls.is_empty()
+    }));
+}
+
+#[tokio::test]
 async fn repeatedly_contaminated_final_answer_fails_closed_after_one_retry() {
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let executor = AgentExecutor::new(
         Box::new(ContaminatedFinalAnswerProvider {
             stream_calls: Arc::clone(&stream_calls),
             always_contaminated: true,
+            contaminate_first_tool_sample: false,
         }),
         ToolRegistry::new(),
         AgentConfig {
