@@ -785,9 +785,9 @@ fn uses_latest_generation_contract(model: &str) -> bool {
 }
 
 fn normalize_thinking_level(model: &str, level: &ReasoningEffort) -> String {
-    let minimum = if normalized_model_name(model)
-        .to_ascii_lowercase()
-        .starts_with("gemini-3.7-flash")
+    let normalized = normalized_model_name(model).to_ascii_lowercase();
+    let minimum = if normalized.starts_with("gemini-3.7-flash")
+        || normalized.starts_with("gemini-3.8-flash")
     {
         "low"
     } else {
@@ -805,9 +805,11 @@ fn normalize_thinking_level(model: &str, level: &ReasoningEffort) -> String {
 fn thinking_budget_to_level(model: &str, budget: u32) -> String {
     match budget {
         ..=128
-            if normalized_model_name(model)
-                .to_ascii_lowercase()
-                .starts_with("gemini-3.7-flash") =>
+            if {
+                let normalized = normalized_model_name(model).to_ascii_lowercase();
+                normalized.starts_with("gemini-3.7-flash")
+                    || normalized.starts_with("gemini-3.8-flash")
+            } =>
         {
             "low"
         }
@@ -1732,6 +1734,15 @@ impl LlmProvider for GeminiProvider {
         self.config.streaming.stream_max_retries
     }
 
+    fn prompt_cache_profile(&self, model: &str) -> super::prompt_cache::PromptCacheProfile {
+        super::prompt_cache::resolve_prompt_cache_profile(
+            self.config.provider_type,
+            self.config.base_url.as_deref(),
+            super::prompt_cache::PromptCacheApiStyle::Gemini,
+            model,
+        )
+    }
+
     fn reasoning_replay_policy(
         &self,
         model: &str,
@@ -1957,7 +1968,7 @@ mod tests {
     fn gemini_auth_uses_the_documented_header_without_leaking_keys_into_urls() {
         let request = with_google_api_key(
             reqwest::Client::new().post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
             ),
             "AQ.test-secret",
         )
@@ -2001,7 +2012,7 @@ mod tests {
             crate::llm::native_search::SearchExecutionMode::ProviderNative,
             ProviderType::Google,
             None,
-            "gemini-3.6-flash",
+            "gemini-3.8-flash",
         )
         .marker()
         .unwrap();
@@ -2457,7 +2468,7 @@ mod tests {
     #[test]
     fn test_latest_models_use_thinking_level_and_omit_temperature() {
         let request = CompletionRequest {
-            model: "gemini-3.7-flash".to_string(),
+            model: "gemini-3.8-flash".to_string(),
             messages: vec![Message::text(Role::User, "hello")],
             temperature: Some(0.2),
             max_tokens: Some(256),
@@ -2482,34 +2493,36 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_3_7_never_emits_unsupported_minimal_thinking() {
-        for (reasoning_effort, thinking_budget) in
-            [(Some(ReasoningEffort::Minimal), None), (None, Some(128))]
-        {
-            let request = CompletionRequest {
-                model: "models/gemini-3.7-flash".to_string(),
-                messages: vec![Message::text(Role::User, "hello")],
-                temperature: None,
-                max_tokens: Some(256),
-                tools: None,
-                stop: None,
-                thinking_budget,
-                reasoning_enabled: Some(true),
-                reasoning_effort,
-                provider_type: None,
-                routing_session_id: None,
-                parallel_tool_calls: true,
-            };
+    fn test_latest_gemini_models_never_emit_unsupported_minimal_thinking() {
+        for model in ["models/gemini-3.7-flash", "models/gemini-3.8-flash"] {
+            for (reasoning_effort, thinking_budget) in
+                [(Some(ReasoningEffort::Minimal), None), (None, Some(128))]
+            {
+                let request = CompletionRequest {
+                    model: model.to_string(),
+                    messages: vec![Message::text(Role::User, "hello")],
+                    temperature: None,
+                    max_tokens: Some(256),
+                    tools: None,
+                    stop: None,
+                    thinking_budget,
+                    reasoning_enabled: Some(true),
+                    reasoning_effort,
+                    provider_type: None,
+                    routing_session_id: None,
+                    parallel_tool_calls: true,
+                };
 
-            let body = build_request_body(&request, None, vec![]);
-            let thinking = body
-                .generation_config
-                .expect("generation config")
-                .thinking_config
-                .expect("thinking config");
+                let body = build_request_body(&request, None, vec![]);
+                let thinking = body
+                    .generation_config
+                    .expect("generation config")
+                    .thinking_config
+                    .expect("thinking config");
 
-            assert_eq!(thinking.thinking_level.as_deref(), Some("low"));
-            assert_eq!(thinking.thinking_budget, None);
+                assert_eq!(thinking.thinking_level.as_deref(), Some("low"));
+                assert_eq!(thinking.thinking_budget, None);
+            }
         }
     }
 

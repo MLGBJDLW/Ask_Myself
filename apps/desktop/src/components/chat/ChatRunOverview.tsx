@@ -26,6 +26,7 @@ interface TokenUsage {
   contextWindow: number;
   completionTokens: number;
   thinkingTokens: number;
+  cachePromptTokens?: number;
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheCreationTokens?: number;
@@ -145,18 +146,18 @@ function cacheUsageStats(usage: TokenUsage | null): CacheUsageStats | null {
   if (!usage || usage.isEstimated) return null;
 
   const readTokens = safeTokenCount(usage.cacheReadTokens);
-  const promptTokens = safeTokenCount(usage.promptTokens);
+  const cachePromptTokens = safeTokenCount(usage.cachePromptTokens ?? usage.promptTokens);
   let missTokens = safeTokenCount(usage.cacheMissTokens);
-  if (missTokens <= 0 && readTokens > 0 && promptTokens > readTokens) {
-    missTokens = promptTokens - readTokens;
+  if (missTokens <= 0 && readTokens > 0 && cachePromptTokens > readTokens) {
+    missTokens = cachePromptTokens - readTokens;
   }
   const creationTokens = safeTokenCount(usage.cacheCreationTokens);
   if (readTokens + missTokens + creationTokens <= 0) return null;
 
   const denominator = missTokens > 0
     ? readTokens + missTokens
-    : promptTokens >= readTokens
-      ? promptTokens
+    : cachePromptTokens >= readTokens
+      ? cachePromptTokens
       : readTokens + creationTokens;
   const hitPercent = denominator > 0
     ? Math.max(0, Math.min(100, (readTokens / denominator) * 100))
@@ -429,9 +430,9 @@ export function ChatRunOverview({
         <span
           data-testid="chat-run-cache-hit-summary"
           className="mr-1.5 inline-flex h-6 max-w-[10rem] items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/80 px-2 text-[10px] text-text-secondary"
-          title={`${t('chat.contextHudAverageCache')}: ${cacheStats.hitPercent.toFixed(1)}%`}
+          title={`${t('chat.contextHudConversationCache')}: ${cacheStats.hitPercent.toFixed(1)}%`}
         >
-          <span className="truncate">{t('chat.contextHudAverageCache')}</span>
+          <span className="truncate">{t('chat.contextHudConversationCache')}</span>
           <span className="shrink-0 font-semibold tabular-nums text-text-primary">
             {cacheStats.hitPercent.toFixed(1)}%
           </span>
@@ -594,7 +595,7 @@ export function ChatRunOverview({
             </div>
           </div>
           <div className="rounded-lg border border-border/55 bg-surface-1/75 px-2.5 py-2">
-            <div className="text-[10px] text-text-tertiary">{t('chat.contextHudAverageCache')}</div>
+            <div className="text-[10px] text-text-tertiary">{t('chat.contextHudConversationCache')}</div>
             <div
               className="mt-0.5 text-sm font-semibold tabular-nums text-text-primary"
               data-testid="chat-run-cache-hit"

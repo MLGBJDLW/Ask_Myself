@@ -215,11 +215,17 @@ test('model selector and context usage follow the active chat model', async ({ p
   await expect(modelSelect).toContainText('Tiny Context');
   await expect(reasoningSelect).toBeVisible();
 
-  const modelBox = await modelSelect.boundingBox();
-  const reasoningBox = await reasoningSelect.boundingBox();
-  expect(modelBox).not.toBeNull();
-  expect(reasoningBox).not.toBeNull();
-  expect(Math.abs((modelBox?.x ?? 0) + (modelBox?.width ?? 0) - (reasoningBox?.x ?? 0))).toBeLessThan(2);
+  await page.evaluate(() => document.fonts.ready);
+  const pickerSeamGap = await page.evaluate(() => {
+    const model = document.querySelector<HTMLElement>('[data-testid="agent-model-picker-trigger"]');
+    const reasoning = document.querySelector<HTMLElement>('[data-testid="agent-reasoning-picker-trigger"]');
+    if (!model || !reasoning) return null;
+    const modelBox = model.getBoundingClientRect();
+    const reasoningBox = reasoning.getBoundingClientRect();
+    return Math.abs(modelBox.right - reasoningBox.left);
+  });
+  expect(pickerSeamGap).not.toBeNull();
+  expect(pickerSeamGap ?? Number.POSITIVE_INFINITY).toBeLessThan(2);
 
   await modelSelect.click();
   await page.getByTestId('agent-model-provider-cfg-large').click();

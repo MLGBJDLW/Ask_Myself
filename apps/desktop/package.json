@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "dev:autoport": "node ./scripts/tauri-dev-autoport.mjs",
-    "build": "npm run i18n:check && tsc -b && vite build",
+    "build": "npm run i18n:check && npm run typescript:check && tsc -b && vite build",
+    "typecheck": "npm run typescript:check && tsc --noEmit",
+    "typescript:check": "node ./scripts/typescript-runtime-contract.mjs",
     "test": "npm run i18n:check && npm run test:streaming && npm run test:voice-runtime && npm run test:media-source-scope && npm run test:office-artifact-evidence && npm run test:image-provider-catalog && npm run test:theme-resource-plugin",
     "i18n:generate": "node ./scripts/i18n-namespaces.mjs generate",
     "i18n:check": "node ./scripts/i18n-namespaces.mjs check",

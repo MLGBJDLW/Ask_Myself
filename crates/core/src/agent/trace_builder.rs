@@ -310,10 +310,25 @@ pub(super) fn build_turn_trace_with_verification(
     items: &[PersistedTraceItem],
     verification: Option<&serde_json::Value>,
 ) -> serde_json::Value {
+    // A prompt-cache snapshot contains fingerprints for the entire request and
+    // grows with every model step. Only the latest snapshot seeds the next turn;
+    // retaining every cumulative snapshot made long tool runs quadratic on disk.
+    let latest_prompt_cache = items
+        .iter()
+        .rposition(|item| matches!(item, PersistedTraceItem::PromptCache { .. }));
+    let compact_items = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            (!matches!(item, PersistedTraceItem::PromptCache { .. })
+                || Some(index) == latest_prompt_cache)
+                .then_some(item)
+        })
+        .collect::<Vec<_>>();
     let mut trace = serde_json::json!({
         "kind": "turnTrace",
         "routeKind": format!("{route_kind:?}"),
-        "items": items,
+        "items": compact_items,
     });
     if let Some(verification) = verification {
         trace["verification"] = verification.clone();
@@ -567,9 +582,44 @@ mod tests {
         assert!(serialized.contains("keyCount"));
     }
 
+    #[test]
+    fn turn_trace_retains_only_the_latest_prompt_cache_snapshot() {
+        let items = vec![
+            PersistedTraceItem::PromptCache {
+                observation: serde_json::json!({ "snapshot": { "marker": "old" } }),
+            },
+            PersistedTraceItem::Thinking {
+                text: "working".to_string(),
+            },
+            PersistedTraceItem::PromptCache {
+                observation: serde_json::json!({ "snapshot": { "marker": "latest" } }),
+            },
+        ];
+
+        let trace = build_turn_trace(AgentRouteKind::DirectResponse, &items);
+        let prompt_cache = trace["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "promptCache")
+            .collect::<Vec<_>>();
+
+        assert_eq!(prompt_cache.len(), 1);
+        assert_eq!(
+            prompt_cache[0]["observation"]["snapshot"]["marker"],
+            "latest"
+        );
+        assert!(trace["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "thinking"));
+    }
+
     fn test_skill(id: &str, name: &str, display_name: &str) -> Skill {
         Skill {
             id: id.to_string(),
+            canonical_name: crate::skills::derive_canonical_skill_name(name).unwrap(),
             name: name.to_string(),
             description: "Use for test work".to_string(),
             content: "Do test work.".to_string(),

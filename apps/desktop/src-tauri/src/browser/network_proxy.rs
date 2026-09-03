@@ -10,7 +10,9 @@ use std::time::Duration;
 use nexa_core::tools::run_shell_tool::ManagedLoopbackPermit;
 use url::Url;
 
-use super::policy::private_or_special_ip;
+use super::policy::{
+    agent_domain_host_allowed, private_or_special_ip, synthetic_dns_ip, verified_synthetic_dns_mode,
+};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 const COPY_INTERRUPT_POLL: Duration = Duration::from_millis(100);
@@ -398,6 +400,11 @@ fn handle_client(
     let target = read_target(&mut client, request[3])?;
     let addresses = resolve_target(&target)?;
     let restricted = agent_restricted.load(Ordering::Acquire);
+    let synthetic_dns_verified = restricted
+        && addresses
+            .iter()
+            .any(|address| synthetic_dns_ip(address.ip()))
+        && verified_synthetic_dns_mode();
     let loopback_permit = restricted
         .then(|| {
             agent_loopback_permits.lock().ok().and_then(|permits| {
@@ -414,7 +421,7 @@ fn handle_client(
             && !loopback_permitted
             && addresses
                 .iter()
-                .any(|address| private_or_special_ip(address.ip())))
+                .any(|address| !target.agent_address_allowed(address.ip(), synthetic_dns_verified)))
         || !connection_authorization_is_current(
             restriction_generation.as_ref(),
             connection_generation,
@@ -434,7 +441,7 @@ fn handle_client(
                 if !address.ip().is_loopback() {
                     continue;
                 }
-            } else if private_or_special_ip(address.ip()) {
+            } else if !target.agent_address_allowed(address.ip(), synthetic_dns_verified) {
                 continue;
             }
         }
@@ -454,7 +461,7 @@ fn handle_client(
             if loopback_permitted {
                 address.ip().is_loopback() && address.port() == target.port()
             } else {
-                !private_or_special_ip(address.ip())
+                target.agent_address_allowed(address.ip(), synthetic_dns_verified)
             }
         });
     if !peer_is_allowed
@@ -572,6 +579,17 @@ impl Target {
         match self {
             Self::Ip(_, port) | Self::Domain(_, port) => *port,
         }
+    }
+
+    fn agent_address_allowed(&self, ip: IpAddr, synthetic_dns_verified: bool) -> bool {
+        if !private_or_special_ip(ip) {
+            return match self {
+                Self::Ip(_, _) => true,
+                Self::Domain(host, _) => agent_domain_host_allowed(host),
+            };
+        }
+        synthetic_dns_verified
+            && matches!(self, Self::Domain(host, _) if agent_domain_host_allowed(host) && synthetic_dns_ip(ip))
     }
 }
 
@@ -701,6 +719,20 @@ mod tests {
         drop(second);
         drop(replacement);
         assert!(budget.try_acquire().is_some());
+    }
+
+    #[test]
+    fn restricted_proxy_allows_fake_ip_only_for_public_domain_targets() {
+        let fake_ip = IpAddr::V4(Ipv4Addr::new(198, 18, 0, 8));
+        let public_domain = Target::Domain("example.com".to_string(), 443);
+        assert!(!public_domain.agent_address_allowed(fake_ip, false));
+        assert!(public_domain.agent_address_allowed(fake_ip, true));
+        assert!(!Target::Ip(fake_ip, 443).agent_address_allowed(fake_ip, true));
+        assert!(
+            !Target::Domain("printer.local".to_string(), 443).agent_address_allowed(fake_ip, true)
+        );
+        assert!(!Target::Domain("localhost".to_string(), 443).agent_address_allowed(fake_ip, true));
+        assert!(!Target::Domain("10.0.0.1".to_string(), 443).agent_address_allowed(fake_ip, true));
     }
 
     #[test]

@@ -36,6 +36,7 @@ const TRUSTED_CREDENTIAL_ENDPOINTS: Readonly<Record<string, string>> = {
   'https://api.groq.com/openai/v1': 'groq',
   'https://api.mistral.ai/v1': 'mistral',
   'https://api.minimax.io/v1': 'minimax',
+  'https://api.meta.ai/v1': 'meta-model-api',
   'https://api.jina.ai/v1': 'jina',
   'https://api.siliconflow.cn/v1': 'siliconflow',
   'https://open.bigmodel.cn/api/paas/v4': 'zhipu:china',

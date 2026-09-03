@@ -16,7 +16,7 @@ use super::registry::{load_builtin_skills, parse_skill_file};
 use super::scanner::scan_skill_content;
 use super::storage::{
     normalize_resource_bundle, portable_user_skill_content, resource_bundle_metadata,
-    resource_kind_from_relative_path,
+    resource_kind_from_relative_path, validate_canonical_skill_name,
 };
 
 const MAX_DISCOVERY_DEPTH: usize = 8;
@@ -61,10 +61,10 @@ fn reject_registered_skill(
         .push(format!("{skill_id}: {}", message.into()));
 }
 
-/// Synchronize edits to already-registered user skill directories. Directory
-/// names are stable database IDs; unknown directories remain untouched and are
-/// not implicitly activated. New skills still cross the explicit import flow,
-/// preserving its security-warning acknowledgement.
+/// Synchronize edits to already-registered user skill directories. Canonical
+/// Agent Skills names are authoritative; the legacy database-ID directory is
+/// recognized only long enough for the materializer to migrate it atomically.
+/// Unknown directories remain untouched and are not implicitly activated.
 pub fn sync_registered_user_skills_from_directory(
     db: &Database,
     root: &Path,
@@ -78,9 +78,9 @@ pub fn sync_registered_user_skills_from_directory(
         .into_iter()
         .map(|skill| (skill.id.clone(), skill))
         .collect::<HashMap<_, _>>();
-    let mut names = existing
+    let canonical_owners = existing
         .values()
-        .map(|skill| (skill.name.to_lowercase(), skill.id.clone()))
+        .map(|skill| (skill.canonical_name.to_ascii_lowercase(), skill.id.clone()))
         .collect::<HashMap<_, _>>();
     let mut entries = fs::read_dir(root)?
         .filter_map(Result::ok)
@@ -88,7 +88,7 @@ pub fn sync_registered_user_skills_from_directory(
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
-        let Some(skill_id) = entry.file_name().to_str().map(str::to_string) else {
+        let Some(directory_name) = entry.file_name().to_str().map(str::to_string) else {
             report
                 .rejected
                 .push(format!("Non-UTF-8 skill directory: {}", path.display()));
@@ -97,8 +97,11 @@ pub fn sync_registered_user_skills_from_directory(
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                if existing.contains_key(&skill_id) {
-                    reject_registered_skill(&mut report, &skill_id, error.to_string());
+                if let Some(skill_id) = canonical_owners
+                    .get(&directory_name.to_ascii_lowercase())
+                    .or_else(|| existing.get_key_value(&directory_name).map(|(id, _)| id))
+                {
+                    reject_registered_skill(&mut report, skill_id, error.to_string());
                 } else {
                     report.rejected.push(format!("{}: {error}", path.display()));
                 }
@@ -106,23 +109,53 @@ pub fn sync_registered_user_skills_from_directory(
             }
         };
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            if existing.contains_key(&skill_id) {
+            if let Some(skill_id) = canonical_owners
+                .get(&directory_name.to_ascii_lowercase())
+                .or_else(|| existing.get_key_value(&directory_name).map(|(id, _)| id))
+            {
                 reject_registered_skill(
                     &mut report,
-                    &skill_id,
+                    skill_id,
                     "registered skill source must be a real directory",
                 );
             }
             continue;
         }
-        let Some(installed) = existing.get(&skill_id) else {
+        let skill_id = existing
+            .contains_key(&directory_name)
+            .then_some(directory_name.as_str())
+            .or_else(|| {
+                canonical_owners
+                    .get(&directory_name.to_ascii_lowercase())
+                    .map(String::as_str)
+            });
+        let Some(skill_id) = skill_id else {
             report.unregistered = report.unregistered.saturating_add(1);
             continue;
         };
-        let candidate = match load_candidate_from_markdown(&path.join("SKILL.md")) {
+        let installed = existing
+            .get(skill_id)
+            .expect("registered skill identity must resolve");
+        let legacy_id_directory = directory_name == installed.id;
+        if !legacy_id_directory && directory_name != installed.canonical_name {
+            reject_registered_skill(
+                &mut report,
+                skill_id,
+                format!(
+                    "skill directory `{directory_name}` must exactly match canonical name `{}`",
+                    installed.canonical_name
+                ),
+            );
+            continue;
+        }
+        let accepted_legacy_display_name = legacy_id_directory.then_some(installed.name.as_str());
+        let candidate = match load_candidate_from_markdown_with_legacy_name(
+            &path.join("SKILL.md"),
+            accepted_legacy_display_name,
+        ) {
             Ok(candidate) => candidate,
             Err(error) => {
-                reject_registered_skill(&mut report, &skill_id, error.to_string());
+                reject_registered_skill(&mut report, skill_id, error.to_string());
                 continue;
             }
         };
@@ -136,29 +169,40 @@ pub fn sync_registered_user_skills_from_directory(
         if !blocked.is_empty() {
             reject_registered_skill(
                 &mut report,
-                &skill_id,
+                skill_id,
                 format!("blocked security warnings: {}", blocked.join("; ")),
             );
             continue;
         }
-        if names
-            .get(&candidate.input.name.to_lowercase())
-            .is_some_and(|owner| owner != &skill_id)
-        {
+        let expected_name = if legacy_id_directory {
+            candidate.input.name == installed.canonical_name
+                || candidate.input.name == installed.name
+        } else {
+            candidate.input.name == installed.canonical_name
+        };
+        if !expected_name {
+            let display_name_hint = if legacy_id_directory {
+                format!(" or installed display name `{}`", installed.name)
+            } else {
+                String::new()
+            };
             reject_registered_skill(
                 &mut report,
-                &skill_id,
+                skill_id,
                 format!(
-                    "skill name `{}` belongs to another installed skill",
-                    candidate.input.name
+                    "SKILL.md name `{}` must match canonical name `{}`{}",
+                    candidate.input.name, installed.canonical_name, display_name_hint
                 ),
             );
             continue;
         }
-        let installed_content =
-            portable_user_skill_content(&installed.content, &skill_id, Some(root));
-        let changed = installed.name != candidate.input.name
-            || installed.description != candidate.input.description
+        let installed_content = portable_user_skill_content(
+            &installed.content,
+            skill_id,
+            &installed.canonical_name,
+            Some(root),
+        );
+        let changed = installed.description != candidate.input.description
             || installed_content != candidate.input.content
             || installed.resource_bundle != candidate.input.resource_bundle;
         if !changed {
@@ -166,17 +210,10 @@ pub fn sync_registered_user_skills_from_directory(
             continue;
         }
         let mut input = candidate.input;
-        input.id = Some(skill_id.clone());
+        input.id = Some(skill_id.to_string());
+        input.name = installed.name.clone();
         input.enabled = installed.enabled;
         db.save_skill(&input)?;
-        let previous_name = installed.name.to_lowercase();
-        let next_name = input.name.to_lowercase();
-        if previous_name != next_name {
-            if names.get(&previous_name) == Some(&skill_id) {
-                names.remove(&previous_name);
-            }
-            names.insert(next_name, skill_id.clone());
-        }
         report.updated = report.updated.saturating_add(1);
     }
     Ok(report)
@@ -194,6 +231,7 @@ pub fn inspect_skill_install_source(
             source.display()
         )));
     }
+    validate_candidate_directory_names(&candidates)?;
     Ok(candidates
         .into_iter()
         .map(|candidate| candidate.preview)
@@ -215,6 +253,7 @@ pub fn import_skills_from_source(
             source.display()
         )));
     }
+    validate_candidate_directory_names(&candidates)?;
 
     let blocked_warnings = candidates
         .iter()
@@ -236,7 +275,7 @@ pub fn import_skills_from_source(
 
     let mut source_names = HashSet::new();
     for candidate in &candidates {
-        let key = candidate.input.name.to_lowercase();
+        let key = candidate.input.name.to_ascii_lowercase();
         if !source_names.insert(key) {
             return Err(CoreError::InvalidInput(format!(
                 "The package contains duplicate skill name `{}`",
@@ -245,18 +284,22 @@ pub fn import_skills_from_source(
         }
     }
 
-    let existing = db
-        .list_skills()?
+    let installed_skills = db.list_skills()?;
+    let existing_ids = installed_skills
+        .iter()
+        .map(|skill| skill.id.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let existing = installed_skills
         .into_iter()
-        .map(|skill| (skill.name.to_lowercase(), skill))
+        .map(|skill| (skill.canonical_name.to_ascii_lowercase(), skill))
         .collect::<HashMap<_, _>>();
     let builtin_names = load_builtin_skills()
         .into_iter()
-        .map(|skill| skill.name.to_lowercase())
+        .map(|skill| skill.canonical_name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let builtin_conflicts = candidates
         .iter()
-        .filter(|candidate| builtin_names.contains(&candidate.input.name.to_lowercase()))
+        .filter(|candidate| builtin_names.contains(&candidate.input.name.to_ascii_lowercase()))
         .map(|candidate| candidate.input.name.clone())
         .collect::<Vec<_>>();
     if !builtin_conflicts.is_empty() {
@@ -265,9 +308,20 @@ pub fn import_skills_from_source(
             builtin_conflicts.join(", ")
         )));
     }
+    let identity_conflicts = candidates
+        .iter()
+        .filter(|candidate| existing_ids.contains(&candidate.input.name.to_ascii_lowercase()))
+        .map(|candidate| candidate.input.name.clone())
+        .collect::<Vec<_>>();
+    if !identity_conflicts.is_empty() {
+        return Err(CoreError::InvalidInput(format!(
+            "Skill names reserved by installed database identities: {}",
+            identity_conflicts.join(", ")
+        )));
+    }
     let conflicts = candidates
         .iter()
-        .filter(|candidate| existing.contains_key(&candidate.input.name.to_lowercase()))
+        .filter(|candidate| existing.contains_key(&candidate.input.name.to_ascii_lowercase()))
         .map(|candidate| candidate.input.name.clone())
         .collect::<Vec<_>>();
     if !replace_existing && !conflicts.is_empty() {
@@ -278,8 +332,10 @@ pub fn import_skills_from_source(
     }
 
     for candidate in &mut candidates {
-        if let Some(skill) = existing.get(&candidate.input.name.to_lowercase()) {
+        let canonical_name = candidate.input.name.to_ascii_lowercase();
+        if let Some(skill) = existing.get(&canonical_name) {
             candidate.input.id = Some(skill.id.clone());
+            candidate.input.name = skill.name.clone();
             candidate.input.enabled = skill.enabled;
         }
     }
@@ -328,6 +384,25 @@ fn load_install_candidates(source: &Path) -> Result<Vec<InstallCandidate>, CoreE
             "Choose a SKILL.md, .skill/.zip package, or skill directory".into(),
         ))
     }
+}
+
+fn validate_candidate_directory_names(candidates: &[InstallCandidate]) -> Result<(), CoreError> {
+    for candidate in candidates {
+        let directory_name = candidate
+            .preview
+            .skill_dir
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default();
+        if !directory_name.is_empty() && directory_name != candidate.input.name {
+            return Err(CoreError::InvalidInput(format!(
+                "Skill directory `{directory_name}` must match SKILL.md name `{}`",
+                candidate.input.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn load_candidates_from_directory(root: &Path) -> Result<Vec<InstallCandidate>, CoreError> {
@@ -383,15 +458,23 @@ fn load_candidates_from_directory(root: &Path) -> Result<Vec<InstallCandidate>, 
 }
 
 fn load_candidate_from_markdown(skill_file: &Path) -> Result<InstallCandidate, CoreError> {
+    load_candidate_from_markdown_with_legacy_name(skill_file, None)
+}
+
+fn load_candidate_from_markdown_with_legacy_name(
+    skill_file: &Path,
+    accepted_legacy_display_name: Option<&str>,
+) -> Result<InstallCandidate, CoreError> {
     let skill_dir = skill_file.parent().unwrap_or_else(|| Path::new("."));
     validate_file_size(fs::metadata(skill_file)?.len(), skill_file)?;
     let content = fs::read_to_string(skill_file)?;
     let resources = load_resource_bundle_from_dir(skill_dir)?;
-    build_candidate(
+    build_candidate_with_legacy_name(
         skill_file.to_string_lossy().to_string(),
         skill_dir.to_string_lossy().to_string(),
         content,
         resources,
+        accepted_legacy_display_name,
     )
 }
 
@@ -545,7 +628,22 @@ fn build_candidate(
     content: String,
     resources: Vec<SkillResourceFile>,
 ) -> Result<InstallCandidate, CoreError> {
+    build_candidate_with_legacy_name(skill_file, skill_dir, content, resources, None)
+}
+
+fn build_candidate_with_legacy_name(
+    skill_file: String,
+    skill_dir: String,
+    content: String,
+    resources: Vec<SkillResourceFile>,
+    accepted_legacy_display_name: Option<&str>,
+) -> Result<InstallCandidate, CoreError> {
     let (frontmatter, body) = parse_skill_file(&content)?;
+    if let Err(error) = validate_canonical_skill_name(&frontmatter.name) {
+        if !accepted_legacy_display_name.is_some_and(|name| name == frontmatter.name) {
+            return Err(error);
+        }
+    }
     let mut warnings = scan_skill_content(&content);
     for resource in &resources {
         if matches!(resource.encoding, SkillResourceEncoding::Utf8) {
@@ -681,11 +779,61 @@ mod tests {
         let first_id = first[0].id.clone();
         assert!(import_skills_from_source(&db, &package, false, false).is_err());
 
+        db.save_skill(&SaveSkillInput {
+            id: Some(first_id.clone()),
+            name: "本地演示助手".into(),
+            description: first[0].description.clone(),
+            content: first[0].content.clone(),
+            enabled: false,
+            resource_bundle: first[0].resource_bundle.clone(),
+        })
+        .unwrap();
+
         write_skill_archive(&package, "Version two.", "echo updated");
         let replaced = import_skills_from_source(&db, &package, true, false).unwrap();
         assert_eq!(replaced[0].id, first_id);
+        assert_eq!(replaced[0].canonical_name, "demo");
+        assert_eq!(replaced[0].name, "本地演示助手");
+        assert!(!replaced[0].enabled);
         assert_eq!(replaced[0].content, "Version two.");
         assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn multi_skill_import_preflights_database_identity_conflicts_atomically() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("package");
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Installed skill".into(),
+                description: "Owns a database identity".into(),
+                content: "Keep this skill unchanged.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        for name in ["first-package-skill", installed.id.as_str()] {
+            let skill_dir = package.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Package skill\n---\n\nPackage body.\n"),
+            )
+            .unwrap();
+        }
+
+        let error = import_skills_from_source(&db, &package, false, false).unwrap_err();
+
+        assert!(error.to_string().contains("database identities"));
+        let saved = db.list_skills().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, installed.id);
+        assert!(!saved
+            .iter()
+            .any(|skill| skill.canonical_name == "first-package-skill"));
     }
 
     #[test]
@@ -726,7 +874,12 @@ mod tests {
             .unwrap();
         assert_eq!(saved.description, "After");
         assert_eq!(
-            portable_user_skill_content(&saved.content, &saved.id, Some(dir.path())),
+            portable_user_skill_content(
+                &saved.content,
+                &saved.id,
+                &saved.canonical_name,
+                Some(dir.path()),
+            ),
             "Run `<SKILL_DIR>/scripts/demo`."
         );
         assert_eq!(report.updated, 1);
@@ -739,7 +892,59 @@ mod tests {
     }
 
     #[test]
-    fn registered_skill_file_sync_rejects_names_claimed_earlier_in_the_same_pass() {
+    fn legacy_id_directory_accepts_the_installed_display_name_then_migrates() {
+        let dir = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let installed = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Writing Assistant".into(),
+                description: "Before".into(),
+                content: "Before body".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy_dir = dir.path().join(&installed.id);
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(
+            legacy_dir.join("SKILL.md"),
+            "---\nname: Writing Assistant\ndescription: After\n---\n\nUse the edited workflow.\n",
+        )
+        .unwrap();
+
+        let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
+        let saved = db
+            .list_skills()
+            .unwrap()
+            .into_iter()
+            .find(|skill| skill.id == installed.id)
+            .unwrap();
+        assert_eq!(report.updated, 1);
+        assert!(report.rejected.is_empty());
+        assert_eq!(saved.name, "Writing Assistant");
+        assert_eq!(saved.canonical_name, "writing-assistant");
+        assert_eq!(saved.content, "Use the edited workflow.");
+
+        crate::skills::materialize_user_skills_to_directory_except(
+            dir.path(),
+            std::slice::from_ref(&saved),
+            &report.preserved_skill_ids,
+        )
+        .unwrap();
+        let canonical_dir = dir.path().join("writing-assistant");
+        assert!(canonical_dir.join("SKILL.md").is_file());
+        assert!(!legacy_dir.exists());
+        let (frontmatter, _) = crate::skills::parse_skill_file(
+            &fs::read_to_string(canonical_dir.join("SKILL.md")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(frontmatter.name, "writing-assistant");
+    }
+
+    #[test]
+    fn registered_skill_file_sync_rejects_canonical_name_mismatches() {
         let dir = tempdir().unwrap();
         let db = Database::open_memory().unwrap();
         db.conn().execute("DELETE FROM skills", []).unwrap();
@@ -763,8 +968,8 @@ mod tests {
                 resource_bundle: Vec::new(),
             })
             .unwrap();
-        for id in [&first.id, &second.id] {
-            let skill_dir = dir.path().join(id);
+        for skill in [&first, &second] {
+            let skill_dir = dir.path().join(&skill.canonical_name);
             fs::create_dir_all(&skill_dir).unwrap();
             fs::write(
                 skill_dir.join("SKILL.md"),
@@ -774,15 +979,9 @@ mod tests {
         }
 
         let report = sync_registered_user_skills_from_directory(&db, dir.path()).unwrap();
-        let shared_count = db
-            .list_skills()
-            .unwrap()
-            .into_iter()
-            .filter(|skill| skill.name == "shared")
-            .count();
-        assert_eq!(report.updated, 1);
-        assert_eq!(report.rejected.len(), 1);
-        assert_eq!(shared_count, 1);
+        assert_eq!(report.updated, 0);
+        assert_eq!(report.rejected.len(), 2);
+        assert_eq!(db.list_skills().unwrap().len(), 2);
     }
 
     #[test]
@@ -805,7 +1004,7 @@ mod tests {
             std::slice::from_ref(&installed),
         )
         .unwrap();
-        let skill_file = dir.path().join(&installed.id).join("SKILL.md");
+        let skill_file = dir.path().join(&installed.canonical_name).join("SKILL.md");
         let rejected_edit = "---\nname: [\ndescription: broken\n---\n\nFix me\n";
         fs::write(&skill_file, rejected_edit).unwrap();
 

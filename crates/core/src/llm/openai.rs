@@ -4078,6 +4078,26 @@ data: [DONE]
         .unwrap();
         assert_eq!(body["reasoning_effort"], "high");
 
+        let mut meta_request = endpoint_reasoning_request("muse-spark-1.3");
+        meta_request.reasoning_effort = Some(ReasoningEffort::High);
+        meta_request.stop = Some(vec!["done".to_string()]);
+        let mut previous = Message::text(Role::Assistant, "prior answer");
+        previous.reasoning_content = Some("provider-private reasoning".to_string());
+        meta_request.messages = vec![previous, Message::text(Role::User, "continue")];
+        let meta = endpoint_config(ProviderType::OpenAi, "https://api.meta.ai/v1");
+        let body = serde_json::to_value(build_request_body_with_config(
+            &meta_request,
+            false,
+            Some(&meta),
+        ))
+        .unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("stop").is_none());
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+        assert!(body["prompt_cache_key"]
+            .as_str()
+            .is_some_and(|key| key.starts_with("nexa-")));
+
         let mut multi_agent = endpoint_reasoning_request("grok-4.20-multi-agent-0309");
         multi_agent.reasoning_effort = Some(ReasoningEffort::High);
         let body = serde_json::to_value(build_request_body_with_config(

@@ -187,15 +187,62 @@ pub fn conversation_message_provider_turn(
 
 /// Return the display projection without opaque provider replay payloads or
 /// signatures. Internal replay callers continue to use the original row.
-pub fn conversation_message_for_display(mut message: ConversationMessage) -> ConversationMessage {
-    if let Some(serde_json::Value::Object(artifacts)) = message.artifacts.as_mut() {
+pub fn conversation_message_for_display(message: ConversationMessage) -> ConversationMessage {
+    conversation_message_for_display_with_turn_trace(message, false)
+}
+
+/// Project a message for the renderer, omitting the legacy message-level trace
+/// when the canonical conversation-turn trace is available. This keeps old
+/// histories readable without transferring the same tool timeline twice.
+pub fn conversation_message_for_display_with_turn_trace(
+    mut message: ConversationMessage,
+    has_canonical_turn_trace: bool,
+) -> ConversationMessage {
+    if let Some(serde_json::Value::Object(mut artifacts)) = message.artifacts.take() {
         artifacts.remove(PROVIDER_TURN_ENVELOPE_ARTIFACT_KEY);
         artifacts.remove(PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY);
+        artifacts.remove(REASONING_ENVELOPE_ARTIFACT_KEY);
+        artifacts.remove(LLM_CONTEXT_CONTENT_ARTIFACT_KEY);
+
+        if has_canonical_turn_trace
+            && artifacts.get("kind").and_then(serde_json::Value::as_str) == Some("traceTimeline")
+        {
+            artifacts.remove("items");
+            artifacts.insert(
+                "kind".to_string(),
+                serde_json::Value::String("assistantArtifacts".to_string()),
+            );
+            artifacts.insert("version".to_string(), serde_json::Value::Number(2.into()));
+        }
+
+        let has_display_payload = artifacts
+            .keys()
+            .any(|key| !matches!(key.as_str(), "kind" | "version"));
+        message.artifacts = has_display_payload.then_some(serde_json::Value::Object(artifacts));
     }
     for tool_call in &mut message.tool_calls {
         tool_call.thought_signature = None;
     }
     message
+}
+
+/// Remove runtime-only diagnostics from the turn payload sent to the WebView.
+/// The database retains the full compact trace for prompt-cache seeding and
+/// audit; the UI consumes only these typed presentation items.
+pub fn conversation_turn_for_display(mut turn: ConversationTurn) -> ConversationTurn {
+    let Some(serde_json::Value::Object(trace)) = turn.trace.as_mut() else {
+        return turn;
+    };
+    let Some(serde_json::Value::Array(items)) = trace.get_mut("items") else {
+        return turn;
+    };
+    items.retain(|item| {
+        matches!(
+            item.get("kind").and_then(serde_json::Value::as_str),
+            Some("thinking" | "reply" | "tool" | "skillSelection" | "status")
+        )
+    });
+    turn
 }
 
 pub fn merge_provider_turn_envelope_artifact(
@@ -342,6 +389,83 @@ mod reasoning_envelope_tests {
         assert!(display.artifacts.as_ref().is_none_or(|artifacts| artifacts
             .get(PROVIDER_REPLAY_BOUNDARY_ARTIFACT_KEY)
             .is_none()));
+    }
+
+    #[test]
+    fn display_projection_drops_opaque_reasoning_replay_payload() {
+        let message = assistant_message(
+            Some("visible reasoning"),
+            Some(serde_json::json!({
+                "kind": "assistantArtifacts",
+                "version": 2,
+                "reasoningEnvelope": {
+                    "displayText": "visible reasoning",
+                    "replayPayload": "large opaque provider replay"
+                },
+                "proposedPlan": { "kind": "plan", "markdown": "Keep me" }
+            })),
+        );
+
+        let display = conversation_message_for_display(message);
+        let artifacts = display.artifacts.unwrap();
+        assert!(artifacts.get(REASONING_ENVELOPE_ARTIFACT_KEY).is_none());
+        assert_eq!(artifacts["proposedPlan"]["markdown"], "Keep me");
+        assert_eq!(display.thinking.as_deref(), Some("visible reasoning"));
+    }
+
+    #[test]
+    fn canonical_turn_trace_prevents_duplicate_message_trace_projection() {
+        let message = assistant_message(
+            Some("visible reasoning"),
+            Some(serde_json::json!({
+                "kind": "traceTimeline",
+                "version": 1,
+                "items": [
+                    { "kind": "thinking", "text": "duplicate trace" },
+                    { "kind": "tool", "toolCall": { "content": "large duplicate output" } }
+                ],
+                "proposedPlan": { "kind": "plan", "markdown": "Keep me" }
+            })),
+        );
+
+        let display = conversation_message_for_display_with_turn_trace(message, true);
+        let artifacts = display.artifacts.unwrap();
+        assert!(artifacts.get("items").is_none());
+        assert_eq!(artifacts["proposedPlan"]["markdown"], "Keep me");
+    }
+
+    #[test]
+    fn turn_display_projection_excludes_runtime_only_trace_items() {
+        let turn = ConversationTurn {
+            id: "turn-1".to_string(),
+            conversation_id: "conversation".to_string(),
+            launch_project_id: None,
+            user_message_id: "user-1".to_string(),
+            assistant_message_id: Some("assistant-1".to_string()),
+            status: "completed".to_string(),
+            route_kind: Some("DirectResponse".to_string()),
+            trace: Some(serde_json::json!({
+                "kind": "turnTrace",
+                "items": [
+                    { "kind": "loop", "event": { "kind": "modelStep" } },
+                    { "kind": "promptCache", "observation": { "large": "internal" } },
+                    { "kind": "toolVisibility", "decision": { "route": "DirectResponse" } },
+                    { "kind": "thinking", "text": "visible" },
+                    { "kind": "tool", "toolCall": { "callId": "call-1" } },
+                    { "kind": "status", "text": "done" }
+                ]
+            })),
+            created_at: String::new(),
+            updated_at: String::new(),
+            finished_at: Some(String::new()),
+        };
+
+        let display = conversation_turn_for_display(turn);
+        let items = display.trace.unwrap()["items"].as_array().unwrap().clone();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["kind"], "thinking");
+        assert_eq!(items[1]["kind"], "tool");
+        assert_eq!(items[2]["kind"], "status");
     }
 }
 

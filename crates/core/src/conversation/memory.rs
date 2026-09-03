@@ -291,7 +291,9 @@ fn model_profile_context_window(m: &str) -> Option<u32> {
         "claude-2.0" => 100_000,
 
         // Google Gemini 3.x
-        "gemini-3.6-flash"
+        "gemini-3.8-flash"
+        | "gemini-3.7-flash"
+        | "gemini-3.6-flash"
         | "gemini-3.5-flash"
         | "gemini-3.5-flash-lite"
         | "gemini-3.1-pro-preview"
@@ -307,6 +309,9 @@ fn model_profile_context_window(m: &str) -> Option<u32> {
         // Google Gemini 1.5
         "gemini-1.5-pro" | "gemini-1.5-pro-latest" => 2_097_152,
         "gemini-1.5-flash" | "gemini-1.5-flash-latest" => 1_048_576,
+
+        // Meta Muse Spark
+        "muse-spark-1.3" | "meta/muse-spark-1.3" => 1_048_576,
 
         // DeepSeek
         "deepseek-v4-pro" | "deepseek-v4-flash" => 1_000_000,
@@ -752,6 +757,7 @@ mod tests {
         assert_eq!(model_context_window("claude-2.1"), 200_000);
         assert_eq!(model_context_window("claude-2.0"), 100_000);
         // Google Gemini
+        assert_eq!(model_context_window("gemini-3.8-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.7-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.6-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-3.5-flash-lite"), 1_048_576);
@@ -761,6 +767,8 @@ mod tests {
         assert_eq!(model_context_window("gemini-2.0-flash"), 1_048_576);
         assert_eq!(model_context_window("gemini-1.5-pro"), 2_097_152);
         assert_eq!(model_context_window("gemini-1.5-flash"), 1_048_576);
+        assert_eq!(model_context_window("muse-spark-1.3"), 1_048_576);
+        assert_eq!(model_context_window("meta/muse-spark-1.3"), 1_048_576);
         // Zhipu GLM
         assert_eq!(model_context_window("glm-5.3"), 1_000_000);
         assert_eq!(model_context_window("glm-5.2"), 1_000_000);

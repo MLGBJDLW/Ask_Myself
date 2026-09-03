@@ -308,6 +308,9 @@ test.beforeEach(async ({ page }) => {
           listeners.delete(Number(_args.eventId ?? 0));
           return null;
         }
+        case "plugin:shell|open":
+          localStorage.setItem("nexa-e2e-opened-subscription-url", String(_args.path ?? ""));
+          return null;
         case "get_wizard_state_cmd":
           return { completed: true };
         case "hydrate_appearance_registry_cmd":
@@ -374,6 +377,145 @@ test.beforeEach(async ({ page }) => {
         }
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig), clone(qwenConfig)];
+        case "get_codex_account_snapshot_cmd": {
+          const state = localStorage.getItem("nexa-e2e-codex-account") ?? "signed-in";
+          const oneShotDelayMs = Number(
+            localStorage.getItem("nexa-e2e-codex-next-snapshot-delay-ms") ?? 0,
+          );
+          if (oneShotDelayMs > 0) {
+            localStorage.removeItem("nexa-e2e-codex-next-snapshot-delay-ms");
+            await new Promise((resolve) => window.setTimeout(resolve, oneShotDelayMs));
+          }
+          if (state === "pending") {
+            const delayMs = Number(localStorage.getItem("nexa-e2e-codex-snapshot-delay-ms") ?? 0);
+            if (delayMs > 0) {
+              const active = Number(localStorage.getItem("nexa-e2e-codex-snapshot-active") ?? 0) + 1;
+              const maximum = Math.max(
+                active,
+                Number(localStorage.getItem("nexa-e2e-codex-snapshot-max-active") ?? 0),
+              );
+              localStorage.setItem("nexa-e2e-codex-snapshot-active", String(active));
+              localStorage.setItem("nexa-e2e-codex-snapshot-max-active", String(maximum));
+              await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+              localStorage.setItem("nexa-e2e-codex-snapshot-active", String(active - 1));
+            }
+          }
+          const base = {
+            available: true,
+            runtimeVersion: "codex-cli 0.153.0",
+            errorCode: null,
+            requiresOpenaiAuth: true,
+            rateLimits: [],
+            usage: null,
+            pendingLogin: null,
+            lastLogin: null,
+          };
+          if (state === "signed-in") {
+            return {
+              ...base,
+              account: { accountType: "chatgpt", email: "reader@example.com", planType: "pro" },
+              rateLimits: [{
+                id: "codex",
+                name: "Codex",
+                planType: "pro",
+                primary: { usedPercent: 18, windowDurationMins: 300, resetsAt: 1788426673 },
+                secondary: null,
+              }],
+              usage: { lifetimeTokens: 1234567, currentStreakDays: 4 },
+            };
+          }
+          if (state === "pending") {
+            return {
+              ...base,
+              account: null,
+              pendingLogin: {
+                loginId: "login-device",
+                kind: "deviceCode",
+                authUrl: null,
+                verificationUrl: "https://auth.openai.com/codex/device",
+                userCode: "ABCD-EFGH",
+              },
+            };
+          }
+          return { ...base, account: null };
+        }
+        case "start_codex_account_login_cmd": {
+          const kind = String(_args.kind ?? "browser");
+          localStorage.setItem("nexa-e2e-codex-account", "pending");
+          return kind === "deviceCode"
+            ? {
+                loginId: "login-device",
+                kind: "deviceCode",
+                authUrl: null,
+                verificationUrl: "https://auth.openai.com/codex/device",
+                userCode: "ABCD-EFGH",
+              }
+            : {
+                loginId: "login-browser",
+                kind: "browser",
+                authUrl: "https://auth.openai.com/oauth/authorize",
+                verificationUrl: null,
+                userCode: null,
+              };
+        }
+        case "cancel_codex_account_login_cmd":
+          localStorage.setItem("nexa-e2e-codex-account", "signed-out");
+          return null;
+        case "logout_codex_account_cmd":
+          localStorage.setItem("nexa-e2e-codex-account", "signed-out");
+          return {
+            available: true,
+            runtimeVersion: "codex-cli 0.153.0",
+            errorCode: null,
+            requiresOpenaiAuth: true,
+            account: null,
+            rateLimits: [],
+            usage: null,
+            pendingLogin: null,
+            lastLogin: null,
+          };
+        case "get_copilot_account_snapshot_cmd": {
+          const state = localStorage.getItem("nexa-e2e-copilot-account") ?? "verified";
+          const base = {
+            available: true,
+            runtimeVersion: "1.0.79",
+            errorCode: null,
+            authenticated: false,
+            entitlementVerified: false,
+            authType: null,
+            login: null,
+            host: "https://github.com",
+            models: [],
+            quotas: [],
+            loginPending: false,
+            loginError: null,
+          };
+          if (state === "pending") return { ...base, loginPending: true };
+          if (state === "signed-out") return base;
+          return {
+            ...base,
+            authenticated: true,
+            entitlementVerified: true,
+            authType: "user",
+            login: "octocat",
+            models: [
+              { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", reasoningEfforts: [] },
+              { id: "gpt-5.4", name: "GPT-5.4", reasoningEfforts: ["low", "medium", "high"] },
+            ],
+            quotas: [{
+              id: "premium_interactions",
+              remainingPercent: 64,
+              resetDate: "2026-10-01T00:00:00Z",
+              unlimited: false,
+            }],
+          };
+        }
+        case "start_copilot_account_login_cmd":
+          localStorage.setItem("nexa-e2e-copilot-account", "pending");
+          return null;
+        case "cancel_copilot_account_login_cmd":
+          localStorage.setItem("nexa-e2e-copilot-account", "signed-out");
+          return null;
         case "list_agent_task_run_summaries_cmd":
           return { items: [], nextCursor: null };
         case "list_conversations_cmd":
@@ -754,6 +896,7 @@ test("settings provider form shows updated preset models for add and edit flows"
   await selectNexaOption(providerField().locator("[data-nexa-select-trigger]"), "google");
   modelSelect = modelField().locator("[data-nexa-select-trigger]");
   await expectModelOptions(modelSelect, [
+    "Gemini 3.8 Flash",
     "Gemini 3.7 Flash",
     "Gemini 3.6 Flash",
     "Gemini 3.5 Flash-Lite",
@@ -1019,6 +1162,43 @@ test("settings uses the MiniMax logo for its OpenAI-compatible preset", async ({
   await expect(minimaxGlyph).not.toHaveAttribute("style", /provider-icons\/openai\.svg/);
 });
 
+test("settings exposes Meta Model API with Muse Spark 1.3 as its verified default", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+
+  const metaCard = page.getByRole("button", { name: /^Meta Model API/ });
+  await expect(metaCard).toBeVisible();
+  await expect(metaCard.locator('[title="Meta"]')).toBeVisible();
+  await metaCard.click();
+
+  const baseUrlField = page
+    .locator("label")
+    .filter({ hasText: "Base URL" })
+    .locator("xpath=..");
+  await expect(baseUrlField.getByRole("textbox")).toHaveValue("https://api.meta.ai/v1");
+
+  const modelField = page.getByTestId("default-model-field");
+  const modelSelect = modelField.locator("[data-nexa-select-trigger]");
+  await expectNexaValue(modelSelect, "muse-spark-1.3");
+  await expectNexaOptions(modelSelect, ["Muse Spark 1.3"]);
+  await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("text+image→text");
+
+  await page.getByRole("button", { name: /^Advanced Settings/ }).click();
+  const alwaysOn = page.getByRole("checkbox", {
+    name: "Reasoning is always on for this model.",
+  });
+  await expect(alwaysOn).toBeChecked();
+  await expect(alwaysOn).toBeDisabled();
+  const effortSelect = page
+    .locator("label")
+    .filter({ hasText: "Reasoning Effort" })
+    .locator("xpath=..")
+    .locator("[data-nexa-select-trigger]");
+  await expectNexaOptions(effortSelect, ["Minimal", "Low", "Medium", "High"]);
+  await expectNexaOptionCount(effortSelect, 4);
+});
+
 test("settings exposes current Qwen3.8 Token Plan models with the retired preview disabled", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
@@ -1026,6 +1206,11 @@ test("settings exposes current Qwen3.8 Token Plan models with the retired previe
 
   const tokenPlanCard = page.getByRole("button", { name: /^Qwen Token Plan/ });
   await expect(tokenPlanCard).toContainText("sk-sp key");
+  const globalTokenPlanCard = page.getByRole("button", {
+    name: /^QwenCloud Token Plan \(Global\)/,
+  });
+  await expect(globalTokenPlanCard).toBeVisible();
+  await expect(globalTokenPlanCard).toContainText("sk-sp key");
   await tokenPlanCard.click();
 
   const baseUrlField = page
@@ -1050,6 +1235,94 @@ test("settings exposes current Qwen3.8 Token Plan models with the retired previe
   await page.keyboard.press("Escape");
   await selectNexaOption(modelSelect, "qwen3.8-flash");
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");
+});
+
+test("settings projects the Codex subscription account and usage without an API key", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("codex-subscription-account");
+  await expect(page.getByText("Accounts & subscription agents", { exact: true })).toBeVisible();
+  await expect(account).toContainText("reader@example.com");
+  await expect(account).toContainText("Pro");
+  await expect(account).toContainText("82% remaining");
+  await expect(account).toContainText("1,234,567 lifetime tokens");
+  await expect(account).not.toContainText("API key");
+});
+
+test("settings completes the official Codex device-code launch and cancellation flow", async ({ page }) => {
+  await page.goto("/settings");
+  await page.evaluate(() => {
+    localStorage.setItem("nexa-e2e-codex-account", "signed-out");
+    localStorage.setItem("nexa-e2e-codex-snapshot-delay-ms", "2000");
+    localStorage.setItem("nexa-e2e-codex-snapshot-active", "0");
+    localStorage.setItem("nexa-e2e-codex-snapshot-max-active", "0");
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("codex-subscription-account");
+  await account.getByRole("button", { name: "Use device code" }).click();
+  await expect(account.getByTestId("codex-login-pending")).toContainText("ABCD-EFGH");
+  await expect.poll(() => page.evaluate(() => (
+    localStorage.getItem("nexa-e2e-opened-subscription-url")
+  ))).toBe("https://auth.openai.com/codex/device");
+  await page.waitForTimeout(3_800);
+  await expect.poll(() => page.evaluate(() => Number(
+    localStorage.getItem("nexa-e2e-codex-snapshot-max-active") ?? 0,
+  ))).toBe(1);
+  await page.evaluate(() => localStorage.removeItem("nexa-e2e-codex-snapshot-delay-ms"));
+  await account.getByRole("button", { name: "Cancel" }).click();
+  await expect(account.getByTestId("codex-login-pending")).toHaveCount(0);
+});
+
+test("settings discards a stale account refresh after login starts", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("nexa-e2e-codex-account", "signed-out"));
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("codex-subscription-account");
+  await expect(account.getByRole("button", { name: "Use device code" })).toBeVisible();
+  await page.evaluate(() => {
+    localStorage.setItem("nexa-e2e-codex-next-snapshot-delay-ms", "600");
+  });
+  await account.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (
+    localStorage.getItem("nexa-e2e-codex-next-snapshot-delay-ms")
+  ))).toBeNull();
+  await account.getByRole("button", { name: "Use device code" }).click();
+  await expect(account.getByTestId("codex-login-pending")).toContainText("ABCD-EFGH");
+
+  await page.waitForTimeout(900);
+  await expect(account.getByTestId("codex-login-pending")).toContainText("ABCD-EFGH");
+});
+
+test("settings verifies GitHub Copilot subscription models and quota through the SDK", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("copilot-subscription-account");
+  await expect(account).toContainText("Subscription verified");
+  await expect(account).toContainText("octocat");
+  await expect(account).toContainText("2 subscription models available");
+  await expect(account).toContainText("Claude Sonnet 4.6");
+  await expect(account).toContainText("GPT-5.4");
+  await expect(account).toContainText("64% remaining");
+  await expect(account).not.toContainText(/(?:ghu_|gho_|github_pat_)[A-Za-z0-9_]+/);
+});
+
+test("settings starts and cancels the official Copilot CLI browser login", async ({ page }) => {
+  await page.goto("/settings");
+  await page.evaluate(() => localStorage.setItem("nexa-e2e-copilot-account", "signed-out"));
+  await page.reload();
+  await page.getByRole("button", { name: "AI Providers" }).click();
+
+  const account = page.getByTestId("copilot-subscription-account");
+  await account.getByRole("button", { name: "Sign in with GitHub" }).click();
+  await expect(account.getByTestId("copilot-login-pending")).toBeVisible();
+  await account.getByRole("button", { name: "Cancel" }).click();
+  await expect(account.getByTestId("copilot-login-pending")).toHaveCount(0);
 });
 
 test("settings selects the public GLM-5.3 flagship route by default", async ({ page }) => {

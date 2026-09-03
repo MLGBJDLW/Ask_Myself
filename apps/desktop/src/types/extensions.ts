@@ -63,6 +63,8 @@ export interface RegisteredSkillFileSyncReport {
 
 export interface Skill {
   id: string;
+  /** Stable Agent Skills invocation and folder name. */
+  canonicalName: string;
   name: string;
   /** Concise trigger-match description (when to activate this skill). */
   description: string;

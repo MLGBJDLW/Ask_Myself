@@ -504,6 +504,16 @@ where
     })
 }
 
+fn server_binding_regex() -> &'static Regex {
+    static BIND_RE: OnceLock<Regex> = OnceLock::new();
+    BIND_RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(?:threadinghttpserver|httpserver|tcpserver)\s*\(\s*\(\s*['\"](localhost|127\.0\.0\.1|0\.0\.0\.0|::1|::)['\"]\s*,\s*(\d{1,5})"#,
+        )
+        .expect("valid managed-service binding regex")
+    })
+}
+
 fn local_url_regex() -> &'static Regex {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     URL_RE.get_or_init(|| {
@@ -526,6 +536,168 @@ fn discover_ready_url(stdout: &str, stderr: &str) -> Option<reqwest::Url> {
             validate_ready_url(&candidate).ok()
         })
         .next()
+}
+
+fn ready_url_for_host_port(host: &str, port: &str) -> Option<reqwest::Url> {
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    let host = match host.trim_matches(['[', ']']) {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    validate_ready_url(&format!("http://{authority}/")).ok()
+}
+
+fn argument_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+    for (index, argument) in args.iter().enumerate() {
+        if names.iter().any(|name| argument == name) {
+            return args.get(index + 1).map(String::as_str);
+        }
+        for name in names {
+            if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn is_python_launcher(program: &str) -> bool {
+    matches!(program, "python" | "python3" | "py")
+        || program
+            .strip_prefix("python3.")
+            .is_some_and(|version| version.chars().all(|character| character.is_ascii_digit()))
+}
+
+fn inline_program_source<'a>(program: &str, args: &'a [String]) -> Option<&'a str> {
+    let program = Path::new(program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    if !is_python_launcher(&program) {
+        return None;
+    }
+    for (index, argument) in args.iter().enumerate() {
+        if argument == "-c" {
+            return args.get(index + 1).map(String::as_str);
+        }
+        if argument == "--" || !argument.starts_with('-') {
+            return None;
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InlineCodeState {
+    Executable,
+    SingleQuoted,
+    DoubleQuoted,
+    TripleSingleQuoted,
+    TripleDoubleQuoted,
+    LineComment,
+}
+
+fn inline_code_offset_is_executable(source: &str, target: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut state = InlineCodeState::Executable;
+    let mut index = 0_usize;
+    while index < target && index < bytes.len() {
+        let current = bytes[index];
+        let triple = bytes.get(index..index.saturating_add(3));
+        match state {
+            InlineCodeState::Executable => match (current, triple) {
+                (b'\'', Some(b"'''")) => {
+                    state = InlineCodeState::TripleSingleQuoted;
+                    index += 3;
+                    continue;
+                }
+                (b'"', Some(b"\"\"\"")) => {
+                    state = InlineCodeState::TripleDoubleQuoted;
+                    index += 3;
+                    continue;
+                }
+                (b'\'', _) => state = InlineCodeState::SingleQuoted,
+                (b'"', _) => state = InlineCodeState::DoubleQuoted,
+                (b'#', _) => state = InlineCodeState::LineComment,
+                _ => {}
+            },
+            InlineCodeState::SingleQuoted => {
+                if current == b'\\' {
+                    index += 2;
+                    continue;
+                }
+                if current == b'\'' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+            InlineCodeState::DoubleQuoted => {
+                if current == b'\\' {
+                    index += 2;
+                    continue;
+                }
+                if current == b'"' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+            InlineCodeState::TripleSingleQuoted => {
+                if triple == Some(b"'''") {
+                    state = InlineCodeState::Executable;
+                    index += 3;
+                    continue;
+                }
+            }
+            InlineCodeState::TripleDoubleQuoted => {
+                if triple == Some(b"\"\"\"") {
+                    state = InlineCodeState::Executable;
+                    index += 3;
+                    continue;
+                }
+            }
+            InlineCodeState::LineComment => {
+                if current == b'\n' || current == b'\r' {
+                    state = InlineCodeState::Executable;
+                }
+            }
+        }
+        index += 1;
+    }
+    state == InlineCodeState::Executable
+}
+
+fn executable_inline_captures<'a>(regex: &Regex, source: &'a str) -> Option<regex::Captures<'a>> {
+    regex.captures_iter(source).find(|captures| {
+        captures
+            .get(0)
+            .is_some_and(|matched| inline_code_offset_is_executable(source, matched.start()))
+    })
+}
+
+/// Infer only endpoints that the launched command itself declares. Unlike
+/// parsing arbitrary stdout, this lets startup preflight prove that the
+/// endpoint was not already serving before the managed process was spawned.
+pub(super) fn infer_ready_url_from_invocation(
+    program: &str,
+    args: &[String],
+) -> Option<reqwest::Url> {
+    if let Some(source) = inline_program_source(program, args) {
+        if let Some(captures) = executable_inline_captures(server_binding_regex(), source) {
+            return ready_url_for_host_port(captures.get(1)?.as_str(), captures.get(2)?.as_str());
+        }
+    }
+
+    if !looks_like_persistent_service(program, args) {
+        return None;
+    }
+    let port = argument_value(args, &["--port", "-p", "--server.port"])?;
+    let host = argument_value(args, &["--host", "--bind", "-b"]).unwrap_or("127.0.0.1");
+    ready_url_for_host_port(host, port)
 }
 
 async fn service_log_snapshot(
@@ -560,40 +732,100 @@ async fn readiness_probe(url: &reqwest::Url) -> bool {
     readiness_client().get(url.clone()).send().await.is_ok()
 }
 
-#[cfg(test)]
-fn launches_python_server_script(program: &str, args: &[String]) -> bool {
-    let is_python_launcher = matches!(program, "python" | "python3" | "py")
-        || program
-            .strip_prefix("python3.")
-            .is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()));
-    if !is_python_launcher {
-        return false;
+fn python_script_invocation<'a>(
+    program: &str,
+    args: &'a [String],
+) -> Option<(&'a str, &'a [String])> {
+    if !is_python_launcher(program) {
+        return None;
     }
 
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         match arg.as_str() {
-            "-c" | "-m" => return false,
+            "-c" | "-m" => return None,
             "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
             "--" => {
-                return args
-                    .get(index + 1)
-                    .and_then(|value| value.rsplit(['/', '\\']).next())
-                    .is_some_and(|name| name == "server.py");
+                let script = args.get(index + 1)?;
+                return Some((script, &args[index + 2..]));
             }
             value if value.starts_with('-') => index += 1,
-            value => {
-                return value
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .is_some_and(|name| name == "server.py");
-            }
+            value => return Some((value, &args[index + 1..])),
         }
     }
-    false
+    None
 }
 
-#[cfg(test)]
+fn launches_python_server_script(program: &str, args: &[String]) -> bool {
+    python_script_invocation(program, args)
+        .and_then(|(script, _)| script.rsplit(['/', '\\']).next())
+        .is_some_and(|name| name == "server.py")
+}
+
+fn python_module_invocation<'a>(
+    program: &str,
+    args: &'a [String],
+) -> Option<(&'a str, &'a [String])> {
+    if !is_python_launcher(program) {
+        return None;
+    }
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        match argument.as_str() {
+            "-m" => {
+                let module = args.get(index + 1)?;
+                return Some((module, &args[index + 2..]));
+            }
+            "-c" | "--" => return None,
+            "-w" | "-x" | "--check-hash-based-pycs" => index += 2,
+            value if value.starts_with("-w") || value.starts_with("-x") => index += 1,
+            value if value.starts_with('-') => index += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn executable_starts_service(program: &str, args: &[String]) -> bool {
+    match program {
+        "vite" => args.first().is_none_or(|argument| {
+            argument.starts_with('-') || matches!(argument.as_str(), "dev" | "serve" | "preview")
+        }),
+        "uvicorn" | "gunicorn" => true,
+        "flask" => args.first().is_some_and(|argument| argument == "run"),
+        "fastapi" => args
+            .first()
+            .is_some_and(|argument| matches!(argument.as_str(), "dev" | "run")),
+        "streamlit" => args.first().is_some_and(|argument| argument == "run"),
+        "webpack" => args.first().is_some_and(|argument| argument == "serve"),
+        "next" => args.first().is_some_and(|argument| argument == "dev"),
+        "django-admin" => args.first().is_some_and(|argument| argument == "runserver"),
+        _ => false,
+    }
+}
+
+fn python_module_starts_service(module: &str, args: &[String]) -> bool {
+    match module {
+        "http.server" | "uvicorn" | "gunicorn" => true,
+        "flask" | "streamlit" => args.first().is_some_and(|argument| argument == "run"),
+        "fastapi" => args
+            .first()
+            .is_some_and(|argument| matches!(argument.as_str(), "dev" | "run")),
+        _ => false,
+    }
+}
+
+fn package_script_starts_service(args: &[String]) -> bool {
+    let args = args
+        .iter()
+        .position(|argument| !argument.starts_with('-'))
+        .map(|index| &args[index..])
+        .unwrap_or_default();
+    matches!(args, [command, script, ..]
+        if command == "run"
+            && matches!(script.as_str(), "dev" | "start" | "serve" | "preview"))
+}
+
 pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> bool {
     let program = Path::new(program)
         .file_stem()
@@ -601,29 +833,75 @@ pub(super) fn looks_like_persistent_service(program: &str, args: &[String]) -> b
         .unwrap_or(program)
         .to_ascii_lowercase();
     let normalized_args: Vec<String> = args.iter().map(|arg| arg.to_ascii_lowercase()).collect();
-    let joined = normalized_args.join(" ");
 
-    joined.contains("http.server")
-        || launches_python_server_script(&program, &normalized_args)
-        || joined.contains("manage.py runserver")
-        || joined.contains("uvicorn")
-        || joined.contains("flask run")
-        || joined.contains("fastapi dev")
-        || joined.contains("fastapi run")
-        || joined.contains("streamlit run")
-        || joined.contains("webpack serve")
-        || joined.contains("next dev")
-        || matches!(program.as_str(), "vite" | "uvicorn" | "gunicorn")
-        || (matches!(
-            program.as_str(),
-            "npm" | "npm.cmd" | "pnpm" | "yarn" | "bun"
-        ) && normalized_args.windows(2).any(|pair| {
-            pair[0] == "run" && matches!(pair[1].as_str(), "dev" | "start" | "serve" | "preview")
-        }))
-        || (matches!(program.as_str(), "npx" | "npx.cmd")
-            && normalized_args
-                .first()
-                .is_some_and(|arg| matches!(arg.as_str(), "vite" | "webpack" | "next")))
+    if launches_python_server_script(&program, &normalized_args) {
+        return true;
+    }
+    if let Some((module, module_args)) = python_module_invocation(&program, &normalized_args) {
+        return python_module_starts_service(module, module_args);
+    }
+    if is_python_launcher(&program) {
+        return python_script_invocation(&program, &normalized_args).is_some_and(
+            |(script, args)| {
+                script.rsplit(['/', '\\']).next() == Some("manage.py")
+                    && args.first().is_some_and(|command| command == "runserver")
+            },
+        );
+    }
+    if executable_starts_service(&program, &normalized_args) {
+        return true;
+    }
+    if matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun") {
+        return package_script_starts_service(&normalized_args);
+    }
+    if program == "npx" {
+        let executable_index = normalized_args
+            .iter()
+            .take_while(|argument| matches!(argument.as_str(), "-y" | "--yes" | "--no-install"))
+            .count();
+        return normalized_args[executable_index..]
+            .split_first()
+            .is_some_and(|(executable, executable_args)| {
+                executable_starts_service(executable, executable_args)
+            });
+    }
+    false
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadyUrlSource {
+    Explicit,
+    InvocationInference,
+}
+
+#[derive(Clone)]
+struct ReadyUrlCandidate {
+    url: reqwest::Url,
+    source: ReadyUrlSource,
+}
+
+impl ReadyUrlCandidate {
+    fn explicit(url: reqwest::Url) -> Self {
+        Self {
+            url,
+            source: ReadyUrlSource::Explicit,
+        }
+    }
+
+    fn inferred(url: reqwest::Url) -> Self {
+        Self {
+            url,
+            source: ReadyUrlSource::InvocationInference,
+        }
+    }
+
+    fn rejects_preexisting_endpoint(&self) -> bool {
+        self.source == ReadyUrlSource::Explicit
+    }
+}
+
+fn verified_ready_url(candidate: &reqwest::Url, probe_succeeded: bool) -> Option<reqwest::Url> {
+    probe_succeeded.then(|| candidate.clone())
 }
 
 struct ManagedServiceRequest<'a> {
@@ -631,7 +909,7 @@ struct ManagedServiceRequest<'a> {
     program: &'a str,
     args: &'a [String],
     cwd: &'a Path,
-    requested_ready_url: Option<reqwest::Url>,
+    ready_url_candidate: Option<ReadyUrlCandidate>,
     auto_promoted: bool,
     activity_runtime: ActivityRuntime,
     conversation_id: Option<&'a str>,
@@ -644,20 +922,27 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         program,
         args,
         cwd,
-        requested_ready_url,
+        mut ready_url_candidate,
         auto_promoted,
         activity_runtime,
         conversation_id,
         before_snapshot,
     } = request;
-    if let Some(ready_url) = requested_ready_url.as_ref() {
-        if readiness_probe(ready_url).await {
-            return error_result(
-                call_id,
-                format!(
-                    "ready_url {ready_url} is already responding; choose a free port or check the existing service before starting another process"
-                ),
-            );
+    if let Some(candidate) = ready_url_candidate.as_ref() {
+        if readiness_probe(&candidate.url).await {
+            if candidate.rejects_preexisting_endpoint() {
+                return error_result(
+                    call_id,
+                    format!(
+                        "ready_url {} is already responding; choose a free port or check the existing service before starting another process",
+                        candidate.url
+                    ),
+                );
+            }
+            // An inferred endpoint that was already live cannot be attributed
+            // to the process about to start. Drop the candidate without
+            // rejecting the unrelated command or granting browser authority.
+            ready_url_candidate = None;
         }
     }
 
@@ -733,7 +1018,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     activity_id,
                     process_id,
                     program: program.to_string(),
-                    ready_url: requested_ready_url,
+                    ready_url: None,
                     logs,
                     auto_promoted,
                     started_at,
@@ -765,11 +1050,13 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         }
 
         let log_snapshot = service_log_snapshot(&logs).await;
-        let ready_url = requested_ready_url
+        let candidate = ready_url_candidate
             .clone()
+            .map(|candidate| candidate.url)
             .or_else(|| discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr));
-        if let Some(ready_url) = ready_url.as_ref() {
-            if readiness_probe(ready_url).await {
+        if let Some(candidate) = candidate.as_ref() {
+            let probe_succeeded = readiness_probe(candidate).await;
+            if let Some(ready_url) = verified_ready_url(candidate, probe_succeeded) {
                 let _ = activity_runtime.append(
                     &activity_id,
                     ActivityEventKind::ReadyUrl,
@@ -837,7 +1124,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     activity_id: activity_id.clone(),
                     process_id,
                     program: program.to_string(),
-                    ready_url: ready_url.clone(),
+                    ready_url: None,
                     logs,
                     auto_promoted,
                     started_at,
@@ -854,12 +1141,8 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
             return ToolResult {
                 call_id: call_id.to_string(),
                 content: format!(
-                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. {} The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
+                    "Long-running command is now a managed background service. service_id: {call_id}; process_id: {}. No verified loopback URL has been identified yet. The command call is complete; keep working and poll with service_action=wait to be handed the exit status and logs as soon as it finishes, service_action=status for a snapshot, and service_action=stop to end it. Continue with browser_evidence_capture when a URL is available.",
                     process_id.map_or_else(|| "unknown".to_string(), |id| id.to_string()),
-                    ready_url.as_ref().map_or_else(
-                        || "No loopback URL was discovered yet; status will keep checking startup logs.".to_string(),
-                        |url| format!("Discovered URL: {url}."),
-                    ),
                 ),
                 is_error: false,
                 artifacts: Some(serde_json::json!({
@@ -869,7 +1152,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     "serviceId": call_id,
                     "processId": process_id,
                     "status": "running",
-                    "readyUrl": ready_url.as_ref().map(reqwest::Url::as_str),
+                    "readyUrl": null,
                     "program": program,
                     "autoPromoted": auto_promoted,
                     "stdoutTail": log_snapshot.stdout,
@@ -882,6 +1165,37 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
 
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+async fn promote_discovered_ready_url(
+    service_id: &str,
+    conversation_id: Option<&str>,
+    expected_instance_id: &str,
+    ready_url: &reqwest::Url,
+) -> bool {
+    let mut registry = managed_services().lock().await;
+    let Some(service) = registry.get_mut(service_id) else {
+        return false;
+    };
+    if !belongs_to_conversation(&service.conversation_id, conversation_id)
+        || service.loopback_permit_issuer.service_instance_id != expected_instance_id
+        || !matches!(service.child.try_wait(), Ok(None))
+    {
+        return false;
+    }
+    service.ready_url = Some(ready_url.clone());
+    service.loopback_permit_issuer.refresh();
+    let _ = service.activity_runtime.append(
+        &service.activity_id,
+        ActivityEventKind::ReadyUrl,
+        serde_json::json!({ "url": ready_url.as_str() }),
+    );
+    let _ = service.activity_runtime.transition(
+        &service.activity_id,
+        ActivityState::Ready,
+        serde_json::json!({ "url": ready_url.as_str() }),
+    );
+    true
 }
 
 async fn status_service(
@@ -927,23 +1241,46 @@ async fn status_service(
         }
         Ok(None) => {
             let log_snapshot = service_log_snapshot(&service.logs).await;
-            if service.ready_url.is_none() {
-                service.ready_url = discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr);
-            }
-            let ready_url = service.ready_url.clone();
+            let ready_url_was_verified = service.ready_url.is_some();
+            let ready_url_candidate = service
+                .ready_url
+                .clone()
+                .or_else(|| discover_ready_url(&log_snapshot.stdout, &log_snapshot.stderr));
             let process_id = service.process_id;
             let program = service.program.clone();
             let auto_promoted = service.auto_promoted;
             let uptime_ms = service.started_at.elapsed().as_millis() as u64;
             let activity_id = service.activity_id.clone();
+            let service_instance_id = service.loopback_permit_issuer.service_instance_id.clone();
             let cursor = service
                 .activity_runtime
                 .get(&activity_id)
                 .map(|record| record.last_event_seq);
             drop(registry);
-            let healthy = match ready_url.as_ref() {
+            let candidate_health = match ready_url_candidate.as_ref() {
                 Some(url) => Some(readiness_probe(url).await),
                 None => None,
+            };
+            let promoted = if !ready_url_was_verified && candidate_health == Some(true) {
+                promote_discovered_ready_url(
+                    service_id,
+                    conversation_id,
+                    &service_instance_id,
+                    ready_url_candidate
+                        .as_ref()
+                        .expect("healthy candidate must include a URL"),
+                )
+                .await
+            } else {
+                false
+            };
+            let ready_url = (ready_url_was_verified || promoted)
+                .then(|| ready_url_candidate.clone())
+                .flatten();
+            let healthy = if candidate_health == Some(true) && ready_url.is_none() {
+                None
+            } else {
+                candidate_health
             };
             ToolResult {
                 call_id: call_id.to_string(),
@@ -957,7 +1294,7 @@ async fn status_service(
                         log_snapshot.stderr,
                     ),
                     _ => format!(
-                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet.\nstdout tail:\n{}\nstderr tail:\n{}",
+                        "Managed service {service_id} is running, but no loopback URL has appeared in its logs yet. Restart it with ready_url when the endpoint is chosen dynamically.\nstdout tail:\n{}\nstderr tail:\n{}",
                         log_snapshot.stdout,
                         log_snapshot.stderr,
                     ),
@@ -1283,6 +1620,29 @@ mod review_regression_tests {
     use super::*;
 
     #[test]
+    fn semantically_dead_binding_stays_untrusted_until_a_successful_probe() {
+        let inferred_url = infer_ready_url_from_invocation(
+            "python",
+            &[
+                "-c".to_string(),
+                "def unused(): ThreadingHTTPServer(('127.0.0.1', 8765), H)\nimport time; time.sleep(60)"
+                    .to_string(),
+            ],
+        )
+        .expect("lexical inference may identify only an unverified candidate");
+        let inferred = ReadyUrlCandidate::inferred(inferred_url.clone());
+        let explicit = ReadyUrlCandidate::explicit(inferred_url.clone());
+
+        assert!(!inferred.rejects_preexisting_endpoint());
+        assert!(explicit.rejects_preexisting_endpoint());
+        assert!(verified_ready_url(&inferred_url, false).is_none());
+        assert_eq!(
+            verified_ready_url(&inferred_url, true).as_ref(),
+            Some(&inferred_url)
+        );
+    }
+
+    #[test]
     fn bounded_service_logs_report_when_the_head_is_discarded() {
         let mut output = String::new();
         assert!(!append_bounded_log(&mut output, b"short output"));
@@ -1550,13 +1910,14 @@ impl Tool for RunShellTool {
                 "background run_shell does not accept stdin",
             ));
         }
-        let ready_url = if managed_background {
+        let ready_url_candidate = if managed_background {
             match parsed.ready_url.as_deref() {
                 Some(raw) => match validate_ready_url(raw) {
-                    Ok(url) => Some(url),
+                    Ok(url) => Some(ReadyUrlCandidate::explicit(url)),
                     Err(message) => return Ok(error_result(call_id, message)),
                 },
-                None => None,
+                None => infer_ready_url_from_invocation(&canonical_program, &normalized_args)
+                    .map(ReadyUrlCandidate::inferred),
             }
         } else {
             None
@@ -1630,7 +1991,7 @@ impl Tool for RunShellTool {
                 program: &canonical_program,
                 args: &normalized_args,
                 cwd: &cwd_path,
-                requested_ready_url: ready_url,
+                ready_url_candidate,
                 auto_promoted,
                 activity_runtime: activity_runtime.cloned().unwrap_or_default(),
                 conversation_id,

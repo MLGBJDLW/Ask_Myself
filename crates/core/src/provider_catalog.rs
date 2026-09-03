@@ -1296,7 +1296,8 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"gemini-3.7-flash"));
+        assert_eq!(ids.first(), Some(&"gemini-3.8-flash"));
+        assert!(ids.contains(&"gemini-3.7-flash"));
         assert!(ids.contains(&"gemini-3.6-flash"));
         assert!(ids.contains(&"gemini-3.5-flash-lite"));
         assert!(!ids.contains(&"gemini-3-pro-preview"));
@@ -1306,18 +1307,19 @@ mod tests {
         let latest = google
             .models
             .first()
-            .expect("Gemini 3.7 Flash should be listed first");
+            .expect("Gemini 3.8 Flash should be listed first");
         assert_eq!(latest.recommended, Some(true));
         assert_eq!(latest.source, Some(ModelCatalogSource::Official));
         let limits = model_limits_from_catalog(ProviderType::Google, &latest.id)
-            .expect("Gemini 3.7 Flash limits should project from the shared catalog");
+            .expect("Gemini 3.8 Flash limits should project from the shared catalog");
         assert_eq!(limits.context_tokens, Some(1_048_576));
         assert_eq!(limits.max_output_tokens, Some(65_536));
         let reasoning = latest
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
-            .expect("Gemini 3.7 Flash should expose reasoning controls");
+            .expect("Gemini 3.8 Flash should expose reasoning controls");
+        assert_eq!(reasoning.mode.as_deref(), Some("always"));
         assert_eq!(
             reasoning.effort_levels,
             vec!["low".to_string(), "medium".to_string(), "high".to_string(),]
@@ -1352,6 +1354,8 @@ mod tests {
         assert!(ids.contains(&"z-ai/glm-5.3-flash"));
         assert!(ids.contains(&"z-ai/glm-5.2"));
         assert!(ids.contains(&"moonshotai/kimi-k2.7-code"));
+        assert!(ids.contains(&"google/gemini-3.8-flash"));
+        assert!(ids.contains(&"meta/muse-spark-1.3"));
         assert!(ids.contains(&"qwen/qwen3.7-plus"));
         assert!(ids.contains(&"x-ai/grok-build-0.1"));
         assert!(ids.contains(&"anthropic/claude-sonnet-4.6"));
@@ -1433,6 +1437,24 @@ mod tests {
         assert_eq!(
             minimax.models.first().map(|model| model.id.as_str()),
             Some("MiniMax-M3")
+        );
+
+        let meta = find_provider_preset("open_ai", Some("https://api.meta.ai/v1/"))
+            .expect("Meta Model API preset should match its exact base URL");
+        let muse = meta.models.first().expect("Muse Spark 1.3 preset");
+        assert_eq!(meta.id, "meta-model-api");
+        assert_eq!(muse.id, "muse-spark-1.3");
+        assert_eq!(muse.context_tokens, Some(1_048_576));
+        assert_eq!(muse.max_output_tokens, None);
+        let muse_reasoning = muse
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.reasoning.as_ref())
+            .expect("Muse Spark should expose its reasoning controls");
+        assert_eq!(muse_reasoning.mode.as_deref(), Some("always"));
+        assert_eq!(
+            muse_reasoning.effort_levels,
+            ["minimal", "low", "medium", "high"]
         );
 
         let zhipu = find_provider_preset("zhipu", Some("https://open.bigmodel.cn/api/paas/v4"))
@@ -1697,7 +1719,11 @@ mod tests {
         assert_eq!(openrouter_open.context_tokens, Some(1_048_576));
         assert_eq!(openrouter_open.max_output_tokens, Some(131_072));
 
-        for model in ["google/gemini-3.7-flash", "google/gemini-3.6-flash"] {
+        for model in [
+            "google/gemini-3.8-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.6-flash",
+        ] {
             let limits = model_limits_from_catalog(ProviderType::OpenRouter, model)
                 .expect("OpenRouter Gemini route should expose verified limits");
             assert_eq!(limits.context_tokens, Some(1_048_576));
@@ -1707,6 +1733,16 @@ mod tests {
                 Some(true)
             );
         }
+
+        let routed_muse =
+            model_limits_from_catalog(ProviderType::OpenRouter, "meta/muse-spark-1.3")
+                .expect("OpenRouter Muse Spark 1.3 should expose routed limits");
+        assert_eq!(routed_muse.context_tokens, Some(1_048_576));
+        assert_eq!(routed_muse.max_output_tokens, Some(943_718));
+        assert_eq!(
+            model_supports_vision_from_catalog(ProviderType::OpenRouter, "meta/muse-spark-1.3"),
+            Some(true)
+        );
 
         let openrouter_kimi =
             model_limits_from_catalog(ProviderType::OpenRouter, "moonshotai/kimi-k3")
@@ -1724,7 +1760,7 @@ mod tests {
         for (provider, model) in [
             (ProviderType::OpenAi, "gpt-5.6"),
             (ProviderType::Anthropic, "claude-fable-5"),
-            (ProviderType::Google, "gemini-3.7-flash"),
+            (ProviderType::Google, "gemini-3.8-flash"),
             (ProviderType::DeepSeek, "deepseek-v4-pro"),
             (ProviderType::Moonshot, "kimi-k3"),
             (ProviderType::Qwen, "qwen3.8-max"),

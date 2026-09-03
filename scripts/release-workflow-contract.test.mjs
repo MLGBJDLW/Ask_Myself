@@ -13,6 +13,10 @@ const ciWorkflow = fs.readFileSync(
   path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
   'utf8',
 );
+const desktopPackage = JSON.parse(fs.readFileSync(
+  path.join(repositoryRoot, 'apps', 'desktop', 'package.json'),
+  'utf8',
+));
 const nativeAcceptanceWorkflowPath = path.join(
   repositoryRoot,
   '.github',
@@ -81,6 +85,16 @@ test('full CI is front-loaded onto pull requests instead of repeated after merge
   assert.match(ciWorkflow, /^  pull_request:\s*$/mu);
   assert.match(ciWorkflow, /^  workflow_dispatch:\s*$/mu);
   assert.doesNotMatch(ciWorkflow, /^  push:\s*$/mu);
+});
+
+test('CI and release builds fail closed unless native TypeScript 7 owns tsc', () => {
+  assert.match(desktopPackage.devDependencies['@typescript/native'], /^npm:typescript@\^7\./);
+  assert.match(desktopPackage.devDependencies.typescript, /^npm:@typescript\/typescript6@\^6\./);
+  assert.match(desktopPackage.scripts.typecheck, /npm run typescript:check && tsc --noEmit/);
+  assert.match(desktopPackage.scripts.build, /npm run typescript:check && tsc -b/);
+  assert.match(ciWorkflow, /name: TypeScript check\s+working-directory: apps\/desktop\s+run: npm run typecheck/);
+  assert.doesNotMatch(ciWorkflow, /run: npx tsc(?:\s|$)/);
+  assert.match(releaseWorkflow, /name: Verify native TypeScript 7 runtime[\s\S]*?run: npm run typescript:check/);
 });
 
 test('only the trusted release metadata classifier can select lightweight CI', () => {

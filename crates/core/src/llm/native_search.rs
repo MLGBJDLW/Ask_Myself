@@ -543,7 +543,7 @@ mod tests {
             SearchExecutionMode::Auto,
             ProviderType::Google,
             Some("https://generativelanguage.googleapis.com/v1beta/"),
-            "gemini-3.6-flash",
+            "gemini-3.8-flash",
         );
         assert_eq!(
             trusted.dialect,
@@ -555,7 +555,7 @@ mod tests {
             SearchExecutionMode::Auto,
             ProviderType::Google,
             Some("https://proxy.example.test/v1beta"),
-            "gemini-3.6-flash",
+            "gemini-3.8-flash",
         );
         assert_eq!(custom.dialect, None);
         assert!(!custom.uses_provider_native());

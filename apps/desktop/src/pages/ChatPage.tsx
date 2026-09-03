@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { Archive, ArchiveRestore, Check, ChevronDown, Globe2, Loader2, Network, Settings, PanelLeftClose, PanelLeftOpen, TerminalSquare, UserRound, Volume2, VolumeX, X } from 'lucide-react';
@@ -613,6 +613,11 @@ export function ChatPage() {
   const [autoSpeechSaving, setAutoSpeechSaving] = useState(false);
   const { speakMessage, stop: stopSpeech } = useSpeechPlayback();
   const finalSpeechCandidateRef = useRef<{ conversationId: string; text: string } | null>(null);
+  const autoSpeechRunRef = useRef<{
+    conversationId: string;
+    phase: 'streaming' | 'settled';
+    existingAssistantIds: Set<string>;
+  } | null>(null);
   const autoSpeechEnabled = appConfig?.textToSpeech?.autoSpeakFinalAnswers === true;
 
   useEffect(() => {
@@ -628,22 +633,68 @@ export function ChatPage() {
     };
   }, [stopSpeech]);
 
-  useEffect(() => {
-    if (!autoSpeechEnabled || !chat.activeId || !chat.isStreaming || !chat.streamText.trim()) return;
-    finalSpeechCandidateRef.current = {
-      conversationId: chat.activeId,
-      text: chat.streamText,
-    };
-  }, [autoSpeechEnabled, chat.activeId, chat.isStreaming, chat.streamText]);
+  // Track the exact run boundary as well as the latest rendered answer. Some
+  // providers deliver the final delta and terminal event in the same browser
+  // frame, so the durable assistant message is the fallback authority when an
+  // intermediate text render never commits.
+  useLayoutEffect(() => {
+    if (!chat.activeId) return;
+    const tracked = autoSpeechRunRef.current;
+    if (chat.isStreaming) {
+      if (
+        !tracked
+        || tracked.conversationId !== chat.activeId
+        || tracked.phase === 'settled'
+      ) {
+        autoSpeechRunRef.current = {
+          conversationId: chat.activeId,
+          phase: 'streaming',
+          existingAssistantIds: new Set(
+            chat.messages
+              .filter((message) => message.role === 'assistant')
+              .map((message) => message.id),
+          ),
+        };
+        finalSpeechCandidateRef.current = null;
+      }
+      if (autoSpeechEnabled && chat.streamText.trim()) {
+        finalSpeechCandidateRef.current = {
+          conversationId: chat.activeId,
+          text: chat.streamText,
+        };
+      }
+      return;
+    }
+    if (tracked?.conversationId === chat.activeId) tracked.phase = 'settled';
+  }, [autoSpeechEnabled, chat.activeId, chat.isStreaming, chat.messages, chat.streamText]);
 
   useEffect(() => {
     if (chat.isStreaming) return;
-    const candidate = finalSpeechCandidateRef.current;
-    if (!candidate || candidate.conversationId !== chat.activeId) return;
+    const tracked = autoSpeechRunRef.current;
+    if (!tracked || tracked.conversationId !== chat.activeId) {
+      if (tracked && tracked.conversationId !== chat.activeId) {
+        autoSpeechRunRef.current = null;
+        finalSpeechCandidateRef.current = null;
+      }
+      return;
+    }
+    const streamedCandidate = finalSpeechCandidateRef.current;
+    const durableCandidate = [...chat.messages].reverse().find((message) => (
+      message.role === 'assistant'
+      && !tracked.existingAssistantIds.has(message.id)
+      && message.content.trim().length > 0
+    ));
+    const candidate = streamedCandidate?.conversationId === chat.activeId
+      ? streamedCandidate
+      : durableCandidate
+        ? { conversationId: chat.activeId, text: durableCandidate.content }
+        : null;
+    if (!candidate) return;
+    autoSpeechRunRef.current = null;
     finalSpeechCandidateRef.current = null;
     if (!autoSpeechEnabled || chat.activeConversation?.archivedAt) return;
     void speakMessage(`auto:${candidate.conversationId}`, candidate.text);
-  }, [autoSpeechEnabled, chat.activeConversation, chat.activeId, chat.isStreaming, speakMessage]);
+  }, [autoSpeechEnabled, chat.activeConversation, chat.activeId, chat.isStreaming, chat.messages, speakMessage]);
 
   const toggleAutoSpeech = useCallback(async () => {
     if (!appConfig?.textToSpeech || autoSpeechSaving) return;

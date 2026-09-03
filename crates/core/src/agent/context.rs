@@ -742,6 +742,7 @@ mod tests {
     fn skill(id: &str, name: &str, description: &str) -> Skill {
         Skill {
             id: id.into(),
+            canonical_name: crate::skills::derive_canonical_skill_name(name).unwrap(),
             name: name.into(),
             description: description.into(),
             content: format!("Follow the {name} workflow."),
@@ -1016,6 +1017,7 @@ mod tests {
     fn test_prepare_messages_with_loaded_skills() {
         let loaded_skills = vec![Skill {
             id: "skill-loaded".into(),
+            canonical_name: "fiction-writing".into(),
             name: "Fiction Writing".into(),
             description: "Use when writing fiction".into(),
             content: "Draft scenes with concrete stakes and natural prose.".into(),
@@ -1068,6 +1070,7 @@ mod tests {
         let sentinel = "END_OF_SELECTED_SKILL";
         let loaded_skills = vec![Skill {
             id: "skill-large-loaded".into(),
+            canonical_name: "large-loaded-skill".into(),
             name: "Large Loaded Skill".into(),
             description: "Use when a complete long workflow is required".into(),
             content: format!("{}\n{sentinel}", "x".repeat(24_000)),
@@ -1285,6 +1288,7 @@ mod tests {
     fn test_prepare_messages_preserves_skills_with_long_system_prompt() {
         let skills = vec![Skill {
             id: "skill-reserve".into(),
+            canonical_name: "reserved-skill".into(),
             name: "Reserved Skill".into(),
             description: "Use when the base prompt is long".into(),
             content: "Always load this skill before using its workflow.".into(),
@@ -1334,6 +1338,7 @@ mod tests {
     fn test_prepare_messages_preserves_skills_with_default_system_prompt() {
         let skills = vec![Skill {
             id: "skill-default-reserve".into(),
+            canonical_name: "default-prompt-skill".into(),
             name: "Default Prompt Skill".into(),
             description: "Use with the default prompt".into(),
             content: "Load this skill from the compact index.".into(),

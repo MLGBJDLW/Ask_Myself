@@ -994,6 +994,69 @@ test('durable replay restores direct canonical run events through live projectio
   streamStore.clearStream(conversationId);
 });
 
+test('tool boundaries keep working narration in thinking and reserve reply for the terminal answer', () => {
+  const projected = projectRunEventsToStreamState(taskRun('completed'), [
+    runEvent({
+      eventSeq: 1,
+      kind: 'outputDelta',
+      payload: {
+        blockId: 'working-thinking',
+        channel: 'thinking',
+        offset: 0,
+        delta: 'I need to inspect the implementation first.',
+      },
+    }),
+    runEvent({
+      eventSeq: 2,
+      kind: 'toolStarted',
+      phase: 'tooling',
+      label: 'read_file',
+      status: 'running',
+      payload: {
+        type: 'toolRunStarted',
+        run: toolRun({ callId: 'call-working-1', toolName: 'read_file', status: 'running' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 3,
+      kind: 'toolCompleted',
+      phase: 'tooling',
+      label: 'read_file',
+      status: 'completed',
+      payload: {
+        type: 'toolRunCompleted',
+        run: toolRun({ callId: 'call-working-1', toolName: 'read_file', status: 'completed' }),
+      },
+    }),
+    runEvent({
+      eventSeq: 4,
+      kind: 'done',
+      phase: 'done',
+      label: 'Final answer produced',
+      status: 'completed',
+      payload: {
+        message: {
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'The implementation is fixed.' }],
+        },
+      },
+    }),
+  ]);
+
+  assertEqual(projected.streamRounds.length, 2, 'working trace and terminal reply stay separate');
+  assertEqual(projected.streamRounds[0].reply, '', 'tool-round prose is not a reply');
+  assert(
+    projected.streamRounds[0].thinking?.includes('I need to inspect') === true,
+    'tool-round prose remains inspectable inside thinking',
+  );
+  assertEqual(projected.streamRounds[1].reply, 'The implementation is fixed.', 'terminal reply');
+  assert(
+    !projected.traceEvents.some(event =>
+      event.kind === 'reply' && event.text.includes('I need to inspect')),
+    'working narration must not survive as a reply trace',
+  );
+});
+
 test('durable legacy tool payloads are normalized into the canonical tool-card lifecycle', () => {
   const projected = projectRunEventsToStreamState(taskRun('completed'), [
     runEvent({

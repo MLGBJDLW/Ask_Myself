@@ -259,12 +259,25 @@ pub async fn get_conversation_cmd(
     id: String,
 ) -> Result<(Conversation, Vec<ConversationMessage>), String> {
     let conv = state.db.get_conversation(&id).map_err(|e| e.to_string())?;
+    let traced_assistant_ids = state
+        .db
+        .get_conversation_turns(&id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|turn| turn.assistant_message_id)
+        .collect::<std::collections::HashSet<_>>();
     let msgs = state
         .db
         .get_messages(&id)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .map(nexa_core::conversation::conversation_message_for_display)
+        .map(|message| {
+            let has_canonical_turn_trace = traced_assistant_ids.contains(&message.id);
+            nexa_core::conversation::conversation_message_for_display_with_turn_trace(
+                message,
+                has_canonical_turn_trace,
+            )
+        })
         .collect();
     Ok((conv, msgs))
 }
@@ -277,6 +290,12 @@ pub async fn get_conversation_turns_cmd(
     state
         .db
         .get_conversation_turns(&conversation_id)
+        .map(|turns| {
+            turns
+                .into_iter()
+                .map(nexa_core::conversation::conversation_turn_for_display)
+                .collect()
+        })
         .map_err(|e| e.to_string())
 }
 

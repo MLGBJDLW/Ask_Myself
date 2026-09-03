@@ -538,6 +538,137 @@ const MERMAID_TEXT_PRESENTATION_PROPERTIES = [
   'word-spacing',
 ] as const;
 
+const MERMAID_EDGE_STROKE = '#64748b';
+const MERMAID_EDGE_STROKE_WIDTH = '1.25';
+const MERMAID_EDGE_STROKE_OPACITY = '0.72';
+
+function mermaidStyleDeclares(element: Element, property: string): boolean {
+  const style = element.getAttribute('style') ?? '';
+  return style
+    .split(';')
+    .some((declaration) => declaration.split(':', 1)[0]?.trim().toLowerCase() === property);
+}
+
+function mermaidStylesheetDeclares(root: Element, element: Element, property: string): boolean {
+  const rulesDeclareProperty = (rules: CSSRuleList): boolean => Array.from(rules).some((rule) => {
+    if (rule instanceof CSSStyleRule && rule.style.getPropertyValue(property)) {
+      const matches = rule.selectorText.split(',').some((selector) => {
+        try {
+          return element.matches(selector.trim());
+        } catch {
+          return false;
+        }
+      });
+      if (matches) return true;
+    }
+    if ('cssRules' in rule) {
+      return rulesDeclareProperty((rule as CSSGroupingRule).cssRules);
+    }
+    return false;
+  });
+
+  return Array.from(root.querySelectorAll<SVGStyleElement>('style')).some((style) => {
+    try {
+      return style.sheet ? rulesDeclareProperty(style.sheet.cssRules) : false;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function isBrowserBlack(value: string | null): boolean {
+  const normalized = (value ?? '').trim().toLowerCase().replace(/\s+/g, '');
+  return normalized === 'black'
+    || normalized === '#000'
+    || normalized === '#000000'
+    || normalized === 'rgb(0,0,0)'
+    || normalized === 'rgba(0,0,0,1)';
+}
+
+function hasMeaningfulMaterializedConnectorWidth(edge: Element): boolean {
+  const width = edge.getAttribute('stroke-width')?.trim().toLowerCase();
+  if (!width) return false;
+  return !['1', '1px', '2', '2px'].includes(width);
+}
+
+function hasMeaningfulMaterializedConnectorOpacity(edge: Element): boolean {
+  const opacity = Number.parseFloat(edge.getAttribute('stroke-opacity') ?? '');
+  return Number.isFinite(opacity) && opacity >= 0 && opacity < 1;
+}
+
+function hasMeaningfulMaterializedConnectorKeyword(
+  edge: Element,
+  property: 'stroke-linecap' | 'stroke-linejoin',
+  browserDefault: string,
+): boolean {
+  const value = edge.getAttribute(property)?.trim().toLowerCase();
+  return Boolean(value && value !== browserDefault);
+}
+
+/**
+ * Mermaid's layout engine assumes semantic SVG defaults that normally arrive
+ * through its generated stylesheet. Strict production CSP can reject that
+ * stylesheet after serialization, so computed-style materialization must not
+ * preserve the browser fallbacks (`path { fill: black }` and
+ * `text-anchor: start`) for edges and node labels.
+ */
+function normalizeMermaidSemanticPresentation(root: Element): void {
+  root.querySelectorAll<SVGPathElement>('.edgePaths path, path.flowchart-link').forEach((edge) => {
+    if (edge.closest('marker')) return;
+    const brokenStroke = !edge.getAttribute('stroke')
+      || edge.getAttribute('stroke') === 'none'
+      || isBrowserBlack(edge.getAttribute('stroke'));
+    if (!mermaidStyleDeclares(edge, 'fill') && isBrowserBlack(edge.getAttribute('fill'))) {
+      edge.setAttribute('fill', 'none');
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke') && brokenStroke) {
+      edge.setAttribute('stroke', MERMAID_EDGE_STROKE);
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-width')
+      && !hasMeaningfulMaterializedConnectorWidth(edge)) {
+      edge.setAttribute('stroke-width', MERMAID_EDGE_STROKE_WIDTH);
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-opacity')
+      && !mermaidStylesheetDeclares(root, edge, 'stroke-opacity')
+      && !hasMeaningfulMaterializedConnectorOpacity(edge)) {
+      edge.setAttribute('stroke-opacity', MERMAID_EDGE_STROKE_OPACITY);
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-linecap')
+      && !hasMeaningfulMaterializedConnectorKeyword(edge, 'stroke-linecap', 'butt')) {
+      edge.setAttribute('stroke-linecap', 'round');
+    }
+    if (!mermaidStyleDeclares(edge, 'stroke-linejoin')
+      && !hasMeaningfulMaterializedConnectorKeyword(edge, 'stroke-linejoin', 'miter')) {
+      edge.setAttribute('stroke-linejoin', 'round');
+    }
+  });
+
+  root.querySelectorAll<SVGElement>('marker path, marker polygon').forEach((arrowhead) => {
+    const brokenMarker = isBrowserBlack(arrowhead.getAttribute('fill'))
+      || isBrowserBlack(arrowhead.getAttribute('stroke'));
+    if (!brokenMarker) return;
+    if (!mermaidStyleDeclares(arrowhead, 'fill')) {
+      arrowhead.setAttribute('fill', MERMAID_EDGE_STROKE);
+    }
+    if (!mermaidStyleDeclares(arrowhead, 'stroke')) {
+      arrowhead.setAttribute('stroke', MERMAID_EDGE_STROKE);
+    }
+    if (!mermaidStyleDeclares(arrowhead, 'fill-opacity')) {
+      arrowhead.setAttribute('fill-opacity', '0.82');
+    }
+    if (!mermaidStyleDeclares(arrowhead, 'stroke-opacity')) {
+      arrowhead.setAttribute('stroke-opacity', '0.82');
+    }
+  });
+
+  root.querySelectorAll<SVGTextElement>('g.node text, g.node tspan, g.node textPath').forEach((label) => {
+    const anchor = label.getAttribute('text-anchor')?.trim().toLowerCase();
+    if (!mermaidStyleDeclares(label, 'text-anchor') && (!anchor || anchor === 'start')) {
+      label.setAttribute('text-anchor', 'middle');
+    }
+  });
+}
+
 /**
  * Tauri production builds hash static inline styles for CSP. Mermaid SVGs are
  * rendered at runtime and then inserted through innerHTML, so their generated
@@ -577,6 +708,8 @@ function materializeMermaidPresentationAttributes(root: Element): void {
       }
     }
   });
+
+  normalizeMermaidSemanticPresentation(root);
 }
 
 export function sanitizeMermaidSvg(svg: string): string {

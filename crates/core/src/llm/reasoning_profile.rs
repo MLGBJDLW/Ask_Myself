@@ -11,9 +11,10 @@ use crate::provider_catalog::{find_provider_preset, model_capabilities_from_cata
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
     is_deepseek_anthropic_endpoint, is_deepseek_public_endpoint, is_google_public_endpoint,
-    is_minimax_public_endpoint, is_mistral_public_endpoint, is_moonshot_public_endpoint,
-    is_openai_public_endpoint, is_openrouter_public_endpoint, is_siliconflow_public_endpoint,
-    is_xai_public_endpoint, is_zhipu_model_api_endpoint, provider_id,
+    is_meta_model_api_endpoint, is_minimax_public_endpoint, is_mistral_public_endpoint,
+    is_moonshot_public_endpoint, is_openai_public_endpoint, is_openrouter_public_endpoint,
+    is_siliconflow_public_endpoint, is_xai_public_endpoint, is_zhipu_model_api_endpoint,
+    provider_id,
 };
 use super::{ProviderType, ReasoningEffort};
 
@@ -536,6 +537,32 @@ pub fn resolve_reasoning_profile(
         };
         value.preserve_reasoning_history = true;
         value.reasoning_history_encoding = ReasoningHistoryEncoding::MistralContentChunks;
+        return value;
+    }
+
+    if is_meta_model_api_endpoint(provider, base_url) && model == "muse-spark-1.3" {
+        let Some((accepted_efforts, default_effort, mandatory)) =
+            catalog_reasoning_effort_policy(provider, &model)
+        else {
+            return ReasoningProfile::unsupported(key);
+        };
+        let mut value = profile(
+            key,
+            "meta-muse-spark-1.3-v1",
+            if mandatory {
+                ThinkingModeControl::AlwaysOn
+            } else {
+                ThinkingModeControl::ProviderDefault
+            },
+            ReasoningEffortField::TopLevel,
+            ReasoningEffortMapping::Exact,
+            (&accepted_efforts, default_effort),
+            ReasoningBudgetField::None,
+        );
+        // Meta documents `stop` as unsupported while Muse Spark reasons. The
+        // current public endpoint accepts minimal through high; max remains a
+        // separately announced future mode and must not be synthesized here.
+        value.omit_stop_when_reasoning = true;
         return value;
     }
 
@@ -1080,10 +1107,26 @@ mod tests {
             Some("high")
         );
 
+        let meta = resolve_reasoning_profile(
+            ProviderType::OpenAi,
+            Some("https://api.meta.ai/v1"),
+            ReasoningApiStyle::OpenAiChatCompletions,
+            "muse-spark-1.3",
+        );
+        assert_eq!(meta.key.endpoint_id, "meta-model-api-public");
+        assert_eq!(meta.mode_control, ThinkingModeControl::AlwaysOn);
+        assert_eq!(
+            meta.wire_effort(Some(&ReasoningEffort::High)).as_deref(),
+            Some("high")
+        );
+        assert_eq!(meta.wire_effort(Some(&ReasoningEffort::XHigh)), None);
+        assert!(meta.omit_stop_when_reasoning);
+
         for endpoint in [
             "https://api.x.ai/v2",
             "http://api.minimax.io/v1",
             "https://api.mistral.ai:8443/v1",
+            "https://api.meta.ai/v2",
         ] {
             let value = resolve_reasoning_profile(
                 ProviderType::OpenAi,

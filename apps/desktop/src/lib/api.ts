@@ -876,6 +876,105 @@ export const togglePersona = (id: string, enabled: boolean) =>
 
 // ── Agent Config ────────────────────────────────────────────────────────
 
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface CodexRateLimitBucket {
+  id: string;
+  name: string | null;
+  planType: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+}
+
+export interface CodexAccountIdentity {
+  accountType: string;
+  email: string | null;
+  planType: string | null;
+}
+
+export interface CodexAccountUsage {
+  lifetimeTokens: number | null;
+  currentStreakDays: number | null;
+}
+
+export interface CodexLoginDescriptor {
+  loginId: string;
+  kind: 'browser' | 'deviceCode';
+  authUrl: string | null;
+  verificationUrl: string | null;
+  userCode: string | null;
+}
+
+export interface CodexLoginCompletion {
+  success: boolean;
+  error: string | null;
+}
+
+export interface CodexAccountSnapshot {
+  available: boolean;
+  runtimeVersion: string | null;
+  errorCode: string | null;
+  requiresOpenaiAuth: boolean | null;
+  account: CodexAccountIdentity | null;
+  rateLimits: CodexRateLimitBucket[];
+  usage: CodexAccountUsage | null;
+  pendingLogin: CodexLoginDescriptor | null;
+  lastLogin: CodexLoginCompletion | null;
+}
+
+export const getCodexAccountSnapshot = () =>
+  invoke<CodexAccountSnapshot>('get_codex_account_snapshot_cmd');
+
+export const startCodexAccountLogin = (kind: 'browser' | 'deviceCode') =>
+  invoke<CodexLoginDescriptor>('start_codex_account_login_cmd', { kind });
+
+export const cancelCodexAccountLogin = (loginId: string) =>
+  invoke<void>('cancel_codex_account_login_cmd', { loginId });
+
+export const logoutCodexAccount = () =>
+  invoke<CodexAccountSnapshot>('logout_codex_account_cmd');
+
+export interface CopilotModelSummary {
+  id: string;
+  name: string;
+  reasoningEfforts: string[];
+}
+
+export interface CopilotQuotaSnapshot {
+  id: string;
+  remainingPercent: number;
+  resetDate: string | null;
+  unlimited: boolean;
+}
+
+export interface CopilotAccountSnapshot {
+  available: boolean;
+  runtimeVersion: string | null;
+  errorCode: string | null;
+  authenticated: boolean;
+  entitlementVerified: boolean;
+  authType: string | null;
+  login: string | null;
+  host: string | null;
+  models: CopilotModelSummary[];
+  quotas: CopilotQuotaSnapshot[];
+  loginPending: boolean;
+  loginError: string | null;
+}
+
+export const getCopilotAccountSnapshot = () =>
+  invoke<CopilotAccountSnapshot>('get_copilot_account_snapshot_cmd');
+
+export const startCopilotAccountLogin = () =>
+  invoke<void>('start_copilot_account_login_cmd');
+
+export const cancelCopilotAccountLogin = () =>
+  invoke<void>('cancel_copilot_account_login_cmd');
+
 export const listAgentConfigs = () => invoke<AgentConfig[]>('list_agent_configs_cmd');
 
 export const saveAgentConfig = (config: SaveAgentConfigInput) =>

@@ -506,21 +506,27 @@ fn main() {
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
             let mcp_config_path = user_extensions.mcp_config_path();
-            match nexa_core::mcp::config_file::reload_user_mcp_config(
+            let canonical_mcp_ready = match nexa_core::mcp::config_file::reload_user_mcp_config(
                 &db,
                 &mcp_config_path,
             ) {
-                Ok(report) => log::info!(
-                    "Loaded {} MCP connector(s) from {}",
-                    report.imported,
-                    mcp_config_path.display()
-                ),
-                Err(error) => log::warn!(
-                    "Failed to reload MCP connector config at {}; retaining the last valid projection: {error}",
-                    mcp_config_path.display()
-                ),
-            }
-            match nexa_core::skills::sync_registered_user_skills_from_directory(
+                Ok(report) => {
+                    log::info!(
+                        "Loaded {} MCP connector(s) from {}",
+                        report.imported,
+                        mcp_config_path.display()
+                    );
+                    true
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Failed to reload MCP connector config at {}; retaining the last valid projection: {error}",
+                        mcp_config_path.display()
+                    );
+                    false
+                }
+            };
+            let canonical_skills = match nexa_core::skills::sync_registered_user_skills_from_directory(
                 &db,
                 &user_extensions.skills_dir(),
             ) {
@@ -542,16 +548,53 @@ fn main() {
                             &user_extensions.skills_dir(),
                             &skills,
                             &report.preserved_skill_ids,
-                        )
+                        )?;
+                        Ok(skills)
                     }) {
-                        Ok(()) => log::info!(
-                            "Materialized user skills to {}",
-                            user_extensions.skills_dir().display()
-                        ),
-                        Err(e) => log::warn!("Failed to materialize user skills: {e}"),
+                        Ok(skills) => {
+                            log::info!(
+                                "Materialized user skills to {}",
+                                user_extensions.skills_dir().display()
+                            );
+                            Some(skills)
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to materialize user skills: {e}");
+                            None
+                        }
                     }
                 }
-                Err(error) => log::warn!("Failed to synchronize ~/.nexa skills: {error}"),
+                Err(error) => {
+                    log::warn!("Failed to synchronize ~/.nexa skills: {error}");
+                    None
+                }
+            };
+            if canonical_mcp_ready {
+                if let Some(skills) = canonical_skills.as_deref() {
+                    match user_extensions.finalize_legacy_projection_cleanup(skills) {
+                        Ok(report) => {
+                            if report.armed_for_next_start {
+                                log::info!(
+                                    "Verified canonical ~/.nexa reads; legacy projection cleanup is armed for the next start"
+                                );
+                            } else {
+                                log::info!(
+                                    "Retired verified legacy extension projections (files={}, directories={}, preserved_modified={}, skipped_links={})",
+                                    report.deleted_files,
+                                    report.deleted_directories,
+                                    report.preserved_modified,
+                                    report.skipped_links,
+                                );
+                            }
+                            for warning in report.warnings {
+                                log::warn!("Legacy extension projection preserved: {warning}");
+                            }
+                        }
+                        Err(error) => log::warn!(
+                            "Could not finalize legacy extension projection cleanup: {error}"
+                        ),
+                    }
+                }
             }
             let db = Arc::new(db);
             let db_executor = nexa_core::db_executor::DatabaseExecutor::new((*db).clone(), 64)
@@ -632,6 +675,8 @@ fn main() {
             let (background_work, background_work_receiver) = BackgroundWorkGovernor::new();
             app.manage(AppState {
                 db: db.clone(),
+                codex_account_runtime: commands::CodexAccountRuntime::default(),
+                copilot_account_runtime: commands::CopilotAccountRuntime::default(),
                 user_extensions: user_extensions.clone(),
                 db_executor,
                 run_event_outboxes,
@@ -892,6 +937,13 @@ fn main() {
             commands::test_agent_connection_cmd,
             commands::refresh_provider_model_catalog_cmd,
             commands::list_provider_presets_cmd,
+            commands::get_codex_account_snapshot_cmd,
+            commands::start_codex_account_login_cmd,
+            commands::cancel_codex_account_login_cmd,
+            commands::logout_codex_account_cmd,
+            commands::get_copilot_account_snapshot_cmd,
+            commands::start_copilot_account_login_cmd,
+            commands::cancel_copilot_account_login_cmd,
             commands::list_workflow_templates_cmd,
             commands::save_workflow_automation_cmd,
             commands::list_workflow_automations_cmd,

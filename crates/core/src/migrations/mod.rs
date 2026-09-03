@@ -2803,7 +2803,14 @@ Every answer that uses knowledge base search results.
            AND run_id IN (
                SELECT id FROM agent_task_runs
                WHERE status IN ('completed', 'cancelled', 'failed', 'timed_out')
-           );",
+         );",
+    ),
+    (
+        "v126_skill_canonical_names",
+        "ALTER TABLE skills ADD COLUMN canonical_name TEXT;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_canonical_name
+             ON skills(canonical_name COLLATE NOCASE)
+             WHERE canonical_name IS NOT NULL AND canonical_name != '';",
     ),
 ];
 
@@ -4186,6 +4193,18 @@ mod tests {
         assert!(
             has_resource_bundle,
             "skills.resource_bundle_json column should exist"
+        );
+
+        let has_canonical_name: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'canonical_name'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(
+            has_canonical_name,
+            "skills.canonical_name column should exist"
         );
     }
 

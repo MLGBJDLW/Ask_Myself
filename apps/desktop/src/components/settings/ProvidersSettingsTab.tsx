@@ -29,6 +29,7 @@ import { AgentConfigForm } from './AgentConfigForm';
 import { ImageGenerationSettingsPanel } from './ImageGenerationSettingsPanel';
 import { TextToSpeechSettingsPanel } from './TextToSpeechSettingsPanel';
 import { SpeechToTextSettingsPanel } from './SpeechToTextSettingsPanel';
+import { SubscriptionAccountsPanel } from './SubscriptionAccountsPanel';
 import { CollapsiblePanel, Section } from './SettingsSection';
 import {
   CapabilityRegistryPanel,
@@ -297,6 +298,8 @@ export function ProvidersSettingsTab({
         </div>
       ) : (
         <div className="space-y-4">
+          <SubscriptionAccountsPanel />
+
           <div
             className="flex flex-col gap-3 rounded-lg border border-border bg-surface-2/60 p-4 sm:flex-row sm:items-center sm:justify-between"
             data-provider-category="chat-reasoning"

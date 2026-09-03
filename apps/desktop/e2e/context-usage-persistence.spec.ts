@@ -402,14 +402,17 @@ test.beforeEach(async ({ page }) => {
           const conversationId = String(args.conversationId ?? '');
           const userText = String(args.message ?? '');
           const lowerCacheSample = /lower cache/i.test(userText);
+          const fullCacheSample = /full cache/i.test(userText);
+          const changedPromptSample = /changed prompt/i.test(userText);
           const responseDelay = /keep streaming/i.test(userText) ? 1200 : 60;
+          const promptTokens = changedPromptSample ? 90000 : 74000;
           const streamUsage = {
-            promptTokens: 74000,
+            promptTokens,
             completionTokens: 1400,
-            totalTokens: 75400,
+            totalTokens: promptTokens + 1400,
             thinkingTokens: 0,
-            cacheReadTokens: lowerCacheSample ? 10000 : 30000,
-            cacheMissTokens: 30000,
+            cacheReadTokens: fullCacheSample ? promptTokens : lowerCacheSample ? 10000 : 30000,
+            cacheMissTokens: fullCacheSample ? 0 : 30000,
             cacheCreationTokens: lowerCacheSample ? 1000 : 2000,
             lastPromptTokens: 74000,
             contextBreakdown: {
@@ -568,7 +571,7 @@ test('usage cache is scoped to conversation id and does not leak to another conv
   await expect(contextTrigger).not.toHaveAttribute('aria-label', /\d+% context used/);
 });
 
-test('context HUD groups detailed segments and averages cache across completed turns', async ({ page }) => {
+test('context HUD keeps the conversation cache rate stable until the live turn is durable', async ({ page }) => {
   await page.goto('/chat/conv-e2e');
   const contextTrigger = page.getByTestId('chat-context-trigger');
   const contextDetails = page.getByTestId('chat-context-details');
@@ -577,6 +580,7 @@ test('context HUD groups detailed segments and averages cache across completed t
   await page.getByTestId('chat-send').click();
 
   await expect(page.getByTestId('chat-run-cache-hit-summary')).toBeVisible();
+  await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('Conversation cache hit');
   await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('50.0%');
   await contextTrigger.hover();
   await expect(contextDetails).toBeVisible();
@@ -588,12 +592,35 @@ test('context HUD groups detailed segments and averages cache across completed t
   await expect(contextDetails.getByText('Tools 400')).toBeVisible();
   await expect(contextDetails.getByText(/Other/)).toHaveCount(0);
 
-  await page.getByTestId('chat-input-textarea').fill('Generate a lower cache sample.');
+  await page.getByTestId('chat-input-textarea').fill('Generate a lower cache sample and keep streaming.');
   await page.getByTestId('chat-send').click();
 
+  await expect(page.getByTestId('chat-stop')).toBeVisible();
+  await page.waitForTimeout(150);
+  await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('50.0%');
+  await expect(page.getByTestId('chat-stop')).toBeHidden();
   await expect(page.getByTestId('chat-run-cache-hit-summary')).toContainText('40.0%');
   await contextTrigger.hover();
   await expect(page.getByTestId('chat-run-cache-hit')).toHaveText('40.0%');
+});
+
+test('conversation cache fallback keeps its own prompt denominator while a new prompt streams', async ({ page }) => {
+  await page.goto('/chat/conv-e2e');
+  const cacheSummary = page.getByTestId('chat-run-cache-hit-summary');
+
+  await page.getByTestId('chat-input-textarea').fill('Generate a full cache sample.');
+  await page.getByTestId('chat-send').click();
+  await expect(cacheSummary).toContainText('100.0%');
+
+  await page.getByTestId('chat-input-textarea').fill(
+    'Generate a lower cache sample with a changed prompt and keep streaming.',
+  );
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-stop')).toBeVisible();
+  await page.waitForTimeout(150);
+  await expect(cacheSummary).toContainText('100.0%');
+  await expect(page.getByTestId('chat-stop')).toBeHidden();
+  await expect(cacheSummary).toContainText('73.7%');
 });
 
 test('active goal owns the top-right task capsule and stays out of context details', async ({ page }) => {

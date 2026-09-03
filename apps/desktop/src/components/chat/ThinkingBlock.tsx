@@ -197,7 +197,7 @@ export function ThinkingBlock({
 
   return (
     <div
-      className="thinking-trace chat-thinking-text mb-2"
+      className="thinking-trace chat-thinking-text mb-2 w-full min-w-0 max-w-full"
       data-trace-active={traceActive ? 'true' : 'false'}
     >
       <span className="thinking-trace-node" aria-hidden="true" />
@@ -207,16 +207,16 @@ export function ThinkingBlock({
         data-trace-state={isStreaming ? "active" : "complete"}
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
-        className="thinking-trace-header flex items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"
+        className="thinking-trace-header flex max-w-full min-w-0 items-center gap-1.5 text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer group"
       >
         <ChevronRight
           size={12}
           className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
         />
-        <span className="flex items-center gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5">
           <Brain size={12} className={isStreaming ? 'text-accent/80' : ''} />
           <span
-            className={`thinking-status-text ${isStreaming && !shouldReduceMotion ? 'thinking-status-text-active' : ''}`}
+            className={`thinking-status-text min-w-0 truncate ${isStreaming && !shouldReduceMotion ? 'thinking-status-text-active' : ''}`}
           >
             {summaryText}
           </span>
@@ -235,9 +235,9 @@ export function ThinkingBlock({
         {expanded && (combinedContent || effectiveSections || children) && (
           <motion.div
             {...getSoftCollapseMotion(!!shouldReduceMotion || isStreaming)}
-            className="overflow-hidden"
+            className="max-w-full min-w-0 overflow-hidden"
           >
-            <div className="thinking-trace-body mt-1 pl-1">
+            <div className="thinking-trace-body mt-1 max-w-full min-w-0 pl-1">
               <div
                 ref={scrollContainerRef}
                 onScroll={(e) => {
@@ -246,15 +246,20 @@ export function ThinkingBlock({
                     el.scrollHeight - el.scrollTop - el.clientHeight;
                   userScrolledUpRef.current = distanceFromBottom > 40;
                 }}
-                className="relative max-h-[300px] overflow-y-auto py-1 pr-6 text-xs leading-relaxed text-text-secondary"
+                className="relative max-h-[300px] max-w-full min-w-0 overflow-x-hidden overflow-y-auto py-1 pr-6 text-xs leading-relaxed text-text-secondary"
               >
-                <div className="space-y-1">
+                <div className="min-w-0 max-w-full space-y-1">
                   {effectiveSections ? (
                     effectiveSections.map((sec, secIdx) => (
-                      <div className="thinking-trace-section" key={secIdx}>
+                      <div className="thinking-trace-section min-w-0 max-w-full" key={secIdx}>
                         {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
                         {sec.text && isStreaming ? (
-                          <div className="whitespace-pre-wrap break-words">{sec.text}</div>
+                          <div
+                            data-testid="thinking-stream-content"
+                            className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere]"
+                          >
+                            {sec.text}
+                          </div>
                         ) : sec.text ? (
                           <ReactMarkdown
                             remarkPlugins={markdownRemarkPlugins}
@@ -269,7 +274,12 @@ export function ThinkingBlock({
                       </div>
                     ))
                   ) : isStreaming ? (
-                    <div className="whitespace-pre-wrap break-words">{content}</div>
+                    <div
+                      data-testid="thinking-stream-content"
+                      className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere]"
+                    >
+                      {content}
+                    </div>
                   ) : (
                     <ReactMarkdown
                       remarkPlugins={markdownRemarkPlugins}
@@ -286,7 +296,7 @@ export function ThinkingBlock({
               </div>
             </div>
             {children && (
-              <div className="thinking-trace-children mt-1 space-y-0.5 pb-0.5 pl-1">
+              <div className="thinking-trace-children mt-1 min-w-0 max-w-full space-y-0.5 pb-0.5 pl-1">
                 {children}
               </div>
             )}

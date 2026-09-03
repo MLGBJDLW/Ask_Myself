@@ -94,7 +94,10 @@ use shell_adapter::{
     resolve_program, RunShellOutput,
 };
 #[cfg(test)]
-use tool_impl::{belongs_to_conversation, looks_like_persistent_service, managed_wait_budget_secs};
+use tool_impl::{
+    belongs_to_conversation, infer_ready_url_from_invocation, looks_like_persistent_service,
+    managed_wait_budget_secs,
+};
 
 #[cfg(test)]
 mod tests;

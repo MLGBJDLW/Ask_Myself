@@ -290,6 +290,51 @@ test('conversation actions offer archive and delete with reversible archive', as
   await expect(page.getByTestId('conversation-item-conv-active')).toBeVisible();
 });
 
+test('conversation quick actions remain individually clickable', async ({ page }) => {
+  await page.goto('/chat/conv-active');
+  const item = page.getByTestId('conversation-item-conv-active');
+
+  expect(await item.evaluate((element) => ({
+    rowIsSyntheticButton: element.getAttribute('role') === 'button',
+    containsNestedButton: element.querySelector('button') !== null,
+  }))).toEqual({
+    rowIsSyntheticButton: false,
+    containsNestedButton: true,
+  });
+  await expect(item.getByTestId('conversation-select-conv-active')).toHaveAttribute('type', 'button');
+
+  await item.hover();
+  const pin = item.getByRole('button', { name: 'Pinned' });
+  const edit = item.getByRole('button', { name: 'Edit' });
+  const move = item.getByRole('button', { name: 'Move to project' });
+  for (const button of [pin, edit, move]) {
+    await expect(button).toBeVisible();
+    await expect(button).toBeEnabled();
+    expect(await button.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit?.closest('button') === element;
+    })).toBe(true);
+  }
+
+  await pin.click();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem('chat-pinned-conversations') ?? '[]') as string[],
+  )).toContain('conv-active');
+
+  await item.hover();
+  await item.getByRole('button', { name: 'Edit' }).click();
+  await expect(item.getByRole('textbox')).toBeVisible();
+  await item.getByRole('button', { name: 'Cancel' }).click();
+
+  await item.hover();
+  await item.getByRole('button', { name: 'Move to project' }).click();
+  const moveMenu = page.getByTestId('conversation-move-menu');
+  await expect(moveMenu.getByText('Move to Project', { exact: true })).toBeVisible();
+  await expect(moveMenu.getByRole('menuitem', { name: 'Legacy project' })).toBeVisible();
+  expect(await moveMenu.evaluate((element) => element.parentElement === document.body)).toBe(true);
+});
+
 test('archive feedback remains an overlay and never participates in the app layout', async ({ page }) => {
   await page.goto('/chat/conv-active');
 

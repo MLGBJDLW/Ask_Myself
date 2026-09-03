@@ -12,8 +12,8 @@ use sha2::Sha256;
 
 use super::provider_boundary::{
     endpoint_id, is_alibaba_chat_endpoint, is_anthropic_public_endpoint, is_azure_openai_endpoint,
-    is_deepseek_public_endpoint, is_openai_public_endpoint, is_openrouter_public_endpoint,
-    provider_id,
+    is_deepseek_public_endpoint, is_google_public_endpoint, is_meta_model_api_endpoint,
+    is_openai_public_endpoint, is_openrouter_public_endpoint, provider_id,
 };
 use super::{Message, ProviderType, Role, ToolDefinition};
 
@@ -48,6 +48,7 @@ pub enum CacheUsageDecoderId {
     AlibabaOpenAiCompatible,
     OpenRouterNormalized,
     Anthropic,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,7 +115,10 @@ impl PromptCacheProfile {
     }
 
     pub(crate) fn sends_openai_prompt_cache_key(&self) -> bool {
-        self.id == "openai-automatic-v1"
+        matches!(
+            self.id.as_str(),
+            "openai-automatic-v1" | "meta-model-api-automatic-v1"
+        )
     }
 
     pub(crate) fn request_is_eligible(
@@ -136,6 +140,21 @@ fn is_explicit_qwen_model(model: &str) -> bool {
         .any(|prefix| normalized.starts_with(prefix))
 }
 
+fn gemini_implicit_cache_minimum(model: &str) -> Option<u32> {
+    let normalized = model
+        .trim()
+        .strip_prefix("models/")
+        .unwrap_or(model.trim())
+        .to_ascii_lowercase();
+    if normalized.starts_with("gemini-3.") {
+        Some(4_096)
+    } else if normalized.starts_with("gemini-2.5-") {
+        Some(2_048)
+    } else {
+        None
+    }
+}
+
 pub fn resolve_prompt_cache_profile(
     provider_type: ProviderType,
     base_url: Option<&str>,
@@ -148,6 +167,50 @@ pub fn resolve_prompt_cache_profile(
         api_style,
         model_id: model.to_string(),
     };
+
+    if api_style == PromptCacheApiStyle::Gemini
+        && is_google_public_endpoint(provider_type, base_url)
+        && gemini_implicit_cache_minimum(model).is_some()
+    {
+        return PromptCacheProfile {
+            id: "gemini-implicit-v1".to_string(),
+            version: 1,
+            key,
+            mode: PromptCacheMode::ImplicitExactPrefix,
+            min_cacheable_tokens: gemini_implicit_cache_minimum(model),
+            max_breakpoints: None,
+            ttl_seconds: None,
+            lookback_content_blocks: None,
+            message_content_markers: false,
+            tool_definition_markers: false,
+            tool_definitions_are_prefix: true,
+            requires_stable_tool_serialization: true,
+            usage_decoder: CacheUsageDecoderId::Gemini,
+            routing_session_affinity: false,
+        };
+    }
+
+    if api_style == PromptCacheApiStyle::OpenAiCompatible
+        && is_meta_model_api_endpoint(provider_type, base_url)
+        && model.trim().eq_ignore_ascii_case("muse-spark-1.3")
+    {
+        return PromptCacheProfile {
+            id: "meta-model-api-automatic-v1".to_string(),
+            version: 1,
+            key,
+            mode: PromptCacheMode::ImplicitExactPrefix,
+            min_cacheable_tokens: None,
+            max_breakpoints: None,
+            ttl_seconds: None,
+            lookback_content_blocks: None,
+            message_content_markers: false,
+            tool_definition_markers: false,
+            tool_definitions_are_prefix: true,
+            requires_stable_tool_serialization: true,
+            usage_decoder: CacheUsageDecoderId::OpenAiCompatible,
+            routing_session_affinity: false,
+        };
+    }
 
     if api_style == PromptCacheApiStyle::OpenAiCompatible
         && matches!(
@@ -389,6 +452,51 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.len() <= OPENAI_PROMPT_CACHE_KEY_MAX_CHARS);
+    }
+
+    #[test]
+    fn latest_gemini_and_meta_models_use_only_their_verified_cache_contracts() {
+        let gemini = resolve_prompt_cache_profile(
+            ProviderType::Google,
+            Some("https://generativelanguage.googleapis.com/v1beta"),
+            PromptCacheApiStyle::Gemini,
+            "gemini-3.8-flash",
+        );
+        assert_eq!(gemini.id, "gemini-implicit-v1");
+        assert_eq!(gemini.min_cacheable_tokens, Some(4_096));
+        assert_eq!(gemini.usage_decoder, CacheUsageDecoderId::Gemini);
+
+        let gemini_25 = resolve_prompt_cache_profile(
+            ProviderType::Google,
+            None,
+            PromptCacheApiStyle::Gemini,
+            "gemini-2.5-pro",
+        );
+        assert_eq!(gemini_25.min_cacheable_tokens, Some(2_048));
+
+        let meta = resolve_prompt_cache_profile(
+            ProviderType::OpenAi,
+            Some("https://api.meta.ai/v1"),
+            PromptCacheApiStyle::OpenAiCompatible,
+            "muse-spark-1.3",
+        );
+        assert_eq!(meta.id, "meta-model-api-automatic-v1");
+        assert_eq!(meta.mode, PromptCacheMode::ImplicitExactPrefix);
+        assert!(meta.sends_openai_prompt_cache_key());
+
+        for endpoint in [
+            "https://api.meta.ai/v2",
+            "https://api.meta.ai.evil.example/v1",
+        ] {
+            let lookalike = resolve_prompt_cache_profile(
+                ProviderType::OpenAi,
+                Some(endpoint),
+                PromptCacheApiStyle::OpenAiCompatible,
+                "muse-spark-1.3",
+            );
+            assert_eq!(lookalike.mode, PromptCacheMode::None);
+            assert!(!lookalike.sends_openai_prompt_cache_key());
+        }
     }
 
     #[test]

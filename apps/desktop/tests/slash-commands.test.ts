@@ -51,6 +51,7 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     sourcePath: null,
     resources: [],
     ...overrides,
+    canonicalName: overrides.canonicalName ?? 'frontend-design',
   };
 }
 

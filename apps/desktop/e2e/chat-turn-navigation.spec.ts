@@ -265,9 +265,42 @@ test('virtualizes a 10000-message conversation below the DOM row budget', async 
   await expect.poll(
     () => page.locator('[data-chat-virtual-row="true"]').count(),
   ).toBeLessThan(200);
+  await expect.poll(
+    () => page.locator('[data-turn-navigation-index]').count(),
+  ).toBeLessThan(240);
   await expect(
     page.locator('[data-chat-virtual-row="true"]').getByText('Question 5000:', { exact: false }),
   ).toBeVisible();
+});
+
+test('sparse turn timeline keeps keyboard focus on newly rendered adjacent markers', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto('/chat/conv-turn-navigation?turns=5000');
+
+  const navigator = page.getByTestId('chat-turn-navigator');
+  const buttons = navigator.locator('[data-turn-navigation-index]');
+  await expect.poll(() => buttons.count()).toBeGreaterThan(2);
+  const sparseIndex = await buttons.evaluateAll((elements) => {
+    const indexes = elements.map((element) => Number(
+      (element as HTMLElement).dataset.turnNavigationIndex,
+    ));
+    const rendered = new Set(indexes);
+    return indexes.find((index) => Number.isFinite(index) && !rendered.has(index + 1)) ?? null;
+  });
+  expect(sparseIndex).not.toBeNull();
+
+  const sparse = navigator.locator(`[data-turn-navigation-index="${sparseIndex}"]`);
+  await sparse.focus();
+  await sparse.press('ArrowRight');
+
+  const adjacent = navigator.locator(`[data-turn-navigation-index="${sparseIndex! + 1}"]`);
+  await expect(adjacent).toHaveAttribute('aria-current', 'step');
+  await expect(adjacent).toBeFocused();
+  await adjacent.press('ArrowRight');
+
+  const following = navigator.locator(`[data-turn-navigation-index="${sparseIndex! + 2}"]`);
+  await expect(following).toHaveAttribute('aria-current', 'step');
+  await expect(following).toBeFocused();
 });
 
 test('keeps the compact turn timeline out of narrow chat layouts', async ({ page }) => {

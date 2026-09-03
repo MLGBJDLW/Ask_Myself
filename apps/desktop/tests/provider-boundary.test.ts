@@ -29,6 +29,22 @@ for (const endpoint of [
 }
 
 assertEqual(
+  providerCredentialScope('open_ai', 'https://api.meta.ai/v1'),
+  'meta-model-api',
+  'the exact Meta Model API endpoint should keep its own credential scope',
+);
+for (const endpoint of [
+  'https://api.meta.ai/v2',
+  'https://api.meta.ai.evil.example/v1',
+  'http://api.meta.ai/v1',
+]) {
+  assert(
+    providerCredentialScope('open_ai', endpoint).startsWith('endpoint:'),
+    `edited Meta endpoints must keep isolated credentials: ${endpoint}`,
+  );
+}
+
+assertEqual(
   providerCredentialScope('zhipu', 'https://open.bigmodel.cn/api/paas/v4'),
   'zhipu:china',
   'China Zhipu Model API should keep its regional credential scope',

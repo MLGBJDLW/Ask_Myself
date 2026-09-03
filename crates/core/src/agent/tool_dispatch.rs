@@ -303,6 +303,32 @@ async fn resolve_tool_visual_context_message(
     Some(tool_visual_observation_message(tool_name, observation))
 }
 
+fn append_provider_safe_tool_round_context(
+    messages: &mut Vec<Message>,
+    tool_results: Vec<Message>,
+    visual_context: Vec<Message>,
+) {
+    // OpenAI-compatible protocols require every result for a parallel tool-call
+    // batch to remain contiguous. Synthetic user/image observations are useful
+    // only after that atomic assistant -> tool[] unit has closed.
+    messages.extend(tool_results);
+    let mut visual_parts = visual_context
+        .into_iter()
+        .flat_map(|message| message.parts)
+        .collect::<Vec<_>>();
+    if visual_parts.is_empty() {
+        return;
+    }
+    messages.push(Message {
+        role: Role::User,
+        parts: std::mem::take(&mut visual_parts),
+        name: None,
+        tool_calls: None,
+        reasoning_content: None,
+        prompt_cache_hint: None,
+    });
+}
+
 pub(super) struct ToolDispatchContext<'a> {
     pub(super) db: &'a Database,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
@@ -1650,6 +1676,8 @@ impl AgentExecutor {
         }
 
         let mut summaries = Vec::with_capacity(completed_for_context.len());
+        let mut provider_tool_results = Vec::with_capacity(completed_for_context.len());
+        let mut visual_context_messages = Vec::new();
         for completed in completed_for_context.into_iter().flatten() {
             let tc = completed.call;
             let content = compact_tool_result_for_context(&tc.name, &completed.content);
@@ -1687,7 +1715,7 @@ impl AgentExecutor {
                 *sort_order += 1;
             }
 
-            messages.push(Message::text_with_name(Role::Tool, content, tc.id.clone()));
+            provider_tool_results.push(Message::text_with_name(Role::Tool, content, tc.id.clone()));
             let primary_supports_vision = self
                 .config
                 .provider_type
@@ -1702,7 +1730,7 @@ impl AgentExecutor {
             {
                 // This synthetic message is deliberately current-turn-only. Persisting
                 // screenshots or their interpretation would replay stale pixels later.
-                messages.push(visual_message);
+                visual_context_messages.push(visual_message);
             }
 
             // Trace: record tool execution step
@@ -1722,6 +1750,11 @@ impl AgentExecutor {
                 });
             }
         }
+        append_provider_safe_tool_round_context(
+            messages,
+            provider_tool_results,
+            visual_context_messages,
+        );
         if let Some(prompt) = post_tool_loop_guard_prompt {
             if let Some(message) = prompt_ir::controller_state_message(prompt) {
                 messages.push(message);
@@ -1898,6 +1931,46 @@ mod visual_attachment_tests {
 
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(message.has_images());
+    }
+
+    #[test]
+    fn parallel_tool_results_close_before_synthetic_visual_user_context() {
+        let calls = ["call-1", "call-2"]
+            .into_iter()
+            .map(|id| ToolCallRequest {
+                id: id.to_string(),
+                name: "browser_evidence_capture".to_string(),
+                arguments: "{}".to_string(),
+                thought_signature: None,
+            })
+            .collect::<Vec<_>>();
+        let mut assistant = Message::text(Role::Assistant, "capturing evidence");
+        assistant.tool_calls = Some(calls.clone());
+        let mut messages = vec![assistant];
+        let tool_results = calls
+            .iter()
+            .map(|call| Message::text_with_name(Role::Tool, "captured", call.id.clone()))
+            .collect();
+        let visual_context = vec![
+            Message::text(Role::User, "visual observation one"),
+            Message::text(Role::User, "visual observation two"),
+        ];
+
+        append_provider_safe_tool_round_context(&mut messages, tool_results, visual_context);
+
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| &message.role)
+                .collect::<Vec<_>>(),
+            vec![&Role::Assistant, &Role::Tool, &Role::Tool, &Role::User]
+        );
+        crate::llm::message_validation::validate_provider_request(
+            &messages,
+            "openai",
+            "deepseek-v4-pro",
+        )
+        .unwrap();
     }
 
     #[tokio::test]

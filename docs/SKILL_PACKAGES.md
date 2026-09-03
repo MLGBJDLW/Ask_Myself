@@ -13,7 +13,7 @@ approval policy.
 The portable shape is:
 
 ```text
-<skill-id>/
+<canonical-name>/
   SKILL.md
   agents/
     openai.yaml
@@ -26,25 +26,29 @@ The portable shape is:
 
 ```yaml
 ---
-name: Research Synthesis
+name: research-synthesis
 description: Use when synthesizing evidence from multiple local or web sources.
 ---
 ```
 
-Installed personal skills use `~/.nexa/skills/<database-id>/` by default. Nexa
-uses the stable database id as the folder name so editing a skill does not
-silently create a second identity. Startup and the explicit Reload skill files
-action synchronize valid edits for already-registered ids. Unknown folders are
-left untouched and unregistered until the user chooses the normal import flow,
+Installed personal skills use `~/.nexa/skills/<canonical-name>/`. The canonical
+name is the portable invocation identity: 1-64 lowercase ASCII letters, digits,
+or single hyphens, with no leading, trailing, or consecutive hyphen. It must
+match both the parent folder and `SKILL.md` frontmatter. Nexa keeps its immutable
+database UUID and localized/human display name separately, so neither appears
+as the portable folder identity and changing display text does not move files.
+
+Startup and the explicit Reload skill files action synchronize valid edits for
+already-registered canonical names. Legacy UUID folders are recognized only for
+a guarded, same-filesystem rename; the database id remains unchanged and all
+unknown files move with the package. An existing target, symlink/reparse point,
+or invalid canonical name fails closed and leaves the source untouched. Unknown
+folders remain unregistered until the user chooses the normal import flow,
 including security-warning acknowledgement. A disabled skill keeps its files;
-only an explicit Delete removes its folder. Invalid, unsafe, or conflicting
-edits are reported and left on disk for correction rather than overwritten by
-the last database projection. Nexa also preserves unmodeled files such as
-`README.md`, `LICENSE`, and repository metadata in these user-owned folders;
-recursive stale-file pruning remains limited to the legacy internal cache.
-When an approved update removes or renames a previously modeled resource,
-Nexa deletes only that exact former resource path so it cannot be re-imported
-on the next reload.
+only an explicit Delete removes its folder. Nexa preserves unmodeled files such
+as `README.md`, `LICENSE`, and repository metadata. When an approved update
+removes or renames a previously modeled resource, Nexa deletes only that exact
+former resource path.
 
 The optional `agents/openai.yaml` file describes agent-facing metadata and
 dependencies:

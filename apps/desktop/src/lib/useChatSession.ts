@@ -340,6 +340,7 @@ export interface UseChatSessionReturn {
     contextWindow: number;
     completionTokens: number;
     thinkingTokens: number;
+    cachePromptTokens?: number;
     cacheReadTokens?: number;
     cacheMissTokens?: number;
     cacheCreationTokens?: number;
@@ -1689,6 +1690,11 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
   // latest run kept by the stream store.
   const isUsingLiveUsage = (shouldShowLivePreview || usageSnapshot == null) && scopedLastUsage != null;
   const usageForView = isUsingLiveUsage ? scopedLastUsage : usageSnapshot ?? scopedLastUsage;
+  // The context ring needs the in-flight run's latest prompt size, but a cache
+  // hit rate only becomes authoritative after that run is durable. Keep the
+  // current conversation's completed-run aggregate stable while streaming,
+  // then let completion hydration fold the new sample into the snapshot.
+  const cacheUsageForView = isUsingLiveUsage ? usageSnapshot : usageForView;
   const durableContextAuthority = !isUsingLiveUsage ? usageSnapshot?.contextAuthority : null;
   const usageContextWindow = durableContextAuthority
     ? usageSnapshot?.contextCapacity ?? 0
@@ -1707,9 +1713,10 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
             contextWindow: usageContextWindow,
             completionTokens: usageForView.completionTokens,
             thinkingTokens: usageForView.thinkingTokens ?? 0,
-            cacheReadTokens: usageForView.cacheReadTokens ?? 0,
-            cacheMissTokens: usageForView.cacheMissTokens ?? 0,
-            cacheCreationTokens: usageForView.cacheCreationTokens ?? 0,
+            cachePromptTokens: cacheUsageForView?.promptTokens ?? 0,
+            cacheReadTokens: cacheUsageForView?.cacheReadTokens ?? 0,
+            cacheMissTokens: cacheUsageForView?.cacheMissTokens ?? 0,
+            cacheCreationTokens: cacheUsageForView?.cacheCreationTokens ?? 0,
             contextBreakdown: usageForView.contextBreakdown,
             isEstimated: source === 'estimated',
             source,

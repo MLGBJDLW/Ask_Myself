@@ -6,6 +6,7 @@
 //! backed up, and shared without exposing internal state or credentials.
 
 use crate::error::CoreError;
+use crate::skills::Skill;
 use crate::theme_resource_plugin::ThemeResourcePlugin;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -18,11 +19,13 @@ use walkdir::WalkDir;
 
 pub const NEXA_HOME_ENV: &str = "NEXA_HOME";
 pub const NEXA_HOME_DIR: &str = ".nexa";
-pub const USER_EXTENSION_LAYOUT_VERSION: u32 = 1;
+pub const USER_EXTENSION_LAYOUT_VERSION: u32 = 2;
 
 const README_FILE: &str = "README.md";
 const MCP_CONFIG_FILE: &str = "mcp.json";
 const LEGACY_MCP_CONFIG_FILE: &str = "mcp-connectors.json";
+const CANONICAL_READ_MARKER: &str = ".migration/portable-home-v2.ready";
+const CANONICAL_READ_MARKER_CONTENT: &[u8] = b"nexa-portable-home-v2\ncanonical-read\n";
 const MAX_MIGRATION_FILES: usize = 10_000;
 const MAX_MIGRATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_THEME_FILE_BYTES: u64 = 1024 * 1024;
@@ -72,6 +75,17 @@ pub struct UserExtensionMigrationReport {
     pub preserved_user_files: u32,
     pub skipped_links: u32,
     pub copied_bytes: u64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyProjectionCleanupReport {
+    pub armed_for_next_start: bool,
+    pub deleted_files: u32,
+    pub deleted_directories: u32,
+    pub preserved_modified: u32,
+    pub skipped_links: u32,
     pub warnings: Vec<String>,
 }
 
@@ -136,6 +150,10 @@ impl UserExtensionLayout {
         self.connectors_dir().join(MCP_CONFIG_FILE)
     }
 
+    fn canonical_read_marker_path(&self) -> PathBuf {
+        self.root.join(CANONICAL_READ_MARKER)
+    }
+
     pub fn view(&self) -> UserExtensionLayoutView {
         UserExtensionLayoutView {
             version: USER_EXTENSION_LAYOUT_VERSION,
@@ -151,8 +169,9 @@ impl UserExtensionLayout {
     }
 
     /// Create the user-owned layout and non-destructively seed it from the
-    /// legacy app-data projections. Existing `.nexa` files always win; legacy
-    /// files remain in place as a rollback source.
+    /// legacy app-data projections. Existing `.nexa` files always win. Once a
+    /// prior startup has established canonical reads, legacy seeding stops and
+    /// verified cleanup may proceed.
     pub fn bootstrap(&self) -> Result<UserExtensionMigrationReport, CoreError> {
         let mut report = UserExtensionMigrationReport::default();
         for directory in [
@@ -166,21 +185,91 @@ impl UserExtensionLayout {
             ensure_directory(&directory, &mut report)?;
         }
 
-        copy_file_if_missing(
-            &self.legacy_app_data_dir.join(LEGACY_MCP_CONFIG_FILE),
-            &self.mcp_config_path(),
-            &mut report,
-        )?;
-        copy_directory_if_missing(
-            &self.legacy_app_data_dir.join("skills").join("user"),
-            &self.skills_dir(),
-            &mut report,
-        )?;
+        if !canonical_read_established(&self.canonical_read_marker_path())? {
+            copy_file_if_missing(
+                &self.legacy_app_data_dir.join(LEGACY_MCP_CONFIG_FILE),
+                &self.mcp_config_path(),
+                &mut report,
+            )?;
+            copy_directory_if_missing(
+                &self.legacy_app_data_dir.join("skills").join("user"),
+                &self.skills_dir(),
+                &mut report,
+            )?;
+        }
         write_bytes_if_missing(
             &self.root.join(README_FILE),
             README_CONTENT.as_bytes(),
             &mut report,
         )?;
+        Ok(report)
+    }
+
+    /// Retire only legacy projections whose canonical `.nexa` copies have
+    /// survived a complete prior startup and still verify byte-for-byte (with
+    /// the expected canonical SKILL.md name rewrite). Unknown, modified,
+    /// linked, or in-use paths remain untouched.
+    pub fn finalize_legacy_projection_cleanup(
+        &self,
+        skills: &[Skill],
+    ) -> Result<LegacyProjectionCleanupReport, CoreError> {
+        let marker = self.canonical_read_marker_path();
+        if !is_real_file_with_bytes(&marker, CANONICAL_READ_MARKER_CONTENT) {
+            if fs::symlink_metadata(&marker).is_ok() {
+                return Err(CoreError::Conflict(format!(
+                    "Portable-home migration marker is not a verified regular file: {}",
+                    marker.display()
+                )));
+            }
+            atomic_write(&marker, CANONICAL_READ_MARKER_CONTENT)?;
+            return Ok(LegacyProjectionCleanupReport {
+                armed_for_next_start: true,
+                ..LegacyProjectionCleanupReport::default()
+            });
+        }
+
+        let mut report = LegacyProjectionCleanupReport::default();
+        remove_identical_legacy_file(
+            &self.legacy_app_data_dir.join(LEGACY_MCP_CONFIG_FILE),
+            &self.mcp_config_path(),
+            &mut report,
+        );
+
+        let legacy_user_skills = self.legacy_app_data_dir.join("skills").join("user");
+        for skill in skills.iter().filter(|skill| !skill.builtin) {
+            let canonical = self.skills_dir().join(&skill.canonical_name);
+            let mut sources = vec![legacy_user_skills.join(&skill.id)];
+            let named_source = legacy_user_skills.join(&skill.canonical_name);
+            if named_source != sources[0] {
+                sources.push(named_source);
+            }
+            for source in sources {
+                match fs::symlink_metadata(&source) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        report.warnings.push(format!(
+                            "Could not inspect legacy skill projection {}: {error}",
+                            source.display()
+                        ));
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
+                match verify_legacy_skill_projection(&source, &canonical, skill) {
+                    Ok(paths) => remove_verified_projection(paths, &mut report),
+                    Err(ProjectionMismatch::Link(message)) => {
+                        report.skipped_links = report.skipped_links.saturating_add(1);
+                        report.warnings.push(message);
+                    }
+                    Err(ProjectionMismatch::Modified(message)) => {
+                        report.preserved_modified = report.preserved_modified.saturating_add(1);
+                        report.warnings.push(message);
+                    }
+                }
+            }
+        }
+        remove_empty_directory(&legacy_user_skills, &mut report);
+        remove_empty_directory(&self.legacy_app_data_dir.join("skills"), &mut report);
         Ok(report)
     }
 
@@ -345,6 +434,251 @@ fn theme_path(themes_dir: &Path, theme_id: &str) -> PathBuf {
     themes_dir.join(format!("{safe_id}.json"))
 }
 
+#[derive(Debug)]
+enum ProjectionMismatch {
+    Link(String),
+    Modified(String),
+}
+
+fn is_real_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+fn is_real_file_with_bytes(path: &Path, expected: &[u8]) -> bool {
+    is_real_file(path) && fs::read(path).is_ok_and(|bytes| bytes == expected)
+}
+
+fn canonical_read_established(marker: &Path) -> Result<bool, CoreError> {
+    match fs::symlink_metadata(marker) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+        Ok(metadata)
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && fs::read(marker).is_ok_and(|bytes| bytes == CANONICAL_READ_MARKER_CONTENT) =>
+        {
+            Ok(true)
+        }
+        Ok(_) => Err(CoreError::Conflict(format!(
+            "Portable-home migration marker is invalid and was preserved: {}",
+            marker.display()
+        ))),
+    }
+}
+
+fn remove_identical_legacy_file(
+    source: &Path,
+    target: &Path,
+    report: &mut LegacyProjectionCleanupReport,
+) {
+    let source_metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            report
+                .warnings
+                .push(format!("Could not inspect {}: {error}", source.display()));
+            return;
+        }
+    };
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+        report.skipped_links = report.skipped_links.saturating_add(1);
+        report.warnings.push(format!(
+            "Preserved non-regular legacy projection: {}",
+            source.display()
+        ));
+        return;
+    }
+    let matching = is_real_file(target)
+        && fs::read(source)
+            .ok()
+            .zip(fs::read(target).ok())
+            .is_some_and(|(source, target)| source == target);
+    if !matching {
+        report.preserved_modified = report.preserved_modified.saturating_add(1);
+        report.warnings.push(format!(
+            "Preserved modified legacy projection: {}",
+            source.display()
+        ));
+        return;
+    }
+    match fs::remove_file(source) {
+        Ok(()) => report.deleted_files = report.deleted_files.saturating_add(1),
+        Err(error) => report.warnings.push(format!(
+            "Could not remove verified legacy projection {}: {error}",
+            source.display()
+        )),
+    }
+}
+
+fn skill_markdown_projection_matches(source: &Path, target: &Path, skill: &Skill) -> bool {
+    let Ok(source_text) = fs::read_to_string(source) else {
+        return false;
+    };
+    let Ok(target_text) = fs::read_to_string(target) else {
+        return false;
+    };
+    let Ok((source_frontmatter, source_body)) = crate::skills::parse_skill_file(&source_text)
+    else {
+        return false;
+    };
+    let Ok((target_frontmatter, target_body)) = crate::skills::parse_skill_file(&target_text)
+    else {
+        return false;
+    };
+    let Some(source_raw_frontmatter) = normalized_skill_frontmatter(&source_text) else {
+        return false;
+    };
+    let Some(target_raw_frontmatter) = normalized_skill_frontmatter(&target_text) else {
+        return false;
+    };
+    target_frontmatter.name == skill.canonical_name
+        && (source_frontmatter.name == skill.canonical_name
+            || source_frontmatter.name == skill.name)
+        && source_frontmatter.description == target_frontmatter.description
+        && source_raw_frontmatter == target_raw_frontmatter
+        && source_body.trim() == target_body.trim()
+}
+
+/// Compare the complete frontmatter instead of the typed projection, while
+/// allowing the one migration-owned change from a display name to its portable
+/// canonical name. Comments and extra keys still have to exist in both copies;
+/// ambiguous name syntax keeps the legacy declaration non-deletable.
+fn normalized_skill_frontmatter(content: &str) -> Option<String> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    let rest = trimmed
+        .strip_prefix("---\n")
+        .or_else(|| trimmed.strip_prefix("---\r\n"))?;
+    let (frontmatter, _) = crate::skills::split_frontmatter(rest).ok()?;
+    let normalized = frontmatter.replace("\r\n", "\n").replace('\r', "\n");
+    let mut found_name = false;
+    let mut lines = Vec::new();
+    for line in normalized.split('\n') {
+        if let Some(value) = line.strip_prefix("name:") {
+            let value = value.trim();
+            if found_name
+                || value.is_empty()
+                || value.starts_with(['|', '>'])
+                || value.starts_with(['&', '*', '!'])
+                || value.contains('#')
+                || serde_yaml::from_str::<String>(value).is_err()
+            {
+                return None;
+            }
+            found_name = true;
+            lines.push("name: <canonical-name>");
+        } else {
+            lines.push(line);
+        }
+    }
+    found_name.then(|| lines.join("\n"))
+}
+
+fn verify_legacy_skill_projection(
+    source: &Path,
+    target: &Path,
+    skill: &Skill,
+) -> Result<Vec<PathBuf>, ProjectionMismatch> {
+    for (label, directory) in [("legacy", source), ("canonical", target)] {
+        let metadata = fs::symlink_metadata(directory).map_err(|error| {
+            ProjectionMismatch::Modified(format!(
+                "Preserved {} because the {label} directory could not be verified: {error}",
+                source.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ProjectionMismatch::Link(format!(
+                "Preserved linked or non-directory skill projection: {}",
+                directory.display()
+            )));
+        }
+    }
+
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(source).follow_links(false) {
+        let entry = entry.map_err(|error| {
+            ProjectionMismatch::Modified(format!(
+                "Preserved unreadable legacy skill projection {}: {error}",
+                source.display()
+            ))
+        })?;
+        let path = entry.path();
+        if entry.file_type().is_symlink() {
+            return Err(ProjectionMismatch::Link(format!(
+                "Preserved legacy skill projection containing a link: {}",
+                path.display()
+            )));
+        }
+        let relative = path.strip_prefix(source).map_err(|error| {
+            ProjectionMismatch::Modified(format!(
+                "Preserved unscoped legacy skill projection {}: {error}",
+                path.display()
+            ))
+        })?;
+        let counterpart = target.join(relative);
+        if entry.file_type().is_dir() {
+            if !fs::symlink_metadata(&counterpart)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            {
+                return Err(ProjectionMismatch::Modified(format!(
+                    "Preserved legacy skill projection because canonical directory is missing: {}",
+                    counterpart.display()
+                )));
+            }
+            paths.push(path.to_path_buf());
+            continue;
+        }
+        if !entry.file_type().is_file() || !is_real_file(&counterpart) {
+            return Err(ProjectionMismatch::Modified(format!(
+                "Preserved legacy skill projection because canonical file is missing: {}",
+                counterpart.display()
+            )));
+        }
+        let matches = if relative == Path::new("SKILL.md") {
+            skill_markdown_projection_matches(path, &counterpart, skill)
+        } else {
+            fs::read(path)
+                .ok()
+                .zip(fs::read(&counterpart).ok())
+                .is_some_and(|(source, target)| source == target)
+        };
+        if !matches {
+            return Err(ProjectionMismatch::Modified(format!(
+                "Preserved modified legacy skill projection file: {}",
+                path.display()
+            )));
+        }
+        paths.push(path.to_path_buf());
+    }
+    paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    Ok(paths)
+}
+
+fn remove_verified_projection(paths: Vec<PathBuf>, report: &mut LegacyProjectionCleanupReport) {
+    for path in paths {
+        let result = if path.is_dir() {
+            fs::remove_dir(&path).map(|_| false)
+        } else {
+            fs::remove_file(&path).map(|_| true)
+        };
+        match result {
+            Ok(true) => report.deleted_files = report.deleted_files.saturating_add(1),
+            Ok(false) => report.deleted_directories = report.deleted_directories.saturating_add(1),
+            Err(error) => report.warnings.push(format!(
+                "Could not remove verified legacy projection {}: {error}",
+                path.display()
+            )),
+        }
+    }
+}
+
+fn remove_empty_directory(path: &Path, report: &mut LegacyProjectionCleanupReport) {
+    if fs::remove_dir(path).is_ok() {
+        report.deleted_directories = report.deleted_directories.saturating_add(1);
+    }
+}
+
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -499,6 +833,8 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
+    use crate::skills::{materialize_user_skills_to_directory, SaveSkillInput};
     use crate::theme_resource_plugin::ThemeResourceDefinition;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -556,6 +892,121 @@ mod tests {
         assert!(layout.mcp_config_path().is_file());
         assert!(app_data.path().join(LEGACY_MCP_CONFIG_FILE).is_file());
         assert!(report.preserved_user_files >= 1);
+    }
+
+    #[test]
+    fn verified_legacy_projections_are_removed_only_after_a_canonical_read_cycle() {
+        let home = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let skill = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Legacy Display Skill".into(),
+                description: "Use for portable-home migration tests".into(),
+                content: "Preserve this body.".into(),
+                enabled: false,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy_skill = app_data.path().join("skills/user").join(&skill.id);
+        fs::create_dir_all(&legacy_skill).unwrap();
+        fs::write(
+            legacy_skill.join("SKILL.md"),
+            format!(
+                "---\nname: {}\ndescription: {}\n---\n\n{}\n",
+                skill.name, skill.description, skill.content
+            ),
+        )
+        .unwrap();
+        fs::write(legacy_skill.join("README.md"), "copied user note\n").unwrap();
+        fs::write(
+            app_data.path().join(LEGACY_MCP_CONFIG_FILE),
+            "{\"version\":1,\"connectors\":{}}",
+        )
+        .unwrap();
+
+        let layout = UserExtensionLayout::resolve(home.path(), app_data.path(), None).unwrap();
+        layout.bootstrap().unwrap();
+        materialize_user_skills_to_directory(&layout.skills_dir(), std::slice::from_ref(&skill))
+            .unwrap();
+        let canonical_skill = layout.skills_dir().join(&skill.canonical_name);
+        assert!(canonical_skill.join("README.md").is_file());
+
+        let armed = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+        assert!(armed.armed_for_next_start);
+        assert!(legacy_skill.is_dir());
+
+        layout.bootstrap().unwrap();
+        assert!(!layout.skills_dir().join(&skill.id).exists());
+        let cleaned = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+        assert!(!cleaned.armed_for_next_start);
+        assert!(cleaned.deleted_files >= 3);
+        assert!(!legacy_skill.exists());
+        assert!(!app_data.path().join(LEGACY_MCP_CONFIG_FILE).exists());
+        assert_eq!(
+            fs::read_to_string(canonical_skill.join("README.md")).unwrap(),
+            "copied user note\n"
+        );
+    }
+
+    #[test]
+    fn legacy_skill_with_unprojected_frontmatter_metadata_is_preserved() {
+        let home = tempdir().unwrap();
+        let app_data = tempdir().unwrap();
+        let db = Database::open_memory().unwrap();
+        db.conn().execute("DELETE FROM skills", []).unwrap();
+        let skill = db
+            .save_skill(&SaveSkillInput {
+                id: None,
+                name: "Metadata Keeper".into(),
+                description: "Use for cleanup fidelity tests".into(),
+                content: "Preserve this body.".into(),
+                enabled: true,
+                resource_bundle: Vec::new(),
+            })
+            .unwrap();
+        let legacy_skill = app_data.path().join("skills/user").join(&skill.id);
+        fs::create_dir_all(&legacy_skill).unwrap();
+        let legacy_markdown = format!(
+            "---\n# user-owned licensing note\nname: {}\ndescription: {}\nlicense: Proprietary\nmetadata:\n  owner: local-user\n---\n\n{}\n",
+            skill.name, skill.description, skill.content
+        );
+        fs::write(legacy_skill.join("SKILL.md"), &legacy_markdown).unwrap();
+
+        let layout = UserExtensionLayout::resolve(home.path(), app_data.path(), None).unwrap();
+        layout.bootstrap().unwrap();
+        materialize_user_skills_to_directory(&layout.skills_dir(), std::slice::from_ref(&skill))
+            .unwrap();
+        let canonical_markdown = fs::read_to_string(
+            layout
+                .skills_dir()
+                .join(&skill.canonical_name)
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        assert!(!canonical_markdown.contains("license:"));
+
+        let armed = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+        assert!(armed.armed_for_next_start);
+        layout.bootstrap().unwrap();
+        let cleaned = layout
+            .finalize_legacy_projection_cleanup(std::slice::from_ref(&skill))
+            .unwrap();
+
+        assert!(cleaned.preserved_modified >= 1);
+        assert!(legacy_skill.is_dir());
+        assert_eq!(
+            fs::read_to_string(legacy_skill.join("SKILL.md")).unwrap(),
+            legacy_markdown
+        );
     }
 
     #[test]
