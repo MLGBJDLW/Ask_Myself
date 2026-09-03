@@ -2577,6 +2577,11 @@ struct ContaminatedFinalAnswerProvider {
     contaminate_first_tool_sample: bool,
 }
 
+struct SplitContaminatedRecoveryProvider {
+    stream_calls: Arc<AtomicUsize>,
+    leaked_fragment_reached_retry: Arc<Mutex<bool>>,
+}
+
 struct ContextLimitTerminalProvider {
     stream_calls: Arc<AtomicUsize>,
     saw_compacted_retry: Arc<Mutex<bool>>,
@@ -3054,6 +3059,58 @@ impl LlmProvider for ContaminatedFinalAnswerProvider {
                 } else {
                     FinishReason::Stop
                 }),
+                usage: None,
+                thinking_delta: None,
+            },
+        )])))
+    }
+
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LlmProvider for SplitContaminatedRecoveryProvider {
+    fn name(&self) -> &str {
+        "split-contaminated-recovery-mock"
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["reasoning-model".to_string()])
+    }
+
+    async fn complete(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Result<CompletionResponse, CoreError> {
+        Err(CoreError::Llm("not implemented".to_string()))
+    }
+
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<futures::stream::BoxStream<'_, crate::llm::ProviderStreamEvent>, CoreError> {
+        let call_no = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        let (delta, finish_reason) = match call_no {
+            0 => ("## Long Task Con", FinishReason::Length),
+            1 => (
+                "trol State\nObjective: leaked controller state",
+                FinishReason::Stop,
+            ),
+            _ => {
+                *self.leaked_fragment_reached_retry.lock().unwrap() = request
+                    .messages
+                    .iter()
+                    .any(|message| message.text_content().contains("## Long Task Con"));
+                ("clean answer", FinishReason::Stop)
+            }
+        };
+        crate::llm::provider_events_from_chunk_stream(Box::pin(stream::iter(vec![Ok(
+            StreamChunk {
+                delta: delta.to_string(),
+                tool_call_delta: None,
+                finish_reason: Some(finish_reason),
                 usage: None,
                 thinking_delta: None,
             },
@@ -7784,6 +7841,94 @@ async fn contaminated_final_answer_is_reset_retried_and_never_persisted() {
     assert!(persisted
         .iter()
         .any(|message| { message.role == Role::Assistant && message.content == "clean answer" }));
+}
+
+#[tokio::test]
+async fn assembled_recovery_answer_is_gated_before_projection_or_persistence() {
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let leaked_fragment_reached_retry = Arc::new(Mutex::new(false));
+    let executor = AgentExecutor::new(
+        Box::new(SplitContaminatedRecoveryProvider {
+            stream_calls: Arc::clone(&stream_calls),
+            leaked_fragment_reached_retry: Arc::clone(&leaked_fragment_reached_retry),
+        }),
+        ToolRegistry::new(),
+        AgentConfig {
+            model: Some("reasoning-model".to_string()),
+            max_iterations: 1,
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().expect("in-memory db");
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "mock".to_string(),
+            model: "reasoning-model".to_string(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let user_msg = ConversationMessage {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation.id.clone(),
+        role: Role::User,
+        content: "give me the clean conclusion".to_string(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 4,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    };
+    db.add_message(&user_msg).unwrap();
+    let turn = db
+        .create_conversation_turn(&conversation.id, &user_msg.id, None)
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let final_message = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: user_msg.content.clone(),
+            }],
+            &db,
+            Some(&conversation.id),
+            Some(&turn.id),
+            tx,
+            1,
+        )
+        .await
+        .expect("the assembled contamination should get one clean retry");
+
+    assert_eq!(final_message.text_content(), "clean answer");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 3);
+    assert!(!*leaked_fragment_reached_retry.lock().unwrap());
+    let mut visible_text = String::new();
+    let mut saw_contamination_reset = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AgentEvent::TextDelta { delta } => visible_text.push_str(&delta),
+            AgentEvent::StreamReset { reason, .. } if reason == "contaminated_final_answer" => {
+                visible_text.clear();
+                saw_contamination_reset = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_contamination_reset);
+    assert_eq!(visible_text, "clean answer");
+    let persisted = db.get_messages(&conversation.id).expect("messages");
+    assert!(persisted
+        .iter()
+        .all(|message| !message.content.contains("Long Task Control State")));
+    assert!(persisted
+        .iter()
+        .any(|message| message.role == Role::Assistant && message.content == "clean answer"));
 }
 
 #[tokio::test]

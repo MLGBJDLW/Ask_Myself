@@ -267,6 +267,131 @@ fn rollback_rejected_sample_projection(
     }
 }
 
+/// In-memory transaction for one answer-recovery episode.
+///
+/// Output-limited fragments may be projected over several physical samples
+/// before their canonical answer exists. Keep enough typed ownership to roll
+/// back the whole episode if the assembled answer fails the visibility gate,
+/// without deleting unrelated committed tool messages.
+#[derive(Default)]
+struct RecoveryAnswerProjection {
+    accumulated_start: Option<usize>,
+    transient_sample_ids: HashSet<String>,
+}
+
+impl RecoveryAnswerProjection {
+    fn begin(&mut self, accumulated_start: usize) {
+        self.accumulated_start.get_or_insert(accumulated_start);
+    }
+
+    fn track_transient_sample(&mut self, sample_id: &str) {
+        self.transient_sample_ids.insert(sample_id.to_string());
+    }
+
+    fn commit(&mut self) {
+        self.accumulated_start = None;
+        self.transient_sample_ids.clear();
+    }
+
+    fn discard(
+        &mut self,
+        accumulated_content: &mut String,
+        messages: &mut Vec<Message>,
+        current_sample_start: usize,
+    ) {
+        let accumulated_start = self
+            .accumulated_start
+            .take()
+            .unwrap_or(current_sample_start)
+            .min(accumulated_content.len());
+        accumulated_content.truncate(accumulated_start);
+
+        if !self.transient_sample_ids.is_empty() {
+            messages.retain(|message| {
+                message
+                    .provider_turn()
+                    .is_none_or(|turn| !self.transient_sample_ids.contains(&turn.sample_id))
+            });
+            self.transient_sample_ids.clear();
+        }
+    }
+}
+
+struct ContaminatedProjectionContext<'a> {
+    db: &'a Database,
+    tx: &'a mpsc::Sender<AgentEvent>,
+    turn_id: Option<&'a str>,
+    route_kind: AgentRouteKind,
+    trace: &'a mut Option<AgentTrace>,
+    persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
+    messages: &'a mut Vec<Message>,
+    accumulated_content: &'a mut String,
+    current_sample_start: usize,
+    recovery_projection: &'a mut RecoveryAnswerProjection,
+    output_recovery: &'a mut OutputRecovery,
+    contaminated_sample_retries: &'a mut u8,
+    clean_final_retry_active: &'a mut bool,
+}
+
+async fn reject_contaminated_projection(
+    ctx: ContaminatedProjectionContext<'_>,
+    marker: &str,
+    tool_calls_empty: bool,
+) -> Result<(), CoreError> {
+    let ContaminatedProjectionContext {
+        db,
+        tx,
+        turn_id,
+        route_kind,
+        trace,
+        persisted_trace_items,
+        messages,
+        accumulated_content,
+        current_sample_start,
+        recovery_projection,
+        output_recovery,
+        contaminated_sample_retries,
+        clean_final_retry_active,
+    } = ctx;
+
+    recovery_projection.discard(accumulated_content, messages, current_sample_start);
+    *output_recovery = OutputRecovery::default();
+    let _ = tx
+        .send(AgentEvent::StreamReset {
+            reason: "contaminated_final_answer".to_string(),
+            discard_sample: true,
+        })
+        .await;
+    let trace_message =
+        format!("discarded assistant sample containing reserved internal marker: {marker}");
+    append_developer_persisted_trace_status(persisted_trace_items, &trace_message, "warning");
+    if *contaminated_sample_retries >= 1 {
+        emit_error_and_finalize_turn(
+            tx,
+            db,
+            trace,
+            turn_id,
+            route_kind,
+            persisted_trace_items,
+            TurnErrorMessages {
+                frontend_message: "Nexa discarded two assistant samples because they contained internal runtime metadata. No contaminated text or client tool call was saved or executed; retry the turn to request a clean response.".to_string(),
+                trace_message: trace_message.clone(),
+            },
+        )
+        .await;
+        return Err(CoreError::Agent(trace_message));
+    }
+
+    *contaminated_sample_retries = contaminated_sample_retries.saturating_add(1);
+    *clean_final_retry_active = tool_calls_empty;
+    if let Some(message) = prompt_ir::controller_state_message(
+        "The previous assistant sample exposed internal runtime metadata and was discarded before persistence or client-tool execution. Continue from the user request and committed evidence without reproducing controller state, replay headers, or tool transport logs.",
+    ) {
+        messages.push(message);
+    }
+    Ok(())
+}
+
 async fn emit_tool_dispatch_failure(
     tx: &mpsc::Sender<AgentEvent>,
     db: &Database,
@@ -1262,6 +1387,7 @@ impl AgentExecutor {
 
         let mut workflow_gate_repair_rounds = 0u8;
         let mut output_recovery = OutputRecovery::default();
+        let mut recovery_answer_projection = RecoveryAnswerProjection::default();
         let mut contaminated_sample_retries = 0u8;
         let mut clean_final_retry_active = false;
         let mut next_step_purpose = TurnStepPurpose::Normal;
@@ -1598,44 +1724,29 @@ impl AgentExecutor {
             // Streaming stays responsive, but rejection resets the exact
             // physical sample before persistence or client-tool execution.
             if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
-                accumulated_content.truncate(accumulated_content_before_model_step);
-                let _ = tx
-                    .send(AgentEvent::StreamReset {
-                        reason: "contaminated_final_answer".to_string(),
-                        discard_sample: true,
-                    })
-                    .await;
-                let trace_message = format!(
-                    "discarded assistant sample containing reserved internal marker: {marker}"
-                );
-                append_developer_persisted_trace_status(
-                    &mut persisted_trace_items,
-                    &trace_message,
-                    "warning",
-                );
-                if contaminated_sample_retries >= 1 {
-                    emit_error_and_finalize_turn(
-                        &tx,
+                if let Err(error) = reject_contaminated_projection(
+                    ContaminatedProjectionContext {
                         db,
-                        &mut trace,
+                        tx: &tx,
                         turn_id,
-                        route_plan.kind,
-                        &persisted_trace_items,
-                        TurnErrorMessages {
-                            frontend_message: "Nexa discarded two assistant samples because they contained internal runtime metadata. No contaminated text or client tool call was saved or executed; retry the turn to request a clean response.".to_string(),
-                            trace_message: trace_message.clone(),
-                        },
-                    )
-                    .await;
+                        route_kind: route_plan.kind,
+                        trace: &mut trace,
+                        persisted_trace_items: &mut persisted_trace_items,
+                        messages: &mut messages,
+                        accumulated_content: &mut accumulated_content,
+                        current_sample_start: accumulated_content_before_model_step,
+                        recovery_projection: &mut recovery_answer_projection,
+                        output_recovery: &mut output_recovery,
+                        contaminated_sample_retries: &mut contaminated_sample_retries,
+                        clean_final_retry_active: &mut clean_final_retry_active,
+                    },
+                    marker,
+                    tool_calls.is_empty(),
+                )
+                .await
+                {
                     turn_state.finish(TurnOutcome::Failed);
-                    return Err(CoreError::Agent(trace_message));
-                }
-                contaminated_sample_retries = contaminated_sample_retries.saturating_add(1);
-                clean_final_retry_active = tool_calls.is_empty();
-                if let Some(message) = prompt_ir::controller_state_message(
-                    "The previous assistant sample exposed internal runtime metadata and was discarded before persistence or client-tool execution. Continue from the user request and committed evidence without reproducing controller state, replay headers, or tool transport logs.",
-                ) {
-                    messages.push(message);
+                    return Err(error);
                 }
                 next_step_purpose = TurnStepPurpose::Recovery;
                 continue 'react_loop;
@@ -1688,6 +1799,9 @@ impl AgentExecutor {
                 !tool_calls.is_empty(),
                 provider_state_fingerprint.as_deref(),
             );
+            if !buffer_answer_projection && output_recovery.reserves_answer_channel() {
+                recovery_answer_projection.begin(accumulated_content_before_model_step);
+            }
             let resumes_provider_pause = matches!(
                 &recovery_decision,
                 OutputRecoveryDecision::Continue {
@@ -1751,6 +1865,7 @@ impl AgentExecutor {
                     if committed_visible_delta || cause == OutputRecoveryCause::ProviderPause {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        recovery_answer_projection.track_transient_sample(&sample_id);
                         messages.push(capture_recovery_assistant_message(
                             RecoveryAssistantMessageContext {
                                 full_content: &visible_delta,
@@ -1841,6 +1956,7 @@ impl AgentExecutor {
                         );
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
+                        recovery_answer_projection.track_transient_sample(&sample_id);
                         messages.push(capture_recovery_assistant_message(
                             RecoveryAssistantMessageContext {
                                 full_content: &full_content,
@@ -1896,6 +2012,42 @@ impl AgentExecutor {
                     content,
                     visible_delta,
                 } => {
+                    // A reserved heading may be split across output-limited
+                    // physical samples even though each sample is clean alone.
+                    // The canonical assembled answer must cross the same gate
+                    // before its final delta is projected or anything persists.
+                    if buffer_answer_projection {
+                        if let Some(marker) =
+                            final_answer_hygiene_scope.contamination_marker(&content)
+                        {
+                            if let Err(error) = reject_contaminated_projection(
+                                ContaminatedProjectionContext {
+                                    db,
+                                    tx: &tx,
+                                    turn_id,
+                                    route_kind: route_plan.kind,
+                                    trace: &mut trace,
+                                    persisted_trace_items: &mut persisted_trace_items,
+                                    messages: &mut messages,
+                                    accumulated_content: &mut accumulated_content,
+                                    current_sample_start: accumulated_content_before_model_step,
+                                    recovery_projection: &mut recovery_answer_projection,
+                                    output_recovery: &mut output_recovery,
+                                    contaminated_sample_retries: &mut contaminated_sample_retries,
+                                    clean_final_retry_active: &mut clean_final_retry_active,
+                                },
+                                marker,
+                                true,
+                            )
+                            .await
+                            {
+                                turn_state.finish(TurnOutcome::Failed);
+                                return Err(error);
+                            }
+                            next_step_purpose = TurnStepPurpose::Recovery;
+                            continue 'react_loop;
+                        }
+                    }
                     if buffer_answer_projection {
                         commit_buffered_answer_projection(
                             &tx,
@@ -1905,6 +2057,7 @@ impl AgentExecutor {
                         .await;
                     }
                     full_content = content;
+                    recovery_answer_projection.commit();
                     None
                 }
                 OutputRecoveryDecision::Reject(failure) => Some(failure),
@@ -2130,6 +2283,9 @@ impl AgentExecutor {
                 }
             };
             output_recovery.commit_staged_tool_round();
+            if !output_recovery.reserves_answer_channel() {
+                recovery_answer_projection.commit();
+            }
             let tool_round_working_delta = staged_tool_round_working_delta
                 .take()
                 .filter(|delta| !delta.trim().is_empty());
