@@ -723,6 +723,14 @@ Safety posture:
 
 Execute a whitelisted program with explicit argv arguments inside a registered source directory. The program is spawned directly — **there is no shell interpreter**, so metacharacters like `;`, `&&`, `|`, backticks, and globs are passed literally and never interpreted.
 
+File-change previews for native `cp` and `mv` cover their resolved mutation paths.
+Other commands do not scan or hash the workspace before/after execution, and
+background processes do not retain workspace contents. Their exit status and
+output are process receipts; an absent diff does not prove files were unchanged
+or verified. Use explicit `git diff`, file reads, or format-specific checks when
+verifying generated/modified artifacts, and record that verification. Untracked
+shell effects remain pending in the runtime evidence audit until verified.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `program` | string | yes | Program basename; must be in the whitelist |

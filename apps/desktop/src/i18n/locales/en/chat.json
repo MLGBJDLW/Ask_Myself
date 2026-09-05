@@ -693,4 +693,5 @@
   "companionFailed": "Task failed",
   "companionCancelled": "Task cancelled",
   "companionSleeping": "Companion is sleeping"
+,"compactUnavailable": "Manual compaction is unavailable for this conversation."
 }

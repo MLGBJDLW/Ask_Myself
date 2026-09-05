@@ -162,7 +162,6 @@ test.beforeEach(async ({ page }) => {
     };
 
     const appConfig = {
-      cacheTtlHours: 24,
       defaultSearchLimit: 20,
       minSearchSimilarity: 0.2,
       maxTextFileSize: 104857600,
@@ -377,6 +376,12 @@ test.beforeEach(async ({ page }) => {
         }
         case "list_agent_configs_cmd":
           return [clone(anthropicConfig), clone(qwenConfig)];
+        case "list_subscription_models_cmd": {
+          if (localStorage.getItem("nexa-e2e-subscription-models-fail") === "1") throw new Error("Subscription model catalog unavailable");
+          return _args.provider === "github_copilot"
+            ? [{ id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", reasoningEfforts: ["low", "high"] }, { id: "gpt-5.4", name: "GPT-5.4", reasoningEfforts: [] }]
+            : [{ id: "gpt-6", name: "GPT-6", reasoningEfforts: ["low", "high", "ultra"] }];
+        }
         case "get_codex_account_snapshot_cmd": {
           const state = localStorage.getItem("nexa-e2e-codex-account") ?? "signed-in";
           const oneShotDelayMs = Number(
@@ -1240,6 +1245,10 @@ test("settings exposes current Qwen3.8 Token Plan models with the retired previe
 test("settings projects the Codex subscription account and usage without an API key", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.getByTestId("codex-subscription-account")).toHaveCount(0);
+  await expect(page.getByTestId("copilot-subscription-account")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "ChatGPT / Codex", exact: false }).click();
 
   const account = page.getByTestId("codex-subscription-account");
   await expect(page.getByText("Accounts & subscription agents", { exact: true })).toBeVisible();
@@ -1260,6 +1269,10 @@ test("settings completes the official Codex device-code launch and cancellation 
   });
   await page.reload();
   await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.getByTestId("codex-subscription-account")).toHaveCount(0);
+  await expect(page.getByTestId("copilot-subscription-account")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "ChatGPT / Codex", exact: false }).click();
 
   const account = page.getByTestId("codex-subscription-account");
   await account.getByRole("button", { name: "Use device code" }).click();
@@ -1281,6 +1294,10 @@ test("settings discards a stale account refresh after login starts", async ({ pa
   await page.evaluate(() => localStorage.setItem("nexa-e2e-codex-account", "signed-out"));
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.getByTestId("codex-subscription-account")).toHaveCount(0);
+  await expect(page.getByTestId("copilot-subscription-account")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "ChatGPT / Codex", exact: false }).click();
 
   const account = page.getByTestId("codex-subscription-account");
   await expect(account.getByRole("button", { name: "Use device code" })).toBeVisible();
@@ -1301,6 +1318,10 @@ test("settings discards a stale account refresh after login starts", async ({ pa
 test("settings verifies GitHub Copilot subscription models and quota through the SDK", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.getByTestId("codex-subscription-account")).toHaveCount(0);
+  await expect(page.getByTestId("copilot-subscription-account")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "GitHub Copilot", exact: false }).click();
 
   const account = page.getByTestId("copilot-subscription-account");
   await expect(account).toContainText("Subscription verified");
@@ -1317,6 +1338,10 @@ test("settings starts and cancels the official Copilot CLI browser login", async
   await page.evaluate(() => localStorage.setItem("nexa-e2e-copilot-account", "signed-out"));
   await page.reload();
   await page.getByRole("button", { name: "AI Providers" }).click();
+  await expect(page.getByTestId("codex-subscription-account")).toHaveCount(0);
+  await expect(page.getByTestId("copilot-subscription-account")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "GitHub Copilot", exact: false }).click();
 
   const account = page.getByTestId("copilot-subscription-account");
   await account.getByRole("button", { name: "Sign in with GitHub" }).click();
@@ -1540,7 +1565,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
   const sttModel = sttPanel.locator("[data-nexa-select-trigger]").nth(1);
-  await expectNexaOptionCount(sttProvider, 9);
+  await expectNexaOptionCount(sttProvider, 10);
 
   await selectNexaOption(sttProvider, "openai-live");
   await selectNexaOption(sttModel, "gpt-live-transcribe");
@@ -1553,6 +1578,12 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await selectNexaOption(sttProvider, "alibaba-qwen-asr");
   await selectNexaOption(sttModel, "qwen3-asr-flash");
   await expectNexaValue(sttModel, "qwen3-asr-flash");
+  await expect(sttPanel.getByText("After recording", { exact: true })).toBeVisible();
+
+  await selectNexaOption(sttProvider, "alibaba-qwen-realtime");
+  await selectNexaOption(sttModel, "qwen3-asr-flash-realtime");
+  await expect(sttPanel.getByText("Live partials", { exact: true })).toBeVisible();
+  await expectNexaValue(sttModel, "qwen3-asr-flash-realtime");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
     "style",
@@ -1562,6 +1593,17 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { speechToText?: { apiKey?: string } } }
   ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
+
+  await selectNexaOption(sttProvider, "alibaba-qwen-asr");
+  await selectNexaOption(sttModel, "qwen3-asr-flash");
+  await expectNexaValue(sttModel, "qwen3-asr-flash");
+  await expect(sttPanel.getByText("After recording", { exact: true })).toBeVisible();
+  await sttPanel.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { speechToText?: unknown } }
+  ).__savedAppConfig?.speechToText)).toMatchObject({
+    apiStyle: "dashscope_asr", model: "qwen3-asr-flash", apiKey: "sk-qwen-demo",
+  });
 
   await selectNexaOption(sttProvider, "siliconflow");
   await selectNexaOption(sttModel, "FunAudioLLM/SenseVoiceSmall");
@@ -1622,7 +1664,7 @@ test("settings never reuses a provider key for a user-edited endpoint", async ({
 
   const sttPanel = page.getByTestId("speech-to-text-settings-panel");
   await sttPanel.locator("button").first().click();
-  await selectNexaOption(sttPanel.getByTestId("stt-provider-select"), "alibaba-qwen-asr");
+  await selectNexaOption(sttPanel.getByTestId("stt-provider-select"), "alibaba-qwen-realtime");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await baseUrlInput(sttPanel).fill("https://dashscope.aliyuncs.com:8443/api/v1/services/audio/asr/transcription");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveCount(0);
@@ -2214,4 +2256,34 @@ test("custom appearances without a visual background keep the ordinary opaque sh
     .locator("xpath=ancestor::section[1]");
   expect(await backgroundAlpha(appearancePanel)).toBe(0.66);
   await expect(appearancePanel).toHaveCSS("backdrop-filter", "none");
+});
+
+for (const runtime of ["GitHub Copilot", "ChatGPT / Codex"]) {
+  test(`settings saves ${runtime} as an explicitly added usable model configuration`, async ({ page }) => {
+    await page.goto("/settings");
+    await page.getByRole("button", { name: "AI Providers" }).click();
+    await page.getByRole("button", { name: "Add Provider" }).click();
+    await page.getByRole("button", { name: runtime, exact: false }).click();
+    const form = page.getByTestId("subscription-agent-form");
+    const model = runtime === "GitHub Copilot" ? "claude-sonnet-4.6" : "gpt-6";
+    await expect(form.getByTestId("subscription-model-select")).toHaveValue(model);
+    await form.getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfig?: unknown }).__savedAgentConfig)).toEqual(expect.objectContaining({
+      provider: runtime === "GitHub Copilot" ? "github_copilot" : "openai_codex",
+      model, apiKey: "", baseUrl: null,
+    }));
+  });
+}
+
+test("subscription catalog failure invalidates stale models and prevents saving", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "AI Providers" }).click();
+  await page.getByRole("button", { name: "Add Provider" }).click();
+  await page.getByRole("button", { name: "GitHub Copilot", exact: false }).click();
+  const form = page.getByTestId("subscription-agent-form");
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await page.evaluate(() => localStorage.setItem("nexa-e2e-subscription-models-fail", "1"));
+  await form.getByRole("button", { name: "Refresh", exact: true }).last().click();
+  await expect(form.getByRole("alert")).toContainText("catalog unavailable");
+  await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
 });

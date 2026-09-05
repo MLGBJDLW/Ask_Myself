@@ -1,7 +1,6 @@
 //! Long-running task resilience helpers.
 
 use super::context;
-use super::turn_state::{TurnPhase, TurnStateMachine};
 use super::*;
 use crate::workflow_ir::WorkflowIr;
 
@@ -21,7 +20,6 @@ pub(super) struct LongTaskCompactionContext<'a> {
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) context_pipeline: ContextPipeline,
     pub(super) tool_defs: &'a [ToolDefinition],
-    pub(super) turn_state: &'a mut TurnStateMachine,
     pub(super) loop_recorder: &'a mut TurnLoopRecorder,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
     pub(super) total_usage: &'a mut Usage,
@@ -98,7 +96,6 @@ impl AgentExecutor {
             messages,
             context_pipeline,
             tool_defs,
-            turn_state,
             loop_recorder,
             persisted_trace_items,
             total_usage,
@@ -124,7 +121,6 @@ impl AgentExecutor {
             "Proactively compacting context before the next model step.",
             "info",
         );
-        turn_state.transition_to(TurnPhase::Compacting);
 
         let actual_tokens_remaining = self
             .config
@@ -168,7 +164,6 @@ impl AgentExecutor {
                 false
             }
         };
-        turn_state.transition_to(TurnPhase::ModelStep);
         compacted
     }
 }

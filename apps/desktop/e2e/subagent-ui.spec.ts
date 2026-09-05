@@ -297,7 +297,6 @@ test.beforeEach(async ({ page }) => {
             }];
           }
           return [];
-        case 'clear_answer_cache':
           return 0;
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');

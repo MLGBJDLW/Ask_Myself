@@ -886,7 +886,11 @@ pub async fn parse_sse_stream_with_idle_timeout(
         {
             Ok(next) => next,
             Err(error)
-                if terminal_finish_seen && matches!(error, CoreError::StreamIncomplete(_)) =>
+                if terminal_finish_seen
+                    && matches!(
+                        error,
+                        CoreError::StreamIncomplete(_) | CoreError::TransientLlm(_)
+                    ) =>
             {
                 warn!("Ignoring transport shutdown after a terminal finish_reason: {error}");
                 break;
@@ -899,7 +903,8 @@ pub async fn parse_sse_stream_with_idle_timeout(
             Ok(chunk) => chunk,
             Err(error) => {
                 error!("Stream read error: {error}");
-                let message = error.to_string().to_ascii_lowercase();
+                let detail = super::transport::describe_http_error(&error);
+                let message = detail.to_ascii_lowercase();
                 let error = if message.contains("decoding response body")
                     || message.contains("connection")
                     || message.contains("closed")
@@ -908,11 +913,11 @@ pub async fn parse_sse_stream_with_idle_timeout(
                     || message.contains("incompleted")
                     || message.contains("eof")
                 {
-                    CoreError::StreamIncomplete(format!("stream interrupted: {error}"))
+                    CoreError::TransientLlm(format!("stream interrupted: {detail}"))
                 } else {
-                    CoreError::Llm(format!("Stream read error: {error}"))
+                    CoreError::Llm(format!("Stream read error: {detail}"))
                 };
-                if terminal_finish_seen && matches!(error, CoreError::StreamIncomplete(_)) {
+                if terminal_finish_seen && matches!(error, CoreError::TransientLlm(_)) {
                     warn!("Ignoring transport shutdown after a terminal finish_reason: {error}");
                     break;
                 }
@@ -1012,6 +1017,7 @@ mod tests {
 
     async fn serve_terminal_chat_sse_without_done(
         listener: tokio::net::TcpListener,
+        truncated_tail: bool,
     ) -> std::io::Result<()> {
         let (mut socket, _) = listener.accept().await?;
         let mut request = [0u8; 2048];
@@ -1023,7 +1029,7 @@ mod tests {
             .write_all(
                 format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    body.len() + usize::from(truncated_tail)
                 )
                 .as_bytes(),
             )
@@ -1034,12 +1040,27 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_finish_reason_accepts_clean_eof_without_done_sentinel() {
+        assert_terminal_finish_survives_transport_end(false).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_finish_reason_survives_truncated_http_body() {
+        assert_terminal_finish_survives_transport_end(true).await;
+    }
+
+    async fn assert_terminal_finish_survives_transport_end(truncated_tail: bool) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fixture server");
         let address = listener.local_addr().expect("fixture address");
-        let server = tokio::spawn(serve_terminal_chat_sse_without_done(listener));
-        let response = reqwest::Client::new()
+        let server = tokio::spawn(serve_terminal_chat_sse_without_done(
+            listener,
+            truncated_tail,
+        ));
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .get(format!("http://{address}/chat/completions"))
             .send()
             .await

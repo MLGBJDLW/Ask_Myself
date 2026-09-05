@@ -21,7 +21,6 @@ import {
   Play,
 } from "lucide-react";
 import { useTranslation } from "../../i18n";
-import { useLiveTranscriptProjection } from "../../lib/useLiveTranscriptProjection";
 import { useDeveloperMode } from "../../lib/developerMode";
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
@@ -794,11 +793,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     prevMessagesLenRef.current = messages.length;
   }, [messages]);
 
-  const liveTranscript = useLiveTranscriptProjection(
-    { answer: streamText, thinking: thinkingText },
-  );
-  const displayedText = liveTranscript.answer;
-  const displayedThinkingText = liveTranscript.thinking;
+  const displayedText = streamText;
+  const displayedThinkingText = thinkingText;
 
   const streamingCitationLookup = useMemo(() => {
     const map = buildCitationMap(toolCalls);

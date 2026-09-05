@@ -176,22 +176,9 @@ pub fn build_desktop_agent_turn_config(
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(db, Some(message))
             .unwrap_or_default();
-    let learned_section = {
-        let cfg = db.get_embedder_config().ok();
-        let embedding = cfg.and_then(|c| match nexa_core::embed::create_embedder(&c) {
-            Ok(embedder) if embedder.dimensions() > 0 => embedder.embed(message).ok(),
-            _ => None,
-        });
-        match embedding {
-            Some(vec) if !vec.iter().all(|&v| v == 0.0) => {
-                match nexa_core::learning::retrieve_similar_successes(db, &vec, 3) {
-                    Ok(hits) => nexa_core::learning::build_learned_successes_section(&hits),
-                    Err(_) => String::new(),
-                }
-            }
-            _ => String::new(),
-        }
-    };
+    let learned_section = nexa_core::learning::retrieve_similar_successes(db, message, 3)
+        .map(|hits| nexa_core::learning::build_learned_successes_section(&hits))
+        .unwrap_or_default();
     let scratchpad_section = nexa_core::agent::scratchpad::build_agent_scratchpad_prompt_section(
         db,
         Some(&conversation.id),
@@ -257,6 +244,7 @@ pub fn build_desktop_agent_turn_config(
                 "high" => Some(ReasoningEffort::High),
                 "max" => Some(ReasoningEffort::Max),
                 "xhigh" => Some(ReasoningEffort::XHigh),
+                "ultra" => Some(ReasoningEffort::Ultra),
                 _ => None,
             });
     let goal_section = nexa_core::conversation::goal::build_conversation_goal_prompt_section(
@@ -574,7 +562,6 @@ pub fn build_desktop_agent_turn_config(
         agent_timeout_secs: db_config
             .agent_timeout_secs
             .and_then(|value| u32::try_from(value).ok()),
-        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
         trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: app_cfg.confirm_destructive,

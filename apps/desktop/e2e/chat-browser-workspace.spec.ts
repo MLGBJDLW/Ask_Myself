@@ -81,6 +81,7 @@ test.beforeEach(async ({ page }) => {
     let deferFirstActiveSession = new URL(window.location.href).searchParams.has('deferBrowserActiveSession');
     let deferredActiveSessionRejecter: (() => void) | null = null;
     const browserDiagnostics = {
+      activeRequests: 0,
       creates: [] as Array<Record<string, unknown>>,
       navigations: [] as Array<Record<string, unknown>>,
       bounds: [] as Array<Record<string, unknown>>,
@@ -164,6 +165,7 @@ test.beforeEach(async ({ page }) => {
         case 'get_recent_queries':
           return [];
         case 'browser_active_session_cmd':
+          browserDiagnostics.activeRequests += 1;
           if (deferFirstActiveSession) {
             deferFirstActiveSession = false;
             return new Promise((_resolve, reject) => {
@@ -435,6 +437,22 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('expanded browser controls stay below the app titlebar and close only the browser', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('nexa:open-browser-workspace', {
+    detail: { url: 'https://example.com' }, cancelable: true,
+  })));
+  const dock = page.getByTestId('browser-dock');
+  await expect(dock).toBeVisible();
+  await dock.getByRole('button', { name: 'Open Browser full screen', exact: true }).click();
+  const titlebar = await page.getByTestId('app-titlebar').boundingBox();
+  const expanded = await dock.boundingBox();
+  expect(expanded!.y).toBeGreaterThanOrEqual(titlebar!.y + titlebar!.height);
+  await dock.getByRole('button', { name: 'Close Browser Workspace', exact: true }).click();
+  await expect(dock).toHaveCount(0);
+  await expect(page.getByTestId('app-titlebar')).toBeVisible();
+});
+
 test('opens a shared Browser Workspace and attaches pointed page context', async ({ page }) => {
   await page.goto('/chat/conv-browser-workspace');
 
@@ -543,6 +561,26 @@ test('ignores popup requests while the owning Browser Workspace is hidden', asyn
     }
   ).__browserDiagnostics__.popups.length);
   expect(popupCount).toBe(0);
+});
+
+test('coalesces browser event bursts into one query and one trailing refresh', async ({ page }) => {
+  await page.goto('/chat/conv-browser-workspace');
+  await page.getByTestId('browser-workspace-toggle').click();
+  await expect(page.getByTestId('browser-dock')).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = window as unknown as {
+      __browserDiagnostics__: { activeRequests: number };
+      __emitBrowserEvent__: (event: Record<string, unknown>) => void;
+    };
+    fixture.__browserDiagnostics__.activeRequests = 0;
+    for (let index = 0; index < 100; index++) fixture.__emitBrowserEvent__({
+      kind: 'titleChanged', payload: { sessionId: 'browser-session-1', tabId: 'tab-1' },
+    });
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as {
+    __browserDiagnostics__: { activeRequests: number };
+  }).__browserDiagnostics__.activeRequests)).toBe(2);
+  await expect(page.getByTestId('browser-native-surface')).toBeVisible();
 });
 
 test('bounds popup admission for a visible Browser Workspace', async ({ page }) => {

@@ -12,7 +12,7 @@ import type {
   AgentTaskRunEvent,
   AgentTurnHandle,
 } from '../types/conversation';
-import { projectRunEventsToStreamState } from './streaming/durableReplay';
+import { projectRunEventsToStreamStateAsync, applyBufferedRunEventsToState } from './streaming/durableReplay';
 import {
   enqueueStreamRunEvent,
   parseStreamEventSeq,
@@ -26,6 +26,7 @@ import { applyDoneEvent } from './streaming/liveProjection';
 import {
   clearToolPreparingTimers,
   createDefaultState,
+  capStreamCollections,
   type InternalStreamState,
 } from './streaming/state';
 import {
@@ -83,6 +84,7 @@ function nextAnimationFrame(callback: () => void): void {
 }
 
 class StreamStoreImpl {
+  private readonly _pendingRestores = new Map<string, symbol>();
   private _streams: Record<string, InternalStreamState> = {};
   private _recency = new Map<string, number>();
   private _recencyTick = 0;
@@ -109,18 +111,6 @@ class StreamStoreImpl {
 
   private notifyImmediately(conversationId: string): void {
     this._notifications.flushNow(conversationId);
-  }
-
-  private capLiveCollections(state: InternalStreamState): void {
-    if (state.traceEvents.length > 512) {
-      state.traceEvents = state.traceEvents.slice(-512);
-    }
-    if (state.streamRounds.length > 128) {
-      state.streamRounds = state.streamRounds.slice(-128);
-    }
-    if (state.taskEvents.length > 256) {
-      state.taskEvents = state.taskEvents.slice(-256);
-    }
   }
 
   private touch(conversationId: string): void {
@@ -174,14 +164,6 @@ class StreamStoreImpl {
     };
   }
 
-  /** Find the conversation ID of any currently active stream. */
-  getActiveStreamId(): string | null {
-    for (const [id, state] of Object.entries(this._streams)) {
-      if (state.isStreaming) return id;
-    }
-    return null;
-  }
-
   /** Return every conversation that currently owns a live stream. */
   getRunningConversationIds(): string[] {
     return Object.entries(this._streams)
@@ -214,21 +196,48 @@ class StreamStoreImpl {
   }
 
   /** Rebuild the visible stream preview directly from canonical durable Run Events. */
-  restoreFromRunEvents(
+  async restoreFromRunEvents(
     conversationId: string,
     taskRun: AgentTaskRun,
     runEvents: AgentRunEvent[],
     taskEvents: AgentTaskRunEvent[] = [],
-  ): void {
-    this.restoreProjectedState(conversationId, () =>
-      projectRunEventsToStreamState(taskRun, runEvents, taskEvents, {
-        interruptActive: taskRun.status === 'cancelling',
-      }),
-    );
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    const original = this._streams[conversationId];
+    const highWater = runEvents.reduce((latest, event) => Math.max(latest, event.eventSeq), 0);
+    // Fetch may have started before live delivery advanced or completed this
+    // turn. Admission must protect that state before claiming a restore ID.
+    if (original && (
+      (original._orderedRunId !== null && original._orderedRunId !== taskRun.id
+        && (original.isStreaming || original._pendingRunEvents.size > 0))
+      || (original._orderedRunId === taskRun.id && original._lastEventSeq > highWater)
+      || stateHasVisiblePreview(original)
+      || (original.isStreaming && original.turnHandle !== null)
+    )) return;
+    const restoreId = Symbol();
+    this._pendingRestores.set(conversationId, restoreId);
+    const originalSequence = original?._lastEventSeq;
+    const originalStreaming = original?.isStreaming;
+    const ownsRestore = () => isCurrent() && this._pendingRestores.get(conversationId) === restoreId
+      && this._streams[conversationId] === original && original?.isStreaming === originalStreaming
+      && original?._lastEventSeq === originalSequence;
+    try {
+      const projected = await projectRunEventsToStreamStateAsync(taskRun, runEvents, taskEvents, ownsRestore);
+      if (!projected || !ownsRestore()) return;
+      // Events buffered while the historical prefix loaded remain authoritative.
+      if (original && !runEvents.some(event => classifyAgentRunEventLifecycle(event) === 'terminal')) {
+        applyBufferedRunEventsToState(projected, [...original._pendingRunEvents.values()]);
+      }
+      capStreamCollections(projected);
+      this.restoreProjectedState(conversationId, () => projected);
+    } finally {
+      if (this._pendingRestores.get(conversationId) === restoreId) this._pendingRestores.delete(conversationId);
+    }
   }
 
   /** Initialize (or reset) stream state for a conversation. */
   startStream(conversationId: string, launchStartedAt?: number): void {
+    this._pendingRestores.delete(conversationId);
     const existing = this._streams[conversationId];
     if (existing) {
       clearStreamWatchdog(existing);
@@ -295,10 +304,16 @@ class StreamStoreImpl {
     this.scheduleNotify(event.conversationId);
   }
 
-  recordHeartbeat(conversationId: string, runId: string): void {
+  recordHeartbeat(conversationId: string, runId: string, durableHighWater?: number | null): void {
     const state = this._streams[conversationId];
     if (!state?.isStreaming || state.turnHandle?.runId !== runId) return;
-    this.resetTimeout(conversationId);
+    // A live executor does not prove its output reached this webview. Keep the
+    // recovery deadline intact, including while a reconciliation is in flight.
+    if (typeof durableHighWater === 'number'
+      && Number.isSafeInteger(durableHighWater)
+      && durableHighWater > state._lastEventSeq) {
+      this.recoverMissingRunEvents(conversationId, state, runId);
+    }
   }
 
   /** Settle the live transport while the durable turn waits for a response. */
@@ -313,6 +328,7 @@ class StreamStoreImpl {
 
   /** Remove stream state entirely. */
   clearStream(conversationId: string): void {
+    this._pendingRestores.delete(conversationId);
     const existing = this._streams[conversationId];
     if (!existing) return;
     clearStreamWatchdog(existing);
@@ -341,6 +357,7 @@ class StreamStoreImpl {
 
   /** Mark stream as stopped by user. */
   stopStream(conversationId: string): void {
+    this._pendingRestores.delete(conversationId);
     const s = this._streams[conversationId];
     if (!s) return;
     clearStreamWatchdog(s);
@@ -359,6 +376,7 @@ class StreamStoreImpl {
 
   /** Handle a send() failure (api.agentChat threw). */
   sendError(conversationId: string, errorMessage: string): void {
+    this._pendingRestores.delete(conversationId);
     const s = this._streams[conversationId];
     if (!s) return;
     clearStreamWatchdog(s);
@@ -540,7 +558,7 @@ class StreamStoreImpl {
       'recovery',
     );
     this.touch(conversationId);
-    this.capLiveCollections(state);
+    capStreamCollections(state);
     this.notifyImmediately(conversationId);
     this.resetTimeout(conversationId, true);
   }
@@ -689,15 +707,17 @@ class StreamStoreImpl {
       if (!state || !state.isStreaming) return;
       if (outcome.kind === 'active') {
         this.setWatchdogConnectionState(state, 'recovered');
-        appendStatusTraceEvent(
-          state,
-          'Durable backend state is active; live recovery remains armed.',
-          'success',
-          'user',
-          'recovery',
-        );
+        if (state._watchdogRecoveryAttempt === 1) {
+          appendStatusTraceEvent(
+            state,
+            'Durable backend state is active; live recovery remains armed.',
+            'success',
+            'user',
+            'recovery',
+          );
+        }
         this.touch(conversationId);
-        this.capLiveCollections(state);
+        capStreamCollections(state);
         this.notifyImmediately(conversationId);
         this.resetTimeout(conversationId, true);
         return;
@@ -885,7 +905,7 @@ class StreamStoreImpl {
     }
     if (isTerminalEvent || isResumableSuspension) this.finishTurnTiming(state);
     this.touch(conversationId);
-    this.capLiveCollections(state);
+    capStreamCollections(state);
     if (isTerminalEvent) this.evictCompletedStreams(conversationId);
     if (
       isTerminalEvent

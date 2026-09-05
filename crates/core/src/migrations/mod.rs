@@ -2812,6 +2812,7 @@ Every answer that uses knowledge base search results.
              ON skills(canonical_name COLLATE NOCASE)
              WHERE canonical_name IS NOT NULL AND canonical_name != '';",
     ),
+    ("v127_remove_unsafe_answer_cache", "DROP TABLE IF EXISTS answer_cache;"),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -3102,6 +3103,39 @@ fn total_migration_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retiring_answer_cache_preserves_conversation_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE answer_cache (answer_text TEXT);
+             INSERT INTO answer_cache VALUES ('stale answer');
+             INSERT INTO conversations (id, title, provider, model) VALUES ('kept', 'User history', 'openai', 'test');
+             DELETE FROM _migrations WHERE name = 'v127_remove_unsafe_answer_cache';",
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'answer_cache'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT title FROM conversations WHERE id = 'kept'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "User history"
+        );
+        run_migrations(&conn).unwrap();
+    }
 
     #[test]
     fn test_migrations_run_successfully() {

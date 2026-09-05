@@ -143,7 +143,7 @@ export function AppWindowFrame({ children, area }: AppWindowFrameProps) {
         </div>
       </header>
 
-      <div className="relative z-10 min-h-0 flex-1 overflow-hidden">{children}</div>
+      <div id="app-window-content" className="relative z-10 min-h-0 flex-1 overflow-hidden">{children}</div>
     </div>
   );
 }

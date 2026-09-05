@@ -631,12 +631,12 @@ impl Drop for CodexAppServerClient {
     }
 }
 
-struct CodexBinary {
-    program: OsString,
-    version: String,
+pub(crate) struct CodexBinary {
+    pub(crate) program: OsString,
+    pub(crate) version: String,
 }
 
-fn resolve_codex_binary() -> Result<CodexBinary, String> {
+pub(crate) fn resolve_codex_binary() -> Result<CodexBinary, String> {
     if let Some(raw_override) = env::var_os(CODEX_BINARY_OVERRIDE) {
         let path = PathBuf::from(raw_override);
         if !path.is_absolute() || !path.is_file() {
@@ -822,7 +822,7 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-fn resolve_copilot_binary() -> Result<PathBuf, String> {
+pub(crate) fn resolve_copilot_binary() -> Result<PathBuf, String> {
     for variable in ["NEXA_COPILOT_BIN", "COPILOT_CLI_PATH"] {
         if let Some(raw_path) = env::var_os(variable) {
             let path = PathBuf::from(raw_path);
@@ -1010,6 +1010,91 @@ pub async fn get_copilot_account_snapshot_cmd(
     state: State<'_, AppState>,
 ) -> Result<CopilotAccountSnapshot, String> {
     Ok(read_copilot_account_snapshot(state.copilot_account_runtime.clone()).await)
+}
+
+#[tauri::command]
+pub async fn list_subscription_models_cmd(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<Vec<CopilotModelSummary>, String> {
+    match provider.as_str() {
+        "github_copilot" => {
+            let snapshot =
+                read_copilot_account_snapshot(state.copilot_account_runtime.clone()).await;
+            if !snapshot.entitlement_verified {
+                return Err("Sign in to GitHub Copilot, then refresh the model list.".into());
+            }
+            Ok(snapshot.models)
+        }
+        "openai_codex" => tokio::task::spawn_blocking(|| {
+            let mut client = CodexAppServerClient::start()?;
+            let account = client.request("account/read", Some(json!({"refreshToken":false})))?;
+            if account.pointer("/account/type").and_then(Value::as_str) != Some("chatgpt") {
+                return Err(
+                    "Sign in with your ChatGPT subscription, then refresh the model list.".into(),
+                );
+            }
+            let mut models = Vec::new();
+            let mut cursor: Option<String> = None;
+            let mut cursors = std::collections::HashSet::new();
+            loop {
+                let page = client.request(
+                    "model/list",
+                    Some(json!({"limit":100,"includeHidden":false,"cursor":cursor})),
+                )?;
+                let entries = page
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "Codex returned an invalid model catalog".to_string())?;
+                for item in entries {
+                    if item.get("hidden").and_then(Value::as_bool) == Some(true) {
+                        continue;
+                    }
+                    let Some(id) = item
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    else {
+                        continue;
+                    };
+                    models.push(CopilotModelSummary {
+                        id: id.to_string(),
+                        name: item
+                            .get("displayName")
+                            .and_then(Value::as_str)
+                            .unwrap_or(id)
+                            .to_string(),
+                        reasoning_efforts: item
+                            .get("supportedReasoningEfforts")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|effort| {
+                                effort
+                                    .get("reasoningEffort")
+                                    .and_then(Value::as_str)
+                                    .map(ToOwned::to_owned)
+                            })
+                            .collect(),
+                    });
+                }
+                cursor = page
+                    .get("nextCursor")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let Some(next) = cursor.as_ref() else {
+                    break;
+                };
+                if models.len() > 1000 || !cursors.insert(next.clone()) {
+                    return Err("Codex model pagination did not converge".into());
+                }
+            }
+            Ok(models)
+        })
+        .await
+        .map_err(|_| "Codex model discovery task failed".to_string())?,
+        _ => Err("Unknown subscription runtime".into()),
+    }
 }
 
 #[tauri::command]

@@ -61,6 +61,7 @@ impl AgentRunPhase {
 #[serde(rename_all = "camelCase")]
 pub enum AgentRunEventKind {
     OutputDelta,
+    OutputSnapshot,
     StreamReset,
     Thinking,
     Status,
@@ -79,8 +80,9 @@ pub enum AgentRunEventKind {
 }
 
 impl AgentRunEventKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::OutputDelta,
+        Self::OutputSnapshot,
         Self::StreamReset,
         Self::Thinking,
         Self::Status,
@@ -101,6 +103,7 @@ impl AgentRunEventKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OutputDelta => "outputDelta",
+            Self::OutputSnapshot => "outputSnapshot",
             Self::StreamReset => "streamReset",
             Self::Thinking => "thinking",
             Self::Status => "status",
@@ -122,6 +125,7 @@ impl AgentRunEventKind {
     pub fn from_wire(value: &str) -> Option<Self> {
         match value {
             "outputDelta" => Some(Self::OutputDelta),
+            "outputSnapshot" => Some(Self::OutputSnapshot),
             "streamReset" => Some(Self::StreamReset),
             "thinking" => Some(Self::Thinking),
             "status" => Some(Self::Status),
@@ -290,7 +294,7 @@ fn event_presentation(
     AgentRunEventImportance,
 ) {
     match kind {
-        AgentRunEventKind::OutputDelta => (
+        AgentRunEventKind::OutputDelta | AgentRunEventKind::OutputSnapshot => (
             AgentRunEventVisibility::User,
             AgentRunDisplayKind::Output,
             AgentRunEventImportance::Normal,
@@ -370,6 +374,11 @@ impl AgentRunEventKindContract {
                 kind,
                 required_payload_paths: &["delta"],
                 alternative_payload_paths: &[&["blockId", "channel", "offset", "delta"]],
+            },
+            AgentRunEventKind::OutputSnapshot => Self {
+                kind,
+                required_payload_paths: &["blockId", "channel", "text"],
+                alternative_payload_paths: &[],
             },
             AgentRunEventKind::StreamReset => Self {
                 kind,
@@ -518,6 +527,12 @@ impl AgentRunEvent {
         let (kind, phase, label, status) = match event {
             AgentEvent::TextDelta { .. } | AgentEvent::StreamBlockDelta { .. } => (
                 AgentRunEventKind::OutputDelta,
+                AgentRunPhase::Responding,
+                "Assistant response".to_string(),
+                Some("streaming".to_string()),
+            ),
+            AgentEvent::StreamBlockSnapshot { .. } => (
+                AgentRunEventKind::OutputSnapshot,
                 AgentRunPhase::Responding,
                 "Assistant response".to_string(),
                 Some("streaming".to_string()),
@@ -1558,6 +1573,7 @@ mod tests {
             usage_total: Usage::default(),
             last_prompt_tokens: 0,
             context_breakdown: None,
+            assistant_message_id: None,
             cached: false,
             finish_reason: Some("cancelled".to_string()),
         });
@@ -1672,6 +1688,11 @@ mod tests {
             "test approval",
         );
         let events = vec![
+            AgentEvent::StreamBlockSnapshot {
+                block_id: "block-1".to_string(),
+                channel: StreamBlockChannel::Answer,
+                text: "corrected answer".to_string(),
+            },
             AgentEvent::TextDelta {
                 delta: "a".to_string(),
             },
@@ -1759,6 +1780,7 @@ mod tests {
                 usage_total: Usage::default(),
                 last_prompt_tokens: 0,
                 context_breakdown: None,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: Some("stop".to_string()),
             },

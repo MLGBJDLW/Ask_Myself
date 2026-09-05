@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
@@ -26,6 +26,7 @@ pub struct ActivityObservation {
 
 struct ActivityRuntimeInner {
     entries: Mutex<HashMap<String, ActivityEntry>>,
+    quarantined: HashSet<String>,
     notify: Notify,
     events: broadcast::Sender<ActivityEvent>,
     database: Option<Database>,
@@ -67,6 +68,7 @@ impl ActivityRuntime {
         Self {
             inner: Arc::new(ActivityRuntimeInner {
                 entries: Mutex::new(HashMap::new()),
+                quarantined: HashSet::new(),
                 notify: Notify::new(),
                 events,
                 database: None,
@@ -77,6 +79,13 @@ impl ActivityRuntime {
 
     pub fn is_persistent(&self) -> bool {
         self.inner.database.is_some()
+    }
+
+    fn ensure_readable(&self, activity_id: &str) -> Result<(), CoreError> {
+        if self.inner.quarantined.contains(activity_id) {
+            return Err(CoreError::InvalidInput(format!("Activity {activity_id} has an unreadable persisted journal. Its original rows are retained; repair the journal before reusing this activity ID.")));
+        }
+        Ok(())
     }
 
     pub fn with_database(database: Database) -> Result<Self, CoreError> {
@@ -98,11 +107,12 @@ impl ActivityRuntime {
             }
         }
 
-        let entries = load_entries(&database)?;
+        let loaded = load_entries(&database)?;
         let (events, _) = broadcast::channel(512);
         let runtime = Self {
             inner: Arc::new(ActivityRuntimeInner {
-                entries: Mutex::new(entries),
+                entries: Mutex::new(loaded.entries),
+                quarantined: loaded.quarantined,
                 notify: Notify::new(),
                 events,
                 database: Some(database),
@@ -117,6 +127,7 @@ impl ActivityRuntime {
     }
 
     pub fn start(&self, spec: ActivitySpec) -> Result<ActivityRecord, CoreError> {
+        self.ensure_readable(&spec.activity_id)?;
         if spec.activity_id.trim().is_empty() {
             return Err(CoreError::InvalidInput(
                 "activity_id cannot be empty".to_string(),
@@ -173,6 +184,7 @@ impl ActivityRuntime {
         kind: ActivityEventKind,
         payload: serde_json::Value,
     ) -> Result<ActivityEvent, CoreError> {
+        self.ensure_readable(activity_id)?;
         let (record, event) = {
             let mut entries = self.entries();
             let entry = entries
@@ -215,6 +227,7 @@ impl ActivityRuntime {
         state: ActivityState,
         payload: serde_json::Value,
     ) -> Result<ActivityEvent, CoreError> {
+        self.ensure_readable(activity_id)?;
         let (record, event) = {
             let mut entries = self.entries();
             let entry = entries
@@ -315,6 +328,7 @@ impl ActivityRuntime {
         after_seq: u64,
         timed_out: bool,
     ) -> Result<ActivityObservation, CoreError> {
+        self.ensure_readable(activity_id)?;
         let entries = self.entries();
         let entry = entries
             .get(activity_id)

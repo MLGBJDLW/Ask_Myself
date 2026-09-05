@@ -1,6 +1,7 @@
 //! Tool-call scheduling, approval, execution, and LLM-context insertion.
 
 use super::*;
+use crate::approval::ApprovalDecision;
 
 const MAX_EPHEMERAL_TOOL_IMAGE_BASE64_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EPHEMERAL_UI_IMAGE_BASE64_BYTES: usize = 6 * 1024 * 1024;
@@ -500,7 +501,48 @@ impl ToolDispatchBlock {
     }
 }
 
+/// Shared tool execution implementation. Provider adapters do not own
+/// validation, approval, cancellation, receipts, or result persistence.
+pub(super) struct ToolDispatchRuntime<'a> {
+    pub(super) native_vision: Option<bool>,
+    pub(super) tools: &'a ToolRegistry,
+    pub(super) config: &'a AgentConfig,
+    pub(super) cancel_token: &'a CancellationToken,
+    pub(super) confirmation_callback: &'a Option<ConfirmationCallback>,
+    pub(super) approval_callback: &'a Option<ApprovalCallback>,
+    pub(super) tool_visual_interpreter: &'a Option<ToolVisualInterpreter>,
+    pub(super) activity_runtime: &'a crate::activity::ActivityRuntime,
+}
+
 impl AgentExecutor {
+    pub(super) async fn dispatch_tool_calls(
+        &self,
+        ctx: ToolDispatchContext<'_>,
+        verified_tool_calls: &VerifiedToolCallBatch,
+        tool_dispatch_block: Option<ToolDispatchBlock>,
+        tool_run_started_ids: &mut HashSet<String>,
+    ) -> Result<ToolDispatchOutcome, CoreError> {
+        ToolDispatchRuntime {
+            native_vision: None,
+            tools: &self.tools,
+            config: &self.config,
+            cancel_token: &self.cancel_token,
+            confirmation_callback: &self.confirmation_callback,
+            approval_callback: &self.approval_callback,
+            tool_visual_interpreter: &self.tool_visual_interpreter,
+            activity_runtime: &self.activity_runtime,
+        }
+        .dispatch_tool_calls(
+            ctx,
+            verified_tool_calls,
+            tool_dispatch_block,
+            tool_run_started_ids,
+        )
+        .await
+    }
+}
+
+impl ToolDispatchRuntime<'_> {
     pub(super) async fn dispatch_tool_calls(
         &self,
         ctx: ToolDispatchContext<'_>,
@@ -535,7 +577,7 @@ impl AgentExecutor {
         // variants remain deserialize-only for historical event compatibility.
         for tc in tool_calls {
             let running_run = build_tool_run_item(
-                &self.tools,
+                self.tools,
                 &tc.id,
                 &tc.name,
                 ToolRunStatus::Running,
@@ -590,8 +632,13 @@ impl AgentExecutor {
             offered_tool_names,
             registered_tool_names,
         );
-        for tc in tool_calls {
-            let decision = tool_policy.decision_for(&self.tools, tc);
+        // Prepare once for the scheduling trace, conflict batching, and approval.
+        // Execution still validates at the registry's authoritative entry point.
+        let scheduling: Vec<_> = tool_calls
+            .iter()
+            .map(|tc| tool_policy.decision_for(self.tools, tc))
+            .collect();
+        for (tc, decision) in tool_calls.iter().zip(&scheduling) {
             let policy_label = tool_dispatch_block
                 .as_ref()
                 .map(ToolDispatchBlock::policy_label)
@@ -640,7 +687,8 @@ impl AgentExecutor {
             is_error: bool,
         }
 
-        let tool_batches = tool_call_execution_batches(&self.tools, &tool_policy, tool_calls);
+        let tool_batches = tool_call_execution_batches(scheduling.iter().map(|s| &s.invocation));
+        let mut scheduling: Vec<_> = scheduling.into_iter().map(Some).collect();
         let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
             vec![None; tool_calls.len()];
         let mut post_tool_loop_guard_prompt: Option<String> = None;
@@ -655,6 +703,9 @@ impl AgentExecutor {
             let batch_action_reconciliation_pending = dispatch_action_reconciliation;
             let mut tool_futures = FuturesUnordered::new();
             for &index in &tool_batch {
+                let scheduling = scheduling[index]
+                    .take()
+                    .expect("each scheduled call executes once");
                 let tc = tool_calls[index].clone();
                 let tool_span = info_span!("tool_execution", tool = %tc.name);
                 let progress_tx = tx.clone();
@@ -662,19 +713,15 @@ impl AgentExecutor {
                 let run_tx = tx.clone();
                 let progress_call_id = tc.id.clone();
                 let progress_tool_name = tc.name.clone();
-                let tool_policy = &tool_policy;
                 let tool_dispatch_block = tool_dispatch_block.clone();
                 tool_futures.push(
                     async move {
-                        let scheduling = tool_policy.decision_for(&self.tools, &tc);
-                        let invocation = self
-                            .tools
-                            .build_invocation(&tc.id, &tc.name, scheduling.parsed_args);
-                        let parsed_args = invocation.arguments.clone();
+                        let invocation = scheduling.invocation;
+                        let parsed_args = &invocation.arguments;
                         let tool_timeout = scheduling.timeout;
                         let capabilities = invocation.capabilities.clone();
                         if batch_action_reconciliation_pending
-                            && action_reconciliation_blocks(&tc.name, &parsed_args)
+                            && action_reconciliation_blocks(&tc.name, parsed_args)
                         {
                             let blocked = crate::tools::ToolResult {
                                 call_id: tc.id.clone(),
@@ -724,7 +771,7 @@ impl AgentExecutor {
                         }
                         let tool_requires_confirm = self
                             .tools
-                            .requires_confirmation(&tc.name, &parsed_args)
+                            .requires_confirmation(&tc.name, parsed_args)
                             || invocation.access_profile.needs_approval;
                         let hard_confirmation = tc.name == "computer_control"
                             || (tc.name == "browser_session" && tool_requires_confirm)
@@ -810,11 +857,11 @@ impl AgentExecutor {
                                 } else {
                                     let reason = match self.tools.confirmation_message_in_context(
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         conversation_id,
                                     ) {
                                         Ok(Some(reason)) => reason,
-                                        Ok(None) => describe_request(&tc.name, &parsed_args),
+                                        Ok(None) => describe_request(&tc.name, parsed_args),
                                         Err(error) => {
                                             let failed = approval_context_failure(
                                                 &tc.id,
@@ -837,7 +884,7 @@ impl AgentExecutor {
                                         .tools
                                         .confirmation_message_for_persistence_in_context(
                                             &tc.name,
-                                            &parsed_args,
+                                            parsed_args,
                                             conversation_id,
                                         ) {
                                         Ok(reason) => reason,
@@ -862,7 +909,7 @@ impl AgentExecutor {
                                     let _ = run_tx
                                         .send(AgentEvent::ToolRunUpdated {
                                             run: build_tool_run_item(
-                                                &self.tools,
+                                                self.tools,
                                                 &tc.id,
                                                 &tc.name,
                                                 ToolRunStatus::ApprovalPending,
@@ -879,7 +926,7 @@ impl AgentExecutor {
                                     let req = ApprovalRequest::new(
                                         Uuid::new_v4().to_string(),
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         risk,
                                         reason,
                                     )
@@ -889,13 +936,20 @@ impl AgentExecutor {
                                             request: req.clone(),
                                         })
                                         .await;
-                                    let decision = approval_cb(req.clone()).await;
+                                    let decision = tokio::select! {
+                                        biased;
+                                        _ = self.cancel_token.cancelled() => ApprovalDecision::Deny,
+                                        decision = approval_cb(req.clone()) => decision,
+                                    };
                                     let _ = approval_tx
                                         .send(AgentEvent::ApprovalResolved {
                                             request_id: req.id.clone(),
                                             decision,
                                         })
                                         .await;
+                                    if self.cancel_token.is_cancelled() {
+                                        return FinishedToolExecution { index, call: tc, timeout: tool_timeout, outcome: ToolExecutionOutcome::Cancelled, elapsed: Duration::ZERO };
+                                    }
                                     if !decision.is_allowed() {
                                         let denied = crate::tools::ToolResult {
                                             call_id: tc.id.clone(),
@@ -920,7 +974,7 @@ impl AgentExecutor {
                                     let _ = run_tx
                                         .send(AgentEvent::ToolRunUpdated {
                                             run: build_tool_run_item(
-                                                &self.tools,
+                                                self.tools,
                                                 &tc.id,
                                                 &tc.name,
                                                 ToolRunStatus::Running,
@@ -1013,7 +1067,7 @@ impl AgentExecutor {
                                 } else if let Some(ref cb) = self.confirmation_callback {
                                     let message = match self.tools.confirmation_message_in_context(
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         conversation_id,
                                     ) {
                                         Ok(Some(message)) => message,
@@ -1089,9 +1143,9 @@ impl AgentExecutor {
                                     source_scope,
                                     conversation_id,
                                     turn_id,
-                                    tool_registry: Some(&self.tools),
-                                    cancel_token: Some(&self.cancel_token),
-                                    activity_runtime: Some(&self.activity_runtime),
+                                    tool_registry: Some(self.tools),
+                                    cancel_token: Some(self.cancel_token),
+                                    activity_runtime: Some(self.activity_runtime),
                                     event_tx: Some(&progress_tx),
                                 },
                             );
@@ -1134,7 +1188,7 @@ impl AgentExecutor {
                                         let _ = progress_tx
                                             .send(AgentEvent::ToolRunUpdated {
                                                 run: build_tool_run_item(
-                                                    &self.tools,
+                                                    self.tools,
                                                     &progress_call_id,
                                                     &progress_tool_name,
                                                     ToolRunStatus::Running,
@@ -1157,7 +1211,7 @@ impl AgentExecutor {
                                         let _ = progress_tx
                                             .send(AgentEvent::ToolRunUpdated {
                                                 run: build_tool_run_item(
-                                                    &self.tools,
+                                                    self.tools,
                                                     &progress_call_id,
                                                     &progress_tool_name,
                                                     ToolRunStatus::Running,
@@ -1412,7 +1466,7 @@ impl AgentExecutor {
                 let _ = tx
                     .send(AgentEvent::ToolRunCompleted {
                         run: build_tool_run_item(
-                            &self.tools,
+                            self.tools,
                             &tc.id,
                             &tc.name,
                             run_status.clone(),
@@ -1429,7 +1483,7 @@ impl AgentExecutor {
                     let _ = tx
                         .send(AgentEvent::ToolRunUpdated {
                             run: build_tool_run_item(
-                                &self.tools,
+                                self.tools,
                                 &tc.id,
                                 &tc.name,
                                 run_status,
@@ -1456,7 +1510,7 @@ impl AgentExecutor {
                                 self.config.resolved_max_response_tokens(model),
                             );
                         tool_discovery::activate_tool_search_matches_bounded(
-                            &self.tools,
+                            self.tools,
                             tool_defs,
                             tool_artifacts.as_ref(),
                             model,
@@ -1465,7 +1519,7 @@ impl AgentExecutor {
                         )
                     } else {
                         tool_discovery::activate_tool_search_matches(
-                            &self.tools,
+                            self.tools,
                             tool_defs,
                             tool_artifacts.as_ref(),
                         )
@@ -1518,7 +1572,7 @@ impl AgentExecutor {
 
                 append_persisted_trace_tool(
                     persisted_trace_items,
-                    &self.tools,
+                    self.tools,
                     &tc.name,
                     &tc.arguments,
                     &tc.id,
@@ -1536,7 +1590,9 @@ impl AgentExecutor {
                 };
                 loop_recorder.record(finished.clone());
                 append_persisted_trace_loop_event(persisted_trace_items, finished);
-                if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
+                if let Some(intervention) =
+                    loop_guard.observe_tool_result(&tc, tool_is_error, tool_artifacts.as_ref())
+                {
                     let event = TurnLoopEvent::LoopGuardIntervention {
                         reason: intervention.reason.clone(),
                         action: intervention.action.as_str().to_string(),
@@ -1630,7 +1686,7 @@ impl AgentExecutor {
                 let _ = tx
                     .send(AgentEvent::ToolRunCompleted {
                         run: build_tool_run_item(
-                            &self.tools,
+                            self.tools,
                             &tc.id,
                             &tc.name,
                             ToolRunStatus::Cancelled,
@@ -1645,7 +1701,7 @@ impl AgentExecutor {
                     .await;
                 append_persisted_trace_tool(
                     persisted_trace_items,
-                    &self.tools,
+                    self.tools,
                     &tc.name,
                     &tc.arguments,
                     &tc.id,
@@ -1716,10 +1772,11 @@ impl AgentExecutor {
             }
 
             provider_tool_results.push(Message::text_with_name(Role::Tool, content, tc.id.clone()));
-            let primary_supports_vision = self
-                .config
-                .provider_type
-                .is_some_and(|provider| crate::llm::model_supports_vision(&provider, model));
+            let primary_supports_vision = self.native_vision.unwrap_or_else(|| {
+                self.config
+                    .provider_type
+                    .is_some_and(|provider| crate::llm::model_supports_vision(&provider, model))
+            });
             if let Some(visual_message) = resolve_tool_visual_context_message(
                 primary_supports_vision,
                 self.tool_visual_interpreter.as_ref(),

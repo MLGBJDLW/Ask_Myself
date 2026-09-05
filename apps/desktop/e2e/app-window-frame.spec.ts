@@ -173,6 +173,47 @@ test('reveals the native window onto a branded startup surface', async ({ page }
   await expect(page.getByText('404')).toBeVisible();
 });
 
+test('reveals the static startup surface while the React bootstrap is still loading', async ({ page }) => {
+  let releaseBootstrap!: () => void;
+  const gate = new Promise<void>(resolve => { releaseBootstrap = resolve; });
+  const requested = page.waitForRequest('**/src/bootstrap.tsx*');
+  await page.route('**/src/bootstrap.tsx*', async route => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto('/missing-route', { waitUntil: 'domcontentloaded' });
+  await requested;
+  try {
+    await expect(page.getByTestId('startup-splash')).toBeVisible();
+    await expect(page.getByText('404', { exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() =>
+      (window as unknown as { __NEXA_WINDOW_COMMANDS__: string[] }).__NEXA_WINDOW_COMMANDS__,
+    )).toContain('plugin:window|show');
+  } finally {
+    releaseBootstrap();
+  }
+  await expect(page.getByText('404', { exact: true })).toBeVisible();
+});
+
+test('offers a working reload when the interface bootstrap cannot load', async ({ page }) => {
+  await page.route('**/src/bootstrap.tsx*', route => route.abort());
+  await page.goto('/missing-route');
+  await expect(page.getByRole('alert')).toHaveText('Unable to load Nexa.');
+  await page.unroute('**/src/bootstrap.tsx*');
+  await page.getByRole('button', { name: 'Reload', exact: true }).click();
+  await expect(page.getByText('404', { exact: true })).toBeVisible();
+});
+
+test('keeps route module failures behind the recoverable application error screen', async ({ page }) => {
+  await page.route('**/src/pages/ChatPage.tsx*', route => route.abort());
+  await page.goto('/chat/route-load-probe');
+  await expect(page.getByRole('heading', { name: 'Something went wrong' })).toBeVisible();
+  await expect(page.getByText('Unexpected Application Error!')).toHaveCount(0);
+  await page.unroute('**/src/pages/ChatPage.tsx*');
+  await page.getByRole('button', { name: 'Restart', exact: true }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toBeVisible();
+});
+
 test('hydrates the startup surface from the last validated theme snapshot before React', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-startup-appearance-v1', JSON.stringify({

@@ -263,7 +263,6 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'list_mcp_servers_cmd':
           return [];
-        case 'clear_answer_cache':
           return 0;
         default:
           return null;
@@ -322,4 +321,101 @@ test('quarantines a legacy reasoning-only reply after persistence reload', async
 
   await page.getByRole('button', { name: /Thinking completed/ }).last().click();
   await expect(leakedReasoning).toHaveCount(1);
+});
+
+
+test('large code plan preserves complete source with bounded DOM after hydration', async ({ page }) => {
+    await page.addInitScript(() => {
+        const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+        const blocks = Array.from({ length: 30 }, (_, b) => Array.from({ length: 40 }, (_, i) => `const record${b}_${i} = { id: ${i}, label: "synthetic text", ready: true };`).join('\n'));
+        const markdown = blocks.map(code => '```javascript\n' + code + '\n```').join('\n\n');
+        const now = '2026-09-05T00:00:00Z';
+        const common = { conversationId: 'conv-turn-trace', toolCallId: null, toolCalls: [], thinking: null, tokenCount: 1, createdAt: now, imageAttachments: null };
+        const messages = [{ ...common, id: 'plan-user', role: 'user', content: 'Create a synthetic plan', sortOrder: 0, artifacts: null }, { ...common, id: 'plan-answer', role: 'assistant', content: 'Synthetic plan summary', sortOrder: 1, artifacts: { kind: 'proposedPlan', title: 'Synthetic Large Plan', markdown } }];
+        (window as any).auditPlan = { blocks, markdownChars: markdown.length, copied: null, longTasks: [] };
+        new PerformanceObserver(list => { for (const e of list.getEntries())
+            (window as any).auditPlan.longTasks.push(e.duration); }).observe({ type: 'longtask', buffered: false });
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (value) => { (window as any).auditPlan.copied = value; } }, configurable: true });
+        (window as any).__TAURI_INTERNALS__.invoke = async (cmd, args = {}) => {
+            if (cmd === 'get_conversation_cmd') {
+                const pair = await invoke(cmd, args);
+                return [pair[0], messages];
+            }
+            if (cmd === 'get_conversation_turns_cmd')
+                return [{ id: 'plan-turn', conversationId: 'conv-turn-trace', userMessageId: 'plan-user', assistantMessageId: 'plan-answer', status: 'success', createdAt: now, updatedAt: now, finishedAt: now, trace: null }];
+            return invoke(cmd, args);
+        };
+    });
+    await page.goto('/chat/conv-turn-trace');
+    await page.getByText('Synthetic Large Plan', { exact: true }).waitFor({ timeout: 20000 });
+    await page.waitForTimeout(120);
+    const beforeCopy = await page.evaluate(() => ({ sourceChars: (window as any).auditPlan.markdownChars, plainBlocks: document.querySelectorAll('[data-code-presentation="plain"]').length, codeBlocks: document.querySelectorAll('pre code').length, allCodeTextMatches: [...document.querySelectorAll('pre code')].every((node, i) => node.textContent.replace(/\n$/, '') === (window as any).auditPlan.blocks[i]), domElements: document.body.querySelectorAll('*').length, initialLoadLongTasks: (window as any).auditPlan.longTasks }));
+    await page.locator('pre[data-code-presentation="plain"]').first().locator('..').locator('button').click({ force: true });
+    const copied = await page.evaluate(() => ({ copyMatchesFirstBlock: (window as any).auditPlan.copied === (window as any).auditPlan.blocks[0], copiedChars: (window as any).auditPlan.copied?.length }));
+    expect(beforeCopy.plainBlocks).toBe(30);
+    expect(beforeCopy.allCodeTextMatches).toBe(true);
+    expect(beforeCopy.domElements).toBeLessThan(1500);
+    expect(copied.copyMatchesFirstBlock).toBe(true);
+    await page.reload();
+    await expect(page.locator('pre[data-code-presentation="plain"]')).toHaveCount(30);
+});
+test('live updates do not revisit unrelated history through changing callbacks', async ({ page }) => {
+    await page.addInitScript(() => {
+        const internals = (window as any).__TAURI_INTERNALS__, invoke = internals.invoke, transform = internals.transformCallback;
+        const listeners = new Map(), callbacks = new Map();
+        let traceReads = 0;
+        const now = '2026-09-05T00:00:00Z', messages = [], turns = [];
+        const message = (id, role, content, sortOrder) => ({ id, conversationId: 'conv-turn-trace', role, content, sortOrder, toolCallId: null, toolCalls: [], artifacts: null, thinking: null, tokenCount: 1, createdAt: now, imageAttachments: null });
+        for (let i = 0; i < 400; i++) {
+            messages.push(message('audit-u' + i, 'user', 'Synthetic audit request ' + i, i * 2), message('audit-a' + i, 'assistant', 'Synthetic audit answer ' + i, i * 2 + 1));
+            const trace = { kind: 'turnTrace', routeKind: 'InteractionOperation', items: [{ kind: 'tool', toolCall: { callId: 'audit-tool' + i, toolName: 'audit_lookup', arguments: '{"query":"synthetic"}', status: 'done', content: 'Synthetic result' } }] };
+            const turn = { id: 'audit-t' + i, conversationId: 'conv-turn-trace', userMessageId: 'audit-u' + i, assistantMessageId: 'audit-a' + i, status: 'success', createdAt: now, updatedAt: now, finishedAt: now };
+            Object.defineProperty(turn, 'trace', { enumerable: true, get() { traceReads++; return trace; } });
+            turns.push(turn);
+        }
+        messages.push(message('audit-active-user', 'user', 'Synthetic current live request', 800));
+        internals.transformCallback = cb => { const id = transform(cb); callbacks.set(id, cb); return id; };
+        internals.invoke = async (cmd, args = {}) => {
+            if (cmd === 'plugin:event|listen') {
+                const id = await invoke(cmd, args);
+                listeners.set(id, { event: args.event, handler: args.handler });
+                return id;
+            }
+            if (cmd === 'plugin:event|unlisten') {
+                listeners.delete(args.eventId);
+                return invoke(cmd, args);
+            }
+            if (cmd === 'get_conversation_turns_cmd')
+                return turns;
+            if (cmd === 'get_agent_task_runs_cmd')
+                return [];
+            if (cmd === 'get_conversation_cmd') {
+                const value = await invoke(cmd, args);
+                return [value[0], messages];
+            }
+            return invoke(cmd, args);
+        };
+        (window as any).audit = { reset() { traceReads = 0; }, count() { return traceReads; }, emit(event) { for (const [id, l] of listeners)
+                if (l.event === 'agent://run-event')
+                    callbacks.get(l.handler)?.({ event: l.event, id, payload: { conversationId: 'conv-turn-trace', runEvent: event } }); } };
+    });
+    await page.goto('/chat/conv-turn-trace');
+    await page.locator('[data-chat-virtual-list]').waitFor({ timeout: 20000 });
+    await page.waitForTimeout(500);
+    await page.evaluate(async () => {
+        const { streamStore } = await import('/src/lib/streamStore.ts');
+        streamStore.startStream('conv-turn-trace');
+        streamStore.bindTurnHandle('conv-turn-trace', { conversationId: 'conv-turn-trace', runId: 'audit-live', turnId: 'audit-active', state: 'running' });
+        (window as any).audit.emit({ version: 2, runId: 'audit-live', turnId: 'audit-active', eventSeq: 1, kind: 'status', phase: 'responding', label: 'Synthetic live run', status: 'running', visibility: 'user', persistence: 'durable', displayKind: 'status', importance: 'normal', payload: {}, createdAt: '2026-09-05T00:00:00Z' });
+    });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => (window as any).audit.reset());
+    for (let i = 0; i < 6; i++) {
+        await page.evaluate(i => (window as any).audit.emit({ version: 2, runId: 'audit-live', turnId: 'audit-active', eventSeq: i + 2, kind: 'outputDelta', phase: 'responding', label: 'Text', status: 'running', visibility: 'user', persistence: 'durable', displayKind: 'output', importance: 'normal', payload: { blockId: 'audit-answer', channel: 'answer', offset: i * 4, delta: 'tick' }, createdAt: '2026-09-05T00:00:00Z' }), i);
+        await page.waitForTimeout(70);
+    }
+    const result = await page.evaluate(() => ({ scenario: 'actual ChatPage + StreamProvider + useChatSession + 400 persisted turns + six live events', tracePropertyReads: (window as any).audit.count(), virtualRows: document.querySelectorAll('[data-chat-virtual-row]').length, liveTextVisible: document.body.textContent.includes('ticktickticktickticktick'), domElements: document.body.querySelectorAll('*').length }));
+    expect(result.tracePropertyReads).toBe(0);
+    expect(result.liveTextVisible).toBe(true);
+    expect(result.virtualRows).toBeLessThan(30);
 });

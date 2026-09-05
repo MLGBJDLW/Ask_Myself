@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["sync", "rt"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
 github-copilot-sdk = "=1.0.11"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "system-proxy"], default-features = false }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 nexa-core = { path = "../../../crates/core", default-features = false }
@@ -49,6 +49,9 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSBitmapImageRep", "NSImage", "NSImageRep"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSDictionary", "NSError", "NSObject", "NSValue"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["block2", "objc2-app-kit", "WKSnapshotConfiguration", "WKWebView"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [features]
 default = ["custom-protocol", "video", "ocr", "local-embeddings"]

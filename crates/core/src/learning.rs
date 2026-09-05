@@ -475,18 +475,36 @@ impl Database {
 /// Minimum cosine similarity below which a candidate is discarded.
 pub const LEARNED_SIMILARITY_THRESHOLD: f32 = 0.7;
 
-/// Retrieve the top-`top_k` learned successes most similar to
-/// `query_embedding`, filtering out anything below
-/// [`LEARNED_SIMILARITY_THRESHOLD`].
+/// Retrieve similar learned successes for a query, embedding only when indexed
+/// examples exist and filtering below [`LEARNED_SIMILARITY_THRESHOLD`].
 pub fn retrieve_similar_successes(
     db: &Database,
-    query_embedding: &[f32],
+    query: &str,
     top_k: usize,
 ) -> Result<Vec<(LearnedSuccess, f32)>, CoreError> {
-    if top_k == 0 || query_embedding.is_empty() {
+    if top_k == 0 || query.trim().is_empty() {
         return Ok(Vec::new());
     }
+    // An empty store has no semantic work to do. In particular, do not load
+    // an ONNX model or make a remote embedding request before the first token.
     let candidates = db.list_learned_successes_with_embedding()?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let config = db.get_embedder_config()?;
+    let embedder = crate::embed::create_embedder(&config)?;
+    if embedder.dimensions() == 0 {
+        return Ok(Vec::new());
+    }
+    let query_embedding = embedder.embed(query)?;
+    Ok(rank_learned_successes(candidates, &query_embedding, top_k))
+}
+
+fn rank_learned_successes(
+    candidates: Vec<(LearnedSuccess, Vec<f32>)>,
+    query_embedding: &[f32],
+    top_k: usize,
+) -> Vec<(LearnedSuccess, f32)> {
     let mut scored: Vec<(LearnedSuccess, f32)> = candidates
         .into_iter()
         .filter_map(|(row, emb)| {
@@ -503,7 +521,7 @@ pub fn retrieve_similar_successes(
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_k);
-    Ok(scored)
+    scored
 }
 
 /// Build the "Learned Successes" prompt section from retrieved examples.
@@ -614,12 +632,20 @@ mod tests {
             .unwrap();
 
         // Very similar query.
-        let hits = retrieve_similar_successes(&db, &[0.99, 0.01, 0.0], 3).unwrap();
+        let hits = rank_learned_successes(
+            db.list_learned_successes_with_embedding().unwrap(),
+            &[0.99, 0.01, 0.0],
+            3,
+        );
         assert_eq!(hits.len(), 1);
         assert!(hits[0].1 >= LEARNED_SIMILARITY_THRESHOLD);
 
         // Orthogonal query — below threshold, filtered out.
-        let miss = retrieve_similar_successes(&db, &[0.0, 1.0, 0.0], 3).unwrap();
+        let miss = rank_learned_successes(
+            db.list_learned_successes_with_embedding().unwrap(),
+            &[0.0, 1.0, 0.0],
+            3,
+        );
         assert!(miss.is_empty());
     }
 

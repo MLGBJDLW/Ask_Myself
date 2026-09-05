@@ -13,6 +13,7 @@ mod delegation_scheduler;
 mod desktop_agent_session;
 mod subagent_lifecycle;
 mod subagent_tool;
+mod subscription_runtime;
 mod terminal_agent_tool;
 mod tool_preview_journal;
 
@@ -752,7 +753,6 @@ fn main() {
             // Hybrid search
             commands::hybrid_search,
             // Answer cache
-            commands::clear_answer_cache,
             // Embeddings
             commands::embed_source,
             commands::rebuild_embeddings,
@@ -942,6 +942,7 @@ fn main() {
             commands::cancel_codex_account_login_cmd,
             commands::logout_codex_account_cmd,
             commands::get_copilot_account_snapshot_cmd,
+            commands::list_subscription_models_cmd,
             commands::start_copilot_account_login_cmd,
             commands::cancel_copilot_account_login_cmd,
             commands::list_workflow_templates_cmd,

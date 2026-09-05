@@ -504,9 +504,32 @@ fn build_structured_tool_error_result(
         side_effect,
         observation_consumed,
     };
-    let content = format!(
-        "Error: {message}\n\nCode: {code}\nRetryable: {retryable}\nUse the expected JSON shape shown in artifacts.expectedFormat before calling the tool again."
-    );
+    // The model receives tool content, not the renderer's artifact sidecar.
+    // Include the actual correction contract and never invite a blind retry.
+    let recovery = error
+        .expected_format
+        .get("recovery")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(if retryable {
+            "Correct the reported cause before trying a materially changed request."
+        } else {
+            "Do not repeat this operation. Stop or choose a different safe approach."
+        });
+    let mut content =
+        format!("Error: {message}\n\nCode: {code}\nRetryable: {retryable}\nRecovery: {recovery}");
+    if matches!(
+        code.as_str(),
+        "invalid_tool_arguments"
+            | "invalid_tool_request"
+            | "unknown_tool"
+            | "invalid_argument_type"
+            | "invalid_argument_value"
+            | "invalid_arguments_shape"
+            | "invalid_arguments_json"
+    ) {
+        content.push_str("\nExpected input: ");
+        content.push_str(&error.expected_format.to_string());
+    }
 
     ToolResult {
         call_id: call_id.to_string(),
@@ -1030,7 +1053,7 @@ impl ToolRegistry {
         Ok(normalize_tool_execution_result(
             call_id,
             name,
-            tool.parameters_schema(),
+            || tool.parameters_schema(),
             result,
         ))
     }
@@ -1535,30 +1558,6 @@ fn levenshtein(left: &str, right: &str) -> usize {
     previous[right_chars.len()]
 }
 
-fn classify_tool_result_error(message: &str) -> (&'static str, bool) {
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("cancel") || lower.contains("denied") || lower.contains("permission") {
-        ("tool_permission_or_cancellation", false)
-    } else if lower.contains("timed out") || lower.contains("timeout") {
-        ("tool_timeout", true)
-    } else if lower.contains("not found") || lower.contains("cannot find") {
-        ("resource_not_found", true)
-    } else if lower.contains("found ") && lower.contains(" times")
-        || lower.contains("multiple occurrences")
-        || lower.contains("ambiguous")
-    {
-        ("ambiguous_match", true)
-    } else if lower.contains("invalid")
-        || lower.contains("requires")
-        || lower.contains("must ")
-        || lower.contains("missing")
-    {
-        ("invalid_tool_request", true)
-    } else {
-        ("tool_execution_failed", true)
-    }
-}
-
 fn core_error_contract(error: &CoreError) -> (&'static str, bool) {
     match error {
         CoreError::InvalidInput(_) | CoreError::Serialization(_) | CoreError::Parse(_) => {
@@ -1598,11 +1597,12 @@ fn conservative_unstructured_computer_failure(
 fn normalize_tool_execution_result(
     call_id: &str,
     tool_name: &str,
-    schema: serde_json::Value,
+    schema: impl FnOnce() -> serde_json::Value,
     result: Result<ToolResult, CoreError>,
 ) -> ToolResult {
     match result {
         Ok(result) if result.is_error && result.artifacts.is_none() => {
+            let schema = schema();
             if tool_name == "computer_control" {
                 tracing::error!(
                     tool = tool_name,
@@ -1610,7 +1610,8 @@ fn normalize_tool_execution_result(
                 );
                 return conservative_unstructured_computer_failure(call_id, schema);
             }
-            let (code, retryable) = classify_tool_result_error(&result.content);
+            // Unstructured text cannot prove that an operation is safe to replay.
+            let (code, retryable) = ("tool_execution_failed", false);
             structured_tool_error_result(
                 call_id,
                 code,
@@ -1629,6 +1630,7 @@ fn normalize_tool_execution_result(
         }
         Ok(result) => result,
         Err(error) => {
+            let schema = schema();
             if tool_name == "computer_control" {
                 tracing::error!(
                     tool = tool_name,
@@ -1829,6 +1831,48 @@ mod tests {
 
     use super::*;
     use crate::approval::ApprovalRisk;
+
+    #[test]
+    fn tool_error_content_carries_the_actual_correction_contract() {
+        let result = structured_tool_error_result(
+            "call",
+            "invalid_argument_type",
+            "count must be an integer",
+            serde_json::json!({"type":"object","properties":{"count":{"type":"integer"}}}),
+            true,
+        );
+        assert!(result.content.contains("\"count\":{\"type\":\"integer\"}"));
+        assert!(!result.content.contains("artifacts.expectedFormat"));
+        let blocked = structured_tool_error_result(
+            "call",
+            "loop_guard_blocked",
+            "repeated request",
+            serde_json::json!({"recovery":"change strategy"}),
+            false,
+        );
+        assert_eq!(blocked.artifacts.as_ref().unwrap()["retryable"], false);
+        assert!(!blocked.content.contains("before calling the tool again"));
+    }
+
+    #[test]
+    fn unstructured_tool_failure_cannot_authorize_an_automatic_retry() {
+        let normalized = normalize_tool_execution_result(
+            "call",
+            "external_tool",
+            || serde_json::json!({}),
+            Ok(ToolResult {
+                call_id: "call".into(),
+                content: "request timed out after writing the document".into(),
+                is_error: true,
+                artifacts: None,
+            }),
+        );
+        assert_eq!(normalized.artifacts.as_ref().unwrap()["retryable"], false);
+        assert_eq!(
+            normalized.artifacts.as_ref().unwrap()["code"],
+            "tool_execution_failed"
+        );
+    }
 
     struct RuntimeMcpOnlyTool;
 
@@ -2935,7 +2979,7 @@ mod tests {
         let projected = normalize_tool_execution_result(
             "call-sensitive",
             "computer_control",
-            serde_json::json!({ "type": "object" }),
+            || serde_json::json!({ "type": "object" }),
             Err(CoreError::InvalidInput(format!(
                 "unsupported key {sentinel}"
             ))),

@@ -94,7 +94,6 @@ function message(
 function createPort(overrides: Partial<DurableRunReconciliationPort> = {}) {
   const calls = {
     taskRuns: 0,
-    runEvents: 0,
     runEventPages: 0,
     taskEvents: 0,
     conversations: 0,
@@ -114,18 +113,11 @@ function createPort(overrides: Partial<DurableRunReconciliationPort> = {}) {
       calls.taskRuns += 1;
       return [taskRun('running')];
     },
-    async listRunEvents() {
-      calls.runEvents += 1;
-      return [runEvent(2), runEvent(1)];
-    },
-    async listRunEventPage(_runId, afterEventSeq, durableHighWater) {
+    async listRunEventPage(runId, afterEventSeq, durableHighWater) {
       calls.runEventPages += 1;
-      return {
-        events: [],
-        durableHighWater: durableHighWater ?? afterEventSeq,
-        nextAfterEventSeq: null,
-        hasMore: false,
-      };
+      const highWater = durableHighWater ?? Math.max(2, afterEventSeq);
+      const events = [runEvent(2), runEvent(1)].filter(event => event.eventSeq > afterEventSeq && event.eventSeq <= highWater).map(event => ({ ...event, runId }));
+      return { events, durableHighWater: highWater, nextAfterEventSeq: events.length ? Math.max(...events.map(event => event.eventSeq)) : null, hasMore: false };
     },
     async listTaskEvents() {
       calls.taskEvents += 1;
@@ -170,6 +162,31 @@ test('hydration selects the newest resumable run and returns canonical event ord
   assertEqual(calls.taskRuns, 0, 'provided hydration runs avoid a duplicate backend query');
 });
 
+test('hydration pins paginated history and cancels before fetching another page', async () => {
+  const cursors: number[] = [];
+  const heads: Array<number | undefined> = [];
+  const { port } = createPort({
+    async listRunEventPage(_runId, afterEventSeq, highWater) {
+      cursors.push(afterEventSeq);
+      heads.push(highWater);
+      return { events: [runEvent(afterEventSeq + 1)], durableHighWater: 3,
+        nextAfterEventSeq: afterEventSeq + 1, hasMore: afterEventSeq < 2 };
+    },
+  });
+  const outcome = await new DurableRunReconciler(port).reconcile({ reason: 'hydration',
+    conversationId: 'conversation-1', taskRuns: [taskRun('running')],
+  });
+  assert(outcome.kind === 'active', 'all pages restore the run');
+  assertEqual(cursors.join(','), '0,1,2', 'initial hydration uses page cursors');
+  assertEqual(heads.map(head => head ?? 'unset').join(','), 'unset,3,3', 'one committed snapshot');
+  cursors.length = 0;
+  const stale = await new DurableRunReconciler(port).reconcile({ reason: 'hydration',
+    conversationId: 'conversation-1', taskRuns: [taskRun('running')], isCurrent: () => cursors.length < 1,
+  });
+  assertEqual(stale.kind, 'stale', 'navigation cancels restoration');
+  assertEqual(cursors.length, 1, 'no abandoned follow-up requests');
+});
+
 test('hydration restores either durable event source when the other is temporarily unavailable', async () => {
   const { port } = createPort({
     async listTaskEvents() { throw new Error('task timeline unavailable'); },
@@ -198,7 +215,6 @@ test('watchdog preserves expected run identity instead of adopting a newer run',
   });
   const { port } = createPort({
     async listTaskRuns() { return [newer, expected]; },
-    async listRunEvents(runId) { return [{ ...runEvent(1), runId }]; },
   });
   const reconciler = new DurableRunReconciler(port);
 
@@ -383,7 +399,7 @@ test('stale generations are rejected between durable queries', async () => {
     isCurrent: () => current,
   });
   assertEqual(outcome.kind, 'stale', 'stale result is discarded');
-  assertEqual(calls.runEvents, 0, 'no later query runs after staleness is observed');
+  assertEqual(calls.runEventPages, 0, 'no later query runs after staleness is observed');
 });
 
 test('backend query failures return a typed unavailable outcome', async () => {
@@ -400,7 +416,7 @@ test('backend query failures return a typed unavailable outcome', async () => {
 
   assert(outcome.kind === 'unavailable', 'query failure should not escape the interface');
   assert(outcome.error.includes('database busy'), 'typed failure preserves the cause');
-  assertEqual(calls.runEvents, 0, 'failed task lookup does not start dependent queries');
+  assertEqual(calls.runEventPages, 0, 'failed task lookup does not start dependent queries');
 });
 
 test('gap recovery owns canonical ordering, backoff, and exhaustion', async () => {

@@ -8,7 +8,7 @@ import {
 } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
 import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
-import { markdownPresentationInterval } from '../../lib/streaming/markdownPresentation';
+import { markdownPresentationInterval, MAX_HIGHLIGHT_DOCUMENT_CHARS } from '../../lib/streaming/markdownPresentation';
 import { CitationChip } from './EvidenceCard';
 import {
   CitationContext,
@@ -114,7 +114,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
         </div>
       )}
       <CitationContext.Provider value={citationLookup}>
-        <MarkdownRenderStateProvider isStreaming={isStreaming}>
+        <MarkdownRenderStateProvider isStreaming={isStreaming} plainCode={content.length > MAX_HIGHLIGHT_DOCUMENT_CHARS}>
           <div
             className="prose-chat"
             data-testid="chat-markdown-document"

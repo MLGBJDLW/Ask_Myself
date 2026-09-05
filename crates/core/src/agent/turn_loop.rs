@@ -11,7 +11,6 @@ use super::output_recovery::{
 use super::steering::SteeringDrainContext;
 use super::tool_dispatch;
 use super::turn_budget::{TurnBudget, TurnStepMode, TurnStepPurpose};
-use super::turn_state::{TurnOutcome, TurnPhase, TurnStateMachine};
 use super::usage_accounting;
 use super::*;
 use crate::llm::FinishReason;
@@ -77,7 +76,7 @@ fn capture_recovery_assistant_message(ctx: RecoveryAssistantMessageContext<'_>) 
     message
 }
 
-fn awaiting_user_input_interaction_id(
+pub(super) fn awaiting_user_input_interaction_id(
     summaries: &[tool_dispatch::ToolDispatchSummary],
 ) -> Option<String> {
     summaries.iter().find_map(|summary| {
@@ -99,14 +98,14 @@ fn awaiting_user_input_interaction_id(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ActionReconciliationFence {
+pub(super) struct ActionReconciliationFence {
     computer: bool,
     browser: bool,
     unknown: bool,
 }
 
 impl ActionReconciliationFence {
-    fn from_resume_prompt(prompt: &str) -> Self {
+    pub(super) fn from_resume_prompt(prompt: &str) -> Self {
         const MARKER: &str = "Checkpoint reason: user_stop_requires_action_reconciliation:";
         let Some(receipts) = prompt.split_once(MARKER).map(|(_, receipts)| receipts) else {
             return Self::default();
@@ -120,11 +119,11 @@ impl ActionReconciliationFence {
         }
     }
 
-    fn blocks_interactive_input(self) -> bool {
+    pub(super) fn blocks_interactive_input(self) -> bool {
         self.computer || self.browser || self.unknown
     }
 
-    fn observe_tool_results(
+    pub(super) fn observe_tool_results(
         &mut self,
         calls: &[ToolCallRequest],
         summaries: &[tool_dispatch::ToolDispatchSummary],
@@ -569,11 +568,9 @@ impl AgentExecutor {
         // accounting. Answer-only turns must not pay context for a tool
         // surface that can never be transmitted.
         let mut turn_budget = TurnBudget::new(self.config.max_iterations);
-        let mut turn_state = TurnStateMachine::new();
 
         // --- 0. Early cancellation check before any work ----------------------
         if self.cancel_token.is_cancelled() {
-            turn_state.finish(TurnOutcome::Cancelled);
             let msg = Message::text(Role::Assistant, "Request cancelled by user.".to_string());
             let _ = tx
                 .send(AgentEvent::Done {
@@ -581,6 +578,7 @@ impl AgentExecutor {
                     usage_total: Usage::default(),
                     last_prompt_tokens: 0,
                     context_breakdown: None,
+                    assistant_message_id: None,
                     cached: false,
                     finish_reason: Some("stop".to_string()),
                 })
@@ -589,7 +587,6 @@ impl AgentExecutor {
         }
 
         // --- 0b. Pre-summarize evicted history if context is getting full -----
-        turn_state.transition_to(TurnPhase::PreparingContext);
         let history_before_summarization = prompt_cache::message_sequence_fingerprint(&history);
         let (history, pre_summarization_usage) = self
             .summarize_if_needed(
@@ -656,7 +653,6 @@ impl AgentExecutor {
                 None => Vec::new(),
             });
         let has_sources = !source_scope.is_empty();
-        turn_state.transition_to(TurnPhase::Planning);
         let route_plan = route_user_turn(
             &user_query_text_for_tools,
             &self.config.system_prompt,
@@ -958,19 +954,11 @@ impl AgentExecutor {
         append_persisted_trace_loaded_skills(&mut persisted_trace_items, &auto_loaded_skills);
         self.seed_prompt_cache_from_previous_turn(db, conversation_id, turn_id);
 
-        // --- 3c. Extract user query text and build cache key -----------------
+        // --- 3c. Extract user query text -----------------
         let user_query_text = &user_query_text_for_tools;
 
-        let cache_source_filter: Option<String> = if source_scope.is_empty() {
-            None
-        } else {
-            let mut sorted = source_scope.clone();
-            sorted.sort();
-            Some(sorted.join(","))
-        };
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
         if !self.config.execution_mode.is_plan() && turn_budget.can_dispatch_tool_round() {
-            turn_state.transition_to(TurnPhase::DirectDispatch);
             match self
                 .try_direct_dispatch(
                     user_query_text,
@@ -984,36 +972,12 @@ impl AgentExecutor {
                 .await
             {
                 direct_dispatch_runner::DirectDispatchOutcome::Completed(message) => {
-                    turn_state.finish(TurnOutcome::DirectDispatch);
                     return Ok(message);
                 }
                 direct_dispatch_runner::DirectDispatchOutcome::ExecutedButFailed => {
                     turn_budget.record_verified_tool_round();
                 }
                 direct_dispatch_runner::DirectDispatchOutcome::NotMatched => {}
-            }
-        }
-
-        // --- 3d. Check answer cache before ReAct loop ------------------------
-        if !self.config.execution_mode.is_plan() {
-            turn_state.transition_to(TurnPhase::CacheLookup);
-            if let Some(msg) = self
-                .try_cached_answer(
-                    user_query_text,
-                    cache_source_filter.as_deref(),
-                    db,
-                    &tx,
-                    conversation_id,
-                    turn_id,
-                    model,
-                    sort_order,
-                    route_plan.kind,
-                    &mut trace,
-                )
-                .await
-            {
-                turn_state.finish(TurnOutcome::Cached);
-                return Ok(msg);
             }
         }
 
@@ -1059,7 +1023,6 @@ impl AgentExecutor {
                             last_context_breakdown.clone(),
                         )
                         .await;
-                    turn_state.finish(TurnOutcome::Cancelled);
                     return Ok(final_msg);
                 }
             };
@@ -1068,7 +1031,6 @@ impl AgentExecutor {
         // --- 3e. Auto pre-search for KnowledgeRetrieval route ----------------
         // Eagerly execute search_knowledge_base so the LLM already has evidence
         // in context instead of depending on it to call the tool itself.
-        turn_state.transition_to(TurnPhase::PreSearch);
         let prefetch_enters_dispatch = route_plan.kind == AgentRouteKind::KnowledgeRetrieval
             && !user_query_text.is_empty()
             && turn_budget.can_dispatch_tool_round();
@@ -1228,7 +1190,6 @@ impl AgentExecutor {
                     })
                     .await;
 
-                turn_state.transition_to(TurnPhase::ToolDispatch);
                 let mut tool_run_started_ids = HashSet::new();
                 let dispatch_outcome = match self
                     .dispatch_tool_calls(
@@ -1271,7 +1232,6 @@ impl AgentExecutor {
                             &error,
                         )
                         .await;
-                        turn_state.finish(TurnOutcome::Failed);
                         return Err(error);
                     }
                 };
@@ -1295,7 +1255,6 @@ impl AgentExecutor {
                         },
                     )
                     .await;
-                    turn_state.finish(TurnOutcome::Failed);
                     return Err(CoreError::Agent(trace_message));
                 }
                 let summaries = dispatch_outcome.summaries;
@@ -1400,7 +1359,6 @@ impl AgentExecutor {
             };
             next_step_purpose = TurnStepPurpose::Normal;
             let iteration = step_permit.sample_index;
-            turn_state.start_iteration(iteration);
             let step_started = TurnLoopEvent::StepStarted {
                 iteration,
                 remaining_iterations: step_permit.remaining_tool_rounds.unwrap_or(u32::MAX),
@@ -1504,7 +1462,6 @@ impl AgentExecutor {
                     messages: &mut messages,
                     context_pipeline,
                     tool_defs: effective_tool_defs,
-                    turn_state: &mut turn_state,
                     loop_recorder: &mut loop_recorder,
                     persisted_trace_items: &mut persisted_trace_items,
                     total_usage: &mut total_usage,
@@ -1559,7 +1516,6 @@ impl AgentExecutor {
                     },
                 )
                 .await;
-                turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             };
             let wire_model_step_max_response_tokens =
@@ -1573,6 +1529,7 @@ impl AgentExecutor {
             let accumulated_content_before_model_step = accumulated_content.len();
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
+                    request_budget: turn_budget.request_budget(),
                     db,
                     tx: &tx,
                     conversation_id,
@@ -1686,7 +1643,6 @@ impl AgentExecutor {
                             tool_defs.as_slice(),
                             suppress_tools_for_step,
                         ),
-                        turn_state: &mut turn_state,
                         loop_recorder: &mut loop_recorder,
                         persisted_trace_items: &mut persisted_trace_items,
                         trace: &mut trace,
@@ -1724,7 +1680,7 @@ impl AgentExecutor {
             // Streaming stays responsive, but rejection resets the exact
             // physical sample before persistence or client-tool execution.
             if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
-                if let Err(error) = reject_contaminated_projection(
+                reject_contaminated_projection(
                     ContaminatedProjectionContext {
                         db,
                         tx: &tx,
@@ -1743,11 +1699,7 @@ impl AgentExecutor {
                     marker,
                     tool_calls.is_empty(),
                 )
-                .await
-                {
-                    turn_state.finish(TurnOutcome::Failed);
-                    return Err(error);
-                }
+                .await?;
                 next_step_purpose = TurnStepPurpose::Recovery;
                 continue 'react_loop;
             }
@@ -1785,7 +1737,6 @@ impl AgentExecutor {
                     },
                 )
                 .await;
-                turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             }
 
@@ -1836,7 +1787,6 @@ impl AgentExecutor {
                     },
                 )
                 .await;
-                turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             }
             let mut tool_round_rejection_cause = None;
@@ -1880,25 +1830,20 @@ impl AgentExecutor {
                     }
 
                     if cause == OutputRecoveryCause::ContextLimit {
-                        if let Err(error) = self
-                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
-                                db,
-                                tx: &tx,
-                                conversation_id,
-                                turn_id,
-                                route_kind: route_plan.kind,
-                                model,
-                                messages: &mut messages,
-                                total_usage: &mut total_usage,
-                                completed_attempts: &mut context_recovery_attempts,
-                                trace: &mut trace,
-                                persisted_trace_items: &mut persisted_trace_items,
-                            })
-                            .await
-                        {
-                            turn_state.finish(TurnOutcome::Failed);
-                            return Err(error);
-                        }
+                        self.recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                            db,
+                            tx: &tx,
+                            conversation_id,
+                            turn_id,
+                            route_kind: route_plan.kind,
+                            model,
+                            messages: &mut messages,
+                            total_usage: &mut total_usage,
+                            completed_attempts: &mut context_recovery_attempts,
+                            trace: &mut trace,
+                            persisted_trace_items: &mut persisted_trace_items,
+                        })
+                        .await?;
                         prompt_was_compacted = true;
                     }
 
@@ -1975,25 +1920,20 @@ impl AgentExecutor {
                         "warning",
                     );
                     if cause == ToolRoundRejectionCause::ContextLimit {
-                        if let Err(error) = self
-                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
-                                db,
-                                tx: &tx,
-                                conversation_id,
-                                turn_id,
-                                route_kind: route_plan.kind,
-                                model,
-                                messages: &mut messages,
-                                total_usage: &mut total_usage,
-                                completed_attempts: &mut context_recovery_attempts,
-                                trace: &mut trace,
-                                persisted_trace_items: &mut persisted_trace_items,
-                            })
-                            .await
-                        {
-                            turn_state.finish(TurnOutcome::Failed);
-                            return Err(error);
-                        }
+                        self.recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                            db,
+                            tx: &tx,
+                            conversation_id,
+                            turn_id,
+                            route_kind: route_plan.kind,
+                            model,
+                            messages: &mut messages,
+                            total_usage: &mut total_usage,
+                            completed_attempts: &mut context_recovery_attempts,
+                            trace: &mut trace,
+                            persisted_trace_items: &mut persisted_trace_items,
+                        })
+                        .await?;
                         prompt_was_compacted = true;
                     }
                     None
@@ -2020,7 +1960,7 @@ impl AgentExecutor {
                         if let Some(marker) =
                             final_answer_hygiene_scope.contamination_marker(&content)
                         {
-                            if let Err(error) = reject_contaminated_projection(
+                            reject_contaminated_projection(
                                 ContaminatedProjectionContext {
                                     db,
                                     tx: &tx,
@@ -2039,11 +1979,7 @@ impl AgentExecutor {
                                 marker,
                                 true,
                             )
-                            .await
-                            {
-                                turn_state.finish(TurnOutcome::Failed);
-                                return Err(error);
-                            }
+                            .await?;
                             next_step_purpose = TurnStepPurpose::Recovery;
                             continue 'react_loop;
                         }
@@ -2106,7 +2042,6 @@ impl AgentExecutor {
                     },
                 )
                 .await;
-                turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             }
 
@@ -2253,7 +2188,6 @@ impl AgentExecutor {
                                 },
                             )
                             .await;
-                            turn_state.finish(TurnOutcome::Failed);
                             return Err(CoreError::Agent(trace_message));
                         }
                         if let Some(message) =
@@ -2397,7 +2331,6 @@ impl AgentExecutor {
                         },
                     )
                     .await;
-                    turn_state.finish(TurnOutcome::Failed);
                     return Err(CoreError::Agent(trace_message));
                 }
             }
@@ -2652,7 +2585,6 @@ impl AgentExecutor {
                     continue;
                 }
                 append_persisted_trace_thinking(&mut persisted_trace_items, &iteration_thinking);
-                turn_state.transition_to(TurnPhase::Finalizing);
                 let finalized = self
                     .finish_successful_turn(
                         finalization::TurnFinalizationContext {
@@ -2671,8 +2603,6 @@ impl AgentExecutor {
                         assistant_msg,
                         assistant_reasoning_content,
                         answer_delta_seen,
-                        user_query_text,
-                        cache_source_filter.as_deref(),
                         total_usage,
                         last_prompt_tokens,
                         last_context_breakdown,
@@ -2682,11 +2612,9 @@ impl AgentExecutor {
                 let assistant_msg = match finalized {
                     Ok(message) => message,
                     Err(error) => {
-                        turn_state.finish(TurnOutcome::Failed);
                         return Err(error);
                     }
                 };
-                turn_state.finish(TurnOutcome::Success);
                 return Ok(assistant_msg);
             }
 
@@ -2755,7 +2683,6 @@ impl AgentExecutor {
             let dispatch_consumes_tool_round = tool_dispatch_block.is_none();
 
             // -- 4e. Execute tool calls in parallel ------------------------------
-            turn_state.transition_to(TurnPhase::ToolDispatch);
             let dispatch_outcome = match self
                 .dispatch_tool_calls(
                     tool_dispatch::ToolDispatchContext {
@@ -2797,7 +2724,6 @@ impl AgentExecutor {
                         &error,
                     )
                     .await;
-                    turn_state.finish(TurnOutcome::Failed);
                     return Err(error);
                 }
             };
@@ -2820,7 +2746,6 @@ impl AgentExecutor {
                     },
                 )
                 .await;
-                turn_state.finish(TurnOutcome::Failed);
                 return Err(CoreError::Agent(trace_message));
             }
             model_action_observed |= successful_executable_action(&tool_calls, &dispatch_summaries);
@@ -2944,7 +2869,6 @@ impl AgentExecutor {
                         tone: Some("attention".to_string()),
                     })
                     .await;
-                turn_state.finish(TurnOutcome::AwaitingUserInput);
                 return Err(CoreError::AwaitingUserInput { interaction_id });
             }
             last_tool_calls = None;
@@ -3013,7 +2937,6 @@ impl AgentExecutor {
             turn_budget.configured_tool_round_limit(),
             turn_budget.tool_rounds_used(),
         );
-        turn_state.transition_to(TurnPhase::Finalizing);
         let live_state = long_task_state.checkpoint_live_state(
             &task_plan,
             workflow_ir.as_ref(),
@@ -3065,7 +2988,6 @@ impl AgentExecutor {
                 last_finish_reason,
             )
             .await;
-        turn_state.finish(TurnOutcome::MaxIterations);
         Ok(final_msg)
     }
 }

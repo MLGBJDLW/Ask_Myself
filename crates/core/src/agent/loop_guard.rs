@@ -39,6 +39,7 @@ pub(crate) struct AgentLoopGuard {
     last_tool_signature: Option<String>,
     repeated_tool_signature_count: u32,
     repeated_tool_intervention_used: bool,
+    observation_fingerprints: HashMap<String, blake3::Hash>,
     last_text_shape: Option<String>,
     repeated_text_fingerprint_count: u32,
     repeated_text_intervention_used: bool,
@@ -99,6 +100,7 @@ impl AgentLoopGuard {
                 self.last_tool_signature = Some(signature);
                 self.repeated_tool_signature_count = 1;
                 self.repeated_tool_intervention_used = false;
+                self.observation_fingerprints.clear();
             }
 
             if self.repeated_tool_signature_count >= REPEATED_TOOL_SIGNATURE_THRESHOLD {
@@ -217,7 +219,46 @@ impl AgentLoopGuard {
         })
     }
 
-    pub(crate) fn observe_tool_result(&mut self, is_error: bool) -> Option<LoopGuardIntervention> {
+    pub(crate) fn observe_tool_result(
+        &mut self,
+        call: &ToolCallRequest,
+        is_error: bool,
+        artifacts: Option<&Value>,
+    ) -> Option<LoopGuardIntervention> {
+        // Only a read-only observation with a changed content receipt proves
+        // progress here. New IDs/timestamps and action successes do not.
+        if !is_error && call.name == "browser_session" {
+            let action = serde_json::from_str::<Value>(&call.arguments).ok();
+            if action
+                .as_ref()
+                .and_then(|args| args.get("action"))
+                .and_then(Value::as_str)
+                == Some("observe")
+            {
+                if let Some(data) = artifacts.and_then(|value| value.get("data")) {
+                    if let Some(content_hash) = data
+                        .get("contentHash")
+                        .and_then(Value::as_str)
+                        .filter(|hash| !hash.is_empty())
+                    {
+                        let fingerprint = blake3::hash(serde_json::json!({
+                            "url": data.get("url"),
+                            "contentHash": content_hash,
+                            "screenshotHash": data.get("screenshotHash").or_else(|| data.pointer("/screenshot/contentHash")),
+                        }).to_string().as_bytes());
+                        let invocation = tool_call_batch_signature(std::slice::from_ref(call));
+                        if self
+                            .observation_fingerprints
+                            .insert(invocation, fingerprint)
+                            .is_some_and(|previous| previous != fingerprint)
+                        {
+                            self.repeated_tool_signature_count = 0;
+                            self.repeated_tool_intervention_used = false;
+                        }
+                    }
+                }
+            }
+        }
         if is_error {
             self.consecutive_tool_errors = self.consecutive_tool_errors.saturating_add(1);
         } else {
@@ -378,20 +419,87 @@ mod tests {
     }
 
     #[test]
+    fn changed_browser_observations_are_progress_but_random_ids_are_not() {
+        for screenshot_field in ["screenshotHash", "screenshot"] {
+            let mut guard = AgentLoopGuard::new();
+            let mut observe = call(r#"{"action":"observe","tabId":"tab"}"#);
+            observe.name = "browser_session".into();
+            for index in 0..8 {
+                assert!(guard
+                    .observe_model_step("", std::slice::from_ref(&observe))
+                    .is_none());
+                let mut data = serde_json::json!({"contentHash":"same-dom", "url":"https://example.com", "observationId":format!("random-{index}")});
+                data[screenshot_field] = if screenshot_field == "screenshot" {
+                    serde_json::json!({"contentHash":index.to_string()})
+                } else {
+                    serde_json::json!(index.to_string())
+                };
+                assert!(guard
+                    .observe_tool_result(&observe, false, Some(&serde_json::json!({"data": data})))
+                    .is_none());
+            }
+        }
+        let mut guard = AgentLoopGuard::new();
+        let mut observe = call(r#"{"action":"observe"}"#);
+        observe.name = "browser_session".into();
+        for index in 0..2 {
+            assert!(guard
+                .observe_model_step("", std::slice::from_ref(&observe))
+                .is_none());
+            guard.observe_tool_result(&observe, false, Some(&serde_json::json!({"data":{"contentHash":"same", "observationId":index, "timestamp":index}})));
+        }
+        assert_eq!(
+            guard.observe_model_step("", &[observe]).unwrap().action,
+            LoopGuardAction::BlockToolCalls
+        );
+    }
+
+    #[test]
+    fn changed_browser_receipts_do_not_authorize_repeated_actions_or_errors() {
+        for (action, is_error) in [("click", false), ("observe", true)] {
+            let mut guard = AgentLoopGuard::new();
+            let mut request = call(&serde_json::json!({"action": action}).to_string());
+            request.name = "browser_session".into();
+            for index in 0..2 {
+                assert!(guard
+                    .observe_model_step("", std::slice::from_ref(&request))
+                    .is_none());
+                guard.observe_tool_result(
+                    &request,
+                    is_error,
+                    Some(&serde_json::json!({"data":{"contentHash":index.to_string()}})),
+                );
+            }
+            assert_eq!(
+                guard.observe_model_step("", &[request]).unwrap().action,
+                LoopGuardAction::BlockToolCalls
+            );
+        }
+    }
+
+    #[test]
     fn detects_consecutive_tool_errors() {
         let mut guard = AgentLoopGuard::new();
-        assert!(guard.observe_tool_result(true).is_none());
-        assert!(guard.observe_tool_result(true).is_none());
-        assert!(guard.observe_tool_result(true).is_none());
+        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
+        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
+        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
         assert_eq!(
-            guard.observe_tool_result(true).unwrap().action,
+            guard
+                .observe_tool_result(&call("{}"), true, None)
+                .unwrap()
+                .action,
             LoopGuardAction::ChangeStrategy
         );
         assert_eq!(
-            guard.observe_tool_result(true).unwrap().action,
+            guard
+                .observe_tool_result(&call("{}"), true, None)
+                .unwrap()
+                .action,
             LoopGuardAction::StopLoop
         );
-        assert!(guard.observe_tool_result(false).is_none());
+        assert!(guard
+            .observe_tool_result(&call("{}"), false, None)
+            .is_none());
     }
 
     #[test]

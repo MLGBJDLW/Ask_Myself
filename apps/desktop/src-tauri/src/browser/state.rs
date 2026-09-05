@@ -329,6 +329,26 @@ impl BrowserState {
         );
     }
 
+    /// Run an atomic native-input check/commit on the UI thread. Wry getters
+    /// synchronously rendezvous with this thread, so a worker must never call
+    /// them while holding `inner`: navigation callbacks also need that mutex.
+    /// Wry executes this closure inline when already on the UI thread.
+    fn on_ui_commit<T: Send + 'static>(
+        &self,
+        action: impl FnOnce(&Self) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let state = self.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.app
+            .run_on_main_thread(move || {
+                let _ = sender.send(action(&state));
+            })
+            .map_err(|error| format!("Could not dispatch browser UI operation: {error}"))?;
+        receiver
+            .recv()
+            .map_err(|_| "Browser UI operation was interrupted".to_string())?
+    }
+
     fn require_visible_focused_host_window(&self) -> Result<(), String> {
         let window = self
             .app
@@ -459,10 +479,17 @@ impl BrowserState {
         &self,
         conversation_id: &str,
     ) -> Result<Option<BrowserSessionInfo>, String> {
-        Ok(self
-            .list_sessions()?
-            .into_iter()
-            .find(|session| session.conversation_id.as_deref() == Some(conversation_id)))
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        Ok(runtime
+            .sessions
+            .values()
+            .find(|session| {
+                !session.initializing && session.conversation_id.as_deref() == Some(conversation_id)
+            })
+            .map(session_info))
     }
 
     pub async fn create_session(
@@ -1630,6 +1657,9 @@ impl BrowserState {
             .to_hex()
             .to_string();
         let observation_id = format!("obs_{}", uuid::Uuid::new_v4().simple());
+        let dispatched_url = webview
+            .url()
+            .map_err(|error| format!("Could not read browser address: {error}"))?;
         let owner = {
             let mut runtime = self
                 .inner
@@ -1652,10 +1682,6 @@ impl BrowserState {
                 .tabs
                 .get_mut(tab_id)
                 .ok_or_else(|| format!("Unknown browser tab '{tab_id}'"))?;
-            let dispatched_url = tab
-                .webview
-                .url()
-                .map_err(|error| format!("Could not read browser address: {error}"))?;
             if dispatched_url != snapshot_url {
                 return Err("stale observation: page navigated during observation".to_string());
             }
@@ -1703,6 +1729,11 @@ impl BrowserState {
 
     pub async fn act(&self, request: BrowserActRequest<'_>) -> Result<BrowserActOutcome, String> {
         self.require_visible_focused_host_window()?;
+        let current_url = self
+            .webview(request.session_id, request.tab_id)?
+            .url()
+            .map_err(|error| format!("Could not read browser address: {error}"))?
+            .to_string();
         let (observation, expected, expected_end) = {
             let mut runtime = self
                 .inner
@@ -1738,12 +1769,6 @@ impl BrowserState {
             {
                 return Err("stale observation: browser state or control owner changed".to_string());
             }
-            let current_url = session
-                .tabs
-                .get(request.tab_id)
-                .and_then(|tab| tab.webview.url().ok())
-                .map(|url| url.to_string())
-                .unwrap_or_default();
             if current_url != observation.url {
                 return Err("stale observation: page navigated".to_string());
             }
@@ -2381,6 +2406,10 @@ impl BrowserState {
         call_id: &str,
         commit_tracker: &BrowserActCommitTracker,
     ) -> Result<(), String> {
+        let current_url = self
+            .webview(session_id, tab_id)?
+            .url()
+            .map_err(|error| format!("Could not read browser address: {error}"))?;
         let (current_url, lease_generation) = {
             let runtime = self
                 .inner
@@ -2396,10 +2425,7 @@ impl BrowserState {
             ) {
                 return Err("Browser control changed before the Agent could reload".to_string());
             }
-            let current_url = require_agent_tab_surface(session, tab_id)?
-                .webview
-                .url()
-                .map_err(|error| format!("Could not read browser address: {error}"))?;
+            require_agent_tab_surface(session, tab_id)?;
             (current_url, session.control_lease.generation())
         };
         self.prepare_agent_network_access(session_id, tab_id, &current_url)
@@ -2793,6 +2819,31 @@ impl BrowserState {
         call_id: &str,
         lease_generation: u64,
     ) -> Result<BrowserTrustedInputGuard, String> {
+        let (session_id, tab_id, observation_id, call_id) = (
+            session_id.to_string(),
+            tab_id.to_string(),
+            observation_id.to_string(),
+            call_id.to_string(),
+        );
+        self.on_ui_commit(move |state| {
+            state.trusted_input_guard_on_ui(
+                &session_id,
+                &tab_id,
+                &observation_id,
+                &call_id,
+                lease_generation,
+            )
+        })
+    }
+
+    fn trusted_input_guard_on_ui(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        observation_id: &str,
+        call_id: &str,
+        lease_generation: u64,
+    ) -> Result<BrowserTrustedInputGuard, String> {
         let runtime = self
             .inner
             .lock()
@@ -2946,6 +2997,37 @@ impl BrowserState {
     }
 
     fn move_native_pointer_to_target(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        observation_id: &str,
+        call_id: &str,
+        lease_generation: u64,
+        target: &BrowserElementBounds,
+        commit_tracker: &BrowserActCommitTracker,
+    ) -> Result<(), String> {
+        let (session_id, tab_id, observation_id, call_id) = (
+            session_id.to_string(),
+            tab_id.to_string(),
+            observation_id.to_string(),
+            call_id.to_string(),
+        );
+        let target = target.clone();
+        let commit_tracker = commit_tracker.clone();
+        self.on_ui_commit(move |state| {
+            state.move_native_pointer_on_ui(
+                &session_id,
+                &tab_id,
+                &observation_id,
+                &call_id,
+                lease_generation,
+                &target,
+                &commit_tracker,
+            )
+        })
+    }
+
+    fn move_native_pointer_on_ui(
         &self,
         session_id: &str,
         tab_id: &str,

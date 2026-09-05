@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, type ComponentType, type ReactNode } from "react";
 import {
   createBrowserRouter,
   createRoutesFromElements,
@@ -9,11 +9,12 @@ import {
   RouterProvider,
   useLocation,
   useNavigate,
+  useRouteError,
 } from "react-router";
 import { listen } from "@tauri-apps/api/event";
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ErrorBoundary, ErrorScreen } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
 import { AppWindowFrame } from "./components/AppWindowFrame";
 
@@ -26,16 +27,6 @@ import * as api from "./lib/api";
 import { useAutoCompile } from "./lib/useAutoCompile";
 import { useAutoHealthCheck } from "./lib/useAutoHealthCheck";
 import { useKnowledgeInsights } from "./lib/useKnowledgeInsights";
-
-const SearchPage = lazy(() => import("./pages/SearchPage").then((module) => ({ default: module.SearchPage })));
-const SourcesPage = lazy(() => import("./pages/SourcesPage").then((module) => ({ default: module.SourcesPage })));
-const KnowledgePage = lazy(() => import("./pages/KnowledgePage").then((module) => ({ default: module.KnowledgePage })));
-const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
-const ChatPage = lazy(() => import("./pages/ChatPage").then((module) => ({ default: module.ChatPage })));
-const TaskCenterPage = lazy(() => import("./pages/TaskCenterPage").then((module) => ({ default: module.TaskCenterPage })));
-const WorkflowsPage = lazy(() => import("./pages/WorkflowsPage").then((module) => ({ default: module.WorkflowsPage })));
-const WizardPage = lazy(() => import("./pages/WizardPage").then((module) => ({ default: module.WizardPage })));
-const CompanionWindowPage = lazy(() => import("./pages/CompanionWindowPage").then((module) => ({ default: module.CompanionWindowPage })));
 
 /* ── Page transition wrapper ─────────────────────────────────────── */
 function PageTransition({ children }: { children: ReactNode }) {
@@ -90,12 +81,24 @@ function PageLoader() {
   );
 }
 
-function LazyPage({ children }: { children: ReactNode }) {
+function withPageTransition(Component: ComponentType) {
+  return function Page() {
+    return <PageTransition><Component /></PageTransition>;
+  };
+}
+
+function InitialRouteLoader() {
+  const location = useLocation();
   return (
-    <Suspense fallback={<PageLoader />}>
-      <PageTransition>{children}</PageTransition>
-    </Suspense>
+    <I18nProvider>
+      <AppWindowFrame area={location.pathname === '/' ? 'home' : 'task'}><PageLoader /></AppWindowFrame>
+    </I18nProvider>
   );
+}
+
+function RouteErrorScreen() {
+  const error = useRouteError();
+  return <ErrorScreen error={error instanceof Error ? error : new Error(String(error))} />;
 }
 
 function AppShell() {
@@ -184,26 +187,29 @@ const router = createBrowserRouter(
     <>
       <Route
         path="/companion"
-        element={(
-          <I18nProvider>
-            <MotionConfig reducedMotion="user">
-              <Suspense fallback={null}><CompanionWindowPage /></Suspense>
-            </MotionConfig>
-          </I18nProvider>
-        )}
+        ErrorBoundary={RouteErrorScreen}
+        hydrateFallbackElement={null}
+        lazy={async () => {
+          const { CompanionWindowPage } = await import("./pages/CompanionWindowPage");
+          return { Component: () => (
+            <I18nProvider>
+              <MotionConfig reducedMotion="user"><CompanionWindowPage /></MotionConfig>
+            </I18nProvider>
+          ) };
+        }}
       />
-      <Route element={<AppShell />}>
-        <Route path="/wizard" element={<Suspense fallback={<PageLoader />}><WizardPage /></Suspense>} />
+      <Route element={<AppShell />} HydrateFallback={InitialRouteLoader} ErrorBoundary={RouteErrorScreen}>
+        <Route path="/wizard" lazy={async () => ({ Component: (await import("./pages/WizardPage")).WizardPage })} />
         <Route element={<Layout />}>
-          <Route path="/" element={<LazyPage><SearchPage /></LazyPage>} />
-          <Route path="/sources" element={<LazyPage><SourcesPage /></LazyPage>} />
+          <Route path="/" lazy={async () => ({ Component: withPageTransition((await import("./pages/SearchPage")).SearchPage) })} />
+          <Route path="/sources" lazy={async () => ({ Component: withPageTransition((await import("./pages/SourcesPage")).SourcesPage) })} />
           <Route path="/playbooks" element={<Navigate to="/" replace />} />
-          <Route path="/knowledge" element={<LazyPage><KnowledgePage /></LazyPage>} />
-          <Route path="/chat/:conversationId?" element={<LazyPage><ChatPage /></LazyPage>} />
-          <Route path="/tasks" element={<LazyPage><TaskCenterPage /></LazyPage>} />
-          <Route path="/workflows" element={<LazyPage><WorkflowsPage /></LazyPage>} />
-          <Route path="/settings" element={<LazyPage><SettingsPage /></LazyPage>} />
-          <Route path="*" element={<LazyPage><NotFoundPage /></LazyPage>} />
+          <Route path="/knowledge" lazy={async () => ({ Component: withPageTransition((await import("./pages/KnowledgePage")).KnowledgePage) })} />
+          <Route path="/chat/:conversationId?" lazy={async () => ({ Component: withPageTransition((await import("./pages/ChatPage")).ChatPage) })} />
+          <Route path="/tasks" lazy={async () => ({ Component: withPageTransition((await import("./pages/TaskCenterPage")).TaskCenterPage) })} />
+          <Route path="/workflows" lazy={async () => ({ Component: withPageTransition((await import("./pages/WorkflowsPage")).WorkflowsPage) })} />
+          <Route path="/settings" lazy={async () => ({ Component: withPageTransition((await import("./pages/SettingsPage")).SettingsPage) })} />
+          <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
         </Route>
       </Route>
     </>

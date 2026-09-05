@@ -45,9 +45,6 @@
   "indexRebuildError": "索引重建失败",
   "ftsOptimized": "FTS 索引优化完成",
   "ftsOptimizeError": "FTS 索引优化失败",
-  "clearCache": "清除回答缓存",
-  "cacheClearedCount": "已清除 {count} 条缓存回答",
-  "clearCacheError": "清除回答缓存失败",
   "loadPrivacyError": "加载隐私配置失败",
   "patternExists": "该模式已存在",
   "privacySaved": "隐私配置已保存",
@@ -340,8 +337,6 @@
   "agentQualityLastRun": "上次运行",
   "agentQualityNoFailures": "所有本地质量门禁均已通过。",
   "advanced": "高级设置",
-  "cacheTtl": "缓存有效期（小时）",
-  "cacheTtlDesc": "AI 回答缓存时长。设为 0 禁用缓存。",
   "searchLimit": "默认搜索数量",
   "searchLimitDesc": "搜索结果默认返回的最大条数。",
   "searchSimilarity": "最低搜索相似度",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "无法取消 GitHub Copilot 登录"
   ,"copilotAvailableModels": "订阅可用模型 {count} 个"
   ,"copilotUnlimited": "不限量"
-  ,"copilotOwnershipNotice": "此账户桥通过固定版本的 GitHub Copilot 官方 SDK 及经过完整性校验的 CLI 验证订阅、模型和配额。登录保留在 Copilot CLI/系统钥匙串中，不会把 GitHub 令牌复制进 Nexa。若要把 Copilot 选作 Nexa 对话执行内核，仍需单独的 Agent Runtime 桥接。"
+  ,"copilotOwnershipNotice": "通过 Copilot 官方 CLI 登录，选择订阅模型后保存为聊天提供商。工具执行与审批由 Nexa 处理，GitHub 令牌保留在 Copilot 中。"
+,"subscriptionSelectModel": "选择可用模型"
+,"reasoningUltra": "Ultra"
 }

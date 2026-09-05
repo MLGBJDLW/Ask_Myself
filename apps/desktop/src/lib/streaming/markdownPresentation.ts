@@ -12,3 +12,7 @@ export function markdownPresentationInterval(contentLength: number): number {
     ? LONG_STREAM_PRESENTATION_INTERVAL_MS
     : SHORT_STREAM_PRESENTATION_INTERVAL_MS;
 }
+
+// Bound syntax-highlight DOM across both live and persisted documents.
+export const MAX_HIGHLIGHT_DOCUMENT_CHARS = 16 * 1024;
+export const MAX_HIGHLIGHT_CODE_CHARS = 8 * 1024;

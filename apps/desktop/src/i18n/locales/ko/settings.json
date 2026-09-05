@@ -45,9 +45,6 @@
   "indexRebuildError": "인덱스 재구축 실패",
   "ftsOptimized": "FTS 인덱스가 최적화되었습니다",
   "ftsOptimizeError": "FTS 인덱스 최적화 실패",
-  "clearCache": "응답 캐시 지우기",
-  "cacheClearedCount": "캐시된 응답 {count}건 삭제됨",
-  "clearCacheError": "응답 캐시 삭제 실패",
   "loadPrivacyError": "개인정보 보호 설정 로드 실패",
   "patternExists": "이 패턴은 이미 존재합니다",
   "privacySaved": "개인정보 보호 설정이 저장되었습니다",
@@ -338,8 +335,6 @@
   "agentQualityLastRun": "Last run",
   "agentQualityNoFailures": "All local quality gates passed.",
   "advanced": "고급 설정",
-  "cacheTtl": "캐시 유효기간 (시간)",
-  "cacheTtlDesc": "AI 답변 캐시 기간. 0으로 설정하면 캐시 비활성화.",
   "searchLimit": "기본 검색 수",
   "searchLimitDesc": "검색 결과 기본 최대 건수.",
   "searchSimilarity": "최소 검색 유사도",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "GitHub Copilot 로그인을 취소할 수 없습니다"
   ,"copilotAvailableModels": "구독으로 사용 가능한 모델 {count}개"
   ,"copilotUnlimited": "무제한"
-  ,"copilotOwnershipNotice": "이 계정 브리지는 고정 버전의 공식 GitHub Copilot SDK와 무결성 검증된 CLI로 구독, 모델 및 할당량을 확인합니다. 로그인은 Copilot CLI/시스템 키체인에 유지되며 GitHub 토큰을 Nexa로 복사하지 않습니다. Copilot을 Nexa 채팅 실행 런타임으로 선택하려면 별도의 Agent Runtime 브리지가 필요합니다."
+  ,"copilotOwnershipNotice": "공식 Copilot CLI로 로그인하고 구독 모델을 선택해 채팅 공급자로 저장하세요. Nexa가 도구 실행과 승인을 처리하며 GitHub 토큰은 Copilot에 보관됩니다."
+,"subscriptionSelectModel": "사용 가능한 모델 선택"
+,"reasoningUltra": "Ultra"
 }

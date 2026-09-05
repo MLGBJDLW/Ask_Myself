@@ -969,6 +969,9 @@ export interface CopilotAccountSnapshot {
 export const getCopilotAccountSnapshot = () =>
   invoke<CopilotAccountSnapshot>('get_copilot_account_snapshot_cmd');
 
+export const listSubscriptionModels = (provider: string) =>
+  invoke<CopilotModelSummary[]>('list_subscription_models_cmd', { provider });
+
 export const startCopilotAccountLogin = () =>
   invoke<void>('start_copilot_account_login_cmd');
 
@@ -2324,9 +2327,6 @@ export const finishRealtimeTranscription = (sessionId: string) =>
 
 export const cancelRealtimeTranscription = (sessionId: string) =>
   invoke<void>('cancel_realtime_transcription_cmd', { sessionId });
-
-export const clearAnswerCache = () =>
-  invoke<number>('clear_answer_cache');
 
 // ── Skills ──────────────────────────────────────────────────────────────
 

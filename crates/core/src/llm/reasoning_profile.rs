@@ -228,9 +228,10 @@ impl ReasoningProfile {
             ReasoningEffortMapping::Qwen38Chat => match effort {
                 ReasoningEffort::Minimal | ReasoningEffort::Low => ReasoningEffort::Low,
                 ReasoningEffort::Medium => ReasoningEffort::Medium,
-                ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh => {
-                    ReasoningEffort::XHigh
-                }
+                ReasoningEffort::High
+                | ReasoningEffort::Max
+                | ReasoningEffort::XHigh
+                | ReasoningEffort::Ultra => ReasoningEffort::XHigh,
                 ReasoningEffort::None => return None,
             },
             ReasoningEffortMapping::OpenAiCompatible | ReasoningEffortMapping::Exact => {

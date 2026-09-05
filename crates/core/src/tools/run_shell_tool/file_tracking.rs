@@ -3,24 +3,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 use super::super::diff_stats::text_diff_artifact;
 
 const MAX_FILE_TRACK_FILES: usize = 5_000;
 const MAX_FILE_TRACK_BYTES: u64 = 1024 * 1024;
 const MAX_FILE_TRACK_DIFFS: usize = 30;
-
-const FILE_TRACK_SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    ".venv",
-    "venv",
-    "__pycache__",
-];
 
 #[derive(Debug, Clone)]
 pub(super) struct FileSnapshotEntry {
@@ -45,16 +34,6 @@ pub(super) struct FileChangeSet {
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
-
-fn should_track_entry(entry: &DirEntry) -> bool {
-    if !entry.file_type().is_dir() {
-        return true;
-    }
-    let name = entry.file_name().to_string_lossy();
-    !FILE_TRACK_SKIP_DIRS
-        .iter()
-        .any(|skip| name.eq_ignore_ascii_case(skip))
-}
 
 fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String> {
     let metadata = match std::fs::metadata(path) {
@@ -96,89 +75,38 @@ fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String>
     }))
 }
 
-pub(super) fn capture_file_snapshot(root: &Path) -> FileSnapshot {
-    if let Some(paths) = git_snapshot_paths(root) {
-        return capture_known_paths(paths);
-    }
-
+/// Snapshot only the paths whose native cp/mv operation can change them.
+/// Arbitrary shell commands have no trustworthy path set and do not use this.
+pub(super) fn capture_file_snapshot(roots: &[PathBuf]) -> FileSnapshot {
     let mut files = BTreeMap::new();
     let mut truncated = false;
-    let mut unreadable_count = 0usize;
-
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(should_track_entry)
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                unreadable_count += 1;
-                continue;
-            }
-        };
-        if !entry.file_type().is_file() {
+    let mut unreadable_count = 0;
+    'roots: for root in roots {
+        if !root.exists() {
             continue;
         }
-        if files.len() >= MAX_FILE_TRACK_FILES {
-            truncated = true;
-            break;
-        }
-        let path = entry.path().to_path_buf();
-        match read_snapshot_entry(&path) {
-            Ok(Some(snapshot)) => {
-                files.insert(path, snapshot);
+        for entry in WalkDir::new(root).follow_links(false) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    unreadable_count += 1;
+                    continue;
+                }
+            };
+            if !entry.file_type().is_file() || files.contains_key(entry.path()) {
+                continue;
             }
-            Ok(None) => {}
-            Err(_) => {
-                unreadable_count += 1;
+            if files.len() >= MAX_FILE_TRACK_FILES {
+                truncated = true;
+                break 'roots;
             }
-        }
-    }
-
-    FileSnapshot {
-        files,
-        truncated,
-        unreadable_count,
-    }
-}
-
-fn git_snapshot_paths(root: &Path) -> Option<Vec<PathBuf>> {
-    let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(root).args([
-        "ls-files",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "-z",
-    ]);
-    crate::background_process::configure_std_background(&mut command);
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(
-        output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .take(MAX_FILE_TRACK_FILES + 1)
-            .map(|path| root.join(String::from_utf8_lossy(path).as_ref()))
-            .collect(),
-    )
-}
-
-fn capture_known_paths(paths: Vec<PathBuf>) -> FileSnapshot {
-    let mut files = BTreeMap::new();
-    let truncated = paths.len() > MAX_FILE_TRACK_FILES;
-    let mut unreadable_count = 0;
-    for path in paths.into_iter().take(MAX_FILE_TRACK_FILES) {
-        match read_snapshot_entry(&path) {
-            Ok(Some(snapshot)) => {
-                files.insert(path, snapshot);
+            match read_snapshot_entry(entry.path()) {
+                Ok(Some(snapshot)) => {
+                    files.insert(entry.into_path(), snapshot);
+                }
+                Ok(None) => {}
+                Err(_) => unreadable_count += 1,
             }
-            Ok(None) => {}
-            Err(_) => unreadable_count += 1,
         }
     }
     FileSnapshot {
@@ -316,6 +244,7 @@ pub(super) fn build_run_shell_file_changes(
         "source": "run_shell",
         "root": root.display().to_string(),
         "tracking": {
+            "scope": "nativeMutationPaths",
             "maxFiles": MAX_FILE_TRACK_FILES,
             "maxBytesPerFile": MAX_FILE_TRACK_BYTES,
             "truncated": before.truncated || after.truncated,

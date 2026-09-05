@@ -983,6 +983,7 @@ export function ChatInput({
       return;
     }
     if (slashResolution?.localAction === "compact") {
+      if (!onCompact) { toast.error(t("chat.compactUnavailable")); return; }
       if (isStreaming) {
         toast.error(t("chat.compactWhileRunning"));
         return;

@@ -300,7 +300,12 @@ async fn parse_ollama_ndjson_stream(
     )
     .await?
     {
-        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| {
+            CoreError::TransientLlm(format!(
+                "Stream read error: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
         buffer.push_str(text);
@@ -502,7 +507,10 @@ impl OllamaProvider {
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
         if status.is_server_error() {
-            Err(CoreError::TransientLlm(message))
+            Err(CoreError::ProviderUnavailable {
+                status: status.as_u16(),
+                message,
+            })
         } else {
             Err(CoreError::Llm(message))
         }
@@ -520,20 +528,27 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/api/tags", self.base_url());
 
-        let response =
-            with_request_timeout(self.transport.client().get(&url), self.request_timeout)
-                .send()
-                .await
-                .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        let response = with_request_timeout(transport.client().get(&url), self.request_timeout)
+            .send()
+            .await
+            .map_err(|e| {
+                CoreError::Llm(format!(
+                    "Request failed: {}",
+                    super::transport::describe_http_error(&e)
+                ))
+            })?;
 
         let response = self.check_response(response).await?;
 
-        let resp: OllamaTagsResponse = response
-            .json()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Failed to parse tags response: {e}")))?;
+        let resp: OllamaTagsResponse = response.json().await.map_err(|e| {
+            CoreError::Llm(format!(
+                "Failed to parse tags response: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         Ok(resp
             .models
@@ -544,12 +559,13 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, false);
         let body_bytes = serialized_json_body(&body, "Ollama completion request")?;
 
         let response = with_request_timeout(
-            self.transport
+            transport
                 .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
@@ -558,14 +574,21 @@ impl LlmProvider for OllamaProvider {
         )
         .send()
         .await
-        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        .map_err(|e| {
+            CoreError::Llm(format!(
+                "Request failed: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         let response = self.check_response(response).await?;
 
-        let resp: OllamaResponse = response
-            .json()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+        let resp: OllamaResponse = response.json().await.map_err(|e| {
+            CoreError::Llm(format!(
+                "Failed to parse response: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         let raw_content = resp
             .message
@@ -622,12 +645,13 @@ impl LlmProvider for OllamaProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/api/chat", self.base_url());
         let body = build_request_body(request, true);
         let body_bytes = serialized_json_body(&body, "Ollama stream request")?;
 
         let response = send_stream_start_request(
-            self.transport
+            transport
                 .client()
                 .post(&url)
                 .header("Content-Type", "application/json")
@@ -637,14 +661,13 @@ impl LlmProvider for OllamaProvider {
         )
         .await
         .inspect_err(|error| {
-            self.transport.record_transport_failure(&error.to_string());
+            transport.record_transport_failure(error);
         })?;
 
         let response = self.check_response(response).await?;
 
         let (tx, rx) = mpsc::channel(64);
 
-        let transport = Arc::clone(&self.transport);
         let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
@@ -654,7 +677,7 @@ impl LlmProvider for OllamaProvider {
                 result = parse_ollama_ndjson_stream(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
-                transport.record_transport_failure(&e.to_string());
+                transport.record_transport_failure(&e);
                 let _ = tx.send(Err(e)).await;
             } else {
                 transport.record_transport_success();

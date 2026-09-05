@@ -215,7 +215,6 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'list_mcp_servers_cmd':
           return [];
-        case 'clear_answer_cache':
           return 0;
         case 'get_recent_queries':
           return [];

@@ -1,4 +1,5 @@
 import providerPresets from "../../../../shared/provider-presets.json";
+import subscriptionPresets from "../../../../shared/subscription-runtime-presets.json";
 import type { ProviderStreamingConfig } from '../types/conversation';
 import type {
   ProviderCapabilities,
@@ -26,6 +27,7 @@ export type {
 } from './providerTypes';
 
 export interface ProviderPreset {
+  runtime?: 'copilot' | 'codex';
   id: string;
   name: string;
   provider: string;
@@ -41,7 +43,7 @@ export interface ProviderPreset {
 
 type RawProviderPreset = Omit<ProviderPreset, 'models'> & { models: LegacyCatalogModel[] };
 
-export const PROVIDER_PRESETS: ProviderPreset[] = (providerPresets as RawProviderPreset[]).map((preset) => ({
+export const PROVIDER_PRESETS: ProviderPreset[] = ([...providerPresets, ...subscriptionPresets] as RawProviderPreset[]).map((preset) => ({
   ...preset,
   models: attachModelDescriptors(preset.models, {
     surface: 'text',

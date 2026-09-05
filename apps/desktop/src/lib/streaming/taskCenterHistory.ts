@@ -15,6 +15,7 @@ export interface TaskCenterHistoryItem {
 
 const HIDDEN_RUN_EVENT_KINDS = new Set<AgentRunEvent['kind']>([
   'outputDelta',
+  'outputSnapshot',
   'thinking',
   'usageUpdated',
 ]);

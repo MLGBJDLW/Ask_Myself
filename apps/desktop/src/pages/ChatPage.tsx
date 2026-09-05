@@ -1,3 +1,4 @@
+import type { ArtifactPayload } from '../types/conversation';
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
@@ -24,6 +25,7 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
+import { findProviderPreset } from '../lib/providerPresets';
 import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import { useSpeechPlayback } from '../features/voice/SpeechPlaybackProvider';
@@ -535,9 +537,9 @@ export function ChatPage() {
     [navigate],
   );
 
-  const initialSourceIds = (
-    (location.state as { sourceIds?: string[] } | null)?.sourceIds ?? []
-  ).filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const routeSourceIds = (location.state as { sourceIds?: string[] } | null)?.sourceIds;
+  const initialSourceIds = useMemo(() => (routeSourceIds ?? [])
+    .filter((value): value is string => typeof value === 'string' && value.length > 0), [routeSourceIds]);
   const initialCollectionContext = (
     (location.state as { collectionContext?: Conversation['collectionContext'] } | null)?.collectionContext
   ) ?? null;
@@ -858,6 +860,10 @@ export function ChatPage() {
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
 
+  const handleQuestionSubmit = useCallback((message: string, artifact: ArtifactPayload) => {
+    void handleChatSend(message, undefined, { userArtifacts: artifact });
+  }, [handleChatSend]);
+
   const handleInteractionSubmit = useCallback(async (
     response: FormattedQuestionResponse,
   ) => {
@@ -960,6 +966,7 @@ export function ChatPage() {
   }, []);
   const selectedAgentConfig =
     agentConfigs.find((config) => config.id === chat.agentConfig?.id) ?? chat.agentConfig;
+  const manualCompactionAvailable = !selectedAgentConfig || !findProviderPreset(selectedAgentConfig)?.runtime;
   const selectedPersona = personas.find((persona) => persona.id === activePersonaId);
   const selectedPersonaLabel = selectedPersona?.name || activePersonaId;
   const selectedPersonaDetail = selectedPersona?.description || activePersonaId;
@@ -1482,6 +1489,7 @@ export function ChatPage() {
   }, [chat.applyCompactionUsage, t]);
 
   const handleCompactConversation = useCallback(async () => {
+    if (!manualCompactionAvailable) { toast.error(t('chat.compactUnavailable')); return; }
     const conversationId = chat.activeId;
     if (!conversationId) return;
     if (chat.isStreaming) {
@@ -1523,7 +1531,7 @@ export function ChatPage() {
       });
       toast.error(formatUserError(t('chat.compact'), e));
     }
-  }, [chat.activeId, chat.isStreaming, compactionStatusByConversation, observeCompaction, t]);
+  }, [chat.activeId, chat.isStreaming, compactionStatusByConversation, manualCompactionAvailable, observeCompaction, t]);
 
   const handleCancelCompaction = useCallback(async () => {
     const conversationId = chat.activeId;
@@ -1870,14 +1878,12 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               error={chat.error}
               onRetry={isArchivedConversation ? undefined : chat.retry}
-              onDismissError={() => chat.clearError()}
+              onDismissError={chat.clearError}
               onDeleteMessage={isArchivedConversation ? undefined : chat.deleteMessage}
               onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
               onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
               onResumePaused={isArchivedConversation ? undefined : handleResumePaused}
-              onQuestionSubmit={isArchivedConversation ? undefined : (message, artifact) => {
-                void handleChatSend(message, undefined, { userArtifacts: artifact });
-              }}
+              onQuestionSubmit={isArchivedConversation ? undefined : handleQuestionSubmit}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               isCompacting={isCompacting}
@@ -2007,7 +2013,7 @@ export function ChatPage() {
               sessionControls={sessionControls}
               prefillText={prefillText}
               prefillKey={prefillKey}
-              onCompact={chat.activeId ? handleCompactConversation : undefined}
+              onCompact={chat.activeId && manualCompactionAvailable ? handleCompactConversation : undefined}
               isCompacting={isCompacting}
               planModeEnabled={planModeEnabled}
               onPlanModeChange={setPlanModeEnabled}

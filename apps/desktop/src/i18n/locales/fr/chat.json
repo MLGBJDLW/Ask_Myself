@@ -693,4 +693,5 @@
   "companionFailed": "Échec de la tâche",
   "companionCancelled": "Tâche annulée",
   "companionSleeping": "Le compagnon dort"
+,"compactUnavailable": "La compression manuelle du contexte est indisponible pour cette conversation."
 }

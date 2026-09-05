@@ -1415,6 +1415,69 @@ async fn test_run_shell_reports_created_text_file_diff() {
     assert!(result.content.contains("copy.txt"));
 }
 
+/// Real tool entry point, native and external commands, with unrelated assets.
+/// Run explicitly: cargo test -p nexa-core performance_shell_workspace_size -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "performance benchmark writes 512 MiB of unrelated workspace assets and requires git"]
+async fn performance_shell_workspace_size() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = db_with_source(tmp.path());
+    std::fs::write(tmp.path().join("source.txt"), "hello\n").unwrap();
+    let mut git = std::process::Command::new("git");
+    git.arg("init").arg(tmp.path());
+    crate::background_process::configure_std_background(&mut git);
+    assert!(git.output().unwrap().status.success());
+    let mut timings = Vec::new();
+    for populated in [false, true] {
+        if populated {
+            let assets = tmp.path().join("assets");
+            std::fs::create_dir(&assets).unwrap();
+            let bytes = vec![b'x'; 4 * 1024 * 1024];
+            for index in 0..128 {
+                std::fs::write(assets.join(format!("asset-{index}.bin")), &bytes).unwrap();
+            }
+        }
+        let mut sample = Vec::new();
+        for (program, argv) in [
+            ("pwd", vec![]),
+            ("git", vec!["status", "--short"]),
+            ("cp", vec!["source.txt", "copy.txt"]),
+        ] {
+            let arguments =
+                json!({"program": program, "args": argv, "cwd": tmp.path()}).to_string();
+            let start = Instant::now();
+            let result = RunShellTool
+                .execute(crate::tools::ToolExecutionContext::new(
+                    "shell-workspace-benchmark",
+                    &arguments,
+                    &db,
+                    &[],
+                ))
+                .await
+                .unwrap();
+            let elapsed = start.elapsed();
+            assert!(!result.is_error, "{}", result.content);
+            assert_eq!(
+                result.artifacts.as_ref().unwrap()["execution"]["exitCode"],
+                0
+            );
+            eprintln!(
+                "shell_workspace populated={populated} program={program} elapsed_ms={}",
+                elapsed.as_millis()
+            );
+            sample.push(elapsed);
+        }
+        timings.push(sample);
+    }
+    for (empty, populated) in timings[0].iter().zip(&timings[1]) {
+        assert!(
+            *populated < *empty + Duration::from_millis(500),
+            "unrelated workspace assets added {} ms",
+            populated.saturating_sub(*empty).as_millis()
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_run_shell_reports_modified_text_file_diff() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1459,6 +1522,58 @@ async fn test_run_shell_reports_modified_text_file_diff() {
         .unwrap()
         .iter()
         .any(|line| line["type"] == "addition" && line["content"] == "new"));
+}
+
+#[tokio::test]
+async fn native_copy_and_move_track_only_their_resolved_targets() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("source/nested")).unwrap();
+    std::fs::create_dir(tmp.path().join("destination")).unwrap();
+    std::fs::write(tmp.path().join("source/nested/data.txt"), "data\n").unwrap();
+    std::fs::write(tmp.path().join("destination/unrelated.txt"), "keep\n").unwrap();
+    let db = db_with_source(tmp.path());
+    for (id, program, argv, expected) in [
+        (
+            "copy-directory",
+            "cp",
+            vec!["-r", "source", "destination"],
+            vec!["destination/source/nested/data.txt"],
+        ),
+        (
+            "move-directory",
+            "mv",
+            vec!["destination/source", "moved"],
+            vec![
+                "destination/source/nested/data.txt",
+                "moved/nested/data.txt",
+            ],
+        ),
+    ] {
+        let arguments = json!({"program": program, "args": argv, "cwd": tmp.path()}).to_string();
+        let result = RunShellTool
+            .execute(crate::tools::ToolExecutionContext::new(
+                id,
+                &arguments,
+                &db,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.content);
+        let artifact = result.artifacts.unwrap();
+        assert_eq!(artifact["diffStats"]["paths"], json!(expected));
+        assert_eq!(artifact["tracking"]["unreadableCount"], 0);
+        assert_eq!(artifact["tracking"]["truncated"], false);
+    }
+    assert!(!tmp.path().join("destination/source").exists());
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("moved/nested/data.txt")).unwrap(),
+        "data\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("destination/unrelated.txt")).unwrap(),
+        "keep\n"
+    );
 }
 
 #[tokio::test]

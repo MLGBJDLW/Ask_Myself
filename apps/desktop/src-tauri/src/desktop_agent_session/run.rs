@@ -2,7 +2,7 @@ use super::*;
 
 pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> DesktopAgentTurnOutcome {
     let DesktopAgentTurnRequest {
-        provider,
+        backend,
         dependencies,
         executor_config,
         cancel_token,
@@ -27,25 +27,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
         cancellation: cancel_token.clone(),
     });
 
-    let executor_cancel_token = cancel_token.clone();
-    let activity_runtime = nexa_core::activity::ActivityRuntime::with_database((*db).clone())
-        .unwrap_or_else(|error| {
-            warn!("Failed to initialize persistent Activity Runtime: {error}");
-            nexa_core::activity::ActivityRuntime::new()
-        });
-    let mut executor = AgentExecutor::new(provider, dependencies.tools, executor_config)
-        .with_activity_runtime(activity_runtime)
-        .with_cancel_token(executor_cancel_token)
-        .with_steering_receiver(steering_rx);
-    executor = executor.with_approval_callback(approval_cb);
-    executor = executor.with_tool_visual_interpreter(tool_visual_interpreter);
-    if let Some(provider) = summarization_provider {
-        executor = executor.with_summarization_provider(provider);
-    }
-    executor = executor
-        .with_skills_override(dependencies.selected_skills)
-        .with_auto_loaded_skills_override(dependencies.auto_loaded_skills);
-
     let (events_tx, events_rx) = mpsc::channel::<AgentEvent>(64);
     let event_forwarder = AgentStreamForwarder::new(
         conversation_id.clone(),
@@ -56,21 +37,61 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
     )
     .run(events_rx);
 
-    // Keep the forwarder structurally owned by the turn future. Aborting a
-    // suspended outer task now drops both the executor and its event consumer;
-    // no detached producer can race the resumed launch's event sequencer.
-    let run_driver = async {
-        let run_future = executor.run(
-            history,
-            user_parts,
-            db.as_ref(),
-            Some(&conversation_id),
-            Some(&turn_id),
-            events_tx,
-            assistant_sort_order,
-        );
+    let run_cancel = cancel_token.clone();
+    let run_conversation = conversation_id.clone();
+    let run_turn = turn_id.clone();
+    let run_future: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Message, CoreError>> + Send>,
+    > = match backend {
+        DesktopAgentBackend::Nexa(provider) => Box::pin(async move {
+            let activity = nexa_core::activity::ActivityRuntime::with_database((*db).clone())?;
+            let mut executor = AgentExecutor::new(provider, dependencies.tools, executor_config)
+                .with_activity_runtime(activity)
+                .with_cancel_token(run_cancel)
+                .with_steering_receiver(steering_rx)
+                .with_approval_callback(approval_cb)
+                .with_tool_visual_interpreter(tool_visual_interpreter)
+                .with_skills_override(dependencies.selected_skills)
+                .with_auto_loaded_skills_override(dependencies.auto_loaded_skills);
+            if let Some(provider) = summarization_provider {
+                executor = executor.with_summarization_provider(provider);
+            }
+            executor
+                .run(
+                    history,
+                    user_parts,
+                    db.as_ref(),
+                    Some(&run_conversation),
+                    Some(&run_turn),
+                    events_tx,
+                    assistant_sort_order,
+                )
+                .await
+        }),
+        DesktopAgentBackend::Subscription(kind) => Box::pin(crate::subscription_runtime::run(
+            crate::subscription_runtime::SubscriptionTurnRequest {
+                kind,
+                config: executor_config,
+                dependencies,
+                db,
+                conversation_id: run_conversation,
+                turn_id: run_turn,
+                next_sort_order: assistant_sort_order,
+                history,
+                user_parts,
+                events: events_tx,
+                cancellation: run_cancel,
+                steering: steering_rx,
+                approval: approval_cb,
+                visual_interpreter: tool_visual_interpreter,
+            },
+        )),
+    };
 
-        let mut run_future = Box::pin(run_future);
+    // The same run owns its driver and ordered publication consumer. Renderer
+    // navigation cannot replace either backend or replay the user request.
+    let run_driver = async {
+        let mut run_future = run_future;
         let mut turn_timeout = (runtime.timeout_secs > 0).then(|| {
             Box::pin(tokio::time::sleep(Duration::from_secs(
                 runtime.timeout_secs,
@@ -100,6 +121,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
                             "conversationId": conversation_id,
                             "runId": stream.task_run_id,
                             "turnId": turn_id,
+                            "durableHighWater": stream.event_seq.durable_high_water(),
                         }),
                     );
                 }
@@ -125,7 +147,6 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
 
         drop(run_future);
         drop(turn_timeout);
-        drop(executor);
         (result, timed_out)
     };
 

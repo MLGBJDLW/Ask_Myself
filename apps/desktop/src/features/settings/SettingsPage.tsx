@@ -154,7 +154,6 @@ export function SettingsPage() {
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [rebuildLoading, setRebuildLoading] = useState(false);
   const [optimizeLoading, setOptimizeLoading] = useState(false);
-  const [clearCacheLoading, setClearCacheLoading] = useState(false);
   const progress = useProgress();
   const ftsProgress = progress.ftsProgress;
   const embedRebuildProgress = progress.embedRebuildProgress;
@@ -193,18 +192,6 @@ export function SettingsPage() {
       toast.error(t('settings.ftsOptimizeError'));
     } finally {
       setOptimizeLoading(false);
-    }
-  };
-
-  const handleClearCache = async () => {
-    setClearCacheLoading(true);
-    try {
-      const deleted = await api.clearAnswerCache();
-      toast.success(t('settings.cacheClearedCount', { count: deleted }));
-    } catch {
-      toast.error(t('settings.clearCacheError'));
-    } finally {
-      setClearCacheLoading(false);
     }
   };
 
@@ -436,7 +423,6 @@ export function SettingsPage() {
       return true;
     } catch {
       setAppConfig({
-        cacheTtlHours: 24,
         defaultSearchLimit: 20,
         minSearchSimilarity: 0.2,
         maxTextFileSize: 104857600,
@@ -716,14 +702,15 @@ export function SettingsPage() {
   useEffect(() => {
     if (
       activeTab === 'providers'
-      && appConfig?.speechToText?.apiStyle === 'local_whisper'
+      && appConfig
+      && (appConfig.speechToText?.apiStyle ?? 'local_whisper') === 'local_whisper'
       && whisperModelExists === null
     ) {
       void refreshWhisperReadiness(videoConfig);
     }
   }, [
     activeTab,
-    appConfig?.speechToText?.apiStyle,
+    appConfig,
     refreshWhisperReadiness,
     videoConfig,
     whisperModelExists,
@@ -1887,7 +1874,6 @@ export function SettingsPage() {
           stats={stats}
           rebuildLoading={rebuildLoading}
           optimizeLoading={optimizeLoading}
-          clearCacheLoading={clearCacheLoading}
           ftsProgress={ftsProgress}
           privacyConfig={privacyConfig}
           newPattern={newPattern}
@@ -1903,7 +1889,6 @@ export function SettingsPage() {
           saveLoading={saveLoading}
           onRebuild={handleRebuild}
           onOptimize={handleOptimize}
-          onClearCache={handleClearCache}
           onNewPatternChange={setNewPattern}
           onAddPattern={addPattern}
           onRemovePattern={removePattern}

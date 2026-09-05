@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type {
-  AgentRunEvent,
   AgentRunEventPage,
   AgentTaskRun,
   AgentTaskRunEvent,
@@ -17,8 +16,6 @@ import {
 const tauriDurableRunReconciliationPort: DurableRunReconciliationPort = {
   listTaskRuns: conversationId =>
     invoke<AgentTaskRun[]>('get_agent_task_runs_cmd', { conversationId }),
-  listRunEvents: (runId, afterEventSeq) =>
-    invoke<AgentRunEvent[]>('get_agent_run_events_cmd', { runId, afterEventSeq }),
   listRunEventPage: (runId, afterEventSeq, durableHighWater) =>
     invoke<AgentRunEventPage>('get_agent_run_event_page_cmd', {
       runId,

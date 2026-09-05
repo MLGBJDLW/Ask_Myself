@@ -45,9 +45,6 @@
   "indexRebuildError": "Error al reconstruir el índice",
   "ftsOptimized": "Índice FTS optimizado",
   "ftsOptimizeError": "Error en la optimización FTS",
-  "clearCache": "Limpiar caché de respuestas",
-  "cacheClearedCount": "{count} respuestas en caché eliminadas",
-  "clearCacheError": "Error al limpiar la caché de respuestas",
   "loadPrivacyError": "Error al cargar la configuración de privacidad",
   "patternExists": "Este patrón ya existe",
   "privacySaved": "Configuración de privacidad guardada",
@@ -338,8 +335,6 @@
   "agentQualityLastRun": "Last run",
   "agentQualityNoFailures": "All local quality gates passed.",
   "advanced": "Avanzado",
-  "cacheTtl": "TTL de caché (horas)",
-  "cacheTtlDesc": "Duración del caché de respuestas IA. 0 para desactivar.",
   "searchLimit": "Límite de búsqueda predeterminado",
   "searchLimitDesc": "Número máximo de resultados de búsqueda devueltos por defecto.",
   "searchSimilarity": "Similitud mínima de búsqueda",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "No se pudo cancelar el acceso a GitHub Copilot"
   ,"copilotAvailableModels": "{count} modelos de suscripción disponibles"
   ,"copilotUnlimited": "Ilimitado"
-  ,"copilotOwnershipNotice": "Este puente de cuenta verifica la suscripción, los modelos y la cuota mediante una versión fijada del SDK oficial de GitHub Copilot y su CLI verificado. El acceso permanece en Copilot CLI o el llavero del sistema; ningún token de GitHub se copia a Nexa. Elegir Copilot como runtime de ejecución del chat de Nexa requiere un puente de Agent Runtime independiente."
+  ,"copilotOwnershipNotice": "Inicia sesión con la CLI oficial de Copilot, elige un modelo de tu suscripción y guárdalo como proveedor de chat. Nexa gestiona las herramientas y aprobaciones; el token de GitHub permanece en Copilot."
+,"subscriptionSelectModel": "Selecciona un modelo disponible"
+,"reasoningUltra": "Ultra"
 }

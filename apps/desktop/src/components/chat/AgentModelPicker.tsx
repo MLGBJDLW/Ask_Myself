@@ -32,6 +32,8 @@ import {
 } from '../../lib/modelCatalog';
 import type { AgentConfig } from '../../types/conversation';
 import { useOverlayRoot } from '../ui/overlay';
+import { listSubscriptionModels } from '../../lib/api';
+import { toast } from 'sonner';
 
 export interface AgentModelSelection {
   config: AgentConfig;
@@ -72,6 +74,7 @@ const REASONING_EFFORT_LABEL_KEYS: Record<ReasoningEffortLevel, TranslationKey> 
   high: 'settings.reasoningHigh',
   max: 'settings.reasoningMax',
   xhigh: 'settings.reasoningXHigh',
+  ultra: 'settings.reasoningUltra',
 };
 
 const GLOBAL_SEARCH_LIMIT = 120;
@@ -139,7 +142,7 @@ function makeModelRows(
   for (const model of models) {
     modelMap.set(model.id, model);
   }
-  if (providerRow.config.model && !modelMap.has(providerRow.config.model)) {
+  if (!providerRow.preset?.runtime && providerRow.config.model && !modelMap.has(providerRow.config.model)) {
     const presetId = providerRow.preset?.id ?? providerRow.config.provider;
     const fallbackModel = {
       id: providerRow.config.model,
@@ -210,6 +213,30 @@ export function AgentModelPicker({
   const [pickerStep, setPickerStep] = useState<PickerStep>('providers');
   const [query, setQuery] = useState('');
   const [budgetDraft, setBudgetDraft] = useState('');
+  const [subscriptionModels, setSubscriptionModels] = useState<Record<string, ProviderModelPreset[]>>({});
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    setSubscriptionModels({});
+    const providers = [...new Set(agentConfigs.filter(config => findPresetForConfig(config)?.runtime).map(config => config.provider))];
+    for (const provider of providers) {
+      void listSubscriptionModels(provider).then(models => {
+        if (disposed) return;
+        const projected = models.map(model => {
+          const effortLevels = model.reasoningEfforts.filter((effort): effort is ReasoningEffortLevel => effort in REASONING_EFFORT_LABEL_KEYS);
+          const nativeModel = {
+            id: model.id, name: model.name, source: 'discovered' as const, status: 'active' as const, productReadiness: 'known' as const,
+            capabilities: { reasoning: effortLevels.length ? { mode: effortLevels.includes('none') ? 'optional' as const : 'always' as const, effortLevels } : null },
+          };
+          return { ...nativeModel, descriptor: projectModelDescriptor(nativeModel, {
+            surface: 'text', providerId: provider, endpointId: modelEndpointId('text', provider), region: 'global', apiStyle: 'subscription_runtime',
+          }) };
+        });
+        setSubscriptionModels(previous => ({ ...previous, [provider]: projected }));
+      }).catch(error => { if (!disposed) toast.error(String(error)); });
+    }
+    return () => { disposed = true; };
+  }, [open, agentConfigs]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const reasoningTriggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -218,7 +245,10 @@ export function AgentModelPicker({
   const providerRows = useMemo<ProviderRow[]>(
     () =>
       agentConfigs.map((config) => {
-        const preset = findPresetForConfig(config);
+        const originalPreset = findPresetForConfig(config);
+        const preset = originalPreset?.runtime && subscriptionModels[config.provider]
+          ? { ...originalPreset, models: subscriptionModels[config.provider] }
+          : originalPreset;
         return {
           config,
           preset,
@@ -228,7 +258,7 @@ export function AgentModelPicker({
             : `${config.provider} / ${config.model}`,
         };
       }),
-    [agentConfigs],
+    [agentConfigs, subscriptionModels],
   );
 
   const allModelRows = useMemo(
@@ -290,7 +320,9 @@ export function AgentModelPicker({
     ? t(REASONING_EFFORT_LABEL_KEYS[selectedConfig.reasoningEffort as ReasoningEffortLevel] ?? 'settings.reasoningEffort')
     : selectedConfig?.thinkingBudget
       ? formatBudget(selectedConfig.thinkingBudget)
-      : t('settings.reasoningNone');
+      : selectedConfig && findPresetForConfig(selectedConfig)?.runtime
+        ? t('settings.isDefault')
+        : t('settings.reasoningNone');
   const selectedReasoningTitle = `${t('settings.reasoningEffort')}: ${selectedReasoningLabel}`;
 
   const panelStepRef = useRef<PickerStep>('providers');

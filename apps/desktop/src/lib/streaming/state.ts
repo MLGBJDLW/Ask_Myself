@@ -1,6 +1,7 @@
 import type { AgentRunEvent } from '../../types/conversation';
 import type { StreamState } from './protocol';
 import type { StreamTimeoutHandle } from './watchdog';
+import { isPendingToolCallStatus } from './toolStatus';
 
 export interface InternalStreamState extends StreamState {
   _toolCallSeq: number;
@@ -84,4 +85,16 @@ export function clearToolPreparingTimer(state: InternalStreamState, callId: stri
 export function clearToolPreparingTimers(state: InternalStreamState): void {
   Object.values(state._toolPreparingTimers).forEach(timer => clearTimeout(timer));
   state._toolPreparingTimers = {};
+}
+
+export function capStreamCollections(state: InternalStreamState): void {
+  if (state.traceEvents.length > 512) state.traceEvents = state.traceEvents.slice(-512);
+  if (state.streamRounds.length > 128) state.streamRounds = state.streamRounds.slice(-128);
+  if (state.taskEvents.length > 256) state.taskEvents = state.taskEvents.slice(-256);
+  if (state.toolCalls.length > 512) {
+    const retained = new Set(state.traceEvents.flatMap(event => event.kind === 'tool' ? [event.toolCall.callId] : []));
+    for (const round of state.streamRounds) for (const tool of round.toolCalls) retained.add(tool.callId);
+    state.toolCalls = state.toolCalls.filter(tool => retained.has(tool.callId)
+      || isPendingToolCallStatus(tool.status));
+  }
 }

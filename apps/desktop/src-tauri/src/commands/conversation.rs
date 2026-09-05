@@ -258,28 +258,26 @@ pub async fn get_conversation_cmd(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(Conversation, Vec<ConversationMessage>), String> {
-    let conv = state.db.get_conversation(&id).map_err(|e| e.to_string())?;
-    let traced_assistant_ids = state
-        .db
-        .get_conversation_turns(&id)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter_map(|turn| turn.assistant_message_id)
-        .collect::<std::collections::HashSet<_>>();
-    let msgs = state
-        .db
-        .get_messages(&id)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|message| {
-            let has_canonical_turn_trace = traced_assistant_ids.contains(&message.id);
-            nexa_core::conversation::conversation_message_for_display_with_turn_trace(
-                message,
-                has_canonical_turn_trace,
-            )
+    state
+        .db_executor
+        .read(move |db| {
+            let conv = db.get_conversation(&id)?;
+            let traced_assistant_ids = db.conversation_turn_assistant_ids(&id)?;
+            let messages = db
+                .get_messages(&id)?
+                .into_iter()
+                .map(|message| {
+                    let has_trace = traced_assistant_ids.contains(&message.id);
+                    nexa_core::conversation::conversation_message_for_display_with_turn_trace(
+                        message, has_trace,
+                    )
+                })
+                .collect();
+            Ok((conv, messages))
         })
-        .collect();
-    Ok((conv, msgs))
+        .await
+        .map(|execution| execution.value)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -288,14 +286,17 @@ pub async fn get_conversation_turns_cmd(
     conversation_id: String,
 ) -> Result<Vec<ConversationTurn>, String> {
     state
-        .db
-        .get_conversation_turns(&conversation_id)
-        .map(|turns| {
-            turns
-                .into_iter()
-                .map(nexa_core::conversation::conversation_turn_for_display)
-                .collect()
+        .db_executor
+        .read(move |db| {
+            db.get_conversation_turns(&conversation_id).map(|turns| {
+                turns
+                    .into_iter()
+                    .map(nexa_core::conversation::conversation_turn_for_display)
+                    .collect()
+            })
         })
+        .await
+        .map(|execution| execution.value)
         .map_err(|e| e.to_string())
 }
 
@@ -1229,6 +1230,7 @@ pub async fn start_context_compaction_cmd(
             let conversation = database.get_conversation(&conversation_id)?;
             let config = select_agent_config_for_conversation(database, &conversation, None)
                 .map_err(nexa_core::error::CoreError::InvalidInput)?;
+            ensure_manual_compaction_supported(&config.provider)?;
             let summary_provider = resolve_desktop_summarization_provider_config(database, &config)
                 .map_err(nexa_core::error::CoreError::InvalidInput)?;
             Ok((conversation, config, summary_provider))
@@ -1269,6 +1271,24 @@ pub async fn start_context_compaction_cmd(
         .start(job)
         .await
         .map_err(|error| error.to_string())
+}
+
+fn ensure_manual_compaction_supported(provider: &str) -> Result<(), nexa_core::error::CoreError> {
+    if crate::subscription_runtime::SubscriptionRuntimeKind::from_provider(provider).is_some() {
+        return Err(nexa_core::error::CoreError::InvalidInput("Manual context compaction is unavailable for subscription conversations. Their official runtime manages context during each active turn.".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod subscription_compaction_tests {
+    #[test]
+    fn native_routes_are_rejected_before_constructing_an_http_summarizer() {
+        for provider in ["github_copilot", "openai_codex"] {
+            assert!(super::ensure_manual_compaction_supported(provider).is_err());
+        }
+        assert!(super::ensure_manual_compaction_supported("open_ai").is_ok());
+    }
 }
 
 #[tauri::command]

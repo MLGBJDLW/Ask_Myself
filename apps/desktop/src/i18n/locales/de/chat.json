@@ -693,4 +693,5 @@
   "companionFailed": "Aufgabe fehlgeschlagen",
   "companionCancelled": "Aufgabe abgebrochen",
   "companionSleeping": "Begleiter schläft"
+,"compactUnavailable": "Manuelle Kontextkomprimierung ist für dieses Gespräch nicht verfügbar."
 }

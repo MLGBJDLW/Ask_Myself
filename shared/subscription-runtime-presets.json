@@ -1,0 +1,12 @@
+[
+  {
+    "id": "github-copilot", "name": "GitHub Copilot", "provider": "github_copilot",
+    "runtime": "copilot", "baseUrl": "", "requiresApiKey": false, "models": [],
+    "icon": "🐙", "description": "Connect your GitHub Copilot subscription and choose its available models."
+  },
+  {
+    "id": "openai-codex", "name": "ChatGPT / Codex", "provider": "openai_codex",
+    "runtime": "codex", "baseUrl": "", "requiresApiKey": false, "models": [],
+    "icon": "🤖", "description": "Connect your ChatGPT plan through the official Codex runtime."
+  }
+]

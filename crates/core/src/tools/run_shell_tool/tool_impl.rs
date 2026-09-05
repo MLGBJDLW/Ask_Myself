@@ -21,7 +21,7 @@ use super::super::run_shell_contract::{
 };
 use super::super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
 use super::environment::{apply_isolated_process_sandbox, LocalRunShellExecutionEnvironment};
-use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot, FileSnapshot};
+use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot};
 use super::native_fs::is_native_filesystem_program;
 use super::parser::parse_run_shell_args;
 use super::policy::{
@@ -207,8 +207,6 @@ struct ManagedService {
     auto_promoted: bool,
     started_at: Instant,
     activity_runtime: ActivityRuntime,
-    cwd: PathBuf,
-    before_snapshot: FileSnapshot,
     conversation_id: Option<String>,
     stdout_task: Option<tokio::task::JoinHandle<()>>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
@@ -913,7 +911,6 @@ struct ManagedServiceRequest<'a> {
     auto_promoted: bool,
     activity_runtime: ActivityRuntime,
     conversation_id: Option<&'a str>,
-    before_snapshot: FileSnapshot,
 }
 
 async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult {
@@ -926,7 +923,6 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
         auto_promoted,
         activity_runtime,
         conversation_id,
-        before_snapshot,
     } = request;
     if let Some(candidate) = ready_url_candidate.as_ref() {
         if readiness_probe(&candidate.url).await {
@@ -1023,8 +1019,6 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     auto_promoted,
                     started_at,
                     activity_runtime,
-                    cwd: cwd.to_path_buf(),
-                    before_snapshot,
                     conversation_id: conversation_id.map(str::to_string),
                     stdout_task: None,
                     stderr_task: None,
@@ -1080,8 +1074,6 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                         auto_promoted,
                         started_at,
                         activity_runtime: activity_runtime.clone(),
-                        cwd: cwd.to_path_buf(),
-                        before_snapshot,
                         conversation_id: conversation_id.map(str::to_string),
                         stdout_task,
                         stderr_task,
@@ -1098,6 +1090,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "fileChangeTracking": "untracked",
                     "activityId": activity_id,
                     "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
@@ -1129,8 +1122,6 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                     auto_promoted,
                     started_at,
                     activity_runtime: activity_runtime.clone(),
-                    cwd: cwd.to_path_buf(),
-                    before_snapshot,
                     conversation_id: conversation_id.map(str::to_string),
                     stdout_task,
                     stderr_task,
@@ -1147,6 +1138,7 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
                 is_error: false,
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "fileChangeTracking": "untracked",
                     "activityId": activity_id,
                     "cursor": activity_runtime.get(&activity_id).map(|record| record.last_event_seq),
                     "serviceId": call_id,
@@ -1163,7 +1155,12 @@ async fn start_managed_service(request: ManagedServiceRequest<'_>) -> ToolResult
             };
         }
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wake immediately when a short command exits. The timer only controls
+        // readiness probes and automatic detachment for a still-running child.
+        tokio::select! {
+            _ = child.wait() => {}
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
     }
 }
 
@@ -1302,6 +1299,7 @@ async fn status_service(
                 is_error: healthy == Some(false),
                 artifacts: Some(serde_json::json!({
                     "kind": "managedService",
+                    "fileChangeTracking": "untracked",
                     "activityId": activity_id,
                     "cursor": cursor,
                     "serviceId": service_id,
@@ -1422,13 +1420,6 @@ async fn exited_service_result(
         serde_json::json!({ "exitCode": exit_code }),
     );
 
-    let after_root = service.cwd.clone();
-    let after_snapshot = tokio::task::spawn_blocking(move || capture_file_snapshot(&after_root))
-        .await
-        .ok();
-    let file_changes = after_snapshot.as_ref().and_then(|after_snapshot| {
-        build_run_shell_file_changes(&service.cwd, &service.before_snapshot, after_snapshot)
-    });
     let output = RunShellOutput {
         exit_code,
         stdout: logs.stdout.clone(),
@@ -1438,15 +1429,11 @@ async fn exited_service_result(
         truncated_stderr: logs.stderr_truncated,
         killed_by_timeout: false,
     };
-    let mut content = format_output(&output);
-    if let Some(changes) = &file_changes {
-        content.push_str("\n── file changes ──\n");
-        content.push_str(&changes.summary);
-        content.push('\n');
-    }
-    let mut artifacts = file_changes
-        .map(|changes| changes.artifact)
-        .unwrap_or_else(|| serde_json::json!({ "kind": "managedService" }));
+    let content = format_output(&output);
+    let mut artifacts = serde_json::json!({
+        "kind": "managedService",
+        "fileChangeTracking": "untracked",
+    });
     if let Some(object) = artifacts.as_object_mut() {
         object.insert(
             "activityId".to_string(),
@@ -1979,12 +1966,6 @@ impl Tool for RunShellTool {
             Err(msg) => return Ok(error_result(call_id, msg)),
         };
 
-        let before_root = cwd_path.clone();
-        let before_snapshot =
-            tokio::task::spawn_blocking(move || capture_file_snapshot(&before_root))
-                .await
-                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
-
         if managed_background {
             return Ok(start_managed_service(ManagedServiceRequest {
                 call_id,
@@ -1995,10 +1976,17 @@ impl Tool for RunShellTool {
                 auto_promoted,
                 activity_runtime: activity_runtime.cloned().unwrap_or_default(),
                 conversation_id,
-                before_snapshot,
             })
             .await);
         }
+
+        let tracking_paths =
+            super::native_fs::mutation_paths(&canonical_program, &normalized_args, &cwd_path);
+        let before_paths = tracking_paths.clone();
+        let before_snapshot =
+            tokio::task::spawn_blocking(move || capture_file_snapshot(&before_paths))
+                .await
+                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
 
         let environment = LocalRunShellExecutionEnvironment;
         let mut execution_request = ExecutionRequest::for_run_shell(
@@ -2032,9 +2020,8 @@ impl Tool for RunShellTool {
             killed_by_timeout: execution_artifact.timed_out,
         };
 
-        let after_root = cwd_path.clone();
         let after_snapshot =
-            tokio::task::spawn_blocking(move || capture_file_snapshot(&after_root))
+            tokio::task::spawn_blocking(move || capture_file_snapshot(&tracking_paths))
                 .await
                 .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
         let file_changes =
@@ -2077,6 +2064,12 @@ impl Tool for RunShellTool {
             .map(|changes| changes.artifact)
             .unwrap_or_else(|| serde_json::json!({ "kind": "commandExecution" }));
         if let Some(object) = artifacts.as_object_mut() {
+            if !is_native_filesystem_program(&canonical_program) {
+                object.insert(
+                    "fileChangeTracking".to_string(),
+                    serde_json::json!("untracked"),
+                );
+            }
             object.insert(
                 "execution".to_string(),
                 serde_json::json!({

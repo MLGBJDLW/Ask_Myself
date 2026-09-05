@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { MAX_HIGHLIGHT_CODE_CHARS } from '../../lib/streaming/markdownPresentation';
+import { memo, useMemo, createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { Copy, Check, FileText, Paperclip, ExternalLink } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
@@ -32,19 +33,23 @@ export const CitationContext = createContext<CitationLookup>(defaultLookup);
 
 export interface MarkdownRenderState {
   isStreaming: boolean;
+  plainCode?: boolean;
 }
 
 const MarkdownRenderStateContext = createContext<MarkdownRenderState>({ isStreaming: false });
 
 export function MarkdownRenderStateProvider({
   isStreaming,
+  plainCode = false,
   children,
 }: {
   isStreaming: boolean;
+  plainCode?: boolean;
   children: ReactNode;
 }) {
+  const value = useMemo(() => ({ isStreaming, plainCode }), [isStreaming, plainCode]);
   return (
-    <MarkdownRenderStateContext.Provider value={{ isStreaming }}>
+    <MarkdownRenderStateContext.Provider value={value}>
       {children}
     </MarkdownRenderStateContext.Provider>
   );
@@ -284,7 +289,10 @@ function MarkdownLink({ href, children, ...rest }: ComponentPropsWithoutRef<'a'>
 }
 
 /** Fenced code block with syntax highlighting and copy button */
-function CodeBlock({ code, language }: { code: string; language: string }) {
+const CodeBlock = memo(function CodeBlock({ code, language }: { code: string; language: string }) {
+  const { isStreaming, plainCode } = useContext(MarkdownRenderStateContext);
+  const large = code.length > MAX_HIGHLIGHT_CODE_CHARS;
+  const highlight = !isStreaming && !plainCode && !large;
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
@@ -322,7 +330,11 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
           </>
         )}
       </button>
-      <Highlight theme={themes.oneDark} code={code} language={language}>
+      {!highlight ? (
+        <pre className={`bg-surface-0 border border-border rounded-md px-3 py-2 text-xs overflow-auto ${large ? 'max-h-[32rem]' : ''}`} data-code-presentation="plain">
+          <code>{code}</code>
+        </pre>
+      ) : <Highlight theme={themes.oneDark} code={code} language={language}>
         {({ tokens, getLineProps, getTokenProps }) => (
           <pre className="bg-surface-0 border border-border rounded-md px-3 py-2 text-xs overflow-x-auto">
             <code>
@@ -336,10 +348,10 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
             </code>
           </pre>
         )}
-      </Highlight>
+      </Highlight>}
     </div>
   );
-}
+});
 
 let mermaidInitialized = false;
 let mermaidModulePromise: Promise<MermaidModule> | null = null;

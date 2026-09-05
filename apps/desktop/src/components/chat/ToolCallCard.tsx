@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { memo, useState, useEffect, useMemo, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { save as showSaveDialog } from '@tauri-apps/plugin-dialog';
@@ -1692,7 +1692,15 @@ function SkillActivationPanel({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-export function ToolCallCard({
+const ToolArgumentDetails = memo(function ToolArgumentDetails({ raw, className }: { raw: string; className: string }) {
+  const { t } = useTranslation();
+  const text = useMemo(() => formatToolArgumentsForDisplay(raw, {
+    redacted: t('chat.toolInputRedacted'), invalid: t('chat.toolInputInvalid'),
+  }), [raw, t]);
+  return text ? <div className={className}>{text}</div> : null;
+});
+
+export const ToolCallCard = memo(function ToolCallCard({
   callId,
   toolName,
   arguments: args,
@@ -1721,7 +1729,7 @@ export function ToolCallCard({
       ? toolName
       : 'unknown_tool';
   const Icon = getToolIcon(safeToolName);
-  const manageSkillArgs = parseManageSkillArgs(args);
+  const manageSkillArgs = useMemo(() => safeToolName === 'manage_skill' ? parseManageSkillArgs(args) : null, [args, safeToolName]);
   const skillActivation = extractSkillActivationArtifact(artifacts);
   const skillActivationName = skillActivation
     ? skillDisplayName(skillActivation.skill)
@@ -1751,10 +1759,6 @@ export function ToolCallCard({
     ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
     : null;
   const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
-  const formattedArgs = formatToolArgumentsForDisplay(args, {
-    redacted: t('chat.toolInputRedacted'),
-    invalid: t('chat.toolInputInvalid'),
-  });
   const briefLabel = skillActivationName
     ? (
         skillActivation
@@ -1825,8 +1829,8 @@ export function ToolCallCard({
       : null,
     [args, artifacts, callId, safeToolName],
   );
-  const imageArgs = useMemo(() => parseImagePromptArgs(args), [args]);
   const isImageRender = renderKind === 'image' || safeToolName.toLowerCase() === 'generate_image';
+  const imageArgs = useMemo(() => parseImagePromptArgs(isImageRender ? args : undefined), [args, isImageRender]);
   const showImagePendingPreview = isImageRender && isPending && !generatedImage;
   const isSearchDone =
     safeToolName.toLowerCase().includes('search') && status === 'done' && !!content;
@@ -1970,14 +1974,14 @@ export function ToolCallCard({
   const hideCompletedArgs = !isPending && !failedStatus && Boolean(
     visibleResultContent || hasStructuredResult,
   );
-  const visibleFormattedArgs =
+  const visibleArgs =
     fileDiff || diffStats || isFileChangeRender || inputPresentation !== 'final' || hideCompletedArgs
       ? null
-      : formattedArgs;
+      : args && !/^\s*\{\s*\}\s*$/.test(args) ? args : null;
   const liveFileDiff = trace && isPending && Boolean(fileDiff);
   const detailsExpanded = expanded;
   const expandableDetails = Boolean(
-    visibleFormattedArgs ||
+    visibleArgs ||
     visibleResultContent ||
     searchItems ||
     subagentRun ||
@@ -2072,10 +2076,8 @@ export function ToolCallCard({
               className="overflow-hidden"
             >
               <div className={`ml-3 mt-1.5 max-w-[36rem] space-y-2 border-l py-1.5 pl-3 pr-1 ${traceDetailBorderClass}`}>
-                {visibleFormattedArgs ? (
-                  <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary">
-                    {visibleFormattedArgs}
-                  </div>
+                {visibleArgs ? (
+                  <ToolArgumentDetails raw={visibleArgs} className="break-words rounded-md border border-border/35 bg-surface-0/45 px-2 py-1 text-[11px] leading-relaxed text-text-tertiary" />
                 ) : null}
                 {skillActivation ? (
                   <SkillActivationPanel activation={skillActivation} compact />
@@ -2244,10 +2246,8 @@ export function ToolCallCard({
               className="overflow-hidden"
             >
               <div className={`ml-3 mt-1.5 max-w-[32rem] space-y-1.5 border-l py-1 pl-2.5 pr-1 ${traceDetailBorderClass}`}>
-                {visibleFormattedArgs ? (
-                  <div className="break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary">
-                    {visibleFormattedArgs}
-                  </div>
+                {visibleArgs ? (
+                  <ToolArgumentDetails raw={visibleArgs} className="break-words rounded-md border border-border/35 bg-surface-0/45 px-1.5 py-0.5 text-[10px] text-text-tertiary" />
                 ) : null}
                 {skillActivation ? (
                   <SkillActivationPanel activation={skillActivation} compact />
@@ -2621,10 +2621,8 @@ export function ToolCallCard({
                   </Button>
                 </div>
               )}
-              {visibleFormattedArgs && (
-                <div className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words">
-                  {visibleFormattedArgs}
-                </div>
+              {visibleArgs && (
+                <ToolArgumentDetails raw={visibleArgs} className="mb-2 rounded-md bg-surface-0/60 px-2 py-1 text-[11px] text-text-tertiary break-words" />
               )}
               {skillActivation ? (
                 <SkillActivationPanel activation={skillActivation} />
@@ -2668,4 +2666,4 @@ export function ToolCallCard({
       </AnimatePresence>
     </motion.div>
   );
-}
+});

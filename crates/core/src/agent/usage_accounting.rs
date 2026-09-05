@@ -1,7 +1,6 @@
 //! Token usage, model-step trace, and automatic compaction accounting.
 
 use super::context;
-use super::turn_state::{TurnPhase, TurnStateMachine};
 use super::*;
 
 pub(super) struct UsageAccountingContext<'a> {
@@ -16,7 +15,6 @@ pub(super) struct UsageAccountingContext<'a> {
     pub(super) messages: &'a mut Vec<Message>,
     pub(super) context_pipeline: ContextPipeline,
     pub(super) tool_defs: &'a [ToolDefinition],
-    pub(super) turn_state: &'a mut TurnStateMachine,
     pub(super) loop_recorder: &'a mut TurnLoopRecorder,
     pub(super) persisted_trace_items: &'a mut Vec<PersistedTraceItem>,
     pub(super) trace: &'a mut Option<AgentTrace>,
@@ -161,7 +159,6 @@ impl AgentExecutor {
             messages,
             context_pipeline,
             tool_defs,
-            turn_state,
             loop_recorder,
             persisted_trace_items,
             trace,
@@ -271,7 +268,6 @@ impl AgentExecutor {
             };
             loop_recorder.record(started.clone());
             append_persisted_trace_loop_event(persisted_trace_items, started);
-            turn_state.transition_to(TurnPhase::Compacting);
             let actual_tokens_remaining = self
                 .config
                 .max_actual_tokens_per_run
@@ -314,7 +310,6 @@ impl AgentExecutor {
                     }
                 }
             }
-            turn_state.transition_to(TurnPhase::ModelStep);
         }
 
         let completed = TurnLoopEvent::ModelStepCompleted {

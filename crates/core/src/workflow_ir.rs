@@ -626,7 +626,7 @@ impl WorkflowIr {
                 .collect::<String>();
             let mut source_ids = Vec::new();
             collect_source_ids(artifacts, &mut source_ids);
-            for citation in crate::cache::extract_citations(content) {
+            for citation in crate::citations::extract_citations(content) {
                 if !source_ids.contains(&citation) {
                     source_ids.push(citation);
                 }

@@ -196,6 +196,7 @@ export type AgentRunPhase =
 
 export type AgentRunEventKind =
   | 'outputDelta'
+  | 'outputSnapshot'
   | 'streamReset'
   | 'thinking'
   | 'status'
@@ -587,7 +588,6 @@ export interface ProviderStreamingConfig {
 
 export interface AppConfig {
   uiLocale?: string;
-  cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;
   maxTextFileSize: number;
@@ -595,6 +595,7 @@ export interface AppConfig {
   maxAudioFileSize: number;
   dynamicToolVisibility?: boolean;
   toolVisibilityDefaultsVersion?: number;
+  dictationDefaultsVersion?: number;
   traceEnabled?: boolean;
   windowCloseBehavior?: 'exit' | 'minimize_to_tray';
   localModelRoot?: string;
@@ -1053,6 +1054,7 @@ export interface AgentHeartbeatEvent {
   conversationId: string;
   runId: string;
   turnId: string;
+  durableHighWater?: number | null;
 }
 
 export type ActivityEventKind =

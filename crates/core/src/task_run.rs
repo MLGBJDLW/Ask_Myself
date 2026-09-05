@@ -424,6 +424,7 @@ impl<'a> AgentTaskRuntime<'a> {
         let emits_snapshot = !matches!(
             event.kind,
             AgentRunEventKind::OutputDelta
+                | AgentRunEventKind::OutputSnapshot
                 | AgentRunEventKind::Thinking
                 | AgentRunEventKind::UsageUpdated
         );
@@ -571,13 +572,77 @@ impl<'a> AgentTaskRuntime<'a> {
                 )
             }
             AgentRunEventKind::OutputDelta
+            | AgentRunEventKind::OutputSnapshot
             | AgentRunEventKind::StreamReset
             | AgentRunEventKind::Thinking
             | AgentRunEventKind::UsageUpdated
             | AgentRunEventKind::AutoCompacted => Ok(()),
         };
         projection?;
+        if event.closes_run() {
+            Self::finalize_open_conversation_turn_on_connection(connection, run_id, event)?;
+        }
         Ok(emits_snapshot)
+    }
+
+    fn finalize_open_conversation_turn_on_connection(
+        connection: &rusqlite::Connection,
+        run_id: &str,
+        event: &AgentRunEvent,
+    ) -> Result<(), CoreError> {
+        let (conversation_id, turn_id, task_status): (String, String, String) = connection
+            .query_row(
+                "SELECT conversation_id, turn_id, status FROM agent_task_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let expected = match (event.kind, event.status.as_deref()) {
+            (_, Some("cancelled")) => "cancelled",
+            (_, Some("timed_out")) => "timed_out",
+            (AgentRunEventKind::Done, _) => "completed",
+            _ => "failed",
+        };
+        // An earlier terminal may have won arbitration. A late candidate
+        // cannot reclassify that winner or attach its own answer to it.
+        if task_status != expected {
+            return Ok(());
+        }
+        let assistant_id = if task_status == "completed" {
+            event
+                .payload
+                .get("assistantMessageId")
+                .and_then(serde_json::Value::as_str)
+        } else {
+            None
+        };
+        if let Some(id) = assistant_id {
+            let belongs: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE id = ?1 AND conversation_id = ?2
+                 AND role = 'assistant' AND CASE WHEN json_valid(artifacts_json)
+                     THEN json_extract(artifacts_json, '$.turnId') END = ?3)",
+                rusqlite::params![id, conversation_id, turn_id],
+                |row| row.get(0),
+            )?;
+            if !belongs {
+                return Err(CoreError::InvalidInput(
+                    "Final assistant message does not belong to this run's conversation turn"
+                        .into(),
+                ));
+            }
+        }
+        let turn_status = match task_status.as_str() {
+            "completed" => "success",
+            "cancelled" => "cancelled",
+            _ => "error",
+        };
+        connection.execute(
+            "UPDATE conversation_turns SET status = ?1,
+                 assistant_message_id = COALESCE(?2, assistant_message_id),
+                 updated_at = datetime('now'), finished_at = datetime('now')
+             WHERE id = ?3 AND conversation_id = ?4 AND finished_at IS NULL",
+            rusqlite::params![turn_status, assistant_id, turn_id, conversation_id],
+        )?;
+        Ok(())
     }
 }
 
@@ -637,6 +702,115 @@ mod tests {
 
     fn create_started_run(db: &Database, suffix: &str) -> (String, String) {
         create_run(db, suffix, true)
+    }
+
+    fn final_answer_event(db: &Database, run_id: &str, turn_id: &str, id: &str) -> AgentRunEvent {
+        let task = db.get_agent_task_run(run_id).unwrap();
+        let mut answer = db.get_messages(&task.conversation_id).unwrap()[0].clone();
+        answer.id = id.into();
+        answer.role = Role::Assistant;
+        answer.content = "final answer".into();
+        answer.artifacts = Some(serde_json::json!({"turnId":turn_id}));
+        db.add_message(&answer).unwrap();
+        AgentRunEvent::from_agent_event(&AgentEvent::Done {
+            message: Message::text(Role::Assistant, "final answer"),
+            usage_total: Usage::default(),
+            last_prompt_tokens: 0,
+            context_breakdown: None,
+            assistant_message_id: Some(id.into()),
+            cached: false,
+            finish_reason: Some("stop".into()),
+        })
+        .with_context(Some(run_id), Some(turn_id), Some(1))
+    }
+
+    #[test]
+    fn final_answer_and_turn_status_share_the_terminal_transaction() {
+        let db = Database::open_memory().unwrap();
+        let (run_id, turn_id) = create_started_run(&db, "final-answer");
+        let trace = serde_json::json!({"toolCalls":[{"id":"tool-evidence"}]});
+        db.update_conversation_turn_trace(&turn_id, Some(&trace))
+            .unwrap();
+        let terminal = final_answer_event(&db, &run_id, &turn_id, "final-message");
+        AgentTaskRuntime::new(&db)
+            .commit_run_event_batch(&run_id, &[terminal])
+            .unwrap();
+        let turn = db.get_conversation_turn(&turn_id).unwrap();
+        assert_eq!(turn.status, "success");
+        assert_eq!(turn.assistant_message_id.as_deref(), Some("final-message"));
+        assert!(turn.finished_at.is_some());
+        assert_eq!(turn.trace, Some(trace));
+        assert_eq!(db.get_agent_task_run(&run_id).unwrap().status, "completed");
+        assert_eq!(db.list_agent_run_events(&run_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejected_turn_update_rolls_back_terminal_event_and_task_projection() {
+        let db = Database::open_memory().unwrap();
+        let (run_id, turn_id) = create_started_run(&db, "turn-write-failure");
+        let terminal = final_answer_event(&db, &run_id, &turn_id, "answer-before-failure");
+        db.conn().execute_batch("CREATE TRIGGER reject_turn_finish BEFORE UPDATE ON conversation_turns BEGIN SELECT RAISE(ABORT, 'test turn failure'); END;").unwrap();
+        assert!(AgentTaskRuntime::new(&db)
+            .commit_run_event_batch(&run_id, &[terminal])
+            .is_err());
+        assert!(db.list_agent_run_events(&run_id).unwrap().is_empty());
+        assert_eq!(db.get_agent_task_run(&run_id).unwrap().status, "running");
+        assert!(db
+            .get_conversation_turn(&turn_id)
+            .unwrap()
+            .finished_at
+            .is_none());
+    }
+
+    #[test]
+    fn terminal_answer_identity_must_belong_to_the_authoritative_turn() {
+        let db = Database::open_memory().unwrap();
+        let (run_id, turn_id) = create_started_run(&db, "identity-owner");
+        let (other_run, other_turn) = create_started_run(&db, "other-identity");
+        final_answer_event(&db, &other_run, &other_turn, "foreign-answer");
+        let mut terminal = final_answer_event(&db, &run_id, &turn_id, "own-answer");
+        for id in ["missing", "msg-identity-owner", "foreign-answer"] {
+            terminal.payload["assistantMessageId"] = serde_json::json!(id);
+            assert!(AgentTaskRuntime::new(&db)
+                .commit_run_event_batch(&run_id, &[terminal.clone()])
+                .is_err());
+            assert!(db.list_agent_run_events(&run_id).unwrap().is_empty());
+            assert_eq!(db.get_agent_task_run(&run_id).unwrap().status, "running");
+        }
+    }
+
+    #[test]
+    fn terminal_error_cancel_timeout_close_open_turns_and_preserve_finished_api_turns() {
+        let db = Database::open_memory().unwrap();
+        for (status, turn_status) in [
+            ("failed", "error"),
+            ("cancelled", "cancelled"),
+            ("timed_out", "error"),
+        ] {
+            let (run_id, turn_id) = create_started_run(&db, status);
+            let event =
+                AgentRunEvent::terminal_error(&run_id, Some(&turn_id), 1, "Stopped", status, None);
+            AgentTaskRuntime::new(&db)
+                .commit_run_event_batch(&run_id, &[event])
+                .unwrap();
+            let turn = db.get_conversation_turn(&turn_id).unwrap();
+            assert_eq!(turn.status, turn_status);
+            assert!(turn.finished_at.is_some());
+            assert!(turn.assistant_message_id.is_none());
+        }
+        let (run_id, turn_id) = create_started_run(&db, "api-finished");
+        let event = final_answer_event(&db, &run_id, &turn_id, "api-answer");
+        let trace = serde_json::json!({"verification":"already finalized"});
+        db.finalize_conversation_turn(&turn_id, "success", Some("api-answer"), Some(&trace))
+            .unwrap();
+        let before = db.get_conversation_turn(&turn_id).unwrap();
+        AgentTaskRuntime::new(&db)
+            .commit_run_event_batch(&run_id, &[event])
+            .unwrap();
+        let after = db.get_conversation_turn(&turn_id).unwrap();
+        assert_eq!(after.finished_at, before.finished_at);
+        assert_eq!(after.assistant_message_id, before.assistant_message_id);
+        assert_eq!(after.trace, before.trace);
     }
 
     #[test]
@@ -832,6 +1006,7 @@ mod tests {
             usage_total: Usage::default(),
             last_prompt_tokens: 0,
             context_breakdown: None,
+            assistant_message_id: None,
             cached: false,
             finish_reason: Some("cancelled".to_string()),
         })

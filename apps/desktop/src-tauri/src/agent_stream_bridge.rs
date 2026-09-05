@@ -65,8 +65,21 @@ impl AgentStreamForwarder {
         tick.tick().await;
 
         loop {
+            if matches!(&pending_delta, Some(PendingStreamDelta::Text(text) | PendingStreamDelta::Thinking(text)) if text.len() >= 32 * 1024)
+            {
+                self.flush_pending(&mut stream_emitter, &mut pending_delta);
+            }
             tokio::select! {
                 biased;
+                _ = tick.tick() => {
+                    if !self.event_outbox.is_closed_for_submission() {
+                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
+                        self.flush_tool_preview_events(
+                            &stream_emitter,
+                            pending_tool_updates.drain_due(Instant::now()),
+                        );
+                    }
+                }
                 maybe_event = rx.recv() => {
                     match maybe_event {
                         Some(event) => {
@@ -95,10 +108,11 @@ impl AgentStreamForwarder {
 
                             match event {
                                 AgentEvent::TextDelta { delta } => {
-                                    if self.event_outbox.is_closed_for_submission() {
+                                    if delta.is_empty() || self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
-                                    if !generating_phase_recorded {
+                                    let first_text = !generating_phase_recorded;
+                                    if first_text {
                                         generating_phase_recorded = true;
                                         self.record_progress_phase("generating", "Generating answer");
                                     }
@@ -110,12 +124,16 @@ impl AgentStreamForwarder {
                                         }
                                         None => pending_delta = Some(PendingStreamDelta::Text(delta)),
                                     }
+                                    if first_text {
+                                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
+                                    }
                                 }
                                 AgentEvent::Thinking { content } => {
-                                    if self.event_outbox.is_closed_for_submission() {
+                                    if content.is_empty() || self.event_outbox.is_closed_for_submission() {
                                         continue;
                                     }
-                                    if !reasoning_phase_recorded {
+                                    let first_thinking = !reasoning_phase_recorded;
+                                    if first_thinking {
                                         reasoning_phase_recorded = true;
                                         self.record_progress_phase("reasoning", "Reasoning");
                                     }
@@ -128,6 +146,9 @@ impl AgentStreamForwarder {
                                             pending_delta = Some(PendingStreamDelta::Thinking(content));
                                         }
                                         None => pending_delta = Some(PendingStreamDelta::Thinking(content)),
+                                    }
+                                    if first_thinking {
+                                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
                                     }
                                 }
                                 AgentEvent::ToolCallPreparing { .. }
@@ -218,15 +239,7 @@ impl AgentStreamForwarder {
                         }
                     }
                 }
-                _ = tick.tick() => {
-                    if !self.event_outbox.is_closed_for_submission() {
-                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                        self.flush_tool_preview_events(
-                            &stream_emitter,
-                            pending_tool_updates.drain_due(Instant::now()),
-                        );
-                    }
-                }
+
             }
         }
     }
@@ -331,6 +344,153 @@ mod tests {
         ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
     };
 
+    #[tokio::test(start_paused = true)]
+    async fn a_large_output_batch_flushes_before_the_timer_or_end_of_stream() {
+        assert_output_precedes_timers("x".repeat(32 * 1024), true).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_is_committed_and_delivered_without_waiting_for_batch_timers() {
+        assert_output_precedes_timers("first".into(), false).await;
+    }
+
+    async fn assert_output_precedes_timers(delta: String, force_journal: bool) {
+        use nexa_core::{
+            conversation::{ConversationMessage, CreateConversationInput},
+            db::Database,
+            db_executor::DatabaseExecutor,
+            run_event_outbox::{AgentRunEventDelivery, AgentRunEventOutboxes},
+        };
+        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct Delivery(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl AgentRunEventDelivery for Delivery {
+            fn deliver_run_event(&self, _: &str, event: &AgentRunEvent) {
+                if event.kind == nexa_core::agent_run::AgentRunEventKind::OutputDelta {
+                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            fn deliver_task_run_snapshot(&self, _: &str, _: nexa_core::conversation::AgentTaskRun) {
+            }
+        }
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".into(),
+                model: "test".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let message = ConversationMessage {
+            id: "input".into(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "test".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 1,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).unwrap();
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "test",
+                Some("test"),
+                Some("test"),
+            )
+            .unwrap();
+        db.mark_agent_task_run_started(&run.id, "responding")
+            .unwrap();
+        let outboxes = AgentRunEventOutboxes::new(
+            DatabaseExecutor::new(db.clone(), 8).unwrap(),
+            std::sync::Arc::new(Delivery(delivered.clone())),
+        );
+        let outbox = outboxes.open(&conversation.id, &run.id).await.unwrap();
+        // Keep virtual time fixed while the blocking database reader works.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let (tx, rx) = mpsc::channel(4);
+        let forwarding = tokio::spawn(
+            AgentStreamForwarder::new(
+                conversation.id,
+                run.id.clone(),
+                turn.id.clone(),
+                outbox.as_ref().clone(),
+                Instant::now(),
+            )
+            .run(rx),
+        );
+        let expected_delta = delta.clone();
+        if force_journal {
+            tx.send(AgentEvent::TextDelta {
+                delta: "seed".into(),
+            })
+            .await
+            .unwrap();
+            while tx.capacity() < 4 {
+                tokio::task::yield_now().await;
+            }
+        }
+        tx.send(AgentEvent::TextDelta { delta }).await.unwrap();
+        while tx.capacity() < 4 {
+            tokio::task::yield_now().await;
+        }
+        if force_journal {
+            // Preserve the existing byte-limit regression independently of the
+            // journal's first-block fast path.
+            outbox
+                .submit(
+                    AgentRunEvent::from_agent_event(&AgentEvent::Status {
+                        content: "test barrier".into(),
+                        tone: None,
+                    })
+                    .with_context(Some(&run.id), Some(&turn.id), None),
+                )
+                .unwrap();
+            outbox.flush().await.unwrap();
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !delivered.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline
+            {
+                tokio::task::yield_now().await;
+            }
+        }
+        let mut output = String::new();
+        let mut offsets_valid = true;
+        for event in db.list_agent_run_events(&run.id).unwrap() {
+            if event.kind == nexa_core::agent_run::AgentRunEventKind::OutputDelta {
+                offsets_valid &= event.payload["offset"].as_u64() == Some(output.len() as u64);
+                output.push_str(event.payload["delta"].as_str().unwrap());
+            }
+        }
+        let expected = if force_journal {
+            format!("seed{expected_delta}")
+        } else {
+            expected_delta
+        };
+        let visible = output == expected;
+        drop(tx);
+        forwarding.await.unwrap();
+        clock_guard.abort();
+        assert!(offsets_valid, "the published block remains contiguous");
+        assert!(visible, "the complete output must be durable while the provider stream is still open and before the timer");
+    }
+
     fn visual_run(artifacts: serde_json::Value) -> ToolRunItem {
         ToolRunItem {
             call_id: "browser-call".to_string(),
@@ -401,6 +561,7 @@ mod tests {
             usage_total: Usage::default(),
             last_prompt_tokens: 0,
             context_breakdown: None,
+            assistant_message_id: None,
             cached: true,
             finish_reason: Some("stop".into()),
         };

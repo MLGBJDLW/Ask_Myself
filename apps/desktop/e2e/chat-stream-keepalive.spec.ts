@@ -186,7 +186,6 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'list_mcp_servers_cmd':
           return [];
-        case 'clear_answer_cache':
           return 0;
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');
@@ -244,14 +243,14 @@ test.beforeEach(async ({ page }) => {
           };
 
           if (exerciseDurableRecovery) {
-            setTimeout(() => {
+            (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__ = () => {
               emitEvent('agent://run-event', {
                 conversationId,
                 type: 'textDelta',
                 delta: assistantMessage.content,
               });
-            }, 1_200);
-            setTimeout(finishStream, 1_240);
+              finishStream();
+            };
           } else {
             queueMicrotask(() => {
               emitEvent('agent://run-event', {
@@ -271,14 +270,14 @@ test.beforeEach(async ({ page }) => {
               }, delay);
             }
 
-            setTimeout(() => {
+            (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__ = () => {
               emitEvent('agent://run-event', {
                 conversationId,
                 type: 'textDelta',
                 delta: assistantMessage.content,
               });
-            }, 300);
-            setTimeout(finishStream, 330);
+              finishStream();
+            };
           }
 
           return {
@@ -353,6 +352,7 @@ test('keeps a live stream active when keepalive events arrive during a long sile
   await expect(page.getByText('Reasoning through the timeout path.').first()).toBeVisible();
   await page.waitForTimeout(220);
   await expect(page.getByText('Connection lost')).toHaveCount(0);
+  await page.evaluate(() => (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__?.());
   await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
 });
 
@@ -366,12 +366,13 @@ test('queries durable state and preserves an active backend turn after live sile
     (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })
       .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
   ))).toBeGreaterThan(0);
-  await expect(page.getByText('Provider connection recovered')).toBeVisible();
+  await expect(page.getByText('Durable backend state is active; live recovery remains armed.')).toBeVisible();
   await page.waitForTimeout(650);
   await expect.poll(() => page.evaluate(() => (
     (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })
       .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
   ))).toBeGreaterThanOrEqual(4);
   await expect(page.getByText('Connection lost')).toHaveCount(0);
+  await page.evaluate(() => (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__?.());
   await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
 });

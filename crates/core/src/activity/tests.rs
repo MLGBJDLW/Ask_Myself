@@ -11,6 +11,112 @@ fn action_receipts_can_distinguish_persistent_from_ephemeral_runtimes() {
 }
 
 #[tokio::test]
+async fn malformed_history_is_quarantined_without_disabling_new_durable_activities() {
+    let db = Database::open_memory().unwrap();
+    let runtime = ActivityRuntime::with_database(db.clone()).unwrap();
+    for id in ["healthy", "broken-record", "broken-event"] {
+        runtime
+            .start(ActivitySpec::new(ActivitySurface::Process, "run_shell").with_activity_id(id))
+            .unwrap();
+    }
+    runtime
+        .transition("healthy", ActivityState::Completed, serde_json::json!({}))
+        .unwrap();
+    drop(runtime);
+    db.conn().execute("UPDATE activity_records SET record_json = '{broken' WHERE activity_id = 'broken-record'",[]).unwrap();
+    db.conn()
+        .execute(
+            "UPDATE activity_events SET event_json = '{broken' WHERE activity_id = 'broken-event'",
+            [],
+        )
+        .unwrap();
+    let recovered = ActivityRuntime::with_database(db.clone()).unwrap();
+    assert!(recovered.is_persistent());
+    assert_eq!(
+        recovered.get("healthy").unwrap().state,
+        ActivityState::Completed
+    );
+    for id in ["broken-record", "broken-event"] {
+        assert!(recovered
+            .observe(id, 0, Duration::ZERO)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unreadable"));
+        assert!(recovered
+            .start(ActivitySpec::new(ActivitySurface::Process, "run_shell").with_activity_id(id))
+            .is_err());
+    }
+    recovered
+        .start(
+            ActivitySpec::new(ActivitySurface::Process, "run_shell").with_activity_id("new-chat"),
+        )
+        .unwrap();
+    recovered
+        .transition(
+            "new-chat",
+            ActivityState::Completed,
+            serde_json::json!({"receipt":"durable"}),
+        )
+        .unwrap();
+    drop(recovered);
+    let next = ActivityRuntime::with_database(db.clone()).unwrap();
+    assert_eq!(
+        next.get("new-chat").unwrap().state,
+        ActivityState::Completed
+    );
+    assert_eq!(
+        db.conn()
+            .query_row(
+                "SELECT record_json FROM activity_records WHERE activity_id = 'broken-record'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "{broken"
+    );
+    assert_eq!(
+        db.conn()
+            .query_row(
+                "SELECT event_json FROM activity_events WHERE activity_id = 'broken-event'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "{broken"
+    );
+}
+
+#[test]
+fn mismatched_journal_identity_is_not_replayed_under_another_activity() {
+    let db = Database::open_memory().unwrap();
+    let runtime = ActivityRuntime::with_database(db.clone()).unwrap();
+    for id in ["source", "target"] {
+        runtime
+            .start(ActivitySpec::new(ActivitySurface::Process, "run_shell").with_activity_id(id))
+            .unwrap();
+    }
+    drop(runtime);
+    db.conn().execute("UPDATE activity_events SET event_json = json_set(event_json, '$.activityId', 'target') WHERE activity_id = 'source'",[]).unwrap();
+    let recovered = ActivityRuntime::with_database(db).unwrap();
+    assert!(recovered.get("source").is_none());
+    assert_eq!(
+        recovered.get("target").unwrap().state,
+        ActivityState::Orphaned
+    );
+    assert!(recovered
+        .start(ActivitySpec::new(ActivitySurface::Process, "run_shell").with_activity_id("source"))
+        .is_err());
+}
+
+#[test]
+fn storage_failures_still_prevent_an_ephemeral_runtime_from_being_reported_as_durable() {
+    let db = Database::open_memory().unwrap();
+    db.conn().execute("DROP TABLE activity_events", []).unwrap();
+    assert!(ActivityRuntime::with_database(db).is_err());
+}
+
+#[tokio::test]
 async fn activity_journal_uses_strictly_increasing_incremental_cursors() {
     let runtime = ActivityRuntime::new();
     let activity = runtime

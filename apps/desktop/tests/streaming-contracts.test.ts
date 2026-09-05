@@ -944,10 +944,10 @@ test('task center never treats untyped task rows as a Run Event fallback', () =>
   assertEqual(history[0].source, 'schedulerEvent', 'scheduler event remains visible');
 });
 
-test('durable replay restores direct canonical run events through live projection', () => {
+test('durable replay restores direct canonical run events through live projection', async () => {
   const conversationId = 'conversation-run-event-replay';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'outputDelta',
@@ -1129,10 +1129,10 @@ test('durable legacy tool progress preserves the started card identity', () => {
   assertEqual(projected.toolCalls[0].progressNote, 'reading', 'progress note remains visible');
 });
 
-test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', () => {
+test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', async () => {
   const conversationId = 'conversation-legacy-run-event-gaps';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'outputDelta',
@@ -1616,10 +1616,10 @@ test('canonical approval denial projection matches live stream dispatch declined
   streamStore.clearStream(conversationId);
 });
 
-test('durable Run Event replay restores usage and approval state', () => {
+test('durable Run Event replay restores usage and approval state', async () => {
   const conversationId = 'conversation-usage-approval-replay';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'usageUpdated',
@@ -2536,10 +2536,32 @@ test('watchdog arms, fires, and clears timeout handles', async () => {
   assertEqual(state._timeoutId, null, 'cleared watchdog handle');
 });
 
-test('restoreFromRunEvents projects terminal error replay into stream state', () => {
+test('backend heartbeats cannot postpone recovery of missing chat events', () => {
+  const conversationId = 'heartbeat-missing-events';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId, runId: 'heartbeat-run', turnId: 'heartbeat-turn', state: 'running',
+  });
+  const originalClearTimeout = globalThis.clearTimeout;
+  let discardedRecoveryTimers = 0;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    discardedRecoveryTimers += 1;
+    originalClearTimeout(handle);
+  }) as typeof clearTimeout;
+  try {
+    for (let i = 0; i < 20; i += 1) streamStore.recordHeartbeat(conversationId, 'heartbeat-run');
+    assertEqual(discardedRecoveryTimers, 0, 'heartbeats without new events must not cancel durable recovery');
+    assertEqual(streamStore.getStream(conversationId)?.isStreaming, true, 'reconciliation must not cancel the backend run');
+  } finally {
+    globalThis.clearTimeout = originalClearTimeout;
+    streamStore.clearStream(conversationId);
+  }
+});
+
+test('restoreFromRunEvents projects terminal error replay into stream state', async () => {
   const conversationId = 'conversation-terminal-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('failed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('failed'), [
     runEvent({
       eventSeq: 1,
       kind: 'error',
@@ -2562,10 +2584,10 @@ test('restoreFromRunEvents projects terminal error replay into stream state', ()
   streamStore.clearStream(conversationId);
 });
 
-test('restoreFromRunEvents preserves cancelled terminal replay status', () => {
+test('restoreFromRunEvents preserves cancelled terminal replay status', async () => {
   const conversationId = 'conversation-cancelled-terminal-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('cancelled'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('cancelled'), [
     runEvent({
       eventSeq: 1,
       kind: 'error',
@@ -2584,10 +2606,10 @@ test('restoreFromRunEvents preserves cancelled terminal replay status', () => {
   streamStore.clearStream(conversationId);
 });
 
-test('restoreFromRunEvents closes a stale cancelling task after app restart', () => {
+test('restoreFromRunEvents closes a stale cancelling task after app restart', async () => {
   const conversationId = 'conversation-cancelling-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('cancelling'), []);
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('cancelling'), []);
 
   const restored = streamStore.getStream(conversationId);
   assert(restored, 'cancelling stream state should exist');
@@ -3172,7 +3194,7 @@ test('a settled bound launch rejects a retired run terminal', () => {
   streamStore.clearStream(conversationId);
 });
 
-test('durable hydration replaces an unbound blank state created by a future event', () => {
+test('durable hydration replaces an unbound blank state created by a future event', async () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
     eventSeq: 2,
@@ -3186,7 +3208,7 @@ test('durable hydration replaces an unbound blank state created by a future even
   assertEqual(blank.turnHandle, null, 'unsolicited event has no launch handle');
   assertEqual(blank.traceEvents.length, 0, 'future event remains buffered without a prefix');
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'done',
@@ -3264,6 +3286,62 @@ test('block projection buffers future UTF-8 byte offsets for answer and thinking
   assertEqual(state.thinkingText, '', 'future thinking fragment waits for its prefix');
   applyStreamBlockDelta(state, 'thinking', 'thinking-cjk', 0, prefix);
   assertEqual(state.thinkingText, '你🙂完', 'thinking fragments drain by UTF-8 byte offset');
+});
+
+test('block snapshots repair missed deltas in live and replay projections', () => {
+  const conversationId = 'snapshot-correction';
+  const events = [
+    runEvent({ eventSeq: 1, kind: 'outputDelta', payload: { blockId: 'a', channel: 'answer', offset: 0, delta: '你错' } }),
+    runEvent({ eventSeq: 2, kind: 'outputDelta', payload: { blockId: 'a', channel: 'answer', offset: 100, delta: 'stale gap' } }),
+    runEvent({ eventSeq: 3, kind: 'outputSnapshot', payload: { blockId: 'a', channel: 'answer', text: '你好🙂' } }),
+    runEvent({ eventSeq: 4, kind: 'outputDelta', payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'Current' } }),
+    runEvent({ eventSeq: 5, kind: 'outputSnapshot', payload: { blockId: 'a', channel: 'answer', text: '修正🙂' } }),
+  ];
+  streamStore.startStream(conversationId);
+  for (const event of events) {
+    const parsed = parseAgentFrontendEvent(frontendEvent(event));
+    assert(parsed !== null, 'snapshots cross the canonical wire parser');
+    streamStore.dispatch(conversationId, parsed);
+  }
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live state exists');
+  assertEqual(live.streamText, 'Current', 'historical correction preserves the active block');
+  const reply = live.traceEvents.find(event => event.kind === 'reply' && event.blockId === 'a');
+  assert(reply?.kind === 'reply', 'corrected block is retained');
+  assertEqual(reply.text, '修正🙂', 'the whole block replaces a corrupt prefix');
+  assertEqual(reply.nextOffset, 10, 'offset counts UTF-8 bytes');
+  const replay = projectRunEventsToStreamState(taskRun('running'), events);
+  assertEqual(replay.streamText, live.streamText, 'reload restores the current output');
+  assertEqual(JSON.stringify(replay.traceEvents.map(event => event.kind === 'reply' ? event.text : null)),
+    JSON.stringify(live.traceEvents.map(event => event.kind === 'reply' ? event.text : null)), 'reload restores corrected history');
+  streamStore.clearStream(conversationId);
+});
+
+test('empty retry snapshots discard abandoned output in live and replay without erasing earlier replies', () => {
+  const conversationId = 'retry-snapshot-cleanup';
+  const events = [
+    runEvent({ eventSeq: 1, kind: 'outputDelta', payload: { blockId: 'saved', channel: 'answer', offset: 0, delta: 'Earlier reply' } }),
+    runEvent({ eventSeq: 2, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 0, delta: 'Rejected draft' } }),
+    runEvent({ eventSeq: 3, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 100, delta: 'stale gap' } }),
+    runEvent({ eventSeq: 4, kind: 'outputSnapshot', payload: { blockId: 'abandoned', channel: 'answer', text: '' } }),
+    runEvent({ eventSeq: 5, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 0, delta: 'Replacement partial' } }),
+  ];
+  streamStore.startStream(conversationId);
+  for (const event of events) {
+    const parsed = parseAgentFrontendEvent(frontendEvent(event));
+    assert(parsed !== null, 'empty corrections cross the canonical parser');
+    streamStore.dispatch(conversationId, parsed);
+    if (event.eventSeq === 4) assertEqual(streamStore.getStream(conversationId)?.streamText, '', 'retry clears the current rejected text');
+  }
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live state exists');
+  const replay = projectRunEventsToStreamState(taskRun('running'), events);
+  for (const state of [live, replay]) {
+    assertEqual(state.streamText, 'Replacement partial', 'replacement starts with a fresh offset');
+    assertEqual(JSON.stringify(state.traceEvents.filter(event => event.kind === 'reply').map(event => event.text)),
+      JSON.stringify(['Earlier reply', 'Replacement partial']), 'abandoned content and pending gaps do not survive retry');
+  }
+  streamStore.clearStream(conversationId);
 });
 
 test('Done message replaces an incomplete streamed answer as the terminal authority', () => {
@@ -3365,6 +3443,7 @@ test('a newer launch status reopens a stream settled by awaiting user input', ()
     phase: 'routing',
     status: 'running',
     label: 'Agent started',
+    visibility: 'internal',
   })));
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
     eventSeq: 3,
@@ -3380,8 +3459,26 @@ test('a newer launch status reopens a stream settled by awaiting user input', ()
   const resumed = streamStore.getStream(conversationId);
   assert(resumed, 'resumed stream state should exist');
   assertEqual(resumed.isStreaming, true, 'new running status reopens the continuation');
+  assert(
+    !visibleTraceEventsForTimeline(resumed.traceEvents).some(event => event.kind === 'status' && event.text === 'Agent started'),
+    'the lifecycle marker resumes control without adding a routine chat notice',
+  );
   assertEqual(resumed.streamText, 'Continued', 'resumed nonterminal events are accepted');
   streamStore.clearStream(conversationId);
+});
+
+test('routine lifecycle notices stay out of live and saved timelines without hiding errors or replies', () => {
+  const routine: TraceEvent = { id: 'started', kind: 'status', text: 'Agent started', tone: 'muted' };
+  const failure: TraceEvent = { id: 'failure', kind: 'status', text: 'Agent started', tone: 'error' };
+  const reply: TraceEvent = { id: 'reply', kind: 'reply', text: 'Agent started' };
+  const visible = visibleTraceEventsForTimeline([routine, failure, reply], true);
+  assertEqual(visible.length, 2, 'only the routine status is removed');
+  assertEqual(visible[0].id, 'failure', 'errors remain visible');
+  assertEqual(visible[1].id, 'reply', 'ordinary answer text remains unchanged');
+  assertEqual(persistedTraceItemToTimelineSections({
+    item: { kind: 'status', text: 'Agent started', tone: 'muted', visibility: 'user' },
+    id: 'saved-start', trace: true,
+  }).length, 0, 'saved lifecycle notices use the same presentation policy');
 });
 
 test('stream registry keeps concurrent conversations independently addressable', () => {
@@ -3455,11 +3552,40 @@ test('conversation cache evicts least-recently-used entries by count and bytes',
   assert(!cache.c && !cache.d, 'older entries are evicted to satisfy the byte budget');
 });
 
-test('completed stream state is bounded and recoverable from durable events', () => {
+test('large hydration yields to input and retains a bounded trace', async () => {
+  const conversationId = 'large-hydration';
+  const events = Array.from({ length: 4096 }, (_, index) => runEvent({
+    eventSeq: index + 1, kind: 'outputDelta',
+    payload: { blockId: `block-${index}`, channel: 'answer', offset: 0, delta: `answer-${index}` },
+  }));
+  let inputHandled = false;
+  const hydration = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  setTimeout(() => { inputHandled = true; }, 0);
+  await hydration;
+  assert(inputHandled, 'input runs between replay batches');
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'hydrated stream exists');
+  assertEqual(restored.streamText, 'answer-4095', 'latest answer is complete');
+  assert(restored.traceEvents.length <= 512, 'hydration and live updates use the same retention');
+  streamStore.clearStream(conversationId);
+
+  const stale = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({ eventSeq: 1, kind: 'outputDelta',
+    payload: { blockId: 'new-turn', channel: 'answer', offset: 0, delta: 'New request' },
+  })));
+  await stale;
+  assertEqual(streamStore.getStream(conversationId)?.streamText, 'New request', 'old hydration cannot replace a new stream');
+  streamStore.clearStream(conversationId);
+  const stoppedHydration = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  streamStore.stopStream(conversationId);
+  await stoppedHydration;
+  assertEqual(streamStore.getStream(conversationId), undefined, 'stop cancels hydration before a preview is installed');
+});
+
+test('completed stream state is bounded and recoverable from durable events', async () => {
   const ids = Array.from({ length: 40 }, (_, index) => `bounded-stream-${index}`);
-  ids.forEach(id => {
-    streamStore.restoreFromRunEvents(id, taskRun('completed'), []);
-  });
+  for (const id of ids) await streamStore.restoreFromRunEvents(id, taskRun('completed'), []);
 
   assertEqual(
     streamStore.getStream(ids[0]),
@@ -3472,9 +3598,62 @@ test('completed stream state is bounded and recoverable from durable events', ()
   );
 
   const restoredId = ids[0];
-  streamStore.restoreFromRunEvents(restoredId, taskRun('completed'), []);
+  await streamStore.restoreFromRunEvents(restoredId, taskRun('completed'), []);
   assert(streamStore.getStream(restoredId), 'an evicted preview restores from durable events');
   ids.forEach(id => streamStore.clearStream(id));
+});
+
+test('a stale hydration fetch cannot replace a delivered final or another run awaiting its prefix', async () => {
+  const id = 'fetch-admission';
+  const stalePrefix = runEvent({ eventSeq: 1, kind: 'outputDelta', payload: {
+    blockId: 'old', channel: 'answer', offset: 0, delta: 'Old prefix',
+  } });
+  streamStore.startStream(id);
+  streamStore.dispatch(id, frontendEvent(stalePrefix));
+  streamStore.dispatch(id, frontendEvent(runEvent({ eventSeq: 2, kind: 'done', phase: 'done', status: 'completed',
+    payload: { message: { role: 'assistant', parts: [{ type: 'text', text: 'Live final' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+  })));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  assertEqual(streamStore.getStream(id)?.isStreaming, false, 'already delivered terminal stays final');
+  assertEqual(streamStore.getStream(id)?.streamRounds[0]?.reply, 'Live final', 'final answer survives stale fetch');
+  streamStore.clearStream(id);
+
+  const future = { ...runEvent({ eventSeq: 2, kind: 'outputDelta', payload: {
+    blockId: 'new', channel: 'answer', offset: 4, delta: 'answer',
+  } }), runId: 'new-run' };
+  streamStore.dispatch(id, frontendEvent(future));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  streamStore.dispatch(id, frontendEvent({ ...future, eventSeq: 1, payload: {
+    blockId: 'new', channel: 'answer', offset: 0, delta: 'New ',
+  } }));
+  assertEqual(streamStore.getStream(id)?.streamText, 'New answer', 'another run keeps its buffered suffix');
+  streamStore.dispatch(id, frontendEvent({ ...runEvent({ eventSeq: 3, kind: 'done', phase: 'done', status: 'completed',
+    payload: { message: { role: 'assistant', parts: [{ type: 'text', text: 'New answer' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+  }), runId: 'new-run' }));
+  streamStore.clearPreview(id);
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  assertEqual(streamStore.getStream(id)?.streamText, 'Old prefix',
+    'a settled blank preview allows a different durable run with its own sequence space');
+  streamStore.clearStream(id);
+});
+
+test('bounded replay retains an old tool that is still waiting for approval', async () => {
+  const id = 'retained-approval';
+  const events = [runEvent({ eventSeq: 1, kind: 'toolStarted', payload: {
+    run: toolRun({ callId: 'approval', status: 'approvalPending' }),
+  } })];
+  for (let index = 0; index < 600; index++) events.push(runEvent({ eventSeq: index + 2, kind: 'toolCompleted',
+    payload: { run: toolRun({ callId: `finished-${index}`, status: 'completed' }) },
+  }));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), events);
+  const state = streamStore.getStream(id);
+  assert(state, 'restored state exists');
+  assertEqual(state.toolCalls.find(tool => tool.callId === 'approval')?.status, 'approvalPending',
+    'completed tool retention cannot discard a pending interaction');
+  assert(state.streamRounds.length <= 128 && state.traceEvents.length <= 512, 'completed history stays bounded');
+  streamStore.clearStream(id);
 });
 
 async function main(): Promise<void> {

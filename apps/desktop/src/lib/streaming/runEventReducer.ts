@@ -7,6 +7,7 @@ import type {
 import {
   appendThinkingTraceEvent,
   applyStreamBlockDelta,
+  applyStreamBlockSnapshot,
 } from './blockProjection';
 import {
   applyApprovalRequestedEvent,
@@ -172,6 +173,18 @@ export function applyAgentRunEvent(
         stringValue(payload.blockId) ?? '',
         numberValue(payload.offset) ?? 0,
         stringValue(payload.delta) ?? '',
+      );
+      return;
+    }
+
+    case 'outputSnapshot': {
+      const channel = payload.channel === 'thinking' ? 'thinking' : 'answer';
+      if (channel === 'answer') clearTransientControllerStatus(state, 'model_planning_slow');
+      applyStreamBlockSnapshot(
+        state,
+        channel,
+        stringValue(payload.blockId) ?? '',
+        stringValue(payload.text) ?? '',
       );
       return;
     }

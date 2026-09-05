@@ -45,9 +45,6 @@
   "indexRebuildError": "Index rebuild failed",
   "ftsOptimized": "FTS index optimized",
   "ftsOptimizeError": "FTS optimization failed",
-  "clearCache": "Clear answer cache",
-  "cacheClearedCount": "Cleared {count} cached answers",
-  "clearCacheError": "Failed to clear answer cache",
   "loadPrivacyError": "Failed to load privacy config",
   "patternExists": "This pattern already exists",
   "privacySaved": "Privacy config saved",
@@ -340,8 +337,6 @@
   "agentQualityLastRun": "Last run",
   "agentQualityNoFailures": "All local quality gates passed.",
   "advanced": "Advanced",
-  "cacheTtl": "Cache TTL (hours)",
-  "cacheTtlDesc": "How long to cache AI answers. Set to 0 to disable caching.",
   "searchLimit": "Default Search Limit",
   "searchLimitDesc": "Maximum number of search results returned by default.",
   "searchSimilarity": "Min Search Similarity",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "Could not cancel GitHub Copilot sign-in"
   ,"copilotAvailableModels": "{count} subscription models available"
   ,"copilotUnlimited": "Unlimited"
-  ,"copilotOwnershipNotice": "This account bridge verifies the subscription, models, and quota with the pinned official GitHub Copilot SDK and its integrity-verified CLI. Login remains in the Copilot CLI/system keychain; no GitHub token is copied into Nexa. Selecting Copilot as Nexa's chat execution runtime requires a separate agent-runtime bridge."
+  ,"copilotOwnershipNotice": "Sign in with the official Copilot CLI, select a subscription model, and save it as a chat provider. Nexa handles tool execution and approvals; your GitHub token stays with Copilot."
+,"subscriptionSelectModel": "Select an available model"
+,"reasoningUltra": "Ultra"
 }

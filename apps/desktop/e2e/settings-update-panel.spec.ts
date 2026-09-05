@@ -89,7 +89,6 @@ test.beforeEach(async ({ page }) => {
           return { persisted: [], session: [] };
         case "get_app_config_cmd":
           return {
-            cacheTtlHours: 24,
             defaultSearchLimit: 20,
             minSearchSimilarity: 0.2,
             maxTextFileSize: 104857600,

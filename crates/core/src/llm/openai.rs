@@ -1519,7 +1519,7 @@ fn build_responses_request_with_tools(
                 Some(ReasoningEffort::Medium | ReasoningEffort::High | ReasoningEffort::XHigh) => {
                     Some("high")
                 }
-                Some(ReasoningEffort::Max) => Some("max"),
+                Some(ReasoningEffort::Max | ReasoningEffort::Ultra) => Some("max"),
                 Some(ReasoningEffort::None) => Some("none"),
                 None if request.reasoning_enabled == Some(true) => Some("high"),
                 None => None,
@@ -2728,9 +2728,9 @@ async fn parse_responses_sse_stream(
     .await?
     {
         let chunk = chunk_result.map_err(|error| {
-            let message = error.to_string();
+            let message = super::transport::describe_http_error(&error);
             if is_retriable_reqwest_error(&error) {
-                CoreError::StreamIncomplete(format!("Responses stream interrupted: {message}"))
+                CoreError::TransientLlm(format!("Responses stream interrupted: {message}"))
             } else {
                 CoreError::Llm(format!("Responses stream read error: {message}"))
             }
@@ -2846,7 +2846,10 @@ impl OpenAiProvider {
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
         if status.is_server_error() {
-            Err(CoreError::TransientLlm(message))
+            Err(CoreError::ProviderUnavailable {
+                status: status.as_u16(),
+                message,
+            })
         } else {
             Err(CoreError::Llm(message))
         }
@@ -2861,6 +2864,7 @@ impl OpenAiProvider {
             crate::model_catalog::NativeWebSearchCapability,
         )>,
     ) -> Result<CompletionResponse, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
         let capability = hosted_search
             .map(|(_, capability)| capability)
@@ -2879,7 +2883,7 @@ impl OpenAiProvider {
         );
         let response = with_request_timeout(
             apply_openrouter_headers(
-                self.transport
+                transport
                     .client()
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -2891,9 +2895,12 @@ impl OpenAiProvider {
         )
         .send()
         .await
-        .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
+        .inspect_err(|error| transport.record_transport_failure(error))
         .map_err(|error| {
-            let message = format!("Responses request failed: {error}");
+            let message = format!(
+                "Responses request failed: {}",
+                super::transport::describe_http_error(&error)
+            );
             if is_retriable_reqwest_error(&error) {
                 CoreError::TransientLlm(message)
             } else {
@@ -2904,9 +2911,12 @@ impl OpenAiProvider {
         let value = response
             .json::<serde_json::Value>()
             .await
-            .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))
+            .inspect_err(|error| transport.record_transport_failure(error))
             .map_err(|error| {
-                let message = format!("Failed to parse Responses payload: {error}");
+                let message = format!(
+                    "Failed to parse Responses payload: {}",
+                    super::transport::describe_http_error(&error)
+                );
                 if is_retriable_reqwest_error(&error) {
                     CoreError::TransientLlm(message)
                 } else {
@@ -2914,7 +2924,7 @@ impl OpenAiProvider {
                 }
             })?;
         let parsed = parse_responses_completion(value, dialect, capability)?;
-        self.transport.record_transport_success();
+        transport.record_transport_success();
         Ok(parsed)
     }
 
@@ -2927,6 +2937,7 @@ impl OpenAiProvider {
             crate::model_catalog::NativeWebSearchCapability,
         )>,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/responses", self.base_url().trim_end_matches('/'));
         let capability = hosted_search
             .map(|(_, capability)| capability)
@@ -2946,7 +2957,7 @@ impl OpenAiProvider {
         );
         let response = send_stream_start_request(
             apply_openrouter_headers(
-                self.transport
+                transport
                     .client()
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -2958,10 +2969,9 @@ impl OpenAiProvider {
             "Responses streaming request",
         )
         .await
-        .inspect_err(|error| self.transport.record_transport_failure(&error.to_string()))?;
+        .inspect_err(|error| transport.record_transport_failure(error))?;
         let response = self.check_response(response).await?;
         let (tx, rx) = mpsc::channel(64);
-        let transport = Arc::clone(&self.transport);
         let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
@@ -2971,16 +2981,8 @@ impl OpenAiProvider {
                 result = parse_responses_sse_stream(response, parser_tx, dialect, capability, stream_idle_timeout) => result,
             };
             if let Err(error) = result {
-                transport.record_transport_failure(&error.to_string());
-                let event = match error {
-                    CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message) => {
-                        ProviderStreamEvent::RecoverableError { message }
-                    }
-                    CoreError::Cancelled(message) => ProviderStreamEvent::Cancelled { message },
-                    error => ProviderStreamEvent::TerminalError {
-                        failure: error.into(),
-                    },
-                };
+                transport.record_transport_failure(&error);
+                let event = super::provider_stream_event_from_error(error);
                 let _ = tx.send(event).await;
             } else {
                 transport.record_transport_success();
@@ -3067,12 +3069,13 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = format!("{}/models", self.base_url());
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(
             apply_openrouter_headers(
-                self.transport
+                transport
                     .client()
                     .get(&url)
                     .header("Authorization", format!("Bearer {api_key}")),
@@ -3082,19 +3085,27 @@ impl LlmProvider for OpenAiProvider {
         )
         .send()
         .await
-        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        .map_err(|e| {
+            CoreError::Llm(format!(
+                "Request failed: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         let response = self.check_response(response).await?;
 
-        let models: ModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| CoreError::Llm(format!("Failed to parse models response: {e}")))?;
+        let models: ModelsResponse = response.json().await.map_err(|e| {
+            CoreError::Llm(format!(
+                "Failed to parse models response: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         Ok(models.data.into_iter().map(|m| m.id).collect())
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let transport = self.transport.for_request()?;
         let fallback_request;
         let request = if let Some((dialect, mode, capability)) = hosted_search_context(request) {
             if !capability.can_mix_client_tools
@@ -3170,7 +3181,7 @@ impl LlmProvider for OpenAiProvider {
 
         let response = with_request_timeout(
             apply_openrouter_headers(
-                self.transport
+                transport
                     .client()
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -3183,10 +3194,13 @@ impl LlmProvider for OpenAiProvider {
         .send()
         .await
         .inspect_err(|error| {
-            self.transport.record_transport_failure(&error.to_string());
+            transport.record_transport_failure(error);
         })
         .map_err(|error| {
-            let message = format!("Request failed: {error}");
+            let message = format!(
+                "Request failed: {}",
+                super::transport::describe_http_error(&error)
+            );
             if is_retriable_reqwest_error(&error) {
                 CoreError::TransientLlm(message)
             } else {
@@ -3198,17 +3212,20 @@ impl LlmProvider for OpenAiProvider {
             .json()
             .await
             .inspect_err(|error| {
-                self.transport.record_transport_failure(&error.to_string());
+                transport.record_transport_failure(error);
             })
             .map_err(|error| {
-                let message = format!("Failed to parse completion response: {error}");
+                let message = format!(
+                    "Failed to parse completion response: {}",
+                    super::transport::describe_http_error(&error)
+                );
                 if is_retriable_reqwest_error(&error) {
                     CoreError::TransientLlm(message)
                 } else {
                     CoreError::Llm(message)
                 }
             })?;
-        self.transport.record_transport_success();
+        transport.record_transport_success();
 
         let choice = oai
             .choices
@@ -3292,6 +3309,7 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let transport = self.transport.for_request()?;
         if let Some((dialect, mode, capability)) = hosted_search_context(request) {
             if capability.supports_stream_events
                 && (capability.can_mix_client_tools
@@ -3381,7 +3399,7 @@ impl LlmProvider for OpenAiProvider {
 
         let response = send_stream_start_request(
             apply_openrouter_headers(
-                self.transport
+                transport
                     .client()
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -3394,7 +3412,7 @@ impl LlmProvider for OpenAiProvider {
         )
         .await
         .inspect_err(|e| {
-            self.transport.record_transport_failure(&e.to_string());
+            transport.record_transport_failure(e);
             error!("Stream send failed: {e}");
         })?;
 
@@ -3404,7 +3422,6 @@ impl LlmProvider for OpenAiProvider {
         let (tx, rx) = mpsc::channel(64);
         info!("SSE stream started");
 
-        let transport = Arc::clone(&self.transport);
         let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
             let parser_tx = tx.clone();
@@ -3414,7 +3431,7 @@ impl LlmProvider for OpenAiProvider {
                 result = parse_sse_stream_with_idle_timeout(response, parser_tx, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
-                transport.record_transport_failure(&e.to_string());
+                transport.record_transport_failure(&e);
                 error!("SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
             } else {
@@ -4237,7 +4254,7 @@ data: [DONE]
     }
 
     #[tokio::test]
-    async fn completion_adapter_performs_one_wire_attempt_and_returns_typed_transient_error() {
+    async fn completion_adapter_performs_one_wire_attempt_and_preserves_http_failure_status() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");
@@ -4265,7 +4282,7 @@ data: [DONE]
         server.await.expect("server task").expect("server result");
         assert!(matches!(
             error,
-            CoreError::TransientLlm(ref message) if message == "temporary upstream failure"
+            CoreError::ProviderUnavailable { status: 503, ref message } if message == "temporary upstream failure"
         ));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }

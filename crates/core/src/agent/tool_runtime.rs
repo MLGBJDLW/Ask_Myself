@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use crate::llm::ToolCallRequest;
 use crate::llm::{ProviderHostedToolEvent, ProviderHostedToolKind, ProviderHostedToolStatus};
 use crate::plugins::CapabilityOwner;
 use crate::tools::diff_stats::{
@@ -11,7 +10,6 @@ use crate::tools::{ToolRegistry, ToolRenderKind};
 use crate::work_plan::MutationWorkPlan;
 use serde_json::{json, Map, Value};
 
-use super::tool_scheduler::ToolSchedulerPolicy;
 use super::{ToolRunItem, ToolRunStatus};
 
 /// Tool arguments are only a diagnostic aid in frontend events. Semantic
@@ -619,20 +617,15 @@ fn write_note_preview_artifact(args: &Value) -> Option<Value> {
     Some(preview_artifact_from_diff(diff, Some(0)))
 }
 
-pub(super) fn tool_call_execution_batches(
-    tools: &ToolRegistry,
-    tool_policy: &ToolSchedulerPolicy,
-    tool_calls: &[ToolCallRequest],
+pub(super) fn tool_call_execution_batches<'a>(
+    invocations: impl IntoIterator<Item = &'a crate::tools::ToolInvocation>,
 ) -> Vec<Vec<usize>> {
     let mut batches: Vec<Vec<usize>> = Vec::new();
     let mut current_parallel_batch: Vec<usize> = Vec::new();
     let mut current_resource_keys: HashSet<String> = HashSet::new();
     let mut current_exclusive_resource_keys: HashSet<String> = HashSet::new();
 
-    for (index, tool_call) in tool_calls.iter().enumerate() {
-        let scheduling = tool_policy.decision_for(tools, tool_call);
-        let invocation =
-            tools.build_invocation(&tool_call.id, &tool_call.name, scheduling.parsed_args);
+    for (index, invocation) in invocations.into_iter().enumerate() {
         if invocation.wait_for_previous && !current_parallel_batch.is_empty() {
             batches.push(std::mem::take(&mut current_parallel_batch));
             current_resource_keys.clear();

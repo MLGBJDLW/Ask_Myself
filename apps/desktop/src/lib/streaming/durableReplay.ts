@@ -6,6 +6,7 @@ import type {
 import { applyAgentRunEvent } from './runEventReducer';
 import {
   createDefaultState,
+  capStreamCollections,
   type InternalStreamState,
 } from './state';
 import { taskRunIsActive, taskRunIsSuspended } from './runReconciliation';
@@ -75,11 +76,18 @@ export function taskTimelineEventsFromReplaySource(events: AgentTaskRunEvent[]):
 export function applyDurableRunEventsToState(
   state: DurableReplayProjectionState,
   events: AgentRunEvent[],
-): void {
+): boolean {
   const ordered = [...events].sort((a, b) => a.eventSeq - b.eventSeq);
   for (const event of ordered) {
+    capStreamCollections(state);
     alignAuthoritativeReplayCursor(state, event);
     enqueueStreamRunEvent(state, event);
+    if (drainReplayEvents(state)) return true;
+  }
+  return false;
+}
+
+function drainReplayEvents(state: DurableReplayProjectionState): boolean {
     let ready: AgentRunEvent | null;
     while ((ready = takeNextStreamRunEvent(state)) !== null) {
       applyAgentRunEvent(state, ready, {
@@ -87,10 +95,16 @@ export function applyDurableRunEventsToState(
       });
       if (classifyAgentRunEventLifecycle(ready) === 'terminal') {
         state._pendingRunEvents.clear();
-        return;
+        return true;
       }
     }
-  }
+  return false;
+}
+
+/** Buffered live events do not authorize skipping missing sequence numbers. */
+export function applyBufferedRunEventsToState(state: DurableReplayProjectionState, events: AgentRunEvent[]): void {
+  for (const event of events) enqueueStreamRunEvent(state, event);
+  drainReplayEvents(state);
 }
 
 export function projectRunEventsToStreamState(
@@ -106,7 +120,13 @@ export function projectRunEventsToStreamState(
   state.taskEvents = taskTimelineEventsFromReplaySource(taskEvents);
   applyDurableRunEventsToState(state, runEvents);
 
-  if (options.interruptActive === true && taskRunIsActive(taskRun) && state.isStreaming) {
+  finishReplayProjection(state, taskRun, options.interruptActive === true);
+
+  return state;
+}
+
+function finishReplayProjection(state: DurableReplayProjectionState, taskRun: AgentTaskRun, interruptActive: boolean): void {
+  if (interruptActive && taskRunIsActive(taskRun) && state.isStreaming) {
     applyTerminalProjection(state, {
       toolStatus: 'cancelled',
       message: 'Previous run interrupted when the app closed.',
@@ -123,7 +143,6 @@ export function projectRunEventsToStreamState(
     };
   }
 
-  return state;
 }
 
 function applyToolPreparingReplay(
@@ -144,4 +163,34 @@ function applyToolPreparingReplay(
   });
   preparingCall.argsBytes = Math.max(0, payload.argsBytes);
   insertPendingToolCall(state, preparingCall, roundThinking);
+}
+
+/** Bounded batches keep navigation and live delivery responsive during hydration. */
+export async function projectRunEventsToStreamStateAsync(
+  taskRun: AgentTaskRun,
+  runEvents: AgentRunEvent[],
+  taskEvents: AgentTaskRunEvent[],
+  isCurrent: () => boolean,
+): Promise<DurableReplayProjectionState | null> {
+  const state = projectRunEventsToStreamState(taskRun, [], taskEvents);
+  state.turnTiming = turnTimingFromTaskRun(taskRun, runEvents);
+  const ordered = [...runEvents].sort((a, b) => a.eventSeq - b.eventSeq);
+  for (let index = 0; index < ordered.length; index += 256) {
+    if (!isCurrent()) return null;
+    const terminal = applyDurableRunEventsToState(state, ordered.slice(index, index + 256));
+    capStreamCollections(state);
+    if (terminal) break;
+    if (index + 256 < ordered.length) await new Promise<void>(resolve => {
+      // A posted task yields without nested timer clamping on long histories.
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(null);
+    });
+  }
+  finishReplayProjection(state, taskRun, taskRun.status === 'cancelling');
+  return isCurrent() ? state : null;
 }

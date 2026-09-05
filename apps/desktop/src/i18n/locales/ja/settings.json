@@ -45,9 +45,6 @@
   "indexRebuildError": "インデックスの再構築に失敗しました",
   "ftsOptimized": "FTS インデックスを最適化しました",
   "ftsOptimizeError": "FTS インデックスの最適化に失敗しました",
-  "clearCache": "回答キャッシュをクリア",
-  "cacheClearedCount": "{count}件のキャッシュされた回答をクリアしました",
-  "clearCacheError": "回答キャッシュのクリアに失敗しました",
   "loadPrivacyError": "プライバシー設定の読み込みに失敗しました",
   "patternExists": "このパターンは既に存在します",
   "privacySaved": "プライバシー設定を保存しました",
@@ -338,8 +335,6 @@
   "agentQualityLastRun": "Last run",
   "agentQualityNoFailures": "All local quality gates passed.",
   "advanced": "詳細設定",
-  "cacheTtl": "キャッシュ有効期限（時間）",
-  "cacheTtlDesc": "AI 回答のキャッシュ期間。0 でキャッシュを無効化。",
   "searchLimit": "デフォルト検索件数",
   "searchLimitDesc": "検索結果のデフォルト最大件数。",
   "searchSimilarity": "最低検索類似度",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "GitHub Copilot サインインをキャンセルできませんでした"
   ,"copilotAvailableModels": "サブスクリプションで {count} モデルを利用可能"
   ,"copilotUnlimited": "無制限"
-  ,"copilotOwnershipNotice": "このアカウントブリッジは、固定版の公式 GitHub Copilot SDK と整合性検証済み CLI でサブスクリプション、モデル、クォータを確認します。ログインは Copilot CLI／システムキーチェーンに残り、GitHub トークンは Nexa にコピーされません。Copilot を Nexa のチャット実行ランタイムとして選ぶには、別の Agent Runtime ブリッジが必要です。"
+  ,"copilotOwnershipNotice": "公式 Copilot CLI でログインし、サブスクリプションのモデルを選んでチャットプロバイダーとして保存します。ツールの実行と承認は Nexa が管理し、GitHub トークンは Copilot に保持されます。"
+,"subscriptionSelectModel": "利用可能なモデルを選択"
+,"reasoningUltra": "Ultra"
 }

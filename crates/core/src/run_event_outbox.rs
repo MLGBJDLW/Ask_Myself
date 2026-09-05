@@ -762,6 +762,14 @@ struct AgentRunEventOutboxActorContext {
 }
 
 impl AgentRunEventOutbox {
+    /// Highest sequence whose durable ledger commit is already visible to readers.
+    pub fn durable_high_water(&self) -> Option<u64> {
+        match &*self.durability.borrow() {
+            AgentRunEventOutboxDurability::Committed(sequence) => Some(*sequence),
+            AgentRunEventOutboxDurability::Failed(_) => None,
+        }
+    }
+
     pub fn submit(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
         if !event.is_durable() {
             return Err(AgentRunEventSubmitError::EphemeralEvent);
@@ -1436,6 +1444,17 @@ async fn commit_pause_checkpoint_and_deliver(
 }
 
 fn is_deferred_event(event: &AgentRunEvent) -> bool {
+    // Commit the first real text of a block with all prior lifecycle events.
+    // The UI can paint it immediately without weakening commit-before-delivery;
+    // subsequent deltas still share the journal's bounded batch interval.
+    if event.kind == AgentRunEventKind::OutputDelta
+        && event.payload["offset"].as_u64() == Some(0)
+        && event.payload["delta"]
+            .as_str()
+            .is_some_and(|delta| !delta.is_empty())
+    {
+        return false;
+    }
     matches!(
         event.kind,
         AgentRunEventKind::OutputDelta

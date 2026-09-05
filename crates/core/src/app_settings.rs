@@ -8,6 +8,7 @@ const APP_CONFIG_KEY: &str = "app_config";
 const UI_LOCALE_KEY: &str = "ui_locale";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 3;
+const CURRENT_DICTATION_DEFAULTS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -210,6 +211,46 @@ impl Default for SpeechToTextConfig {
 }
 
 impl SpeechToTextConfig {
+    /// The microphone's Qwen preset is realtime. Upgrade the old official
+    /// file-only preset without changing the account, region, or custom URLs.
+    fn normalize_dictation(&mut self) -> bool {
+        if self.provider != "alibaba_model_studio"
+            || self.api_style != "dashscope_asr"
+            || self.model.trim() != "qwen3-asr-flash"
+        {
+            return false;
+        }
+        let Some(base) = self.base_url.as_deref() else {
+            return false;
+        };
+        let Ok(mut url) = url::Url::parse(base.trim()) else {
+            return false;
+        };
+        if url.scheme() != "https"
+            || !matches!(
+                url.host_str(),
+                Some(
+                    "dashscope.aliyuncs.com"
+                        | "dashscope-intl.aliyuncs.com"
+                        | "dashscope-us.aliyuncs.com"
+                )
+            )
+            || url.path().trim_end_matches('/') != "/compatible-mode/v1"
+            || url.port().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return false;
+        }
+        url.set_path("/api-ws/v1");
+        self.base_url = Some(url.to_string());
+        self.api_style = "dashscope_realtime_asr".to_string();
+        self.model = "qwen3-asr-flash-realtime".to_string();
+        true
+    }
+
     pub fn is_configured(&self) -> bool {
         match self.api_style.as_str() {
             "local_whisper" => true,
@@ -700,13 +741,12 @@ impl Default for CompanionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Distinguishes legacy microphone defaults from an explicit current preset.
+    #[serde(default)]
+    pub dictation_defaults_version: u32,
     /// UI locale shared with native desktop surfaces such as the system tray.
     #[serde(default = "default_ui_locale")]
     pub ui_locale: String,
-
-    /// Answer cache TTL in hours. 0 = disabled. Default: 24
-    #[serde(default = "default_cache_ttl_hours")]
-    pub cache_ttl_hours: u32,
 
     /// Default search result limit. Default: 20
     #[serde(default = "default_search_limit")]
@@ -824,9 +864,6 @@ fn default_failure_hold_ms() -> u32 {
     6_000
 }
 
-fn default_cache_ttl_hours() -> u32 {
-    24
-}
 fn default_ui_locale() -> String {
     "en".to_string()
 }
@@ -947,8 +984,8 @@ fn default_stt_num_threads() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            dictation_defaults_version: CURRENT_DICTATION_DEFAULTS_VERSION,
             ui_locale: default_ui_locale(),
-            cache_ttl_hours: default_cache_ttl_hours(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
             max_text_file_size: default_max_text_file_size(),
@@ -978,6 +1015,9 @@ impl Default for AppConfig {
 
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.companion.normalize();
+    // Saving is an explicit choice. Only loading an unversioned legacy
+    // configuration may upgrade the former microphone default.
+    config.dictation_defaults_version = CURRENT_DICTATION_DEFAULTS_VERSION;
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
@@ -1044,8 +1084,14 @@ impl Database {
                 if let Some(locale) = persisted_ui_locale {
                     config.ui_locale = locale;
                 }
-                let (config, visibility_migrated) = migrate_tool_visibility_defaults(config);
-                if visibility_migrated {
+                let (mut config, visibility_migrated) = migrate_tool_visibility_defaults(config);
+                let speech_migrated =
+                    config.dictation_defaults_version < CURRENT_DICTATION_DEFAULTS_VERSION;
+                if speech_migrated {
+                    config.speech_to_text.normalize_dictation();
+                    config.dictation_defaults_version = CURRENT_DICTATION_DEFAULTS_VERSION;
+                }
+                if visibility_migrated || speech_migrated {
                     self.save_app_config(&config)?;
                 }
                 Ok(config)
@@ -1234,19 +1280,19 @@ mod tests {
     fn independently_persisted_ui_locale_survives_stale_app_config_saves() {
         let db = Database::open_memory().expect("open_memory");
         let mut config = AppConfig::default();
-        config.cache_ttl_hours = 12;
+        config.default_search_limit = 12;
         db.save_app_config(&config).expect("save initial config");
         db.save_ui_locale("zh-CN").expect("save UI locale");
 
         let mut stale_snapshot = config;
         stale_snapshot.ui_locale = "en".to_string();
-        stale_snapshot.cache_ttl_hours = 48;
+        stale_snapshot.default_search_limit = 48;
         db.save_app_config(&stale_snapshot)
             .expect("save stale whole-config snapshot");
 
         let loaded = db.load_app_config().expect("load merged config");
         assert_eq!(loaded.ui_locale, "zh-CN");
-        assert_eq!(loaded.cache_ttl_hours, 48);
+        assert_eq!(loaded.default_search_limit, 48);
     }
 
     #[test]
@@ -1334,6 +1380,76 @@ mod tests {
         assert_eq!(config.local_model_root, "D:\\NexaModels");
         let json = serde_json::to_value(config).expect("serialize app config");
         assert_eq!(json["localModelRoot"], "D:\\NexaModels");
+    }
+
+    #[test]
+    fn qwen_microphone_upgrade_preserves_region_and_refuses_custom_routes() {
+        for host in [
+            "dashscope.aliyuncs.com",
+            "dashscope-intl.aliyuncs.com",
+            "dashscope-us.aliyuncs.com",
+        ] {
+            let mut config = SpeechToTextConfig {
+                provider: "alibaba_model_studio".into(),
+                api_style: "dashscope_asr".into(),
+                model: "qwen3-asr-flash".into(),
+                api_key: "test-account".into(),
+                base_url: Some(format!("https://{host}/compatible-mode/v1")),
+                ..Default::default()
+            };
+            assert!(config.normalize_dictation());
+            assert_eq!(config.base_url, Some(format!("https://{host}/api-ws/v1")));
+            assert_eq!(config.api_key, "test-account");
+            assert_eq!(config.model, "qwen3-asr-flash-realtime");
+            assert!(!config.normalize_dictation());
+        }
+        let mut custom = SpeechToTextConfig {
+            provider: "alibaba_model_studio".into(),
+            api_style: "dashscope_asr".into(),
+            model: "qwen3-asr-flash".into(),
+            base_url: Some("https://relay.example/compatible-mode/v1".into()),
+            ..Default::default()
+        };
+        assert!(!custom.normalize_dictation());
+        assert_eq!(custom.model, "qwen3-asr-flash");
+    }
+
+    #[test]
+    fn legacy_qwen_migrates_once_and_explicit_batch_choice_survives_saves() {
+        let db = Database::open_memory().unwrap();
+        let mut config = AppConfig::default();
+        config.speech_to_text = SpeechToTextConfig {
+            provider: "alibaba_model_studio".into(),
+            api_style: "dashscope_asr".into(),
+            model: "qwen3-asr-flash".into(),
+            base_url: Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1".into()),
+            ..Default::default()
+        };
+        db.save_app_config(&config).unwrap();
+        assert_eq!(
+            db.load_app_config().unwrap().speech_to_text.api_style,
+            "dashscope_asr"
+        );
+        // Simulate the persisted pre-upgrade configuration, not a new choice.
+        db.conn().execute("UPDATE app_config SET value = json_remove(value, '$.dictationDefaultsVersion') WHERE key = ?1", [APP_CONFIG_KEY]).unwrap();
+        let upgraded = db.load_app_config().unwrap();
+        assert_eq!(upgraded.speech_to_text.api_style, "dashscope_realtime_asr");
+        assert_eq!(
+            upgraded.dictation_defaults_version,
+            CURRENT_DICTATION_DEFAULTS_VERSION
+        );
+        config.default_search_limit = 37;
+        db.save_app_config(&config).unwrap();
+        let mut selected = db.load_app_config().unwrap();
+        assert_eq!(selected.speech_to_text.model, "qwen3-asr-flash");
+        selected.default_search_limit = 38;
+        db.save_app_config(&selected).unwrap();
+        let reloaded = db.load_app_config().unwrap();
+        assert_eq!(reloaded.speech_to_text.api_style, "dashscope_asr");
+        assert_eq!(
+            reloaded.speech_to_text.base_url,
+            config.speech_to_text.base_url
+        );
     }
 
     #[test]

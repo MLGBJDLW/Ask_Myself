@@ -648,14 +648,25 @@ fn partial_assistant_output(events: &[AgentRunEvent]) -> Option<Value> {
             blocks.clear();
             continue;
         }
-        if event.kind != AgentRunEventKind::OutputDelta
-            || event.payload.get("channel").and_then(Value::as_str) != Some("answer")
+        if !matches!(
+            event.kind,
+            AgentRunEventKind::OutputDelta | AgentRunEventKind::OutputSnapshot
+        ) || event.payload.get("channel").and_then(Value::as_str) != Some("answer")
         {
             continue;
         }
         let Some(block_id) = event.payload.get("blockId").and_then(Value::as_str) else {
             continue;
         };
+        if event.kind == AgentRunEventKind::OutputSnapshot {
+            if let Some(text) = event.payload.get("text").and_then(Value::as_str) {
+                if !blocks.contains_key(block_id) {
+                    order.push(block_id.to_string());
+                }
+                blocks.insert(block_id.to_string(), text.to_string());
+            }
+            continue;
+        }
         let Some(delta) = event.payload.get("delta").and_then(Value::as_str) else {
             continue;
         };

@@ -34,7 +34,8 @@ ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"], op
 tiktoken-rs = "0.11.0"
 tokenizers = { version = "0.23", default-features = false, features = ["progressbar", "onig"], optional = true }
 ndarray = { version = "0.17", optional = true }
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "multipart", "stream", "cookies", "gzip", "brotli", "deflate", "zstd", "charset", "http2"], default-features = false }
+h2 = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking", "multipart", "stream", "cookies", "gzip", "brotli", "deflate", "zstd", "charset", "http2", "system-proxy"], default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
 async-trait = "0.1"
@@ -63,6 +64,8 @@ tar = { version = "0.4", optional = true }
 walkdir = "2.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+reqwest = { version = "0.12", features = ["native-tls"], default-features = false }
+windows-registry = "0.6"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-capture = "2.0.0"
 

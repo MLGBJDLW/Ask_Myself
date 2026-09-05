@@ -144,6 +144,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: Some("cancelled".to_string()),
             })
@@ -167,8 +168,6 @@ impl AgentExecutor {
         assistant_msg: Message,
         assistant_reasoning_content: Option<String>,
         answer_delta_seen: bool,
-        user_query_text: &str,
-        cache_source_filter: Option<&str>,
         total_usage: Usage,
         last_prompt_tokens: u32,
         context_breakdown: Option<context::ContextUsageBreakdown>,
@@ -388,21 +387,6 @@ impl AgentExecutor {
             )?;
         }
 
-        if !self.config.execution_mode.is_plan()
-            && !final_text.is_empty()
-            && !user_query_text.is_empty()
-        {
-            let citations = crate::cache::extract_citations(&final_text);
-            if !citations.is_empty() {
-                let _ = db.cache_answer(
-                    user_query_text,
-                    &final_text,
-                    &citations,
-                    cache_source_filter,
-                );
-            }
-        }
-
         let finished = TurnLoopEvent::TurnFinished {
             outcome: "success".to_string(),
         };
@@ -415,6 +399,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: last_finish_reason,
             })
@@ -522,6 +507,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: last_finish_reason,
             })

@@ -70,6 +70,13 @@ pub enum AgentEvent {
         offset: usize,
         delta: String,
     },
+    /// Replace one output block from an authoritative full record.
+    StreamBlockSnapshot {
+        #[serde(rename = "blockId")]
+        block_id: String,
+        channel: StreamBlockChannel,
+        text: String,
+    },
     /// Reset stream projection before a recovery or controller restart.
     StreamReset {
         reason: String,
@@ -175,6 +182,13 @@ pub enum AgentEvent {
     /// The agent finished producing a final answer.
     Done {
         message: Message,
+        /// Exact durable assistant row selected by this terminal response.
+        #[serde(
+            rename = "assistantMessageId",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        assistant_message_id: Option<String>,
         #[serde(rename = "usageTotal")]
         usage_total: Usage,
         /// The prompt token count from the *last* LLM iteration (best

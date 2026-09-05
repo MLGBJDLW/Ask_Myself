@@ -184,6 +184,7 @@ struct ConnectionNotice {
 /// The provider may be an adapter (including automatic fallback); this module
 /// depends only on [`LlmProvider`] and never inspects adapter internals.
 pub(super) struct ModelAttempt<'provider, 'events> {
+    request_budget: Option<super::turn_budget::ModelRequestBudget>,
     provider: &'provider dyn LlmProvider,
     events: &'events mpsc::Sender<AgentEvent>,
     original_request: CompletionRequest,
@@ -223,6 +224,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
             AttemptPhase::ReadyToStream
         };
         Self {
+            request_budget: None,
             provider,
             events,
             original_request,
@@ -373,8 +375,18 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                                 false,
                             );
                         }
-                        Some(ProviderStreamEvent::RecoverableError { message }) => {
-                            self.recover_from_disconnect(message);
+                        Some(ProviderStreamEvent::RecoverableError { message, category }) => {
+                            self.recover_from_disconnect(
+                                message,
+                                match category {
+                                    crate::llm::ProviderRecoveryCategory::Network => {
+                                        ConnectionErrorCategory::Network
+                                    }
+                                    crate::llm::ProviderRecoveryCategory::Provider => {
+                                        ConnectionErrorCategory::ProviderUnavailable
+                                    }
+                                },
+                            );
                         }
                         Some(ProviderStreamEvent::Cancelled { message }) => {
                             self.phase = AttemptPhase::Done;
@@ -551,7 +563,36 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         matches!(self.phase, AttemptPhase::Streaming(_))
     }
 
+    pub(super) fn with_request_budget(
+        mut self,
+        budget: super::turn_budget::ModelRequestBudget,
+    ) -> Self {
+        self.request_budget = Some(budget);
+        self
+    }
+
+    fn acquire_request(&mut self) -> bool {
+        let Some(budget) = self.request_budget.as_ref() else {
+            return true;
+        };
+        if budget.acquire() {
+            return true;
+        }
+        let message = format!("model_request_budget_exhausted: this turn reached its {} provider request limit across tools and recovery. Completed work was retained; no additional request was sent.", budget.limit());
+        self.phase = AttemptPhase::Done;
+        self.pending_progress = Some(ModelAttemptProgress::Failed(self.failure(
+            ModelAttemptFailureStage::Connect,
+            CoreError::Agent(message),
+            None,
+            None,
+        )));
+        false
+    }
+
     fn begin_stream_open(&mut self) {
+        if !self.acquire_request() {
+            return;
+        }
         let request = self.request_for_invocation();
         self.candidate_sample_id = Some(Uuid::new_v4().to_string());
         info!(attempt = self.connect_retries + 1, "Initiating LLM stream");
@@ -563,6 +604,9 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
     }
 
     fn begin_completion(&mut self, switched_to_non_streaming: bool) {
+        if !self.acquire_request() {
+            return;
+        }
         let request = self.request_for_invocation();
         self.candidate_sample_id = Some(Uuid::new_v4().to_string());
         info!(
@@ -613,42 +657,54 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     )))
                 }
             },
-            CoreError::TransientLlm(message) => match self
-                .policy
-                .decide_after_transient_error(self.connect_retries, &message)
-            {
-                StreamConnectRetryDecision::Retry { attempt, delay, .. } => {
-                    self.connect_retries = attempt;
-                    self.queue_reconnecting(
-                        ConnectionErrorCategory::Network,
-                        attempt,
-                        self.policy.max_connect_retries(),
-                        delay,
-                    );
-                    ConnectErrorAction::Retry(delay)
+            error @ (CoreError::TransientLlm(_) | CoreError::ProviderUnavailable { .. }) => {
+                let (message, category) = match &error {
+                    CoreError::ProviderUnavailable { message, .. } => {
+                        (message, ConnectionErrorCategory::ProviderUnavailable)
+                    }
+                    CoreError::TransientLlm(message) => (message, ConnectionErrorCategory::Network),
+                    _ => unreachable!(),
+                };
+                match self
+                    .policy
+                    .decide_after_transient_error(self.connect_retries, message)
+                {
+                    StreamConnectRetryDecision::Retry { attempt, delay, .. } => {
+                        self.connect_retries = attempt;
+                        self.queue_reconnecting(
+                            category,
+                            attempt,
+                            self.policy.max_connect_retries(),
+                            delay,
+                        );
+                        ConnectErrorAction::Retry(delay)
+                    }
+                    StreamConnectRetryDecision::GiveUp {
+                        user_message,
+                        trace_message,
+                    } => {
+                        self.queue_failed(
+                            category,
+                            self.connect_retries,
+                            self.policy.max_connect_retries(),
+                        );
+                        let error = match error {
+                            CoreError::TransientLlm(_)
+                                if stage == ModelAttemptFailureStage::Connect =>
+                            {
+                                CoreError::Llm(trace_message.clone())
+                            }
+                            error => error,
+                        };
+                        ConnectErrorAction::Finish(Box::new(self.failure(
+                            stage,
+                            error,
+                            Some(user_message),
+                            Some(trace_message),
+                        )))
+                    }
                 }
-                StreamConnectRetryDecision::GiveUp {
-                    user_message,
-                    trace_message,
-                } => {
-                    self.queue_failed(
-                        ConnectionErrorCategory::Network,
-                        self.connect_retries,
-                        self.policy.max_connect_retries(),
-                    );
-                    let error = if stage == ModelAttemptFailureStage::Connect {
-                        CoreError::Llm(trace_message.clone())
-                    } else {
-                        CoreError::TransientLlm(message)
-                    };
-                    ConnectErrorAction::Finish(Box::new(self.failure(
-                        stage,
-                        error,
-                        Some(user_message),
-                        Some(trace_message),
-                    )))
-                }
-            },
+            }
             error => ConnectErrorAction::Finish(Box::new(self.failure(stage, error, None, None))),
         }
     }
@@ -688,7 +744,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         }));
     }
 
-    fn recover_from_disconnect(&mut self, detail: String) {
+    fn recover_from_disconnect(&mut self, detail: String, category: ConnectionErrorCategory) {
         match self.policy.decide_after_incomplete(
             false,
             self.disconnect_retries,
@@ -700,7 +756,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 trace_message,
             } => {
                 self.queue_failed(
-                    ConnectionErrorCategory::Network,
+                    category,
                     self.disconnect_retries,
                     self.policy.max_disconnect_retries(),
                 );
@@ -724,7 +780,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                     max_attempts: self.policy.max_disconnect_retries(),
                 });
                 self.queue_reconnecting(
-                    ConnectionErrorCategory::Network,
+                    category,
                     attempt,
                     self.policy.max_disconnect_retries(),
                     delay,
@@ -744,7 +800,7 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
                 trace_message,
             } => {
                 self.queue_failed(
-                    ConnectionErrorCategory::Network,
+                    category,
                     self.disconnect_retries,
                     self.policy.max_disconnect_retries(),
                 );
@@ -763,7 +819,9 @@ impl<'provider, 'events> ModelAttempt<'provider, 'events> {
         let category = match &error {
             CoreError::RateLimited { .. } => ConnectionErrorCategory::RateLimit,
             CoreError::TransientLlm(_) => ConnectionErrorCategory::Network,
-            CoreError::Llm(_) => ConnectionErrorCategory::ProviderUnavailable,
+            CoreError::Llm(_) | CoreError::ProviderUnavailable { .. } => {
+                ConnectionErrorCategory::ProviderUnavailable
+            }
             _ => ConnectionErrorCategory::Unknown,
         };
         let detail = error.to_string();
@@ -1332,6 +1390,38 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn provider_http_failures_retry_with_provider_category_instead_of_network() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            vec![
+                Invocation::Stream(Err(CoreError::ProviderUnavailable {
+                    status: 503,
+                    message: "server busy".into(),
+                })),
+                Invocation::Stream(Ok(vec![chunk("accepted")])),
+            ],
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, mut rx) = event_channel();
+        let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false);
+        expect_stream_opened(&mut attempt).await;
+        let mut categories = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::ConnectionState { state } = event {
+                categories.push(state.error_category);
+            }
+        }
+        assert!(categories.contains(&Some(ConnectionErrorCategory::ProviderUnavailable)));
+        assert!(!categories.contains(&Some(ConnectionErrorCategory::Network)));
+        assert_eq!(requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn disconnect_before_visible_output_reconnects_then_returns_control() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let route_queries = Arc::new(Mutex::new(0));
@@ -1342,12 +1432,15 @@ mod tests {
             ReasoningReplayPolicy::NotRequired,
             vec![
                 Invocation::Stream(Ok(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "disconnect one".to_string(),
                 }])),
                 Invocation::Stream(Ok(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "disconnect two".to_string(),
                 }])),
                 Invocation::Stream(Ok(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "disconnect three".to_string(),
                 }])),
                 Invocation::Complete(Ok(response("fallback answer"))),
@@ -1410,6 +1503,7 @@ mod tests {
                     Invocation::Stream(Ok(vec![
                         resettable,
                         ProviderStreamEvent::RecoverableError {
+                            category: crate::llm::ProviderRecoveryCategory::Network,
                             message: "late disconnect".to_string(),
                         },
                     ])),
@@ -1467,6 +1561,7 @@ mod tests {
                     }),
                 },
                 ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "late disconnect".to_string(),
                 },
             ]))],
@@ -1501,6 +1596,7 @@ mod tests {
                 Invocation::Stream(Ok(vec![
                     chunk(""),
                     ProviderStreamEvent::RecoverableError {
+                        category: crate::llm::ProviderRecoveryCategory::Network,
                         message: "disconnect".to_string(),
                     },
                 ])),
@@ -1649,6 +1745,7 @@ mod tests {
                 ReasoningReplayPolicy::NotRequired,
                 vec![Invocation::Stream(Ok(vec![
                     ProviderStreamEvent::RecoverableError {
+                        category: crate::llm::ProviderRecoveryCategory::Network,
                         message: "primary unavailable".to_string(),
                     },
                 ]))],
@@ -2633,6 +2730,44 @@ mod tests {
                 AgentEvent::ConnectionState { .. } | AgentEvent::StreamReset { .. }
             ));
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recreated_attempts_share_the_turn_provider_invocation_ceiling() {
+        let budget = crate::agent::turn_budget::TurnBudget::new(0).request_budget();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            (0..16)
+                .map(|_| Invocation::Stream(Ok(Vec::new())))
+                .collect(),
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, _rx) = event_channel();
+        for _ in 0..16 {
+            let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false)
+                .with_request_budget(budget.clone());
+            expect_stream_opened(&mut attempt).await;
+            assert!(matches!(
+                attempt.next().await,
+                ModelAttemptProgress::StreamComplete { .. }
+            ));
+        }
+        let mut exhausted =
+            ModelAttempt::new(provider.as_ref(), request(), &tx, false).with_request_budget(budget);
+        assert!(matches!(
+            exhausted.next().await,
+            ModelAttemptProgress::Failed(_)
+        ));
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            16,
+            "no provider call is started after exhaustion"
+        );
     }
 
     #[tokio::test(start_paused = true)]

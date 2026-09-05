@@ -382,6 +382,16 @@ fn push_runtime_verification_reason(tool_call: &PersistedTraceToolCall, reasons:
         "run_shell" if artifact_has_file_changes(tool_call.artifacts.as_ref()) => {
             Some("run_shell changed files".to_string())
         }
+        "run_shell"
+            if tool_call
+                .artifacts
+                .as_ref()
+                .and_then(|artifact| artifact.get("fileChangeTracking"))
+                .and_then(serde_json::Value::as_str)
+                == Some("untracked") =>
+        {
+            Some("run_shell executed without tracking filesystem changes".to_string())
+        }
         _ => None,
     };
 
@@ -783,6 +793,27 @@ mod tests {
         assert_eq!(
             signals.runtime_verification.reasons,
             vec!["run_shell changed files".to_string()]
+        );
+    }
+
+    #[test]
+    fn untracked_shell_effects_cannot_be_reported_as_verified_by_absence_of_a_diff() {
+        let items = vec![done_tool_with_artifacts(
+            "run_shell",
+            Some(serde_json::json!({
+                "kind": "managedService", "fileChangeTracking": "untracked",
+                "execution": {"exitCode": 0}
+            })),
+        )];
+        let signals = evidence_signals_from_trace(&items);
+        assert!(signals.runtime_verification.required);
+        assert_eq!(
+            signals.runtime_verification.verification_artifact_status,
+            None
+        );
+        assert_eq!(
+            signals.runtime_verification.reasons,
+            vec!["run_shell executed without tracking filesystem changes"]
         );
     }
 

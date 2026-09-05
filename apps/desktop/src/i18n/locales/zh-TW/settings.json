@@ -45,9 +45,6 @@
   "indexRebuildError": "索引重建失敗",
   "ftsOptimized": "FTS 索引最佳化完成",
   "ftsOptimizeError": "FTS 索引最佳化失敗",
-  "clearCache": "清除回答快取",
-  "cacheClearedCount": "已清除 {count} 筆快取回答",
-  "clearCacheError": "清除回答快取失敗",
   "loadPrivacyError": "載入隱私設定失敗",
   "patternExists": "該模式已存在",
   "privacySaved": "隱私設定已儲存",
@@ -338,8 +335,6 @@
   "agentQualityLastRun": "上次執行",
   "agentQualityNoFailures": "所有本地品質門檻均已通過。",
   "advanced": "進階設定",
-  "cacheTtl": "快取有效期（小時）",
-  "cacheTtlDesc": "AI 回答快取時長。設為 0 停用快取。",
   "searchLimit": "預設搜尋數量",
   "searchLimitDesc": "搜尋結果預設傳回的最大筆數。",
   "searchSimilarity": "最低搜尋相似度",
@@ -977,5 +972,7 @@
   ,"copilotCancelError": "無法取消 GitHub Copilot 登入"
   ,"copilotAvailableModels": "訂閱可用模型 {count} 個"
   ,"copilotUnlimited": "不限量"
-  ,"copilotOwnershipNotice": "此帳戶橋透過固定版本的 GitHub Copilot 官方 SDK 與經過完整性驗證的 CLI 驗證訂閱、模型及配額。登入保留在 Copilot CLI／系統鑰匙圈，不會將 GitHub 權杖複製到 Nexa。若要將 Copilot 選作 Nexa 對話執行核心，仍需獨立的 Agent Runtime 橋接。"
+  ,"copilotOwnershipNotice": "透過 Copilot 官方 CLI 登入，選擇訂閱模型後儲存為聊天供應商。工具執行與審批由 Nexa 處理，GitHub 權杖保留在 Copilot 中。"
+,"subscriptionSelectModel": "選擇可用模型"
+,"reasoningUltra": "Ultra"
 }

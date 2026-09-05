@@ -307,6 +307,7 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
         },
         AgentEvent::Done {
             message,
+            assistant_message_id,
             usage_total,
             last_prompt_tokens,
             context_breakdown,
@@ -314,6 +315,7 @@ pub(crate) fn compact_agent_event_for_frontend(event: AgentEvent) -> AgentEvent 
             finish_reason,
         } => AgentEvent::Done {
             message: compact_message_for_frontend(message),
+            assistant_message_id,
             usage_total,
             last_prompt_tokens,
             context_breakdown,
@@ -513,6 +515,7 @@ mod tests {
             usage_total: nexa_core::llm::Usage::default(),
             last_prompt_tokens: 0,
             context_breakdown: None,
+            assistant_message_id: None,
             cached: false,
             finish_reason: Some("stop".to_string()),
         };

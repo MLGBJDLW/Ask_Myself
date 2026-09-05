@@ -224,3 +224,43 @@ export function applyStreamBlockDelta(
     );
   }
 }
+
+/** A full upstream record supersedes only its block, including any stale gaps. */
+export function applyStreamBlockSnapshot(
+  state: StreamTerminalProjectionState,
+  channel: 'answer' | 'thinking',
+  blockId: string,
+  text: string,
+): void {
+  if (!blockId) return;
+  const kind = channel === 'answer' ? 'reply' : 'thinking';
+  const index = state.traceEvents.findIndex(event => event.kind === kind && event.blockId === blockId);
+  const nextOffset = utf8ByteLength(text);
+  pendingBlocks(state, channel).delete(blockId);
+  if (index >= 0) {
+    const previous = state.traceEvents[index] as TraceReplyEvent | TraceThinkingEvent;
+    const next = [...state.traceEvents];
+    next[index] = { ...previous, text, nextOffset };
+    state.traceEvents = next;
+  } else {
+    state.traceEvents = [...state.traceEvents, {
+      id: `trace-${kind}-${Date.now()}-${state._traceSeq++}`,
+      kind, blockId, text, nextOffset,
+    }];
+  }
+  // Historical corrections must not steal the currently streaming block.
+  if (channel === 'answer' && (index < 0 || state._activeAnswerBlockId === blockId)) {
+    state._activeAnswerBlockId = blockId;
+    state._activeAnswerOffset = nextOffset;
+    state.streamText = text;
+    state.isThinking = false;
+    state.thinkingText = '';
+    state._activeRoundId = null;
+    state._activeRoundAcceptingStarts = false;
+  } else if (channel === 'thinking' && (index < 0 || state._activeThinkingBlockId === blockId)) {
+    state._activeThinkingBlockId = blockId;
+    state._activeThinkingOffset = nextOffset;
+    state.thinkingText = text;
+    state.isThinking = true;
+  }
+}
