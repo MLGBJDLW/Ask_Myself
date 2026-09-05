@@ -18,6 +18,36 @@ fn resolve_native_path(cwd: &Path, raw: &str) -> PathBuf {
     }
 }
 
+/// Resolve the same source/destination mapping as native cp and mv before the
+/// operation starts. Keeping this set fixed also handles a newly created dest.
+pub(super) fn mutation_paths(program: &str, args: &[String], cwd: &Path) -> Vec<PathBuf> {
+    if !matches!(program, "cp" | "mv") {
+        return Vec::new();
+    }
+    let positionals = collect_positional_args(args);
+    let Some((dest, sources)) = positionals.split_last() else {
+        return Vec::new();
+    };
+    let dest = resolve_native_path(cwd, dest);
+    let mut paths = Vec::new();
+    for raw in sources {
+        let source = resolve_native_path(cwd, raw);
+        let target = if dest.is_dir() {
+            let Some(name) = source.file_name() else {
+                continue;
+            };
+            dest.join(name)
+        } else {
+            dest.clone()
+        };
+        if program == "mv" {
+            paths.push(source);
+        }
+        paths.push(target);
+    }
+    paths
+}
+
 fn display_native_path(path: &Path) -> String {
     path.display().to_string()
 }
