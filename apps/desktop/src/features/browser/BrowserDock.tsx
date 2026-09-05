@@ -121,6 +121,7 @@ export function BrowserDock({
   const pickTimerRef = useRef<number | null>(null);
   const sessionPromisesRef = useRef(new Map<string, Promise<api.BrowserSessionInfo | null>>());
   const sessionRequestGenerationRef = useRef(0);
+  const refreshesRef = useRef(new Map<string, { dirty: boolean; promise: Promise<api.BrowserSessionInfo | null> }>());
   const conversationLifecycleRef = useRef({ conversationId, generation: 0 });
   if (conversationLifecycleRef.current.conversationId !== conversationId) {
     conversationLifecycleRef.current = {
@@ -276,12 +277,35 @@ export function BrowserDock({
       setSession(null);
       return null;
     }
-    const scope = beginSessionRequest(targetConversationId);
-    if (!scope) return null;
-    const next = await api.activeBrowserSession(targetConversationId);
-    if (!commitSession(scope, next)) return null;
-    recoverRequestedVisibility(scope, next);
-    return next;
+    const lifecycleGeneration = conversationLifecycleRef.current.generation;
+    const key = `${lifecycleGeneration}:${targetConversationId}`;
+    const pending = refreshesRef.current.get(key);
+    if (pending) {
+      pending.dirty = true;
+      return pending.promise;
+    }
+    const entry = { dirty: false, promise: Promise.resolve<api.BrowserSessionInfo | null>(null) };
+    refreshesRef.current.set(key, entry);
+    entry.promise = (async () => {
+      let latest: api.BrowserSessionInfo | null = null;
+      try {
+        do {
+          entry.dirty = false;
+          if (conversationLifecycleRef.current.generation !== lifecycleGeneration) return null;
+          const scope = beginSessionRequest(targetConversationId);
+          if (!scope) return null;
+          const next = await api.activeBrowserSession(targetConversationId);
+          if (commitSession(scope, next)) {
+            recoverRequestedVisibility(scope, next);
+            latest = next;
+          }
+        } while (entry.dirty);
+        return latest;
+      } finally {
+        refreshesRef.current.delete(key);
+      }
+    })();
+    return entry.promise;
   }, [beginSessionRequest, commitSession, recoverRequestedVisibility]);
 
   const syncBounds = useCallback(async (
@@ -587,7 +611,7 @@ export function BrowserDock({
               ? 'idle'
               : 'empty';
     onStatusChange?.({ tabCount: session?.tabs.length ?? 0, state });
-  }, [currentTab?.loading, lastError, onStatusChange, session]);
+  }, [currentTab?.loading, lastError, onStatusChange, session?.id, session?.tabs.length, session?.controlOwner?.type]);
 
   useEffect(() => {
     busyGenerationRef.current += 1;

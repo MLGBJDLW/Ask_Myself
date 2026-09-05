@@ -479,10 +479,17 @@ impl BrowserState {
         &self,
         conversation_id: &str,
     ) -> Result<Option<BrowserSessionInfo>, String> {
-        Ok(self
-            .list_sessions()?
-            .into_iter()
-            .find(|session| session.conversation_id.as_deref() == Some(conversation_id)))
+        let runtime = self
+            .inner
+            .lock()
+            .map_err(|_| "Browser runtime is unavailable".to_string())?;
+        Ok(runtime
+            .sessions
+            .values()
+            .find(|session| {
+                !session.initializing && session.conversation_id.as_deref() == Some(conversation_id)
+            })
+            .map(session_info))
     }
 
     pub async fn create_session(
