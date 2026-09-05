@@ -1274,7 +1274,7 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
 #[test]
 fn empty_learned_memory_does_not_call_embedding_before_the_model_request() {
     use nexa_core::embed::{create_embedder, EmbedderConfig};
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     use std::sync::atomic::AtomicUsize;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -1291,8 +1291,34 @@ fn empty_learned_memory_does_not_call_embedding_before_the_model_request() {
                     socket
                         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
                         .unwrap();
-                    let mut request = [0; 4096];
-                    socket.read(&mut request).unwrap();
+                    // A TCP read is not an HTTP request. Closing with an unread
+                    // POST body can reset the connection and make the embedder
+                    // retry, corrupting the request-count regression signal.
+                    let mut request = std::io::BufReader::new(&mut socket);
+                    let mut line = String::new();
+                    if request.read_line(&mut line).unwrap() == 0 {
+                        continue;
+                    }
+                    assert!(line.starts_with("POST "));
+                    let mut content_length = None;
+                    loop {
+                        line.clear();
+                        assert!(request.read_line(&mut line).unwrap() > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = Some(value.trim().parse::<usize>().unwrap());
+                            }
+                        }
+                    }
+                    let length = content_length.expect("JSON POST must declare its length");
+                    assert!(length < 64 * 1024);
+                    let mut body = vec![0; length];
+                    request.read_exact(&mut body).unwrap();
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+                    drop(request);
                     server_calls.fetch_add(1, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0,0.0]}]}"#;
