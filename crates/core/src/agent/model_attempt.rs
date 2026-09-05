@@ -2670,6 +2670,44 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn recreated_attempts_share_the_turn_provider_invocation_ceiling() {
+        let budget = crate::agent::turn_budget::TurnBudget::new(0).request_budget();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = ScriptedProvider::boxed(
+            "primary",
+            "primary-endpoint",
+            "primary-model",
+            ReasoningReplayPolicy::NotRequired,
+            (0..16)
+                .map(|_| Invocation::Stream(Ok(Vec::new())))
+                .collect(),
+            Arc::clone(&requests),
+            Arc::new(Mutex::new(0)),
+        );
+        let (tx, _rx) = event_channel();
+        for _ in 0..16 {
+            let mut attempt = ModelAttempt::new(provider.as_ref(), request(), &tx, false)
+                .with_request_budget(budget.clone());
+            expect_stream_opened(&mut attempt).await;
+            assert!(matches!(
+                attempt.next().await,
+                ModelAttemptProgress::StreamComplete { .. }
+            ));
+        }
+        let mut exhausted =
+            ModelAttempt::new(provider.as_ref(), request(), &tx, false).with_request_budget(budget);
+        assert!(matches!(
+            exhausted.next().await,
+            ModelAttemptProgress::Failed(_)
+        ));
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            16,
+            "no provider call is started after exhaustion"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn non_streaming_completion_owns_one_exact_transient_retry_budget() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let provider = ScriptedProvider::boxed(
