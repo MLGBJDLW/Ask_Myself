@@ -119,7 +119,7 @@ pub(crate) fn loop_guard_blocked_result(call: &ToolCallRequest, reason: &str) ->
             "arguments": "must differ materially from the repeated blocked call",
             "recovery": "change strategy, narrow scope, ask the user, or synthesize from existing evidence"
         }),
-        true,
+        false,
     )
 }
 
