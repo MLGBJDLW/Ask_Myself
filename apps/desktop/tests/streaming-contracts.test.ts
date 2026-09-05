@@ -3443,6 +3443,7 @@ test('a newer launch status reopens a stream settled by awaiting user input', ()
     phase: 'routing',
     status: 'running',
     label: 'Agent started',
+    visibility: 'internal',
   })));
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
     eventSeq: 3,
@@ -3458,8 +3459,26 @@ test('a newer launch status reopens a stream settled by awaiting user input', ()
   const resumed = streamStore.getStream(conversationId);
   assert(resumed, 'resumed stream state should exist');
   assertEqual(resumed.isStreaming, true, 'new running status reopens the continuation');
+  assert(
+    !visibleTraceEventsForTimeline(resumed.traceEvents).some(event => event.kind === 'status' && event.text === 'Agent started'),
+    'the lifecycle marker resumes control without adding a routine chat notice',
+  );
   assertEqual(resumed.streamText, 'Continued', 'resumed nonterminal events are accepted');
   streamStore.clearStream(conversationId);
+});
+
+test('routine lifecycle notices stay out of live and saved timelines without hiding errors or replies', () => {
+  const routine: TraceEvent = { id: 'started', kind: 'status', text: 'Agent started', tone: 'muted' };
+  const failure: TraceEvent = { id: 'failure', kind: 'status', text: 'Agent started', tone: 'error' };
+  const reply: TraceEvent = { id: 'reply', kind: 'reply', text: 'Agent started' };
+  const visible = visibleTraceEventsForTimeline([routine, failure, reply], true);
+  assertEqual(visible.length, 2, 'only the routine status is removed');
+  assertEqual(visible[0].id, 'failure', 'errors remain visible');
+  assertEqual(visible[1].id, 'reply', 'ordinary answer text remains unchanged');
+  assertEqual(persistedTraceItemToTimelineSections({
+    item: { kind: 'status', text: 'Agent started', tone: 'muted', visibility: 'user' },
+    id: 'saved-start', trace: true,
+  }).length, 0, 'saved lifecycle notices use the same presentation policy');
 });
 
 test('stream registry keeps concurrent conversations independently addressable', () => {

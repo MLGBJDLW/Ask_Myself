@@ -945,8 +945,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
     let task = tokio::spawn(async move {
         let _foreground_work_lease = background_work.foreground_lease();
         let initialization = async {
-            stream_event_seq_for_task
-                .submit(AgentRunEvent::status_update(
+            let mut started_event = AgentRunEvent::status_update(
                     &task_run_id,
                     Some(&turn_id),
                     0,
@@ -954,7 +953,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     "Agent started",
                     Some("running"),
                     None,
-                ))
+                );
+            // Startup recovery still consumes this durable lifecycle marker;
+            // it is not a chat message or a user-actionable progress notice.
+            started_event.visibility = nexa_core::agent_run::AgentRunEventVisibility::Internal;
+            stream_event_seq_for_task
+                .submit(started_event)
                 .map_err(|error| error.to_string())?;
             stream_event_seq_for_task
                 .flush()

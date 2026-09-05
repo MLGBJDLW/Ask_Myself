@@ -47,6 +47,12 @@ const INTERNAL_TRACE_TOOLS = new Set([
   'tool_search',
 ]);
 
+const ROUTINE_RUN_STATUSES = new Set(['Agent started', 'Generating answer', 'Reasoning']);
+
+function isRoutineRunStatus(text: string, tone?: TraceTone): boolean {
+  return tone !== 'error' && tone !== 'success' && ROUTINE_RUN_STATUSES.has(text.trim());
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -439,6 +445,7 @@ export function persistedTraceItemToTimelineSections(input: {
       }
       if (item.visibility === 'internal') return [];
       if (item.visibility === 'developer' && !includeDeveloper) return [];
+      if (isRoutineRunStatus(item.text, item.tone)) return [];
       return [{
         kind: 'status',
         id,
@@ -485,13 +492,13 @@ export function visibleTraceEventsForTimeline(
   traceEvents: TraceEvent[],
   includeDeveloper = false,
 ): TraceEvent[] {
-  return traceEvents.filter(event => (
-    event.kind === 'status' && event.code === 'model_planning_slow'
-      ? false
-      : event.kind !== 'status'
-    || (event.visibility !== 'internal'
-      && (includeDeveloper || event.visibility !== 'developer'))
-  ));
+  return traceEvents.filter(event => {
+    if (event.kind !== 'status') return true;
+    return event.code !== 'model_planning_slow'
+      && !isRoutineRunStatus(event.text, event.tone)
+      && event.visibility !== 'internal'
+      && (includeDeveloper || event.visibility !== 'developer');
+  });
 }
 
 export function traceEventToTimelineSections(event: TraceEvent): TimelineSection[] {
@@ -509,6 +516,7 @@ export function traceEventToTimelineSections(event: TraceEvent): TimelineSection
     });
   }
   if (event.code === 'model_planning_slow') return [];
+  if (isRoutineRunStatus(event.text, event.tone)) return [];
   {
     if (event.displayKind === 'steering') {
       return [{ kind: 'steering', id: event.id, text: event.text }];
