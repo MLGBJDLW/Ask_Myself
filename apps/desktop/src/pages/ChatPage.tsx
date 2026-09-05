@@ -1,3 +1,4 @@
+import type { ArtifactPayload } from '../types/conversation';
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router';
@@ -536,9 +537,9 @@ export function ChatPage() {
     [navigate],
   );
 
-  const initialSourceIds = (
-    (location.state as { sourceIds?: string[] } | null)?.sourceIds ?? []
-  ).filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const routeSourceIds = (location.state as { sourceIds?: string[] } | null)?.sourceIds;
+  const initialSourceIds = useMemo(() => (routeSourceIds ?? [])
+    .filter((value): value is string => typeof value === 'string' && value.length > 0), [routeSourceIds]);
   const initialCollectionContext = (
     (location.state as { collectionContext?: Conversation['collectionContext'] } | null)?.collectionContext
   ) ?? null;
@@ -858,6 +859,10 @@ export function ChatPage() {
     },
     [activePersonaId, chat.send, pendingGraphContext, personas, setPersona],
   );
+
+  const handleQuestionSubmit = useCallback((message: string, artifact: ArtifactPayload) => {
+    void handleChatSend(message, undefined, { userArtifacts: artifact });
+  }, [handleChatSend]);
 
   const handleInteractionSubmit = useCallback(async (
     response: FormattedQuestionResponse,
@@ -1873,14 +1878,12 @@ export function ChatPage() {
               isStreaming={chat.isStreaming}
               error={chat.error}
               onRetry={isArchivedConversation ? undefined : chat.retry}
-              onDismissError={() => chat.clearError()}
+              onDismissError={chat.clearError}
               onDeleteMessage={isArchivedConversation ? undefined : chat.deleteMessage}
               onEditAndResend={isArchivedConversation ? undefined : chat.editAndResend}
               onApprovePlan={isArchivedConversation ? undefined : handleApprovePlan}
               onResumePaused={isArchivedConversation ? undefined : handleResumePaused}
-              onQuestionSubmit={isArchivedConversation ? undefined : (message, artifact) => {
-                void handleChatSend(message, undefined, { userArtifacts: artifact });
-              }}
+              onQuestionSubmit={isArchivedConversation ? undefined : handleQuestionSubmit}
               loadingMsgs={chat.loadingMsgs}
               lastCached={chat.lastCached}
               isCompacting={isCompacting}

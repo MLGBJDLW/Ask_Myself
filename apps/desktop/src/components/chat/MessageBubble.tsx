@@ -1,3 +1,4 @@
+import { MAX_HIGHLIGHT_DOCUMENT_CHARS } from '../../lib/streaming/markdownPresentation';
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -7,6 +8,7 @@ import { toast } from 'sonner';
 import * as api from '../../lib/api';
 import {
   CitationContext,
+  MarkdownRenderStateProvider,
   markdownComponents,
   markdownRemarkPlugins,
   preprocessCitations,
@@ -338,6 +340,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
       : t('chat.assistantResponse');
 
   return (
+    <MarkdownRenderStateProvider isStreaming={false} plainCode={msg.content.length + (proposedPlan?.markdown.length ?? 0) > MAX_HIGHLIGHT_DOCUMENT_CHARS}>
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
@@ -557,6 +560,7 @@ function MessageBubbleInner({ msg, chunkIds, queryText, citationLookup, isLastAs
         </Modal>
       </div>
     </motion.div>
+    </MarkdownRenderStateProvider>
   );
 }
 
