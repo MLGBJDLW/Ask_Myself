@@ -789,7 +789,7 @@ mod tests {
         ] {
             let (run_id, turn_id) = create_started_run(&db, status);
             let event =
-                AgentRunEvent::terminal_status(&run_id, Some(&turn_id), 1, "Stopped", status, None);
+                AgentRunEvent::terminal_error(&run_id, Some(&turn_id), 1, "Stopped", status, None);
             AgentTaskRuntime::new(&db)
                 .commit_run_event_batch(&run_id, &[event])
                 .unwrap();
