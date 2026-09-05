@@ -243,14 +243,14 @@ test.beforeEach(async ({ page }) => {
           };
 
           if (exerciseDurableRecovery) {
-            setTimeout(() => {
+            (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__ = () => {
               emitEvent('agent://run-event', {
                 conversationId,
                 type: 'textDelta',
                 delta: assistantMessage.content,
               });
-            }, 1_200);
-            setTimeout(finishStream, 1_240);
+              finishStream();
+            };
           } else {
             queueMicrotask(() => {
               emitEvent('agent://run-event', {
@@ -372,5 +372,6 @@ test('queries durable state and preserves an active backend turn after live sile
       .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
   ))).toBeGreaterThanOrEqual(4);
   await expect(page.getByText('Connection lost')).toHaveCount(0);
+  await page.evaluate(() => (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__?.());
   await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
 });

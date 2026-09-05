@@ -944,10 +944,10 @@ test('task center never treats untyped task rows as a Run Event fallback', () =>
   assertEqual(history[0].source, 'schedulerEvent', 'scheduler event remains visible');
 });
 
-test('durable replay restores direct canonical run events through live projection', () => {
+test('durable replay restores direct canonical run events through live projection', async () => {
   const conversationId = 'conversation-run-event-replay';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'outputDelta',
@@ -1129,10 +1129,10 @@ test('durable legacy tool progress preserves the started card identity', () => {
   assertEqual(projected.toolCalls[0].progressNote, 'reading', 'progress note remains visible');
 });
 
-test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', () => {
+test('authoritative durable replay accepts legacy event sequence gaps without weakening live ordering', async () => {
   const conversationId = 'conversation-legacy-run-event-gaps';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'outputDelta',
@@ -1616,10 +1616,10 @@ test('canonical approval denial projection matches live stream dispatch declined
   streamStore.clearStream(conversationId);
 });
 
-test('durable Run Event replay restores usage and approval state', () => {
+test('durable Run Event replay restores usage and approval state', async () => {
   const conversationId = 'conversation-usage-approval-replay';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'usageUpdated',
@@ -2558,10 +2558,10 @@ test('backend heartbeats cannot postpone recovery of missing chat events', () =>
   }
 });
 
-test('restoreFromRunEvents projects terminal error replay into stream state', () => {
+test('restoreFromRunEvents projects terminal error replay into stream state', async () => {
   const conversationId = 'conversation-terminal-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('failed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('failed'), [
     runEvent({
       eventSeq: 1,
       kind: 'error',
@@ -2584,10 +2584,10 @@ test('restoreFromRunEvents projects terminal error replay into stream state', ()
   streamStore.clearStream(conversationId);
 });
 
-test('restoreFromRunEvents preserves cancelled terminal replay status', () => {
+test('restoreFromRunEvents preserves cancelled terminal replay status', async () => {
   const conversationId = 'conversation-cancelled-terminal-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('cancelled'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('cancelled'), [
     runEvent({
       eventSeq: 1,
       kind: 'error',
@@ -2606,10 +2606,10 @@ test('restoreFromRunEvents preserves cancelled terminal replay status', () => {
   streamStore.clearStream(conversationId);
 });
 
-test('restoreFromRunEvents closes a stale cancelling task after app restart', () => {
+test('restoreFromRunEvents closes a stale cancelling task after app restart', async () => {
   const conversationId = 'conversation-cancelling-restore';
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('cancelling'), []);
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('cancelling'), []);
 
   const restored = streamStore.getStream(conversationId);
   assert(restored, 'cancelling stream state should exist');
@@ -3194,7 +3194,7 @@ test('a settled bound launch rejects a retired run terminal', () => {
   streamStore.clearStream(conversationId);
 });
 
-test('durable hydration replaces an unbound blank state created by a future event', () => {
+test('durable hydration replaces an unbound blank state created by a future event', async () => {
   const conversationId = 'conversation-unbound-gap-hydration';
   streamStore.dispatch(conversationId, frontendEvent(runEvent({
     eventSeq: 2,
@@ -3208,7 +3208,7 @@ test('durable hydration replaces an unbound blank state created by a future even
   assertEqual(blank.turnHandle, null, 'unsolicited event has no launch handle');
   assertEqual(blank.traceEvents.length, 0, 'future event remains buffered without a prefix');
 
-  streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
+  await streamStore.restoreFromRunEvents(conversationId, taskRun('completed'), [
     runEvent({
       eventSeq: 1,
       kind: 'done',
@@ -3506,11 +3506,36 @@ test('conversation cache evicts least-recently-used entries by count and bytes',
   assert(!cache.c && !cache.d, 'older entries are evicted to satisfy the byte budget');
 });
 
-test('completed stream state is bounded and recoverable from durable events', () => {
+test('large hydration yields to input and retains a bounded trace', async () => {
+  const conversationId = 'large-hydration';
+  const events = Array.from({ length: 4096 }, (_, index) => runEvent({
+    eventSeq: index + 1, kind: 'outputDelta',
+    payload: { blockId: `block-${index}`, channel: 'answer', offset: 0, delta: `answer-${index}` },
+  }));
+  let inputHandled = false;
+  const hydration = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  setTimeout(() => { inputHandled = true; }, 0);
+  await hydration;
+  assert(inputHandled, 'input runs between replay batches');
+  const restored = streamStore.getStream(conversationId);
+  assert(restored, 'hydrated stream exists');
+  assertEqual(restored.streamText, 'answer-4095', 'latest answer is complete');
+  assert(restored.traceEvents.length <= 512, 'hydration and live updates use the same retention');
+  streamStore.clearStream(conversationId);
+
+  const stale = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  streamStore.startStream(conversationId);
+  streamStore.dispatch(conversationId, frontendEvent(runEvent({ eventSeq: 1, kind: 'outputDelta',
+    payload: { blockId: 'new-turn', channel: 'answer', offset: 0, delta: 'New request' },
+  })));
+  await stale;
+  assertEqual(streamStore.getStream(conversationId)?.streamText, 'New request', 'old hydration cannot replace a new stream');
+  streamStore.clearStream(conversationId);
+});
+
+test('completed stream state is bounded and recoverable from durable events', async () => {
   const ids = Array.from({ length: 40 }, (_, index) => `bounded-stream-${index}`);
-  ids.forEach(id => {
-    streamStore.restoreFromRunEvents(id, taskRun('completed'), []);
-  });
+  for (const id of ids) await streamStore.restoreFromRunEvents(id, taskRun('completed'), []);
 
   assertEqual(
     streamStore.getStream(ids[0]),
@@ -3523,7 +3548,7 @@ test('completed stream state is bounded and recoverable from durable events', ()
   );
 
   const restoredId = ids[0];
-  streamStore.restoreFromRunEvents(restoredId, taskRun('completed'), []);
+  await streamStore.restoreFromRunEvents(restoredId, taskRun('completed'), []);
   assert(streamStore.getStream(restoredId), 'an evicted preview restores from durable events');
   ids.forEach(id => streamStore.clearStream(id));
 });

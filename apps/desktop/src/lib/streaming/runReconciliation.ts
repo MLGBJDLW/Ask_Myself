@@ -14,7 +14,6 @@ const MAX_GAP_RECOVERY_ATTEMPTS = 4;
 
 export interface DurableRunReconciliationPort {
   listTaskRuns(conversationId: string): Promise<AgentTaskRun[]>;
-  listRunEvents(runId: string, afterEventSeq?: number): Promise<AgentRunEvent[]>;
   listRunEventPage(
     runId: string,
     afterEventSeq: number,
@@ -202,10 +201,9 @@ export class DurableRunReconciler {
       };
     }
 
-    const runEventsQuery = request.reason === 'watchdog'
-      && request.afterEventSeq !== undefined
-      ? this.listRunEventSuffix(taskRun.id, request.afterEventSeq)
-      : this.port.listRunEvents(taskRun.id);
+    const runEventsQuery = this.listRunEventSuffix(
+      taskRun.id, request.reason === 'watchdog' ? request.afterEventSeq ?? 0 : 0, isCurrent,
+    );
     const taskEventsQuery = this.port.listTaskEvents(taskRun.id);
     let runEvents: AgentRunEvent[];
     let taskEvents: AgentTaskRunEvent[];
@@ -213,7 +211,7 @@ export class DurableRunReconciler {
       [runEvents, taskEvents] = await this.withTimeout(
         Promise.all(request.reason === 'hydration'
           ? [
-            runEventsQuery.catch((): AgentRunEvent[] => []),
+            runEventsQuery,
             taskEventsQuery.catch((): AgentTaskRunEvent[] => []),
           ]
           : [runEventsQuery, taskEventsQuery]),
@@ -316,12 +314,15 @@ export class DurableRunReconciler {
   private async listRunEventSuffix(
     runId: string,
     afterEventSeq: number,
+    isCurrent: () => boolean,
   ): Promise<AgentRunEvent[]> {
     const events: AgentRunEvent[] = [];
     let cursor = afterEventSeq;
     let durableHighWater: number | undefined;
     for (;;) {
+      if (!isCurrent()) return [];
       const page = await this.port.listRunEventPage(runId, cursor, durableHighWater);
+      if (!isCurrent()) return [];
       durableHighWater = this.validateRecoveryPage(page, durableHighWater, cursor);
       events.push(...page.events);
       const nextCursor = page.nextAfterEventSeq ?? cursor;

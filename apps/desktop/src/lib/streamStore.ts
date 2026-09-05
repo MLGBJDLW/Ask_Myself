@@ -12,7 +12,7 @@ import type {
   AgentTaskRunEvent,
   AgentTurnHandle,
 } from '../types/conversation';
-import { projectRunEventsToStreamState } from './streaming/durableReplay';
+import { projectRunEventsToStreamStateAsync, applyBufferedRunEventsToState } from './streaming/durableReplay';
 import {
   enqueueStreamRunEvent,
   parseStreamEventSeq,
@@ -26,6 +26,7 @@ import { applyDoneEvent } from './streaming/liveProjection';
 import {
   clearToolPreparingTimers,
   createDefaultState,
+  capStreamCollections,
   type InternalStreamState,
 } from './streaming/state';
 import {
@@ -111,18 +112,6 @@ class StreamStoreImpl {
     this._notifications.flushNow(conversationId);
   }
 
-  private capLiveCollections(state: InternalStreamState): void {
-    if (state.traceEvents.length > 512) {
-      state.traceEvents = state.traceEvents.slice(-512);
-    }
-    if (state.streamRounds.length > 128) {
-      state.streamRounds = state.streamRounds.slice(-128);
-    }
-    if (state.taskEvents.length > 256) {
-      state.taskEvents = state.taskEvents.slice(-256);
-    }
-  }
-
   private touch(conversationId: string): void {
     this._recencyTick += 1;
     this._recency.set(conversationId, this._recencyTick);
@@ -206,17 +195,25 @@ class StreamStoreImpl {
   }
 
   /** Rebuild the visible stream preview directly from canonical durable Run Events. */
-  restoreFromRunEvents(
+  async restoreFromRunEvents(
     conversationId: string,
     taskRun: AgentTaskRun,
     runEvents: AgentRunEvent[],
     taskEvents: AgentTaskRunEvent[] = [],
-  ): void {
-    this.restoreProjectedState(conversationId, () =>
-      projectRunEventsToStreamState(taskRun, runEvents, taskEvents, {
-        interruptActive: taskRun.status === 'cancelling',
-      }),
-    );
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    const original = this._streams[conversationId];
+    const originalSequence = original?._lastEventSeq;
+    const ownsRestore = () => isCurrent() && this._streams[conversationId] === original
+      && original?._lastEventSeq === originalSequence;
+    const projected = await projectRunEventsToStreamStateAsync(taskRun, runEvents, taskEvents, ownsRestore);
+    if (!projected || !ownsRestore()) return;
+    // Events buffered while the historical prefix loaded remain authoritative.
+    if (original && !runEvents.some(event => classifyAgentRunEventLifecycle(event) === 'terminal')) {
+      applyBufferedRunEventsToState(projected, [...original._pendingRunEvents.values()]);
+    }
+    capStreamCollections(projected);
+    this.restoreProjectedState(conversationId, () => projected);
   }
 
   /** Initialize (or reset) stream state for a conversation. */
@@ -538,7 +535,7 @@ class StreamStoreImpl {
       'recovery',
     );
     this.touch(conversationId);
-    this.capLiveCollections(state);
+    capStreamCollections(state);
     this.notifyImmediately(conversationId);
     this.resetTimeout(conversationId, true);
   }
@@ -695,7 +692,7 @@ class StreamStoreImpl {
           'recovery',
         );
         this.touch(conversationId);
-        this.capLiveCollections(state);
+        capStreamCollections(state);
         this.notifyImmediately(conversationId);
         this.resetTimeout(conversationId, true);
         return;
@@ -883,7 +880,7 @@ class StreamStoreImpl {
     }
     if (isTerminalEvent || isResumableSuspension) this.finishTurnTiming(state);
     this.touch(conversationId);
-    this.capLiveCollections(state);
+    capStreamCollections(state);
     if (isTerminalEvent) this.evictCompletedStreams(conversationId);
     if (
       isTerminalEvent

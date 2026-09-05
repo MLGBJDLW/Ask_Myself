@@ -729,14 +729,16 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
               !cancelled && generation === conversationHydrationGenerationRef.current
             ),
             })
-            .then(outcome => {
+            .then(async outcome => {
               if (outcome.kind !== 'active' && outcome.kind !== 'suspended') return;
-              streamStore.restoreFromRunEvents(
+              await streamStore.restoreFromRunEvents(
                 activeId,
                 outcome.snapshot.taskRun,
                 outcome.snapshot.runEvents,
                 outcome.snapshot.taskEvents,
+                () => !cancelled && generation === conversationHydrationGenerationRef.current,
               );
+              if (cancelled || generation !== conversationHydrationGenerationRef.current) return;
               const restoredStream = streamStore.getStream(activeId);
               if (outcome.kind === 'active' && restoredStream?.isStreaming) {
                 knownStreamConversationsRef.current.add(activeId);
@@ -1363,7 +1365,7 @@ export function useChatSession(options: UseChatSessionOptions = {}): UseChatSess
         || outcome.kind === 'completed'
         || outcome.kind === 'pending'
       ) {
-        streamStore.restoreFromRunEvents(
+        await streamStore.restoreFromRunEvents(
           conversationId,
           outcome.snapshot.taskRun,
           outcome.snapshot.runEvents,
