@@ -162,7 +162,6 @@ test.beforeEach(async ({ page }) => {
     };
 
     const appConfig = {
-      cacheTtlHours: 24,
       defaultSearchLimit: 20,
       minSearchSimilarity: 0.2,
       maxTextFileSize: 104857600,

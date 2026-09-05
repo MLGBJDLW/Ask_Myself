@@ -128,7 +128,6 @@ test.beforeEach(async ({ page }) => {
           return 1047576;
         case 'get_app_config_cmd':
           return {
-            cacheTtlHours: 24,
             defaultSearchLimit: 20,
             minSearchSimilarity: 0.2,
             maxTextFileSize: 1,
@@ -201,7 +200,6 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'list_mcp_servers_cmd':
           return [];
-        case 'clear_answer_cache':
           return 0;
         case 'agent_chat_cmd': {
           const conversationId = String(args.conversationId ?? '');

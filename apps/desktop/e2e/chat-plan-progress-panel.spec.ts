@@ -778,7 +778,6 @@ test.beforeEach(async ({ page }) => {
           };
         case 'check_ocr_models_cmd':
           return false;
-        case 'clear_answer_cache':
         case 'compact_conversation_cmd':
         case 'save_agent_config_cmd':
         case 'agent_stop_cmd':

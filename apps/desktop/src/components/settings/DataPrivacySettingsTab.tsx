@@ -20,7 +20,6 @@ interface DataPrivacySettingsTabProps {
   stats: IndexStats | null;
   rebuildLoading: boolean;
   optimizeLoading: boolean;
-  clearCacheLoading: boolean;
   ftsProgress: FtsProgress | null;
   privacyConfig: PrivacyConfig | null;
   newPattern: string;
@@ -36,7 +35,6 @@ interface DataPrivacySettingsTabProps {
   saveLoading: boolean;
   onRebuild: () => void;
   onOptimize: () => void;
-  onClearCache: () => void;
   onNewPatternChange: (value: string) => void;
   onAddPattern: () => void;
   onRemovePattern: (index: number) => void;
@@ -110,7 +108,6 @@ export function DataPrivacySettingsTab({
   stats,
   rebuildLoading,
   optimizeLoading,
-  clearCacheLoading,
   ftsProgress,
   privacyConfig,
   newPattern,
@@ -126,7 +123,6 @@ export function DataPrivacySettingsTab({
   saveLoading,
   onRebuild,
   onOptimize,
-  onClearCache,
   onNewPatternChange,
   onAddPattern,
   onRemovePattern,
@@ -264,9 +260,6 @@ export function DataPrivacySettingsTab({
           </Button>
           <Button variant="secondary" size="sm" icon={<Zap size={14} />} loading={optimizeLoading} onClick={onOptimize}>
             {t('settings.optimizeIndex')}
-          </Button>
-          <Button variant="secondary" size="sm" icon={<Trash2 size={14} />} loading={clearCacheLoading} onClick={onClearCache}>
-            {t('settings.clearCache')}
           </Button>
         </div>
         {ftsProgress && (

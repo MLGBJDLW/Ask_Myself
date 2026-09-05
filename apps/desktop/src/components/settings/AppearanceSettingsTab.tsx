@@ -287,19 +287,8 @@ export function AppearanceSettingsTab({
         >
           {appConfig && (
             <div className="space-y-4">
-              {/* Cache & Search */}
+              {/* Search */}
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-text-primary">{t('settings.cacheTtl')}</label>
-                  <Input
-                    type="number"
-                    value={appConfig.cacheTtlHours}
-                    onChange={(e) => onAppConfigChange({ ...appConfig, cacheTtlHours: Math.max(0, Math.min(168, parseInt(e.target.value) || 0)) })}
-                    min={0}
-                    max={168}
-                  />
-                  <p className="text-xs text-text-tertiary">{t('settings.cacheTtlDesc')}</p>
-                </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-text-primary">{t('settings.searchLimit')}</label>
                   <Input

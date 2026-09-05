@@ -958,16 +958,9 @@ impl AgentExecutor {
         append_persisted_trace_loaded_skills(&mut persisted_trace_items, &auto_loaded_skills);
         self.seed_prompt_cache_from_previous_turn(db, conversation_id, turn_id);
 
-        // --- 3c. Extract user query text and build cache key -----------------
+        // --- 3c. Extract user query text -----------------
         let user_query_text = &user_query_text_for_tools;
 
-        let cache_source_filter: Option<String> = if source_scope.is_empty() {
-            None
-        } else {
-            let mut sorted = source_scope.clone();
-            sorted.sort();
-            Some(sorted.join(","))
-        };
         // --- 3c'. Try direct dispatch (skip LLM for simple commands) ---------
         if !self.config.execution_mode.is_plan() && turn_budget.can_dispatch_tool_round() {
             turn_state.transition_to(TurnPhase::DirectDispatch);
@@ -991,29 +984,6 @@ impl AgentExecutor {
                     turn_budget.record_verified_tool_round();
                 }
                 direct_dispatch_runner::DirectDispatchOutcome::NotMatched => {}
-            }
-        }
-
-        // --- 3d. Check answer cache before ReAct loop ------------------------
-        if !self.config.execution_mode.is_plan() {
-            turn_state.transition_to(TurnPhase::CacheLookup);
-            if let Some(msg) = self
-                .try_cached_answer(
-                    user_query_text,
-                    cache_source_filter.as_deref(),
-                    db,
-                    &tx,
-                    conversation_id,
-                    turn_id,
-                    model,
-                    sort_order,
-                    route_plan.kind,
-                    &mut trace,
-                )
-                .await
-            {
-                turn_state.finish(TurnOutcome::Cached);
-                return Ok(msg);
             }
         }
 
@@ -2672,8 +2642,6 @@ impl AgentExecutor {
                         assistant_msg,
                         assistant_reasoning_content,
                         answer_delta_seen,
-                        user_query_text,
-                        cache_source_filter.as_deref(),
                         total_usage,
                         last_prompt_tokens,
                         last_context_breakdown,

@@ -54,7 +54,6 @@ use crate::tools::{
 };
 use crate::trace::{AgentTrace, TraceOutcome, TraceStep};
 
-mod answer_cache;
 mod assistant_turn;
 pub mod context;
 mod context_compaction;
@@ -319,8 +318,6 @@ pub struct AgentConfig {
     /// Maximum time for each tool call in seconds. 0 disables the outer tool timeout.
     pub tool_timeout_secs: Option<u32>,
     pub agent_timeout_secs: Option<u32>,
-    /// Answer cache TTL in hours. When `None`, the cache module default is used.
-    pub cache_ttl_hours: Option<u32>,
     /// Whether to filter tools based on context (query keywords).
     /// When `false`, all tools are sent every turn (original behaviour).
     /// Default: `false` so the main agent has the full registered toolset.
@@ -473,7 +470,6 @@ impl Default for AgentConfig {
             delegation_limits_v2: None,
             tool_timeout_secs: None,
             agent_timeout_secs: None,
-            cache_ttl_hours: None,
             dynamic_tool_visibility: false,
             trace_enabled: true,
             require_tool_confirmation: false,

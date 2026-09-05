@@ -167,8 +167,6 @@ impl AgentExecutor {
         assistant_msg: Message,
         assistant_reasoning_content: Option<String>,
         answer_delta_seen: bool,
-        user_query_text: &str,
-        cache_source_filter: Option<&str>,
         total_usage: Usage,
         last_prompt_tokens: u32,
         context_breakdown: Option<context::ContextUsageBreakdown>,
@@ -386,21 +384,6 @@ impl AgentExecutor {
                     subtask_run_id: self.usage_subtask_run_id.as_deref(),
                 },
             )?;
-        }
-
-        if !self.config.execution_mode.is_plan()
-            && !final_text.is_empty()
-            && !user_query_text.is_empty()
-        {
-            let citations = crate::cache::extract_citations(&final_text);
-            if !citations.is_empty() {
-                let _ = db.cache_answer(
-                    user_query_text,
-                    &final_text,
-                    &citations,
-                    cache_source_filter,
-                );
-            }
         }
 
         let finished = TurnLoopEvent::TurnFinished {

@@ -2328,9 +2328,6 @@ export const finishRealtimeTranscription = (sessionId: string) =>
 export const cancelRealtimeTranscription = (sessionId: string) =>
   invoke<void>('cancel_realtime_transcription_cmd', { sessionId });
 
-export const clearAnswerCache = () =>
-  invoke<number>('clear_answer_cache');
-
 // ── Skills ──────────────────────────────────────────────────────────────
 
 export const listSkills = () =>

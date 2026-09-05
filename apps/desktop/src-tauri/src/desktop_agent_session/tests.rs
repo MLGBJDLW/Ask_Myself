@@ -1058,7 +1058,6 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     let mut app_cfg = AppConfig::default();
     app_cfg.tool_approval_mode = ToolApprovalMode::DenyAll;
     app_cfg.shell_access_mode = ShellAccessMode::Open;
-    app_cfg.cache_ttl_hours = 9;
     app_cfg.dynamic_tool_visibility = false;
     app_cfg.trace_enabled = false;
     app_cfg.confirm_destructive = true;
@@ -1123,7 +1122,6 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     assert_eq!(executor.tool_timeout_secs, Some(37));
     assert_eq!(executor.agent_timeout_secs, Some(91));
     assert_eq!(executor.subagent_verification_reserve_percent, None);
-    assert_eq!(executor.cache_ttl_hours, Some(9));
     assert!(!executor.dynamic_tool_visibility);
     assert!(!executor.trace_enabled);
     assert!(executor.require_tool_confirmation);

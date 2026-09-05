@@ -575,7 +575,6 @@ pub fn build_desktop_agent_turn_config(
         agent_timeout_secs: db_config
             .agent_timeout_secs
             .and_then(|value| u32::try_from(value).ok()),
-        cache_ttl_hours: Some(app_cfg.cache_ttl_hours),
         dynamic_tool_visibility: app_cfg.dynamic_tool_visibility,
         trace_enabled: app_cfg.trace_enabled,
         require_tool_confirmation: app_cfg.confirm_destructive,

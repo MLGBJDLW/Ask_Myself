@@ -397,7 +397,6 @@ test.beforeEach(async ({ page }) => {
         case 'get_ocr_config_cmd':
           return { enabled: false, minConfidence: 0.5, llmFallback: false, detectionLimit: 2048, useCls: false };
         case 'check_ocr_models_cmd': return false;
-        case 'clear_answer_cache': return 0;
         default: return null;
       }
     };

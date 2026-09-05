@@ -197,8 +197,6 @@ pub async fn scan_all_sources(
     .await
     .map_err(|e| e.to_string())??;
 
-    // Invalidate all cached answers after re-scanning all sources.
-    let _ = state.db.clear_answer_cache();
     for result in &results {
         emit_file_changed_after_scan(&app_handle, result);
     }
@@ -413,13 +411,6 @@ pub fn get_recent_queries(
 #[tauri::command]
 pub fn clear_recent_queries(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.db.clear_query_logs().map_err(|e| e.to_string())
-}
-
-// ── Answer Cache Commands ───────────────────────────────────────────────
-
-#[tauri::command]
-pub fn clear_answer_cache(state: tauri::State<'_, AppState>) -> Result<usize, String> {
-    state.db.clear_answer_cache().map_err(|e| e.to_string())
 }
 
 // ── Hybrid Search Commands ──────────────────────────────────────────────

@@ -753,7 +753,6 @@ fn main() {
             // Hybrid search
             commands::hybrid_search,
             // Answer cache
-            commands::clear_answer_cache,
             // Embeddings
             commands::embed_source,
             commands::rebuild_embeddings,

@@ -287,7 +287,6 @@ test.beforeEach(async ({ page }) => {
           const input = args?.input as { outputPath?: string } | undefined;
           return { path: input?.outputPath ?? '', bytesWritten: 68 };
         }
-        case 'clear_answer_cache':
         case 'compact_conversation_cmd':
         case 'save_agent_config_cmd':
         case 'agent_stop_cmd':

@@ -588,7 +588,6 @@ export interface ProviderStreamingConfig {
 
 export interface AppConfig {
   uiLocale?: string;
-  cacheTtlHours: number;
   defaultSearchLimit: number;
   minSearchSimilarity: number;
   maxTextFileSize: number;

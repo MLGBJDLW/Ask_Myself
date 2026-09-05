@@ -405,7 +405,6 @@ test.beforeEach(async ({ page }) => {
           };
         case 'check_ocr_models_cmd':
           return false;
-        case 'clear_answer_cache':
           return 0;
         case 'update_conversation_system_prompt_cmd':
         case 'compact_conversation_cmd':

@@ -744,10 +744,6 @@ pub struct AppConfig {
     #[serde(default = "default_ui_locale")]
     pub ui_locale: String,
 
-    /// Answer cache TTL in hours. 0 = disabled. Default: 24
-    #[serde(default = "default_cache_ttl_hours")]
-    pub cache_ttl_hours: u32,
-
     /// Default search result limit. Default: 20
     #[serde(default = "default_search_limit")]
     pub default_search_limit: usize,
@@ -864,9 +860,6 @@ fn default_failure_hold_ms() -> u32 {
     6_000
 }
 
-fn default_cache_ttl_hours() -> u32 {
-    24
-}
 fn default_ui_locale() -> String {
     "en".to_string()
 }
@@ -988,7 +981,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             ui_locale: default_ui_locale(),
-            cache_ttl_hours: default_cache_ttl_hours(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
             max_text_file_size: default_max_text_file_size(),
@@ -1276,19 +1268,19 @@ mod tests {
     fn independently_persisted_ui_locale_survives_stale_app_config_saves() {
         let db = Database::open_memory().expect("open_memory");
         let mut config = AppConfig::default();
-        config.cache_ttl_hours = 12;
+        config.default_search_limit = 12;
         db.save_app_config(&config).expect("save initial config");
         db.save_ui_locale("zh-CN").expect("save UI locale");
 
         let mut stale_snapshot = config;
         stale_snapshot.ui_locale = "en".to_string();
-        stale_snapshot.cache_ttl_hours = 48;
+        stale_snapshot.default_search_limit = 48;
         db.save_app_config(&stale_snapshot)
             .expect("save stale whole-config snapshot");
 
         let loaded = db.load_app_config().expect("load merged config");
         assert_eq!(loaded.ui_locale, "zh-CN");
-        assert_eq!(loaded.cache_ttl_hours, 48);
+        assert_eq!(loaded.default_search_limit, 48);
     }
 
     #[test]

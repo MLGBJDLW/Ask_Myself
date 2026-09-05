@@ -7,7 +7,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::extract_citations;
+use crate::citations::extract_citations;
 use crate::intelligence::{AgentTaskPlan, EvidenceMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
