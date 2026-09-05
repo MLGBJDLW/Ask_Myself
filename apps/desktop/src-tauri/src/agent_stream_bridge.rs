@@ -65,8 +65,21 @@ impl AgentStreamForwarder {
         tick.tick().await;
 
         loop {
+            if matches!(&pending_delta, Some(PendingStreamDelta::Text(text) | PendingStreamDelta::Thinking(text)) if text.len() >= 32 * 1024)
+            {
+                self.flush_pending(&mut stream_emitter, &mut pending_delta);
+            }
             tokio::select! {
                 biased;
+                _ = tick.tick() => {
+                    if !self.event_outbox.is_closed_for_submission() {
+                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
+                        self.flush_tool_preview_events(
+                            &stream_emitter,
+                            pending_tool_updates.drain_due(Instant::now()),
+                        );
+                    }
+                }
                 maybe_event = rx.recv() => {
                     match maybe_event {
                         Some(event) => {
@@ -218,15 +231,7 @@ impl AgentStreamForwarder {
                         }
                     }
                 }
-                _ = tick.tick() => {
-                    if !self.event_outbox.is_closed_for_submission() {
-                        self.flush_pending(&mut stream_emitter, &mut pending_delta);
-                        self.flush_tool_preview_events(
-                            &stream_emitter,
-                            pending_tool_updates.drain_due(Instant::now()),
-                        );
-                    }
-                }
+
             }
         }
     }
@@ -330,6 +335,119 @@ mod tests {
     use nexa_core::tools::{
         ToolInputStreamingMode, ToolInterruptBehavior, ToolRenderKind, ToolRunCapabilities,
     };
+
+    #[tokio::test(start_paused = true)]
+    async fn a_large_output_batch_flushes_before_the_timer_or_end_of_stream() {
+        use nexa_core::{
+            conversation::{ConversationMessage, CreateConversationInput},
+            db::Database,
+            db_executor::DatabaseExecutor,
+            run_event_outbox::{AgentRunEventDelivery, AgentRunEventOutboxes},
+        };
+        struct Delivery;
+        impl AgentRunEventDelivery for Delivery {
+            fn deliver_run_event(&self, _: &str, _: &AgentRunEvent) {}
+            fn deliver_task_run_snapshot(&self, _: &str, _: nexa_core::conversation::AgentTaskRun) {
+            }
+        }
+        let db = Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(&CreateConversationInput {
+                provider: "test".into(),
+                model: "test".into(),
+                system_prompt: None,
+                collection_context: None,
+                project_id: None,
+                persona_id: None,
+            })
+            .unwrap();
+        let message = ConversationMessage {
+            id: "input".into(),
+            conversation_id: conversation.id.clone(),
+            role: Role::User,
+            content: "test".into(),
+            tool_call_id: None,
+            tool_calls: vec![],
+            artifacts: None,
+            token_count: 1,
+            created_at: String::new(),
+            sort_order: 0,
+            thinking: None,
+            image_attachments: None,
+        };
+        db.add_message(&message).unwrap();
+        let turn = db
+            .create_conversation_turn(&conversation.id, &message.id, None)
+            .unwrap();
+        let run = db
+            .create_agent_task_run(
+                &conversation.id,
+                &turn.id,
+                &message.id,
+                "test",
+                Some("test"),
+                Some("test"),
+            )
+            .unwrap();
+        db.mark_agent_task_run_started(&run.id, "responding")
+            .unwrap();
+        let outboxes = AgentRunEventOutboxes::new(
+            DatabaseExecutor::new(db.clone(), 8).unwrap(),
+            std::sync::Arc::new(Delivery),
+        );
+        let outbox = outboxes.open(&conversation.id, &run.id).await.unwrap();
+        // Keep virtual time fixed while the blocking database reader works.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let (tx, rx) = mpsc::channel(4);
+        let forwarding = tokio::spawn(
+            AgentStreamForwarder::new(
+                conversation.id,
+                run.id.clone(),
+                turn.id.clone(),
+                outbox.as_ref().clone(),
+                Instant::now(),
+            )
+            .run(rx),
+        );
+        tx.send(AgentEvent::TextDelta {
+            delta: "x".repeat(32 * 1024),
+        })
+        .await
+        .unwrap();
+        while tx.capacity() < 4 {
+            tokio::task::yield_now().await;
+        }
+        // A non-deferred status commits the output journal without advancing
+        // the separate outbox batching timer.
+        outbox
+            .submit(
+                AgentRunEvent::from_agent_event(&AgentEvent::Status {
+                    content: "test barrier".into(),
+                    tone: None,
+                })
+                .with_context(Some(&run.id), Some(&turn.id), None),
+            )
+            .unwrap();
+        outbox.flush().await.unwrap();
+        let visible = db
+            .list_agent_run_events(&run.id)
+            .unwrap()
+            .into_iter()
+            .any(|event| {
+                event.kind == nexa_core::agent_run::AgentRunEventKind::OutputDelta
+                    && event.payload["delta"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty())
+            });
+        drop(tx);
+        forwarding.await.unwrap();
+        clock_guard.abort();
+        assert!(visible, "the output must be durable while the provider stream is still open and before the timer");
+    }
 
     fn visual_run(artifacts: serde_json::Value) -> ToolRunItem {
         ToolRunItem {

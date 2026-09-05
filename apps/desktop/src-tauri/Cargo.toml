@@ -50,6 +50,9 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSBi
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSDictionary", "NSError", "NSObject", "NSValue"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["block2", "objc2-app-kit", "WKSnapshotConfiguration", "WKWebView"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [features]
 default = ["custom-protocol", "video", "ocr", "local-embeddings"]
 custom-protocol = ["tauri/custom-protocol"]
