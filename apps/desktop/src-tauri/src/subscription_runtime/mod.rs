@@ -3,6 +3,7 @@
 
 mod codex;
 mod copilot;
+mod copilot_response;
 mod projection;
 #[cfg(test)]
 mod tests;

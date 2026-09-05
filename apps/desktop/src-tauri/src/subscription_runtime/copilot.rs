@@ -207,6 +207,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     );
     let mut projection = Projection::default();
     let mut seen = HashSet::new();
+    let mut response = super::copilot_response::Response::default();
     let mut steering = VecDeque::new();
     let mut steering_closed = false;
     let run = async {
@@ -237,9 +238,10 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                             if event.event_type == "session.idle" { idle = true; }
                             else if matches!(event.event_type.as_str(), "assistant.turn_start" | "assistant.message_delta" | "tool.execution_start") { idle = false; }
                         }
-                        project_event(&mut projection, &turn.events, &mut seen, &event).await?;
+                        project_event(&mut projection, &mut response, &turn.events, &mut seen, &event).await?;
                     }
                     if idle {
+                        response.ensure_complete()?;
                         if let Some(message) = steering.pop_front() {
                             if message.recovery_control.is_some() { return Err(protocol_error("Copilot manages its own recovery. Stop and start a new turn to change reasoning.")); }
                             let attachments = message.parts.iter().filter_map(|part| match part { ContentPart::Image {media_type,data} => Some(Attachment::Blob{data:data.clone(),mime_type:media_type.clone(),display_name:None}),_=>None }).collect::<Vec<_>>();
@@ -275,6 +277,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
 
 async fn project_event(
     projection: &mut Projection,
+    response: &mut super::copilot_response::Response,
     tx: &mpsc::Sender<AgentEvent>,
     seen: &mut HashSet<String>,
     event: &SessionEvent,
@@ -324,16 +327,25 @@ async fn project_event(
                 .get("messageId")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&event.id);
-            projection.complete(tx, id, text).await?;
-            if data
-                .get("toolRequests")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|calls| !calls.is_empty())
-            {
-                projection.clear_answer();
+            let blocks = response.accept(data)?;
+            projection.complete_block(tx, id, text).await?;
+            projection.clear_answer();
+            if let Some(blocks) = blocks {
+                projection.select_answer_blocks(blocks)?;
             }
         }
-        "tool.execution_start" => projection.clear_answer(),
+        "assistant.turn_start" => {
+            response.start(data.get("turnId").and_then(serde_json::Value::as_str));
+            projection.clear_answer();
+        }
+        "assistant.turn_retry" => {
+            response.retry();
+            projection.clear_answer();
+        }
+        "tool.execution_start" => {
+            response.tool_started();
+            projection.clear_answer();
+        }
         "assistant.usage" => {
             let tokens = |key: &str| {
                 data.get(key)
@@ -403,6 +415,123 @@ mod tests {
             assert!(options.github_token.is_none());
         }
     }
+    async fn project_test_event(
+        projection: &mut Projection,
+        response: &mut super::super::copilot_response::Response,
+        tx: &mpsc::Sender<AgentEvent>,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        let event: SessionEvent = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(), "timestamp": "2026-09-05T00:00:00Z", "type": kind, "data": data
+        })).unwrap();
+        project_event(projection, response, tx, &mut HashSet::new(), &event).await
+    }
+
+    #[tokio::test]
+    async fn split_response_is_ordered_corrected_and_checkpointed_without_duplicate_chunks() {
+        let (request, mut rx, _, _) =
+            super::super::tests::fixture(SubscriptionRuntimeKind::Copilot, "test");
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let mut projection = Projection::default();
+        let mut response = super::super::copilot_response::Response::default();
+        for (index, content) in [
+            (3, ""),
+            (1, "first draft"),
+            (0, ""),
+            (2, "第二段"),
+            (1, "第一段"),
+        ] {
+            project_test_event(&mut projection, &mut response, &turn.events, "assistant.message", serde_json::json!({
+                "apiCallId": "api", "messageId": format!("m{index}"), "chunkIndex": index, "chunkCount": 4,
+                "content": content, "reasoningText": "private reasoning"
+            })).await.unwrap();
+        }
+        response.ensure_complete().unwrap();
+        assert_eq!(projection.answer, "第一段\n\n第二段");
+        projection
+            .persist_completed_answer(&turn)
+            .await
+            .unwrap()
+            .unwrap();
+        turn.tools
+            .persist_steering(&AgentSteeringMessage::text("follow up"))
+            .await
+            .unwrap();
+        projection.persist_partial(&turn).await.unwrap();
+        let history = db.get_messages(&conversation).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[1].content, "第一段\n\n第二段");
+        assert_eq!(history[2].content, "follow up");
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AgentEvent::Done { .. }));
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_response_never_becomes_final_or_crosses_api_boundaries() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut projection = Projection::default();
+        let mut response = super::super::copilot_response::Response::default();
+        for index in [0, 2] {
+            project_test_event(&mut projection, &mut response, &tx, "assistant.message", serde_json::json!({
+                "apiCallId": "api", "messageId": format!("m{index}"), "chunkIndex": index, "chunkCount": 3, "content": "part"
+            })).await.unwrap();
+        }
+        assert!(projection.answer.is_empty());
+        assert!(response.ensure_complete().is_err());
+        assert!(project_test_event(
+            &mut projection,
+            &mut response,
+            &tx,
+            "assistant.message",
+            serde_json::json!({
+                "apiCallId": "different-api", "messageId": "other", "content": "other answer"
+            })
+        )
+        .await
+        .is_err());
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AgentEvent::Done { .. }));
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_commentary_and_retried_chunks_do_not_leak_into_final_answer() {
+        let (tx, _rx) = mpsc::channel(32);
+        let mut projection = Projection::default();
+        let mut response = super::super::copilot_response::Response::default();
+        for (kind, data) in [
+            ("assistant.turn_start", serde_json::json!({"turnId":"turn"})),
+            (
+                "assistant.message",
+                serde_json::json!({"apiCallId":"tool-api", "messageId":"comment", "content":"Checking", "toolRequests":[{}]}),
+            ),
+            ("tool.execution_start", serde_json::json!({})),
+            (
+                "assistant.message",
+                serde_json::json!({"messageId":"abandoned", "chunkIndex":0,"chunkCount":2,"content":"retry draft"}),
+            ),
+            ("assistant.turn_retry", serde_json::json!({})),
+            (
+                "assistant.message",
+                serde_json::json!({"messageId":"a", "chunkIndex":0,"chunkCount":2,"content":"final"}),
+            ),
+            (
+                "assistant.message",
+                serde_json::json!({"messageId":"b", "chunkIndex":1,"chunkCount":2,"content":"answer"}),
+            ),
+        ] {
+            project_test_event(&mut projection, &mut response, &tx, kind, data)
+                .await
+                .unwrap();
+        }
+        response.ensure_complete().unwrap();
+        assert_eq!(projection.answer, "final\n\nanswer");
+    }
+
     #[tokio::test]
     #[ignore = "uses the official Copilot subscription for one read-only tool inference"]
     async fn native_copilot_executes_nexa_tool_and_streams_persisted_answer() {

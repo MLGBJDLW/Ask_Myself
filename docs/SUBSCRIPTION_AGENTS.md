@@ -55,6 +55,14 @@ the runtime does not silently switch to an in-memory journal.
   questions/status are persisted visibly, and are never interpreted as terminal
   answers. Real user replies use `turn/steer`; no suggested option is auto-sent.
   Unknown native requests receive a correlated error and terminate visibly.
+- Copilot assembles response chunks by `apiCallId` and `chunkIndex`; empty
+  reasoning-boundary chunks count toward completeness but reasoning is not
+  included in the answer. Missing or conflicting chunks cannot emit success.
+  Completed responses are saved before queued steering is submitted.
+- The final response carries its exact persisted assistant message ID. The
+  event outbox commits the closing event, task status and open conversation
+  turn together; the ID must belong to that conversation and turn. Existing
+  tool traces and already-finalized API turns are preserved.
 - Subscription drivers validate the selected model and reasoning level before
   inference. There is no automatic switch to another model or API credential.
 - Mixture of Agents, delegated API workers and scheduled isolated patch runs are
@@ -73,13 +81,14 @@ hide missing messages. Expanded browser controls are positioned inside the app's
 content area. Native webview getters run outside the shared browser mutex, and
 trusted native input checks execute on the UI thread to avoid cross-thread waits.
 
-Official legacy Qwen microphone presets migrate to
+Official legacy Qwen microphone presets migrate once to
 `dashscope_realtime_asr` / `qwen3-asr-flash-realtime`. The live WebSocket uses
 server VAD, publishes interim text while recording, and finishes with
 `session.finish`. Ordered utterance finalization retains earlier sentences and
 flushes the last sentence. User composer corrections retain ownership. Custom
 HTTP endpoints stay final-only and remain labelled as such; they are not silently
-converted into a guessed WebSocket service.
+converted into a guessed WebSocket service. After migration, explicitly choosing
+a batch preset is preserved across settings saves and reloads.
 
 ## Verification
 
@@ -89,4 +98,5 @@ model/reasoning selection, recording composer behavior, browser control bounds
 and event reconciliation. Ignored desktop tests named `native_*` explicitly opt
 into the user's official login and one read-only tool inference. They assert a
 fresh tool nonce reaches the streamed answer, executes once, persists once, and
-emits one terminal event. They are not run by ordinary CI.
+emits one terminal event through the real forwarder/outbox, and closes the turn
+with the exact final assistant ID before delivery. They are not run by ordinary CI.
