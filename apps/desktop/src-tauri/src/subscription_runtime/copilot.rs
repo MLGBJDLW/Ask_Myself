@@ -322,7 +322,7 @@ async fn project_event(
             let text = data
                 .get("content")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
+                .ok_or_else(|| protocol_error("Copilot message has no text content field"))?;
             let id = data
                 .get("messageId")
                 .and_then(serde_json::Value::as_str)
@@ -475,6 +475,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let mut projection = Projection::default();
         let mut response = super::super::copilot_response::Response::default();
+        assert!(project_test_event(
+            &mut projection,
+            &mut response,
+            &tx,
+            "assistant.message",
+            serde_json::json!({
+                "apiCallId": "malformed", "messageId": "missing-content"
+            })
+        )
+        .await
+        .is_err());
         for index in [0, 2] {
             project_test_event(&mut projection, &mut response, &tx, "assistant.message", serde_json::json!({
                 "apiCallId": "api", "messageId": format!("m{index}"), "chunkIndex": index, "chunkCount": 3, "content": "part"
