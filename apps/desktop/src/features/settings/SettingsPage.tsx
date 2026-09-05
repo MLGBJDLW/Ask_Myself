@@ -716,14 +716,15 @@ export function SettingsPage() {
   useEffect(() => {
     if (
       activeTab === 'providers'
-      && appConfig?.speechToText?.apiStyle === 'local_whisper'
+      && appConfig
+      && (appConfig.speechToText?.apiStyle ?? 'local_whisper') === 'local_whisper'
       && whisperModelExists === null
     ) {
       void refreshWhisperReadiness(videoConfig);
     }
   }, [
     activeTab,
-    appConfig?.speechToText?.apiStyle,
+    appConfig,
     refreshWhisperReadiness,
     videoConfig,
     whisperModelExists,

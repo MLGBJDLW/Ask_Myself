@@ -76,10 +76,10 @@ export function SpeechToTextSettingsPanel({
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.speechToText ?? DEFAULT_STT_CONFIG;
   const scopedPresets = useMemo(
-    () => STT_PROVIDER_PRESETS.filter((preset) => preset.id !== 'alibaba-qwen-asr'
+    () => STT_PROVIDER_PRESETS.filter((preset) => (preset.id !== 'alibaba-qwen-asr' || config.apiStyle === 'dashscope_asr')
       && (providerScope === 'all'
       || (providerScope === 'local' ? preset.local === true : preset.local !== true))),
-    [providerScope],
+    [providerScope, config.apiStyle],
   );
   const cloudPresets = useMemo(() => scopedPresets.filter((preset) => preset.local !== true), [scopedPresets]);
   const localPresets = useMemo(() => scopedPresets.filter((preset) => preset.local === true), [scopedPresets]);
