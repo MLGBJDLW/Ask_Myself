@@ -77,7 +77,7 @@ fn capture_recovery_assistant_message(ctx: RecoveryAssistantMessageContext<'_>) 
     message
 }
 
-fn awaiting_user_input_interaction_id(
+pub(super) fn awaiting_user_input_interaction_id(
     summaries: &[tool_dispatch::ToolDispatchSummary],
 ) -> Option<String> {
     summaries.iter().find_map(|summary| {
@@ -99,14 +99,14 @@ fn awaiting_user_input_interaction_id(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ActionReconciliationFence {
+pub(super) struct ActionReconciliationFence {
     computer: bool,
     browser: bool,
     unknown: bool,
 }
 
 impl ActionReconciliationFence {
-    fn from_resume_prompt(prompt: &str) -> Self {
+    pub(super) fn from_resume_prompt(prompt: &str) -> Self {
         const MARKER: &str = "Checkpoint reason: user_stop_requires_action_reconciliation:";
         let Some(receipts) = prompt.split_once(MARKER).map(|(_, receipts)| receipts) else {
             return Self::default();
@@ -120,11 +120,11 @@ impl ActionReconciliationFence {
         }
     }
 
-    fn blocks_interactive_input(self) -> bool {
+    pub(super) fn blocks_interactive_input(self) -> bool {
         self.computer || self.browser || self.unknown
     }
 
-    fn observe_tool_results(
+    pub(super) fn observe_tool_results(
         &mut self,
         calls: &[ToolCallRequest],
         summaries: &[tool_dispatch::ToolDispatchSummary],
