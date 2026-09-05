@@ -3557,6 +3557,59 @@ test('completed stream state is bounded and recoverable from durable events', as
   ids.forEach(id => streamStore.clearStream(id));
 });
 
+test('a stale hydration fetch cannot replace a delivered final or another run awaiting its prefix', async () => {
+  const id = 'fetch-admission';
+  const stalePrefix = runEvent({ eventSeq: 1, kind: 'outputDelta', payload: {
+    blockId: 'old', channel: 'answer', offset: 0, delta: 'Old prefix',
+  } });
+  streamStore.startStream(id);
+  streamStore.dispatch(id, frontendEvent(stalePrefix));
+  streamStore.dispatch(id, frontendEvent(runEvent({ eventSeq: 2, kind: 'done', phase: 'done', status: 'completed',
+    payload: { message: { role: 'assistant', parts: [{ type: 'text', text: 'Live final' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+  })));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  assertEqual(streamStore.getStream(id)?.isStreaming, false, 'already delivered terminal stays final');
+  assertEqual(streamStore.getStream(id)?.streamRounds[0]?.reply, 'Live final', 'final answer survives stale fetch');
+  streamStore.clearStream(id);
+
+  const future = { ...runEvent({ eventSeq: 2, kind: 'outputDelta', payload: {
+    blockId: 'new', channel: 'answer', offset: 4, delta: 'answer',
+  } }), runId: 'new-run' };
+  streamStore.dispatch(id, frontendEvent(future));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  streamStore.dispatch(id, frontendEvent({ ...future, eventSeq: 1, payload: {
+    blockId: 'new', channel: 'answer', offset: 0, delta: 'New ',
+  } }));
+  assertEqual(streamStore.getStream(id)?.streamText, 'New answer', 'another run keeps its buffered suffix');
+  streamStore.dispatch(id, frontendEvent({ ...runEvent({ eventSeq: 3, kind: 'done', phase: 'done', status: 'completed',
+    payload: { message: { role: 'assistant', parts: [{ type: 'text', text: 'New answer' }] },
+      usageTotal: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+  }), runId: 'new-run' }));
+  streamStore.clearPreview(id);
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), [stalePrefix]);
+  assertEqual(streamStore.getStream(id)?.streamText, 'Old prefix',
+    'a settled blank preview allows a different durable run with its own sequence space');
+  streamStore.clearStream(id);
+});
+
+test('bounded replay retains an old tool that is still waiting for approval', async () => {
+  const id = 'retained-approval';
+  const events = [runEvent({ eventSeq: 1, kind: 'toolStarted', payload: {
+    run: toolRun({ callId: 'approval', status: 'approvalPending' }),
+  } })];
+  for (let index = 0; index < 600; index++) events.push(runEvent({ eventSeq: index + 2, kind: 'toolCompleted',
+    payload: { run: toolRun({ callId: `finished-${index}`, status: 'completed' }) },
+  }));
+  await streamStore.restoreFromRunEvents(id, taskRun('running'), events);
+  const state = streamStore.getStream(id);
+  assert(state, 'restored state exists');
+  assertEqual(state.toolCalls.find(tool => tool.callId === 'approval')?.status, 'approvalPending',
+    'completed tool retention cannot discard a pending interaction');
+  assert(state.streamRounds.length <= 128 && state.traceEvents.length <= 512, 'completed history stays bounded');
+  streamStore.clearStream(id);
+});
+
 async function main(): Promise<void> {
   for (const { name, fn } of tests) {
     try {

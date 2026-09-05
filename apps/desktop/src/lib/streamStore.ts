@@ -203,9 +203,19 @@ class StreamStoreImpl {
     taskEvents: AgentTaskRunEvent[] = [],
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
+    const original = this._streams[conversationId];
+    const highWater = runEvents.reduce((latest, event) => Math.max(latest, event.eventSeq), 0);
+    // Fetch may have started before live delivery advanced or completed this
+    // turn. Admission must protect that state before claiming a restore ID.
+    if (original && (
+      (original._orderedRunId !== null && original._orderedRunId !== taskRun.id
+        && (original.isStreaming || original._pendingRunEvents.size > 0))
+      || (original._orderedRunId === taskRun.id && original._lastEventSeq > highWater)
+      || stateHasVisiblePreview(original)
+      || (original.isStreaming && original.turnHandle !== null)
+    )) return;
     const restoreId = Symbol();
     this._pendingRestores.set(conversationId, restoreId);
-    const original = this._streams[conversationId];
     const originalSequence = original?._lastEventSeq;
     const originalStreaming = original?.isStreaming;
     const ownsRestore = () => isCurrent() && this._pendingRestores.get(conversationId) === restoreId
