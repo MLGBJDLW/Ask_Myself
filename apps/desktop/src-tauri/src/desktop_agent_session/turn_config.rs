@@ -176,22 +176,9 @@ pub fn build_desktop_agent_turn_config(
     let preference_section =
         nexa_core::personalization::build_preference_summary_for_query(db, Some(message))
             .unwrap_or_default();
-    let learned_section = {
-        let cfg = db.get_embedder_config().ok();
-        let embedding = cfg.and_then(|c| match nexa_core::embed::create_embedder(&c) {
-            Ok(embedder) if embedder.dimensions() > 0 => embedder.embed(message).ok(),
-            _ => None,
-        });
-        match embedding {
-            Some(vec) if !vec.iter().all(|&v| v == 0.0) => {
-                match nexa_core::learning::retrieve_similar_successes(db, &vec, 3) {
-                    Ok(hits) => nexa_core::learning::build_learned_successes_section(&hits),
-                    Err(_) => String::new(),
-                }
-            }
-            _ => String::new(),
-        }
-    };
+    let learned_section = nexa_core::learning::retrieve_similar_successes(db, message, 3)
+        .map(|hits| nexa_core::learning::build_learned_successes_section(&hits))
+        .unwrap_or_default();
     let scratchpad_section = nexa_core::agent::scratchpad::build_agent_scratchpad_prompt_section(
         db,
         Some(&conversation.id),

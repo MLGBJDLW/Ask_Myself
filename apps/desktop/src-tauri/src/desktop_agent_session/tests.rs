@@ -1270,3 +1270,138 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn empty_learned_memory_does_not_call_embedding_before_the_model_request() {
+    use nexa_core::embed::{create_embedder, EmbedderConfig};
+    use std::io::{Read, Write};
+    use std::sync::atomic::AtomicUsize;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+    let server_calls = calls.clone();
+    let server_finished = finished.clone();
+    let server = std::thread::spawn(move || {
+        while !server_finished.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
+                    socket
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = [0; 4096];
+                    socket.read(&mut request).unwrap();
+                    server_calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0,0.0]}]}"#;
+                    write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => panic!("embedding fixture: {error}"),
+            }
+        }
+    });
+    let config = EmbedderConfig {
+        provider: "api".into(),
+        api_key: "synthetic-key".into(),
+        api_base_url: format!("http://{address}/v1"),
+        api_model: "synthetic-embedding".into(),
+        vector_dimensions: 3,
+        ..Default::default()
+    };
+    // Establish that this exact HTTP fixture is reachable before using zero
+    // requests as the regression signal. No environment/proxy mutation.
+    create_embedder(&config)
+        .unwrap()
+        .embed("fixture preflight")
+        .unwrap();
+    assert_eq!(calls.swap(0, Ordering::SeqCst), 1);
+    let db = Database::open_memory().unwrap();
+    db.save_embedder_config(&config).unwrap();
+    let conversation = db
+        .create_conversation(&CreateConversationInput {
+            provider: "open_ai".into(),
+            model: "gpt-test".into(),
+            system_prompt: None,
+            collection_context: None,
+            project_id: None,
+            persona_id: None,
+        })
+        .unwrap();
+    let db_config = test_agent_config();
+    let app_cfg = AppConfig::default();
+    let started = std::time::Instant::now();
+    let _turn = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
+        db: &db,
+        conversation: &conversation,
+        turn_id: "startup-test",
+        message: "Synthetic query",
+        persona_id: None,
+        explicit_skill_ids: &[],
+        db_config: &db_config,
+        app_cfg: &app_cfg,
+        execution_mode: AgentExecutionMode::Plan,
+        power_mode: AgentPowerMode::Standard,
+        collaboration_mode: AgentCollaborationMode::Direct,
+        moa_preset: MoaPresetId::FastReview,
+        orchestration_profile: OrchestrationProfile::Balanced,
+        custom_orchestration: None,
+    });
+    let elapsed = started.elapsed();
+    let empty_calls = calls.load(Ordering::SeqCst);
+    db.add_message(&nexa_core::conversation::ConversationMessage {
+        id: "learning-fixture-message".into(),
+        conversation_id: conversation.id.clone(),
+        role: nexa_core::llm::Role::Assistant,
+        content: "Learned answer".into(),
+        tool_call_id: None,
+        tool_calls: vec![],
+        artifacts: None,
+        token_count: 1,
+        created_at: String::new(),
+        sort_order: 0,
+        thinking: None,
+        image_attachments: None,
+    })
+    .unwrap();
+    let learned_id = db
+        .insert_learned_success(
+            "Synthetic query",
+            "Learned answer",
+            "learning-fixture-message",
+        )
+        .unwrap();
+    let unindexed =
+        nexa_core::learning::retrieve_similar_successes(&db, "Synthetic query", 3).unwrap();
+    let unindexed_calls = calls.load(Ordering::SeqCst);
+    db.update_learned_success_embedding(&learned_id, &[1.0, 0.0, 0.0])
+        .unwrap();
+    let indexed =
+        nexa_core::learning::retrieve_similar_successes(&db, "Synthetic query", 3).unwrap();
+    finished.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+    eprintln!(
+        "empty_learning_context elapsed_ms={} embedding_calls={empty_calls}",
+        elapsed.as_millis()
+    );
+    assert_eq!(
+        empty_calls, 0,
+        "empty learned memory must not delay the real model request with an embedding call"
+    );
+    assert!(unindexed.is_empty());
+    assert_eq!(
+        unindexed_calls, 0,
+        "unindexed examples do not justify a network request"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "indexed examples still use semantic retrieval"
+    );
+    assert_eq!(indexed.len(), 1);
+    assert_eq!(indexed[0].0.response_summary, "Learned answer");
+}
