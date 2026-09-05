@@ -1679,7 +1679,7 @@ impl AgentExecutor {
             // Streaming stays responsive, but rejection resets the exact
             // physical sample before persistence or client-tool execution.
             if let Some(marker) = final_answer_hygiene_scope.contamination_marker(&full_content) {
-                if let Err(error) = reject_contaminated_projection(
+                reject_contaminated_projection(
                     ContaminatedProjectionContext {
                         db,
                         tx: &tx,
@@ -1698,10 +1698,7 @@ impl AgentExecutor {
                     marker,
                     tool_calls.is_empty(),
                 )
-                .await
-                {
-                    return Err(error);
-                }
+                .await?;
                 next_step_purpose = TurnStepPurpose::Recovery;
                 continue 'react_loop;
             }
@@ -1832,24 +1829,20 @@ impl AgentExecutor {
                     }
 
                     if cause == OutputRecoveryCause::ContextLimit {
-                        if let Err(error) = self
-                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
-                                db,
-                                tx: &tx,
-                                conversation_id,
-                                turn_id,
-                                route_kind: route_plan.kind,
-                                model,
-                                messages: &mut messages,
-                                total_usage: &mut total_usage,
-                                completed_attempts: &mut context_recovery_attempts,
-                                trace: &mut trace,
-                                persisted_trace_items: &mut persisted_trace_items,
-                            })
-                            .await
-                        {
-                            return Err(error);
-                        }
+                        self.recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                            db,
+                            tx: &tx,
+                            conversation_id,
+                            turn_id,
+                            route_kind: route_plan.kind,
+                            model,
+                            messages: &mut messages,
+                            total_usage: &mut total_usage,
+                            completed_attempts: &mut context_recovery_attempts,
+                            trace: &mut trace,
+                            persisted_trace_items: &mut persisted_trace_items,
+                        })
+                        .await?;
                         prompt_was_compacted = true;
                     }
 
@@ -1926,24 +1919,20 @@ impl AgentExecutor {
                         "warning",
                     );
                     if cause == ToolRoundRejectionCause::ContextLimit {
-                        if let Err(error) = self
-                            .recover_provider_context_limit(ProviderContextLimitRecoveryContext {
-                                db,
-                                tx: &tx,
-                                conversation_id,
-                                turn_id,
-                                route_kind: route_plan.kind,
-                                model,
-                                messages: &mut messages,
-                                total_usage: &mut total_usage,
-                                completed_attempts: &mut context_recovery_attempts,
-                                trace: &mut trace,
-                                persisted_trace_items: &mut persisted_trace_items,
-                            })
-                            .await
-                        {
-                            return Err(error);
-                        }
+                        self.recover_provider_context_limit(ProviderContextLimitRecoveryContext {
+                            db,
+                            tx: &tx,
+                            conversation_id,
+                            turn_id,
+                            route_kind: route_plan.kind,
+                            model,
+                            messages: &mut messages,
+                            total_usage: &mut total_usage,
+                            completed_attempts: &mut context_recovery_attempts,
+                            trace: &mut trace,
+                            persisted_trace_items: &mut persisted_trace_items,
+                        })
+                        .await?;
                         prompt_was_compacted = true;
                     }
                     None
@@ -1970,7 +1959,7 @@ impl AgentExecutor {
                         if let Some(marker) =
                             final_answer_hygiene_scope.contamination_marker(&content)
                         {
-                            if let Err(error) = reject_contaminated_projection(
+                            reject_contaminated_projection(
                                 ContaminatedProjectionContext {
                                     db,
                                     tx: &tx,
@@ -1989,10 +1978,7 @@ impl AgentExecutor {
                                 marker,
                                 true,
                             )
-                            .await
-                            {
-                                return Err(error);
-                            }
+                            .await?;
                             next_step_purpose = TurnStepPurpose::Recovery;
                             continue 'react_loop;
                         }

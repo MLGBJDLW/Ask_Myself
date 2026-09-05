@@ -3111,7 +3111,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE answer_cache (answer_text TEXT);
              INSERT INTO answer_cache VALUES ('stale answer');
-             INSERT INTO conversations (id, title) VALUES ('kept', 'User history');
+             INSERT INTO conversations (id, title, provider, model) VALUES ('kept', 'User history', 'openai', 'test');
              DELETE FROM _migrations WHERE name = 'v127_remove_unsafe_answer_cache';",
         )
         .unwrap();
