@@ -1,12 +1,6 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import { ThemeProvider } from "./lib/ThemeProvider";
 import { runLocalStorageMigrations } from "./lib/localStorageMigrations";
 import "@fontsource-variable/inter";
 import "./index.css";
-import { SpeechPlaybackProvider } from "./features/voice/SpeechPlaybackProvider";
-import { OverlayProvider } from "./components/ui/overlay";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 function revealMainWindowAfterFirstPaint() {
@@ -35,14 +29,18 @@ revealMainWindowAfterFirstPaint();
 
 runLocalStorageMigrations();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ThemeProvider>
-      <OverlayProvider>
-        <SpeechPlaybackProvider>
-          <App />
-        </SpeechPlaybackProvider>
-      </OverlayProvider>
-    </ThemeProvider>
-  </React.StrictMode>,
-);
+// Reveal the already-painted static shell independently of the React module
+// graph, while loading that graph in parallel with the first native frames.
+void import('./bootstrap').then(({ mountApp }) => mountApp()).catch((error: unknown) => {
+  console.error('Unable to load the Nexa interface', error);
+  const root = document.getElementById('root');
+  if (!root) return;
+  const message = document.createElement('p');
+  message.setAttribute('role', 'alert');
+  message.textContent = 'Unable to load Nexa.';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.textContent = 'Reload';
+  retry.onclick = () => window.location.reload();
+  root.replaceChildren(message, retry);
+});

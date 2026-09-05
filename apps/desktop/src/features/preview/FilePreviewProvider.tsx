@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -13,7 +15,6 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import DOMPurify from 'dompurify';
-import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
 import {
   BotMessageSquare,
@@ -46,11 +47,6 @@ import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { isWebUrl } from '../../lib/sourceDisplay';
 import { useResizablePanel } from '../../lib/useResizablePanel';
-import {
-  markdownComponents,
-  markdownRemarkPlugins,
-  rehypePlugins,
-} from '../../components/chat/markdownComponents';
 import { openNexaBrowser } from '../browser';
 import { FilePreviewContext } from './filePreviewContext';
 
@@ -289,17 +285,13 @@ function TextPreview({ content }: { content: string }) {
   );
 }
 
+const RichMarkdownPreview = lazy(() => import('./MarkdownPreview'));
+
 function MarkdownPreview({ content }: { content: string }) {
   return (
-    <div className="prose prose-sm prose-invert max-w-none px-5 py-4 text-text-primary">
-      <ReactMarkdown
-        remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={markdownComponents}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
+    <Suspense fallback={<pre className="whitespace-pre-wrap break-words px-5 py-4 text-sm text-text-primary">{content}</pre>}>
+      <RichMarkdownPreview content={content} />
+    </Suspense>
   );
 }
 
