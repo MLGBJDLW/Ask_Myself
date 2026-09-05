@@ -1,13 +1,14 @@
 //! Copilot can split one API response at reasoning boundaries. Message IDs
 //! identify blocks; only apiCallId + chunkIndex identify the complete answer.
 use super::{protocol_error, CoreError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Default)]
 pub(super) struct Response {
     turn_id: Option<String>,
     attempt: u64,
     group: Option<Group>,
+    answer_blocks: HashSet<String>,
 }
 
 struct Group {
@@ -22,11 +23,28 @@ impl Response {
         self.turn_id = turn_id.map(str::to_owned);
         self.attempt += 1;
         self.group = None;
+        self.answer_blocks.clear();
     }
 
-    pub(super) fn retry(&mut self) {
+    pub(super) fn retry(&mut self, turn_id: &str) -> Result<Vec<String>, CoreError> {
+        if self.turn_id.as_deref() != Some(turn_id) {
+            return Err(protocol_error(
+                "Copilot retry does not belong to the active turn",
+            ));
+        }
         self.attempt += 1;
         self.group = None;
+        Ok(self.answer_blocks.drain().collect())
+    }
+
+    pub(super) fn observe_answer(&mut self, id: &str) -> Result<(), CoreError> {
+        if !self.answer_blocks.contains(id) && self.answer_blocks.len() >= 2048 {
+            return Err(protocol_error(
+                "Copilot attempt exceeded its answer block budget",
+            ));
+        }
+        self.answer_blocks.insert(id.to_string());
+        Ok(())
     }
 
     pub(super) fn tool_started(&mut self) {
@@ -55,6 +73,7 @@ impl Response {
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| protocol_error("Copilot message has no messageId"))?;
+        self.observe_answer(id)?;
         let (index, count) = match (data.get("chunkIndex"), data.get("chunkCount")) {
             (None | Some(serde_json::Value::Null), None | Some(serde_json::Value::Null)) => (0, 1),
             (Some(index), Some(count)) => {
@@ -127,6 +146,16 @@ impl Response {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn retry_must_match_the_active_turn_before_abandoning_its_blocks() {
+        let mut response = Response::default();
+        response.start(Some("current"));
+        response.observe_answer("live").unwrap();
+        assert!(response.retry("old").is_err());
+        assert_eq!(response.retry("current").unwrap(), vec!["live"]);
+        assert!(response.retry("current").unwrap().is_empty());
+    }
+
     #[test]
     fn malformed_chunk_identity_is_rejected_without_guessing() {
         for malformed in [

@@ -3317,6 +3317,33 @@ test('block snapshots repair missed deltas in live and replay projections', () =
   streamStore.clearStream(conversationId);
 });
 
+test('empty retry snapshots discard abandoned output in live and replay without erasing earlier replies', () => {
+  const conversationId = 'retry-snapshot-cleanup';
+  const events = [
+    runEvent({ eventSeq: 1, kind: 'outputDelta', payload: { blockId: 'saved', channel: 'answer', offset: 0, delta: 'Earlier reply' } }),
+    runEvent({ eventSeq: 2, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 0, delta: 'Rejected draft' } }),
+    runEvent({ eventSeq: 3, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 100, delta: 'stale gap' } }),
+    runEvent({ eventSeq: 4, kind: 'outputSnapshot', payload: { blockId: 'abandoned', channel: 'answer', text: '' } }),
+    runEvent({ eventSeq: 5, kind: 'outputDelta', payload: { blockId: 'abandoned', channel: 'answer', offset: 0, delta: 'Replacement partial' } }),
+  ];
+  streamStore.startStream(conversationId);
+  for (const event of events) {
+    const parsed = parseAgentFrontendEvent(frontendEvent(event));
+    assert(parsed !== null, 'empty corrections cross the canonical parser');
+    streamStore.dispatch(conversationId, parsed);
+    if (event.eventSeq === 4) assertEqual(streamStore.getStream(conversationId)?.streamText, '', 'retry clears the current rejected text');
+  }
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live state exists');
+  const replay = projectRunEventsToStreamState(taskRun('running'), events);
+  for (const state of [live, replay]) {
+    assertEqual(state.streamText, 'Replacement partial', 'replacement starts with a fresh offset');
+    assertEqual(JSON.stringify(state.traceEvents.filter(event => event.kind === 'reply').map(event => event.text)),
+      JSON.stringify(['Earlier reply', 'Replacement partial']), 'abandoned content and pending gaps do not survive retry');
+  }
+  streamStore.clearStream(conversationId);
+});
+
 test('Done message replaces an incomplete streamed answer as the terminal authority', () => {
   const conversationId = 'conversation-authoritative-done';
   streamStore.startStream(conversationId);

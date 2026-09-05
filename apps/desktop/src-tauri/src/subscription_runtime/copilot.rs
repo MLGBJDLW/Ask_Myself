@@ -291,12 +291,15 @@ async fn project_event(
     let data = &event.data;
     match event.event_type.as_str() {
         "assistant.message_delta" => {
+            let id = data
+                .get("messageId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&event.id);
+            response.observe_answer(id)?;
             projection
                 .delta(
                     tx,
-                    data.get("messageId")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(&event.id),
+                    id,
                     StreamBlockChannel::Answer,
                     data.get("deltaContent")
                         .and_then(serde_json::Value::as_str)
@@ -339,8 +342,12 @@ async fn project_event(
             projection.clear_answer();
         }
         "assistant.turn_retry" => {
-            response.retry();
-            projection.clear_answer();
+            let turn_id = data
+                .get("turnId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| protocol_error("Copilot retry has no turnId"))?;
+            let abandoned = response.retry(turn_id)?;
+            projection.discard_answer_blocks(tx, abandoned).await?;
         }
         "tool.execution_start" => {
             response.tool_started();
@@ -525,7 +532,7 @@ mod tests {
                 "assistant.message",
                 serde_json::json!({"messageId":"abandoned", "chunkIndex":0,"chunkCount":2,"content":"retry draft"}),
             ),
-            ("assistant.turn_retry", serde_json::json!({})),
+            ("assistant.turn_retry", serde_json::json!({"turnId":"turn"})),
             (
                 "assistant.message",
                 serde_json::json!({"messageId":"a", "chunkIndex":0,"chunkCount":2,"content":"final"}),
@@ -541,6 +548,109 @@ mod tests {
         }
         response.ensure_complete().unwrap();
         assert_eq!(projection.answer, "final\n\nanswer");
+    }
+
+    #[tokio::test]
+    async fn failed_retry_discards_completed_and_delta_only_blocks_but_preserves_prior_response() {
+        let (request, mut rx, _, _) =
+            super::super::tests::fixture(SubscriptionRuntimeKind::Copilot, "test");
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let mut projection = Projection::default();
+        let mut response = super::super::copilot_response::Response::default();
+        for (kind, data) in [
+            (
+                "assistant.turn_start",
+                serde_json::json!({"turnId":"first"}),
+            ),
+            (
+                "assistant.message",
+                serde_json::json!({"messageId":"saved","content":"saved answer"}),
+            ),
+        ] {
+            project_test_event(&mut projection, &mut response, &turn.events, kind, data)
+                .await
+                .unwrap();
+        }
+        projection
+            .persist_completed_answer(&turn)
+            .await
+            .unwrap()
+            .unwrap();
+        turn.tools
+            .persist_steering(&AgentSteeringMessage::text("follow up"))
+            .await
+            .unwrap();
+        for (kind, data) in [
+            (
+                "assistant.turn_start",
+                serde_json::json!({"turnId":"second"}),
+            ),
+            (
+                "assistant.message_delta",
+                serde_json::json!({"messageId":"delta-only","deltaContent":"abandoned unfinished text"}),
+            ),
+            (
+                "assistant.message",
+                serde_json::json!({"apiCallId":"bad","messageId":"reused","chunkIndex":0,"chunkCount":2,"content":"abandoned completed chunk"}),
+            ),
+            (
+                "assistant.turn_retry",
+                serde_json::json!({"turnId":"second"}),
+            ),
+            (
+                "assistant.message_delta",
+                serde_json::json!({"messageId":"reused","deltaContent":"replacement partial"}),
+            ),
+        ] {
+            project_test_event(&mut projection, &mut response, &turn.events, kind, data)
+                .await
+                .unwrap();
+        }
+        assert!(project_test_event(
+            &mut projection,
+            &mut response,
+            &turn.events,
+            "session.error",
+            serde_json::json!({"message":"connection failed"})
+        )
+        .await
+        .is_err());
+        projection.persist_partial(&turn).await.unwrap();
+        let history = db.get_messages(&conversation).unwrap();
+        assert_eq!(
+            history[1..]
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["saved answer", "follow up", "replacement partial"]
+        );
+        let mut cleared = HashSet::new();
+        let mut replacement_offset = None;
+        while let Ok(event) = rx.try_recv() {
+            nexa_core::agent_run::AgentRunEvent::from_agent_event(&event)
+                .with_context(Some("retry-run"), Some("retry-turn"), Some(1))
+                .validate_durable_contract()
+                .unwrap();
+            match event {
+                AgentEvent::StreamBlockSnapshot { block_id, text, .. } if text.is_empty() => {
+                    cleared.insert(block_id);
+                }
+                AgentEvent::StreamBlockDelta { offset, delta, .. }
+                    if delta == "replacement partial" =>
+                {
+                    replacement_offset = Some(offset)
+                }
+                AgentEvent::Done { .. } => panic!("failed retry cannot complete successfully"),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            cleared,
+            HashSet::from(["delta-only".to_string(), "reused".to_string()])
+        );
+        assert_eq!(replacement_offset, Some(0));
     }
 
     #[tokio::test]

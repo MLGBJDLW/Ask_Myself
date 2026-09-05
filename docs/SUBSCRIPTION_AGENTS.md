@@ -59,6 +59,9 @@ the runtime does not silently switch to an in-memory journal.
   reasoning-boundary chunks count toward completeness but reasoning is not
   included in the answer. Missing or conflicting chunks cannot emit success.
   Completed responses are saved before queued steering is submitted.
+  Retry events must match the active native turn. They discard its abandoned
+  completed and delta-only drafts before failure recovery and clear the same
+  live blocks with canonical snapshots, preserving already-saved responses.
 - The final response carries its exact persisted assistant message ID. The
   event outbox commits the closing event, task status and open conversation
   turn together; the ID must belong to that conversation and turn. Existing

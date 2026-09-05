@@ -30,7 +30,7 @@ impl Projection {
         if delta.is_empty() || self.completed.contains(id) {
             return Ok(());
         }
-        if self.offsets.len() > 2048 {
+        if !self.offsets.contains_key(id) && self.offsets.len() >= 2048 {
             return Err(protocol_error(
                 "upstream output exceeded the bounded event protocol",
             ));
@@ -110,6 +110,9 @@ impl Projection {
         id: &str,
         text: &str,
     ) -> Result<(), CoreError> {
+        if !self.offsets.contains_key(id) && self.offsets.len() >= 2048 {
+            return Err(protocol_error("subscription output-block budget exceeded"));
+        }
         if !self.completed.contains(id) && self.completed.len() >= 2048 {
             return Err(protocol_error(
                 "subscription completed-block budget exceeded",
@@ -158,6 +161,36 @@ impl Projection {
             self.draft_bytes -= text.len();
         }
         self.draft_order.retain(|key| key != id);
+    }
+
+    /// An upstream retry abandons only this inference's uncommitted output.
+    /// Clear memory before delivery so a closed UI channel cannot re-persist it.
+    pub(super) async fn discard_answer_blocks(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        ids: Vec<String>,
+    ) -> Result<(), CoreError> {
+        let ids = ids
+            .into_iter()
+            .filter(|id| self.drafts.contains_key(id))
+            .collect::<Vec<_>>();
+        for id in &ids {
+            self.mark_persisted(id);
+            self.completed.remove(id);
+            // Retain the ID in the turn-wide budget, but reset a reused block.
+            self.offsets.insert(id.clone(), 0);
+        }
+        self.clear_answer();
+        for id in ids {
+            tx.send(AgentEvent::StreamBlockSnapshot {
+                block_id: id,
+                channel: StreamBlockChannel::Answer,
+                text: String::new(),
+            })
+            .await
+            .map_err(protocol_error)?;
+        }
+        Ok(())
     }
 
     pub(super) fn clear_answer(&mut self) {
@@ -299,6 +332,30 @@ mod tests {
                 "checkpointing is not a terminal event"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn retry_cleanup_remains_effective_when_frontend_delivery_is_closed() {
+        let (request, rx, _, _) =
+            super::super::tests::fixture(super::super::SubscriptionRuntimeKind::Copilot, "test");
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let mut projection = Projection::default();
+        for id in ["a", "b"] {
+            projection
+                .complete(&turn.events, id, "abandoned")
+                .await
+                .unwrap();
+        }
+        drop(rx);
+        assert!(projection
+            .discard_answer_blocks(&turn.events, vec!["a".into(), "b".into()])
+            .await
+            .is_err());
+        projection.persist_partial(&turn).await.unwrap();
+        assert_eq!(db.get_messages(&conversation).unwrap().len(), 1);
+        assert_eq!(projection.draft_bytes, 0);
     }
 
     #[tokio::test]
