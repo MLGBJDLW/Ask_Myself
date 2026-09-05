@@ -238,6 +238,22 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     assert_eq!(done, 1);
     assert!(deltas > 0);
     let history = db.get_messages(&conversation).unwrap();
+    if matches!(kind, SubscriptionRuntimeKind::Copilot) {
+        let steering_index = history
+            .iter()
+            .position(|message| message.content == correction)
+            .unwrap();
+        let previous = &history[steering_index - 1];
+        assert_eq!(
+            previous.role,
+            Role::Assistant,
+            "the completed response precedes queued steering durably"
+        );
+        assert!(
+            previous.content.contains(&nonce),
+            "the first response must survive reload"
+        );
+    }
     assert_eq!(
         history
             .iter()

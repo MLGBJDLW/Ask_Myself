@@ -14,6 +14,7 @@ pub(super) struct Projection {
     draft_bytes: usize,
     async_messages: VecDeque<(String, String)>,
     pub(super) answer: String,
+    answer_block_id: Option<String>,
     pub(super) usage: Usage,
     pub(super) last_prompt_tokens: u32,
 }
@@ -109,6 +110,7 @@ impl Projection {
         self.completed.insert(id.to_string());
         self.offsets.insert(id.to_string(), text.len());
         self.answer = text.to_string();
+        self.answer_block_id = Some(id.to_string());
         let previous = self.drafts.get(id).map_or(0, String::len);
         if !self.drafts.contains_key(id) {
             self.draft_order.push(id.to_string());
@@ -123,6 +125,29 @@ impl Projection {
             self.draft_bytes -= text.len();
         }
         self.draft_order.retain(|key| key != id);
+    }
+
+    pub(super) fn clear_answer(&mut self) {
+        self.answer.clear();
+        self.answer_block_id = None;
+    }
+
+    /// Commit a completed response before a new user input changes the turn.
+    /// It is then excluded from failure recovery to avoid a duplicate reply.
+    pub(super) async fn persist_completed_answer(
+        &mut self,
+        turn: &PreparedTurn,
+    ) -> Result<Option<nexa_core::llm::Message>, CoreError> {
+        self.flush_async_messages(turn).await?;
+        if self.answer.trim().is_empty() {
+            return Ok(None);
+        }
+        let message = turn.tools.persist_answer(&self.answer).await?;
+        if let Some(id) = self.answer_block_id.take() {
+            self.mark_persisted(&id);
+        }
+        self.clear_answer();
+        Ok(Some(message))
     }
 
     pub(super) fn queue_async_message(&mut self, id: String, text: String) {
@@ -164,11 +189,10 @@ impl Projection {
         mut self,
         turn: &PreparedTurn,
     ) -> Result<nexa_core::llm::Message, CoreError> {
-        self.flush_async_messages(turn).await?;
-        if self.answer.trim().is_empty() {
-            return Err(protocol_error("upstream completed without a final answer"));
-        }
-        let message = turn.tools.persist_answer(&self.answer).await?;
+        let message = self
+            .persist_completed_answer(turn)
+            .await?
+            .ok_or_else(|| protocol_error("upstream completed without a final answer"))?;
         turn.events
             .send(AgentEvent::Done {
                 message: message.clone(),
@@ -187,6 +211,62 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn completed_response_precedes_steering_and_is_not_duplicated_on_failure() {
+        let (request, mut rx, _, _) =
+            super::super::tests::fixture(super::super::SubscriptionRuntimeKind::Copilot, "test");
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let mut projection = Projection::default();
+        projection
+            .complete(&turn.events, "first", "first response")
+            .await
+            .unwrap();
+        assert!(projection
+            .persist_completed_answer(&turn)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(projection
+            .persist_completed_answer(&turn)
+            .await
+            .unwrap()
+            .is_none());
+        turn.tools
+            .persist_steering(&nexa_core::agent::AgentSteeringMessage::text("follow up"))
+            .await
+            .unwrap();
+        projection
+            .delta(
+                &turn.events,
+                "second",
+                StreamBlockChannel::Answer,
+                "partial follow-up",
+            )
+            .await
+            .unwrap();
+        projection.persist_partial(&turn).await.unwrap();
+        let history = db.get_messages(&conversation).unwrap();
+        assert_eq!(
+            history[1..]
+                .iter()
+                .map(|message| (message.role.clone(), message.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (nexa_core::llm::Role::Assistant, "first response"),
+                (nexa_core::llm::Role::User, "follow up"),
+                (nexa_core::llm::Role::Assistant, "partial follow-up"),
+            ]
+        );
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, AgentEvent::Done { .. }),
+                "checkpointing is not a terminal event"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn full_records_replace_corrupt_prefixes_and_repeated_revisions() {
         let (tx, mut rx) = mpsc::channel(16);

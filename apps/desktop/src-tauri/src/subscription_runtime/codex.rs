@@ -436,6 +436,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                 projection.flush_async_messages(&turn).await?;
                 if let Some(message) = steering_queue.pop_front() {
                     let images = message.parts.iter().filter_map(|part| match part { ContentPart::Image {media_type,data}=>Some((media_type.clone(),data.clone())),_=>None }).collect::<Vec<_>>();
+                    projection.persist_completed_answer(&turn).await?;
                     turn.tools.persist_steering(&message).await?;
                     if turn.cancellation.is_cancelled() { return Err(CoreError::Cancelled("Stopped by user".into())); }
                     let id = wire.send("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":user_input(&redact_user_text(&message.content,&turn.privacy),&images)})).await?;
@@ -490,7 +491,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                                 if params["turnId"].as_str() != Some(&turn_id) || pending.len() >= 16 { wire.reject(&message).await?; return Err(protocol_error("invalid Codex tool dispatch boundary")); }
                                 let call = ToolCallRequest {id:required_string(params,"callId")?,name:required_string(params,"tool")?,arguments:params["arguments"].to_string(),thought_signature:None};
                                 let tools = turn.tools.clone(); let id = message["id"].clone();
-                                projection.answer.clear();
+                                projection.clear_answer();
                                 pending.push(async move { (id,tools.execute(call).await) });
                             }
                             _ => { wire.reject(&message).await?; return Err(protocol_error(format!("Codex requested unsupported native capability {method}; use Nexa tools"))); }
@@ -613,7 +614,7 @@ async fn project_event(
                 } else {
                     projection.complete(&turn.events, &id, text).await?;
                     if item["phase"] == "commentary" {
-                        projection.answer.clear();
+                        projection.clear_answer();
                     }
                 }
             }

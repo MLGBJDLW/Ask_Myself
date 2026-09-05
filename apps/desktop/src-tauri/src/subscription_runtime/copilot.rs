@@ -244,10 +244,10 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                             if message.recovery_control.is_some() { return Err(protocol_error("Copilot manages its own recovery. Stop and start a new turn to change reasoning.")); }
                             let attachments = message.parts.iter().filter_map(|part| match part { ContentPart::Image {media_type,data} => Some(Attachment::Blob{data:data.clone(),mime_type:media_type.clone(),display_name:None}),_=>None }).collect::<Vec<_>>();
                             if !native_vision && !attachments.is_empty() { return Err(protocol_error("the selected Copilot model does not accept steering images")); }
+                            projection.persist_completed_answer(&turn).await?;
                             turn.tools.persist_steering(&message).await?;
                             if turn.cancellation.is_cancelled() { return Err(CoreError::Cancelled("Stopped by user".into())); }
                             turn.events.send(AgentEvent::Steering { content:message.content.clone() }).await.map_err(protocol_error)?;
-                            projection.answer.clear();
                             session.send(MessageOptions::new(redact_user_text(&message.content,&turn.privacy)).with_attachments(attachments)).await.map_err(protocol_error)?;
                         } else { return Ok(()); }
                     }
@@ -330,10 +330,10 @@ async fn project_event(
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|calls| !calls.is_empty())
             {
-                projection.answer.clear();
+                projection.clear_answer();
             }
         }
-        "tool.execution_start" => projection.answer.clear(),
+        "tool.execution_start" => projection.clear_answer(),
         "assistant.usage" => {
             let tokens = |key: &str| {
                 data.get(key)
