@@ -1444,6 +1444,17 @@ async fn commit_pause_checkpoint_and_deliver(
 }
 
 fn is_deferred_event(event: &AgentRunEvent) -> bool {
+    // Commit the first real text of a block with all prior lifecycle events.
+    // The UI can paint it immediately without weakening commit-before-delivery;
+    // subsequent deltas still share the journal's bounded batch interval.
+    if event.kind == AgentRunEventKind::OutputDelta
+        && event.payload["offset"].as_u64() == Some(0)
+        && event.payload["delta"]
+            .as_str()
+            .is_some_and(|delta| !delta.is_empty())
+    {
+        return false;
+    }
     matches!(
         event.kind,
         AgentRunEventKind::OutputDelta
