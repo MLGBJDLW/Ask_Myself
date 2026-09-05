@@ -83,6 +83,7 @@ async fn wait_for_model_progress_deadline(deadline: Option<tokio::time::Instant>
 }
 
 pub(super) struct ModelStepContext<'a> {
+    pub(super) request_budget: super::turn_budget::ModelRequestBudget,
     pub(super) db: &'a Database,
     pub(super) tx: &'a mpsc::Sender<AgentEvent>,
     pub(super) conversation_id: Option<&'a str>,
@@ -305,6 +306,7 @@ impl AgentExecutor {
         ctx: ModelStepContext<'_>,
     ) -> Result<ModelStepOutcome, CoreError> {
         let ModelStepContext {
+            request_budget,
             db,
             tx,
             conversation_id,
@@ -437,6 +439,7 @@ impl AgentExecutor {
             tx,
             *force_non_streaming_llm,
         )
+        .with_request_budget(request_budget.clone())
         .with_cancel_token(self.cancel_token.clone());
         let mut progress_watchdog = model_progress_watchdog::ModelProgressWatchdog::new(
             self.config.provider_type,
@@ -581,6 +584,7 @@ impl AgentExecutor {
                             tx,
                             *force_non_streaming_llm,
                         )
+                        .with_request_budget(request_budget.clone())
                         .with_cancel_token(self.cancel_token.clone());
                         progress_watchdog.reset_for_new_attempt();
                         if *force_non_streaming_llm {
@@ -1064,6 +1068,7 @@ impl AgentExecutor {
                                 tx,
                                 *force_non_streaming_llm,
                             )
+                            .with_request_budget(request_budget.clone())
                             .with_cancel_token(self.cancel_token.clone());
                             progress_watchdog.reset_for_context_retry();
                             if *force_non_streaming_llm {
@@ -1348,6 +1353,7 @@ impl AgentExecutor {
                     tx,
                     true,
                 )
+                .with_request_budget(request_budget.clone())
                 .with_cancel_token(self.cancel_token.clone());
                 let mut safe_watchdog = model_progress_watchdog::ModelProgressWatchdog::new(
                     self.config.provider_type,

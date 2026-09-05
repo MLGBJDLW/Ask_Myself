@@ -1573,6 +1573,7 @@ impl AgentExecutor {
             let accumulated_content_before_model_step = accumulated_content.len();
             let model_step_result = self
                 .run_model_step(model_step::ModelStepContext {
+                    request_budget: turn_budget.request_budget(),
                     db,
                     tx: &tx,
                     conversation_id,
