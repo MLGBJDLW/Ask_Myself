@@ -1565,7 +1565,7 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
   const sttModel = sttPanel.locator("[data-nexa-select-trigger]").nth(1);
-  await expectNexaOptionCount(sttProvider, 9);
+  await expectNexaOptionCount(sttProvider, 10);
 
   await selectNexaOption(sttProvider, "openai-live");
   await selectNexaOption(sttModel, "gpt-live-transcribe");
@@ -1575,8 +1575,14 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await selectNexaOption(sttModel, "whisper-large-v3-turbo");
   await expectNexaValue(sttModel, "whisper-large-v3-turbo");
 
+  await selectNexaOption(sttProvider, "alibaba-qwen-asr");
+  await selectNexaOption(sttModel, "qwen3-asr-flash");
+  await expectNexaValue(sttModel, "qwen3-asr-flash");
+  await expect(sttPanel.getByText("After recording", { exact: true })).toBeVisible();
+
   await selectNexaOption(sttProvider, "alibaba-qwen-realtime");
   await selectNexaOption(sttModel, "qwen3-asr-flash-realtime");
+  await expect(sttPanel.getByText("Live partials", { exact: true })).toBeVisible();
   await expectNexaValue(sttModel, "qwen3-asr-flash-realtime");
   await expect(sttPanel.getByTestId("shared-credential-notice")).toHaveAttribute("data-state", "reusing");
   await expect(sttPanel.locator('[title="Alibaba Cloud"] > span')).toHaveAttribute(
@@ -1587,6 +1593,17 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __savedAppConfig?: { speechToText?: { apiKey?: string } } }
   ).__savedAppConfig?.speechToText?.apiKey)).toBe("sk-qwen-demo");
+
+  await selectNexaOption(sttProvider, "alibaba-qwen-asr");
+  await selectNexaOption(sttModel, "qwen3-asr-flash");
+  await expectNexaValue(sttModel, "qwen3-asr-flash");
+  await expect(sttPanel.getByText("After recording", { exact: true })).toBeVisible();
+  await sttPanel.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __savedAppConfig?: { speechToText?: unknown } }
+  ).__savedAppConfig?.speechToText)).toMatchObject({
+    apiStyle: "dashscope_asr", model: "qwen3-asr-flash", apiKey: "sk-qwen-demo",
+  });
 
   await selectNexaOption(sttProvider, "siliconflow");
   await selectNexaOption(sttModel, "FunAudioLLM/SenseVoiceSmall");
