@@ -924,6 +924,7 @@ fn mock_replay_events(trajectory: &Trajectory, input: &AgentTurnInput) -> Vec<Ag
                     usage_total: Usage::default(),
                     last_prompt_tokens: 0,
                     context_breakdown: None,
+                    assistant_message_id: None,
                     cached: false,
                     finish_reason: Some(finish_reason.to_string()),
                 },
@@ -1443,6 +1444,7 @@ mod tests {
                 usage_total: Usage::default(),
                 last_prompt_tokens: 0,
                 context_breakdown: None,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: Some("stop".to_string()),
             })
@@ -1529,6 +1531,7 @@ mod tests {
                 usage_total: Usage::default(),
                 last_prompt_tokens: 0,
                 context_breakdown: None,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: Some("stop".to_string()),
             })

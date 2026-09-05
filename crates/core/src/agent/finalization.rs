@@ -144,6 +144,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: Some("cancelled".to_string()),
             })
@@ -398,6 +399,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: last_finish_reason,
             })
@@ -505,6 +507,7 @@ impl AgentExecutor {
                 usage_total: total_usage,
                 last_prompt_tokens,
                 context_breakdown,
+                assistant_message_id: None,
                 cached: false,
                 finish_reason: last_finish_reason,
             })

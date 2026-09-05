@@ -89,7 +89,9 @@ mod tool_runtime;
 pub mod tool_scheduler;
 mod trace_builder;
 mod turn_budget;
-pub use external_tools::{ExternalToolOutput, ExternalToolSession, ExternalToolSessionInput};
+pub use external_tools::{
+    ExternalToolOutput, ExternalToolSession, ExternalToolSessionInput, PersistedAssistantMessage,
+};
 pub mod turn_events;
 mod turn_loop;
 mod usage_accounting;

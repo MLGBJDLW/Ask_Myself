@@ -177,6 +177,25 @@ pub(super) fn fixture(
     (request, rx, calls, nonce)
 }
 
+struct DurableProbeDelivery(nexa_core::db::Database);
+impl nexa_core::run_event_outbox::AgentRunEventDelivery for DurableProbeDelivery {
+    fn deliver_run_event(&self, _: &str, event: &nexa_core::agent_run::AgentRunEvent) {
+        if event.closes_run() {
+            let turn = self.0.get_conversation_turn(&event.turn_id).unwrap();
+            assert_eq!(
+                turn.status, "success",
+                "turn must close before terminal delivery"
+            );
+            assert_eq!(
+                turn.assistant_message_id.as_deref(),
+                event.payload["assistantMessageId"].as_str()
+            );
+            assert!(turn.finished_at.is_some());
+        }
+    }
+    fn deliver_task_run_snapshot(&self, _: &str, _: nexa_core::conversation::AgentTaskRun) {}
+}
+
 pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     let (mut request, mut rx, calls, nonce) = fixture(kind, model);
     let assembler =
@@ -192,6 +211,35 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     }
     let db = request.db.clone();
     let conversation = request.conversation_id.clone();
+    let turn_id = request.turn_id.clone();
+    let turn = db.get_conversation_turn(&turn_id).unwrap();
+    let task = db
+        .create_agent_task_run(
+            &conversation,
+            &turn_id,
+            &turn.user_message_id,
+            "Native protocol probe",
+            Some("subscription"),
+            Some(model),
+        )
+        .unwrap();
+    db.mark_agent_task_run_started(&task.id, "responding")
+        .unwrap();
+    let executor = nexa_core::db_executor::DatabaseExecutor::new(db.as_ref().clone(), 8).unwrap();
+    let outboxes = nexa_core::run_event_outbox::AgentRunEventOutboxes::new(
+        executor,
+        Arc::new(DurableProbeDelivery(db.as_ref().clone())),
+    );
+    let outbox = outboxes.open(&conversation, &task.id).await.unwrap();
+    let (forward_tx, forward_rx) = mpsc::channel(512);
+    let forwarder = crate::agent_stream_bridge::AgentStreamForwarder::new(
+        conversation.clone(),
+        task.id.clone(),
+        turn_id.clone(),
+        outbox.as_ref().clone(),
+        std::time::Instant::now(),
+    );
+    let forwarding = tokio::spawn(forwarder.run(forward_rx));
     let (steering_tx, steering_rx) = mpsc::unbounded_channel();
     request.steering = steering_rx;
     let correction = "Keep the current read_test_nonce call, and do not call any tool again. After its result arrives, reply with STEERING_CONFIRMED followed by that nonce.";
@@ -217,6 +265,7 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
                 AgentEvent::Steering { .. } => applied += 1,
                 _ => {}
             }
+            forward_tx.send(event).await.unwrap();
         }
         (done, deltas, steered, applied, tool_events)
     });
@@ -230,6 +279,17 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let (done, deltas, steered, applied, tool_events) = drain.await.unwrap();
+    forwarding.await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        outbox.wait_for_terminal_commit(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let completed = db.get_conversation_turn(&turn_id).unwrap();
+    assert_eq!(completed.status, "success");
+    assert!(completed.finished_at.is_some());
     assert!(
         result.text_content().contains("STEERING_CONFIRMED"),
         "steered={steered}, applied={applied}, tools={tool_events:?}, synthetic answer={}",
@@ -273,4 +333,8 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
         1
     );
     assert!(history.last().unwrap().content.contains(&nonce));
+    assert_eq!(
+        completed.assistant_message_id.as_deref(),
+        Some(history.last().unwrap().id.as_str())
+    );
 }

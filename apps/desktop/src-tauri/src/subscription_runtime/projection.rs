@@ -14,7 +14,7 @@ pub(super) struct Projection {
     draft_bytes: usize,
     async_messages: VecDeque<(String, String)>,
     pub(super) answer: String,
-    answer_block_id: Option<String>,
+    answer_block_ids: Vec<String>,
     pub(super) usage: Usage,
     pub(super) last_prompt_tokens: u32,
 }
@@ -75,6 +75,41 @@ impl Projection {
         id: &str,
         text: &str,
     ) -> Result<(), CoreError> {
+        self.complete_block(tx, id, text).await?;
+        self.select_answer_blocks(vec![id.to_string()])
+    }
+
+    pub(super) fn select_answer_blocks(&mut self, ids: Vec<String>) -> Result<(), CoreError> {
+        let mut parts = Vec::new();
+        for id in &ids {
+            if !self.completed.contains(id) {
+                return Err(protocol_error(
+                    "answer response contains an incomplete block",
+                ));
+            }
+            let text = self
+                .drafts
+                .get(id)
+                .ok_or_else(|| protocol_error("answer response block is missing"))?;
+            if !text.is_empty() {
+                parts.push(text.as_str());
+            }
+        }
+        let answer = parts.join("\n\n");
+        if answer.len() > 4 * 1024 * 1024 {
+            return Err(protocol_error("assembled response exceeds its byte budget"));
+        }
+        self.answer = answer;
+        self.answer_block_ids = ids;
+        Ok(())
+    }
+
+    pub(super) async fn complete_block(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        id: &str,
+        text: &str,
+    ) -> Result<(), CoreError> {
         if !self.completed.contains(id) && self.completed.len() >= 2048 {
             return Err(protocol_error(
                 "subscription completed-block budget exceeded",
@@ -109,8 +144,6 @@ impl Projection {
         }
         self.completed.insert(id.to_string());
         self.offsets.insert(id.to_string(), text.len());
-        self.answer = text.to_string();
-        self.answer_block_id = Some(id.to_string());
         let previous = self.drafts.get(id).map_or(0, String::len);
         if !self.drafts.contains_key(id) {
             self.draft_order.push(id.to_string());
@@ -129,7 +162,7 @@ impl Projection {
 
     pub(super) fn clear_answer(&mut self) {
         self.answer.clear();
-        self.answer_block_id = None;
+        self.answer_block_ids.clear();
     }
 
     /// Commit a completed response before a new user input changes the turn.
@@ -137,13 +170,13 @@ impl Projection {
     pub(super) async fn persist_completed_answer(
         &mut self,
         turn: &PreparedTurn,
-    ) -> Result<Option<nexa_core::llm::Message>, CoreError> {
+    ) -> Result<Option<nexa_core::agent::PersistedAssistantMessage>, CoreError> {
         self.flush_async_messages(turn).await?;
         if self.answer.trim().is_empty() {
             return Ok(None);
         }
         let message = turn.tools.persist_answer(&self.answer).await?;
-        if let Some(id) = self.answer_block_id.take() {
+        for id in std::mem::take(&mut self.answer_block_ids) {
             self.mark_persisted(&id);
         }
         self.clear_answer();
@@ -195,16 +228,17 @@ impl Projection {
             .ok_or_else(|| protocol_error("upstream completed without a final answer"))?;
         turn.events
             .send(AgentEvent::Done {
-                message: message.clone(),
+                message: message.message.clone(),
                 last_prompt_tokens: self.last_prompt_tokens,
                 usage_total: self.usage,
                 context_breakdown: None,
+                assistant_message_id: Some(message.id),
                 cached: false,
                 finish_reason: Some("stop".into()),
             })
             .await
             .map_err(protocol_error)?;
-        Ok(message)
+        Ok(message.message)
     }
 }
 

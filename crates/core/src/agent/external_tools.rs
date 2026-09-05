@@ -5,6 +5,11 @@ use super::*;
 use crate::tools::ToolResult;
 use std::collections::HashMap;
 
+pub struct PersistedAssistantMessage {
+    pub id: String,
+    pub message: Message,
+}
+
 pub struct ExternalToolSessionInput {
     pub tools: ToolRegistry,
     pub config: AgentConfig,
@@ -549,11 +554,12 @@ impl ExternalToolSession {
         Ok(())
     }
 
-    pub async fn persist_answer(&self, text: &str) -> Result<Message, CoreError> {
+    pub async fn persist_answer(&self, text: &str) -> Result<PersistedAssistantMessage, CoreError> {
         let mut state = self.state.lock().await;
         let message = Message::text(Role::Assistant, text.to_string());
+        let id = Uuid::new_v4().to_string();
         self.input.db.add_message(&ConversationMessage {
-            id: Uuid::new_v4().to_string(),
+            id: id.clone(),
             conversation_id: self.input.conversation_id.clone(),
             role: Role::Assistant,
             content: text.to_string(),
@@ -572,6 +578,6 @@ impl ExternalToolSession {
             image_attachments: None,
         })?;
         state.next_sort_order += 1;
-        Ok(message)
+        Ok(PersistedAssistantMessage { id, message })
     }
 }

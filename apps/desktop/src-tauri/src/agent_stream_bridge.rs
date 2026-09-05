@@ -519,6 +519,7 @@ mod tests {
             usage_total: Usage::default(),
             last_prompt_tokens: 0,
             context_breakdown: None,
+            assistant_message_id: None,
             cached: true,
             finish_reason: Some("stop".into()),
         };
