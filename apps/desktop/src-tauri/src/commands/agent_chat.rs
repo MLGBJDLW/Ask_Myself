@@ -9,7 +9,7 @@ use crate::desktop_agent_session::{
     provider_config_is_local, reconcile_authoritative_run_event_outbox_failure,
     request_desktop_running_agent_stop, resolve_desktop_summarization_provider_config,
     run_desktop_agent_post_success_learning, run_desktop_agent_turn, DesktopAgentApprovalRuntime,
-    DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
+    DesktopAgentBackend, DesktopAgentPostSuccessLearningRequest, DesktopAgentSessionConfigInput,
     DesktopAgentSessionDependencyRequest, DesktopAgentStopFinalization,
     DesktopAgentTurnConfigRequest, DesktopAgentTurnFinalization, DesktopAgentTurnRequest,
     DesktopAgentTurnRuntime, DesktopAgentTurnStream, DesktopAgentVisionUserContentRequest,
@@ -109,6 +109,7 @@ fn build_moa_provider(
                 "high" => Some(ReasoningEffort::High),
                 "max" => Some(ReasoningEffort::Max),
                 "xhigh" => Some(ReasoningEffort::XHigh),
+                "ultra" => Some(ReasoningEffort::Ultra),
                 _ => None,
             });
         advisors.push(MoaAdvisor {
@@ -974,7 +975,11 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 task_id: Some(task_run_id.clone()),
             };
             let mut effective_db_config = db_config.clone();
-            let registry_resolution = if capability_registry_may_select_text_route(
+            let subscription_kind = crate::subscription_runtime::SubscriptionRuntimeKind::from_provider(&db_config.provider);
+            if subscription_kind.is_some() && (collaboration_mode.is_moa() || force_workspace_isolation) {
+                return Err("Subscription agents use their official runtime directly. Select a direct chat without Mixture of Agents or scheduled workspace isolation.".to_string());
+            }
+            let registry_resolution = if subscription_kind.is_none() && capability_registry_may_select_text_route(
                 agent_config_override_is_authoritative,
             ) {
                 db.resolve_or_pin_task_runtime_capability(
@@ -1041,11 +1046,14 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 }
                 None => {
                     let provider_config = db_config_to_provider_config(&db_config, None);
-                    let egress_id = provider_config_egress_id(&provider_config);
+                    let egress_id = if subscription_kind.is_some() { format!("subscription:{}", db_config.provider) } else { provider_config_egress_id(&provider_config) };
                     let primary_routes_local = provider_config_is_local(&provider_config);
                     (provider_config, None, egress_id, primary_routes_local, true)
                 }
             };
+            let backend = if let Some(kind) = subscription_kind {
+                DesktopAgentBackend::Subscription(kind)
+            } else {
             let mut provider = create_provider(provider_config.clone()).map_err(|e| e.to_string())?;
             if let Some((primary_fallback_index, primary_model, fallbacks)) =
                 registry_fallback_plan
@@ -1095,6 +1103,8 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 build_moa_provider(db.as_ref(), &effective_db_config, provider, moa_preset)?
             } else {
                 provider
+            };
+            DesktopAgentBackend::Nexa(provider)
             };
             let vision_resolution = if attachments.as_ref().is_some_and(|attachments| {
                 attachments
@@ -1196,7 +1206,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                 executor_config.request_kind =
                     nexa_core::agent::AgentRequestKind::ScheduledIsolatedPatch;
             }
-            let summarization_provider = match resolve_desktop_summarization_provider_config(
+            let summarization_provider = if subscription_kind.is_some() { None } else { match resolve_desktop_summarization_provider_config(
                 db.as_ref(),
                 &effective_db_config,
             )? {
@@ -1207,10 +1217,11 @@ pub(super) async fn launch_desktop_agent_chat_turn(
                     Some(create_provider(summary_config).map_err(|error| error.to_string())?)
                 }
                 None => None,
-            };
+            }};
 
             let session_dependencies =
                 build_desktop_agent_session_dependencies(DesktopAgentSessionDependencyRequest {
+                    subscription_runtime: subscription_kind.is_some(),
                     db: &db,
                     mcp_manager: &mcp_manager,
                     event_seq: &stream_event_seq_for_task,
@@ -1366,7 +1377,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
             };
             let turn_timeout_secs = executor_config.agent_timeout_secs.unwrap_or(0) as u64;
             Ok::<_, String>((
-                provider,
+                backend,
                 session_dependencies,
                 executor_config,
                 approval_runtime,
@@ -1380,7 +1391,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         .await;
 
         let (
-            provider,
+            backend,
             session_dependencies,
             executor_config,
             approval_runtime,
@@ -1424,7 +1435,7 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         }
 
         let outcome = run_desktop_agent_turn(DesktopAgentTurnRequest {
-            provider,
+            backend,
             dependencies: session_dependencies,
             executor_config,
             cancel_token: cancel_token_clone,
@@ -1515,7 +1526,12 @@ pub(super) async fn launch_desktop_agent_chat_turn(
         })
         .await;
 
-        if matches!(result, Some(Ok(_))) {
+        if matches!(result, Some(Ok(_)))
+            && crate::subscription_runtime::SubscriptionRuntimeKind::from_provider(
+                &db_config_for_post_success.provider,
+            )
+            .is_none()
+        {
             run_desktop_agent_post_success_learning(DesktopAgentPostSuccessLearningRequest {
                 db: db.clone(),
                 conversation_id: conv_id.clone(),

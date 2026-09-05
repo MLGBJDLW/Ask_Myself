@@ -1519,7 +1519,7 @@ fn build_responses_request_with_tools(
                 Some(ReasoningEffort::Medium | ReasoningEffort::High | ReasoningEffort::XHigh) => {
                     Some("high")
                 }
-                Some(ReasoningEffort::Max) => Some("max"),
+                Some(ReasoningEffort::Max | ReasoningEffort::Ultra) => Some("max"),
                 Some(ReasoningEffort::None) => Some("none"),
                 None if request.reasoning_enabled == Some(true) => Some("high"),
                 None => None,

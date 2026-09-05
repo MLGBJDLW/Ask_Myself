@@ -977,5 +977,7 @@
   ,"copilotCancelError": "GitHub Copilot 로그인을 취소할 수 없습니다"
   ,"copilotAvailableModels": "구독으로 사용 가능한 모델 {count}개"
   ,"copilotUnlimited": "무제한"
-  ,"copilotOwnershipNotice": "이 계정 브리지는 고정 버전의 공식 GitHub Copilot SDK와 무결성 검증된 CLI로 구독, 모델 및 할당량을 확인합니다. 로그인은 Copilot CLI/시스템 키체인에 유지되며 GitHub 토큰을 Nexa로 복사하지 않습니다. Copilot을 Nexa 채팅 실행 런타임으로 선택하려면 별도의 Agent Runtime 브리지가 필요합니다."
+  ,"copilotOwnershipNotice": "공식 Copilot CLI로 로그인하고 구독 모델을 선택해 채팅 공급자로 저장하세요. Nexa가 도구 실행과 승인을 처리하며 GitHub 토큰은 Copilot에 보관됩니다."
+,"subscriptionSelectModel": "사용 가능한 모델 선택"
+,"reasoningUltra": "Ultra"
 }

@@ -977,5 +977,7 @@
   ,"copilotCancelError": "GitHub Copilot サインインをキャンセルできませんでした"
   ,"copilotAvailableModels": "サブスクリプションで {count} モデルを利用可能"
   ,"copilotUnlimited": "無制限"
-  ,"copilotOwnershipNotice": "このアカウントブリッジは、固定版の公式 GitHub Copilot SDK と整合性検証済み CLI でサブスクリプション、モデル、クォータを確認します。ログインは Copilot CLI／システムキーチェーンに残り、GitHub トークンは Nexa にコピーされません。Copilot を Nexa のチャット実行ランタイムとして選ぶには、別の Agent Runtime ブリッジが必要です。"
+  ,"copilotOwnershipNotice": "公式 Copilot CLI でログインし、サブスクリプションのモデルを選んでチャットプロバイダーとして保存します。ツールの実行と承認は Nexa が管理し、GitHub トークンは Copilot に保持されます。"
+,"subscriptionSelectModel": "利用可能なモデルを選択"
+,"reasoningUltra": "Ultra"
 }

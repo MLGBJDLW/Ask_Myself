@@ -977,5 +977,7 @@
   ,"copilotCancelError": "Could not cancel GitHub Copilot sign-in"
   ,"copilotAvailableModels": "{count} subscription models available"
   ,"copilotUnlimited": "Unlimited"
-  ,"copilotOwnershipNotice": "This account bridge verifies the subscription, models, and quota with the pinned official GitHub Copilot SDK and its integrity-verified CLI. Login remains in the Copilot CLI/system keychain; no GitHub token is copied into Nexa. Selecting Copilot as Nexa's chat execution runtime requires a separate agent-runtime bridge."
+  ,"copilotOwnershipNotice": "Sign in with the official Copilot CLI, select a subscription model, and save it as a chat provider. Nexa handles tool execution and approvals; your GitHub token stays with Copilot."
+,"subscriptionSelectModel": "Select an available model"
+,"reasoningUltra": "Ultra"
 }

@@ -977,5 +977,7 @@
   ,"copilotCancelError": "无法取消 GitHub Copilot 登录"
   ,"copilotAvailableModels": "订阅可用模型 {count} 个"
   ,"copilotUnlimited": "不限量"
-  ,"copilotOwnershipNotice": "此账户桥通过固定版本的 GitHub Copilot 官方 SDK 及经过完整性校验的 CLI 验证订阅、模型和配额。登录保留在 Copilot CLI/系统钥匙串中，不会把 GitHub 令牌复制进 Nexa。若要把 Copilot 选作 Nexa 对话执行内核，仍需单独的 Agent Runtime 桥接。"
+  ,"copilotOwnershipNotice": "通过 Copilot 官方 CLI 登录，选择订阅模型后保存为聊天提供商。工具执行与审批由 Nexa 处理，GitHub 令牌保留在 Copilot 中。"
+,"subscriptionSelectModel": "选择可用模型"
+,"reasoningUltra": "Ultra"
 }

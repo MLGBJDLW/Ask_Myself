@@ -977,5 +977,7 @@
   ,"copilotCancelError": "Не удалось отменить вход в GitHub Copilot"
   ,"copilotAvailableModels": "Доступно моделей по подписке: {count}"
   ,"copilotUnlimited": "Без ограничений"
-  ,"copilotOwnershipNotice": "Этот мост аккаунта проверяет подписку, модели и квоты через закреплённую версию официального GitHub Copilot SDK и CLI с проверкой целостности. Вход остаётся в Copilot CLI или системном хранилище; токен GitHub не копируется в Nexa. Для выбора Copilot как среды выполнения чата Nexa требуется отдельный мост Agent Runtime."
+  ,"copilotOwnershipNotice": "Войдите через официальный CLI Copilot, выберите модель подписки и сохраните её как провайдера чата. Nexa управляет инструментами и разрешениями; токен GitHub остаётся в Copilot."
+,"subscriptionSelectModel": "Выберите доступную модель"
+,"reasoningUltra": "Ultra"
 }

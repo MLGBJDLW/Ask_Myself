@@ -122,6 +122,7 @@ const REASONING_EFFORT_LABEL_KEYS: Record<
   high: "settings.reasoningHigh",
   max: "settings.reasoningMax",
   xhigh: "settings.reasoningXHigh",
+  ultra: "settings.reasoningUltra",
 };
 
 function normalizeBaseUrl(value: string | null | undefined): string {

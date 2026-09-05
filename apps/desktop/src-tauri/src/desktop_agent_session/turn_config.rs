@@ -257,6 +257,7 @@ pub fn build_desktop_agent_turn_config(
                 "high" => Some(ReasoningEffort::High),
                 "max" => Some(ReasoningEffort::Max),
                 "xhigh" => Some(ReasoningEffort::XHigh),
+                "ultra" => Some(ReasoningEffort::Ultra),
                 _ => None,
             });
     let goal_section = nexa_core::conversation::goal::build_conversation_goal_prompt_section(

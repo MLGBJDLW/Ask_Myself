@@ -276,6 +276,7 @@ pub enum ReasoningEffort {
     High,
     Max,
     XHigh,
+    Ultra,
 }
 
 impl std::fmt::Display for ReasoningEffort {
@@ -288,6 +289,7 @@ impl std::fmt::Display for ReasoningEffort {
             Self::High => write!(f, "high"),
             Self::Max => write!(f, "max"),
             Self::XHigh => write!(f, "xhigh"),
+            Self::Ultra => write!(f, "ultra"),
         }
     }
 }
@@ -302,6 +304,7 @@ impl ReasoningEffort {
             "high" => Some(Self::High),
             "max" => Some(Self::Max),
             "xhigh" => Some(Self::XHigh),
+            "ultra" => Some(Self::Ultra),
             _ => None,
         }
     }

@@ -977,5 +977,7 @@
   ,"copilotCancelError": "No se pudo cancelar el acceso a GitHub Copilot"
   ,"copilotAvailableModels": "{count} modelos de suscripción disponibles"
   ,"copilotUnlimited": "Ilimitado"
-  ,"copilotOwnershipNotice": "Este puente de cuenta verifica la suscripción, los modelos y la cuota mediante una versión fijada del SDK oficial de GitHub Copilot y su CLI verificado. El acceso permanece en Copilot CLI o el llavero del sistema; ningún token de GitHub se copia a Nexa. Elegir Copilot como runtime de ejecución del chat de Nexa requiere un puente de Agent Runtime independiente."
+  ,"copilotOwnershipNotice": "Inicia sesión con la CLI oficial de Copilot, elige un modelo de tu suscripción y guárdalo como proveedor de chat. Nexa gestiona las herramientas y aprobaciones; el token de GitHub permanece en Copilot."
+,"subscriptionSelectModel": "Selecciona un modelo disponible"
+,"reasoningUltra": "Ultra"
 }

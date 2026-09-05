@@ -281,6 +281,7 @@ pub struct DesktopAgentSessionConfigInput<'a> {
 }
 
 pub struct DesktopAgentSessionDependencyRequest<'a> {
+    pub subscription_runtime: bool,
     pub db: &'a Database,
     pub mcp_manager: &'a Arc<tokio::sync::Mutex<McpManager>>,
     pub event_seq: &'a AgentRunEventOutbox,
@@ -333,8 +334,13 @@ pub struct DesktopAgentStopFinalization<'a> {
     pub summary: &'a str,
 }
 
+pub enum DesktopAgentBackend {
+    Nexa(Box<dyn LlmProvider>),
+    Subscription(crate::subscription_runtime::SubscriptionRuntimeKind),
+}
+
 pub struct DesktopAgentTurnRequest {
-    pub provider: Box<dyn LlmProvider>,
+    pub backend: DesktopAgentBackend,
     pub dependencies: DesktopAgentSessionDependencies,
     pub executor_config: AgentConfig,
     pub cancel_token: CancellationToken,

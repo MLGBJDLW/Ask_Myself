@@ -977,5 +977,7 @@
   ,"copilotCancelError": "GitHub-Copilot-Anmeldung konnte nicht abgebrochen werden"
   ,"copilotAvailableModels": "{count} Abo-Modelle verfügbar"
   ,"copilotUnlimited": "Unbegrenzt"
-  ,"copilotOwnershipNotice": "Diese Kontobrücke prüft Abonnement, Modelle und Kontingente mit einer festen Version des offiziellen GitHub Copilot SDK und der integritätsgeprüften CLI. Die Anmeldung bleibt in Copilot CLI/System-Schlüsselbund; kein GitHub-Token wird nach Nexa kopiert. Für Copilot als Chat-Ausführungsruntime von Nexa ist eine separate Agent-Runtime-Brücke erforderlich."
+  ,"copilotOwnershipNotice": "Über die offizielle Copilot CLI anmelden, ein Abonnementmodell wählen und als Chat-Anbieter speichern. Nexa verwaltet Werkzeuge und Genehmigungen; das GitHub-Token bleibt bei Copilot."
+,"subscriptionSelectModel": "Verfügbares Modell wählen"
+,"reasoningUltra": "Ultra"
 }

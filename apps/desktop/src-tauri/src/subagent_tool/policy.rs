@@ -141,6 +141,7 @@ pub(super) fn apply_nexus_worker_reasoning_policy(
         ReasoningEffort::Medium => 3,
         ReasoningEffort::High => 4,
         ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Ultra => 6,
         ReasoningEffort::Max => 6,
     };
     let supported = reasoning

@@ -7,7 +7,8 @@ export type ReasoningEffortLevel =
   | 'medium'
   | 'high'
   | 'max'
-  | 'xhigh';
+  | 'xhigh'
+  | 'ultra';
 
 export interface ThinkingBudgetCapability {
   enabled: boolean;

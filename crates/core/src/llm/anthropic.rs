@@ -718,6 +718,7 @@ fn anthropic_reasoning_effort(effort: Option<&ReasoningEffort>) -> Option<String
         None => Some("high".to_string()),
         Some(ReasoningEffort::High) => Some("high".to_string()),
         Some(ReasoningEffort::XHigh) => Some("xhigh".to_string()),
+        Some(ReasoningEffort::Ultra) => None,
         Some(ReasoningEffort::Max) => Some("max".to_string()),
     }
 }

@@ -122,7 +122,7 @@ mod realtime_transcript;
 mod realtime_transcription;
 mod skills_mcp;
 mod sources;
-mod subscription_accounts;
+pub(crate) mod subscription_accounts;
 mod terminal;
 mod update;
 mod watcher;

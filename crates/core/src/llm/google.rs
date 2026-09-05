@@ -797,7 +797,10 @@ fn normalize_thinking_level(model: &str, level: &ReasoningEffort) -> String {
         ReasoningEffort::None | ReasoningEffort::Minimal => minimum,
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => "high",
+        ReasoningEffort::High
+        | ReasoningEffort::XHigh
+        | ReasoningEffort::Max
+        | ReasoningEffort::Ultra => "high",
     }
     .to_string()
 }

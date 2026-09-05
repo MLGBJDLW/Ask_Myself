@@ -90,6 +90,7 @@ pub async fn build_desktop_agent_session_dependencies(
     request: DesktopAgentSessionDependencyRequest<'_>,
 ) -> DesktopAgentSessionDependencies {
     let DesktopAgentSessionDependencyRequest {
+        subscription_runtime,
         db,
         mcp_manager,
         event_seq,
@@ -241,31 +242,32 @@ pub async fn build_desktop_agent_session_dependencies(
     drop(snapshot_guard);
     drop(manager);
 
-    let delegation_runtime = DelegationRuntime::new(
-        provider_config,
-        executor_config,
-        subagent_allowed_tools,
-        subagent_allowed_skill_ids,
-        subagent_lifecycle,
-        cancel_token,
-        Some(task_run_id.to_string()),
-        Some(conversation_id.to_string()),
-    );
-    tools.register(Box::new(SubagentTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    tools.register(Box::new(SubagentBatchTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
-        delegation_runtime.clone(),
-    )));
-    for lifecycle_tool in SubagentLifecycleTool::all(delegation_runtime.clone()) {
-        tools.register(Box::new(lifecycle_tool));
-    }
+    let delegation_runtime = if !subscription_runtime {
+        let runtime = DelegationRuntime::new(
+            provider_config,
+            executor_config,
+            subagent_allowed_tools,
+            subagent_allowed_skill_ids,
+            subagent_lifecycle,
+            cancel_token,
+            Some(task_run_id.to_string()),
+            Some(conversation_id.to_string()),
+        );
+        tools.register(Box::new(SubagentTool::from_runtime(runtime.clone())));
+        tools.register(Box::new(SubagentBatchTool::from_runtime(runtime.clone())));
+        tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+            runtime.clone(),
+        )));
+        tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
+            runtime.clone(),
+        )));
+        for lifecycle_tool in SubagentLifecycleTool::all(runtime.clone()) {
+            tools.register(Box::new(lifecycle_tool));
+        }
+        Some(runtime)
+    } else {
+        None
+    };
     if let Some(terminal_state) = terminal_state {
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));
     }
@@ -344,7 +346,9 @@ pub async fn build_desktop_agent_session_dependencies(
     }
     // Delegated workers inherit the already-filtered root registry and can
     // only narrow it further through their own role/tool policy.
-    delegation_runtime.set_tool_registry(tools.clone());
+    if let Some(runtime) = delegation_runtime {
+        runtime.set_tool_registry(tools.clone());
+    }
 
     DesktopAgentSessionDependencies {
         tools,

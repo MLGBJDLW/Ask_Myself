@@ -969,6 +969,9 @@ export interface CopilotAccountSnapshot {
 export const getCopilotAccountSnapshot = () =>
   invoke<CopilotAccountSnapshot>('get_copilot_account_snapshot_cmd');
 
+export const listSubscriptionModels = (provider: string) =>
+  invoke<CopilotModelSummary[]>('list_subscription_models_cmd', { provider });
+
 export const startCopilotAccountLogin = () =>
   invoke<void>('start_copilot_account_login_cmd');
 

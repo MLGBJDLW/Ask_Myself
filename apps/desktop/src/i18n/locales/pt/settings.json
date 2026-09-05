@@ -977,5 +977,7 @@
   ,"copilotCancelError": "Não foi possível cancelar o login do GitHub Copilot"
   ,"copilotAvailableModels": "{count} modelos de assinatura disponíveis"
   ,"copilotUnlimited": "Ilimitado"
-  ,"copilotOwnershipNotice": "Esta ponte de conta verifica a assinatura, os modelos e a cota com uma versão fixa do SDK oficial GitHub Copilot e seu CLI verificado. O login permanece no Copilot CLI ou chaveiro do sistema; nenhum token do GitHub é copiado para o Nexa. Selecionar o Copilot como runtime de execução do chat do Nexa requer uma ponte de Agent Runtime separada."
+  ,"copilotOwnershipNotice": "Entre pela CLI oficial do Copilot, escolha um modelo da assinatura e salve como provedor de chat. O Nexa gerencia ferramentas e aprovações; o token do GitHub permanece no Copilot."
+,"subscriptionSelectModel": "Selecione um modelo disponível"
+,"reasoningUltra": "Ultra"
 }

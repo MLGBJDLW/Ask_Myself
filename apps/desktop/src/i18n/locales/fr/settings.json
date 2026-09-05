@@ -977,5 +977,7 @@
   ,"copilotCancelError": "Impossible d’annuler la connexion GitHub Copilot"
   ,"copilotAvailableModels": "{count} modèles d’abonnement disponibles"
   ,"copilotUnlimited": "Illimité"
-  ,"copilotOwnershipNotice": "Ce pont de compte vérifie l’abonnement, les modèles et le quota avec une version fixe du SDK GitHub Copilot officiel et son CLI vérifié. La connexion reste dans le CLI Copilot ou le trousseau système ; aucun jeton GitHub n’est copié dans Nexa. Choisir Copilot comme runtime d’exécution du chat Nexa nécessite un pont Agent Runtime distinct."
+  ,"copilotOwnershipNotice": "Connectez-vous avec le CLI officiel Copilot, choisissez un modèle de votre abonnement et enregistrez-le comme fournisseur de chat. Nexa gère les outils et les approbations ; le jeton GitHub reste dans Copilot."
+,"subscriptionSelectModel": "Choisir un modèle disponible"
+,"reasoningUltra": "Ultra"
 }

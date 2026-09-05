@@ -123,7 +123,7 @@ async function openTrustedUrl(url: string | null): Promise<void> {
   await open(parsed.toString());
 }
 
-export function SubscriptionAccountsPanel() {
+export function SubscriptionAccountsPanel({ runtime }: { runtime: 'copilot' | 'codex' }) {
   const { t, locale } = useTranslation();
   const [snapshot, setSnapshot] = useState<CodexAccountSnapshot | null>(null);
   const [copilotSnapshot, setCopilotSnapshot] = useState<CopilotAccountSnapshot | null>(null);
@@ -163,8 +163,8 @@ export function SubscriptionAccountsPanel() {
   }, [t]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (runtime === 'codex') void refresh();
+  }, [refresh, runtime]);
 
   const refreshCopilot = useCallback(async (foreground = false) => {
     const actionRevision = copilotActionRevision.current;
@@ -192,8 +192,8 @@ export function SubscriptionAccountsPanel() {
   }, [t]);
 
   useEffect(() => {
-    void refreshCopilot();
-  }, [refreshCopilot]);
+    if (runtime === 'copilot') void refreshCopilot();
+  }, [refreshCopilot, runtime]);
 
   useSerialPoll(Boolean(snapshot?.pendingLogin) && action === null, refresh, LOGIN_POLL_MS);
   useSerialPoll(
@@ -330,7 +330,7 @@ export function SubscriptionAccountsPanel() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-border bg-surface-2 p-4" data-testid="codex-subscription-account">
+      {runtime === 'codex' && <div className="rounded-lg border border-border bg-surface-2 p-4" data-testid="codex-subscription-account">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-3 text-text-secondary">
@@ -507,7 +507,8 @@ export function SubscriptionAccountsPanel() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-border bg-surface-2 p-4" data-testid="copilot-subscription-account">
+      }
+      {runtime === 'copilot' && <div className="rounded-lg border border-border bg-surface-2 p-4" data-testid="copilot-subscription-account">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 items-start gap-3">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-surface-3 text-text-secondary">
@@ -651,7 +652,7 @@ export function SubscriptionAccountsPanel() {
         <p className="mt-3 text-[10px] leading-4 text-text-tertiary">
           {t('settings.copilotOwnershipNotice')}
         </p>
-      </div>
+      </div>}
     </div>
   );
 }
