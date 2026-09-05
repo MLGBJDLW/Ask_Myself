@@ -240,9 +240,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     match run {
         Ok(()) => projection.finish(&turn).await,
         Err(error) => {
-            if !projection.answer.is_empty() {
-                turn.tools.persist_answer(&projection.answer).await?;
-            }
+            projection.persist_partial(&turn).await?;
             Err(error)
         }
     }

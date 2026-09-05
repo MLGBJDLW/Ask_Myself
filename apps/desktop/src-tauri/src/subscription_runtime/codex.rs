@@ -516,9 +516,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     match result {
         Ok(()) => projection.finish(&turn).await,
         Err(error) => {
-            if !projection.answer.is_empty() {
-                turn.tools.persist_answer(&projection.answer).await?;
-            }
+            projection.persist_partial(&turn).await?;
             Err(error)
         }
     }
@@ -595,6 +593,7 @@ async fn project_event(
                         projection
                             .delta(&turn.events, &id, StreamBlockChannel::Answer, &text)
                             .await?;
+                        projection.mark_persisted(&id);
                     }
                 } else {
                     projection.complete(&turn.events, &id, text).await?;

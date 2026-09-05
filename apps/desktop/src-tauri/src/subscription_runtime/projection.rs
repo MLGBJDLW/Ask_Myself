@@ -9,6 +9,9 @@ use tokio::sync::mpsc;
 pub(super) struct Projection {
     offsets: HashMap<String, usize>,
     completed: HashSet<String>,
+    drafts: HashMap<String, String>,
+    draft_order: Vec<String>,
+    draft_bytes: usize,
     pub(super) answer: String,
     pub(super) usage: Usage,
     pub(super) last_prompt_tokens: u32,
@@ -36,6 +39,12 @@ impl Projection {
                 "upstream output exceeded the bounded event protocol",
             ));
         }
+        if channel == StreamBlockChannel::Answer && self.draft_bytes + delta.len() > 4 * 1024 * 1024
+        {
+            return Err(protocol_error(
+                "subscription answer history exceeded its byte budget",
+            ));
+        }
         tx.send(AgentEvent::StreamBlockDelta {
             block_id: id.to_string(),
             channel,
@@ -45,6 +54,16 @@ impl Projection {
         .await
         .map_err(protocol_error)?;
         *offset += delta.len();
+        if channel == StreamBlockChannel::Answer {
+            if !self.drafts.contains_key(id) {
+                self.draft_order.push(id.to_string());
+            }
+            self.drafts
+                .entry(id.to_string())
+                .or_default()
+                .push_str(delta);
+            self.draft_bytes += delta.len();
+        }
         Ok(())
     }
 
@@ -54,6 +73,11 @@ impl Projection {
         id: &str,
         text: &str,
     ) -> Result<(), CoreError> {
+        if !self.completed.contains(id) && self.completed.len() >= 2048 {
+            return Err(protocol_error(
+                "subscription completed-block budget exceeded",
+            ));
+        }
         if text.len() > 4 * 1024 * 1024 {
             return Err(protocol_error(
                 "upstream answer exceeded the bounded event protocol",
@@ -70,6 +94,39 @@ impl Projection {
             self.completed.insert(id.to_string());
         }
         self.answer = text.to_string();
+        let previous = self.drafts.get(id).map_or(0, String::len);
+        if self.draft_bytes - previous + text.len() > 4 * 1024 * 1024 {
+            return Err(protocol_error(
+                "subscription answer history exceeded its byte budget",
+            ));
+        }
+        if !self.drafts.contains_key(id) {
+            self.draft_order.push(id.to_string());
+        }
+        self.draft_bytes = self.draft_bytes - previous + text.len();
+        self.drafts.insert(id.to_string(), text.to_string());
+        Ok(())
+    }
+
+    pub(super) fn mark_persisted(&mut self, id: &str) {
+        if let Some(text) = self.drafts.remove(id) {
+            self.draft_bytes -= text.len();
+        }
+        self.draft_order.retain(|key| key != id);
+    }
+
+    pub(super) async fn persist_partial(&self, turn: &PreparedTurn) -> Result<(), CoreError> {
+        let text = self
+            .draft_order
+            .iter()
+            .filter_map(|id| self.drafts.get(id))
+            .filter(|text| !text.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.is_empty() {
+            turn.tools.persist_answer(&text).await?;
+        }
         Ok(())
     }
 
@@ -93,5 +150,62 @@ impl Projection {
             .await
             .map_err(protocol_error)?;
         Ok(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn disconnected_answer_deltas_survive_reload_without_reasoning_or_duplicate_questions() {
+        let (request, mut rx, _, _) =
+            super::super::tests::fixture(super::super::SubscriptionRuntimeKind::Codex, "test");
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let mut projection = Projection::default();
+        projection
+            .delta(
+                &turn.events,
+                "thought",
+                StreamBlockChannel::Thinking,
+                "private reasoning",
+            )
+            .await
+            .unwrap();
+        projection
+            .delta(
+                &turn.events,
+                "question",
+                StreamBlockChannel::Answer,
+                "already stored question",
+            )
+            .await
+            .unwrap();
+        projection.mark_persisted("question");
+        projection
+            .delta(&turn.events, "answer", StreamBlockChannel::Answer, "半个")
+            .await
+            .unwrap();
+        projection
+            .delta(&turn.events, "answer", StreamBlockChannel::Answer, "回答")
+            .await
+            .unwrap();
+        assert!(
+            projection.answer.is_empty(),
+            "there was no full-message event"
+        );
+        projection.persist_partial(&turn).await.unwrap();
+        assert_eq!(
+            db.get_messages(&conversation)
+                .unwrap()
+                .last()
+                .unwrap()
+                .content,
+            "半个回答"
+        );
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AgentEvent::Done { .. }));
+        }
     }
 }
