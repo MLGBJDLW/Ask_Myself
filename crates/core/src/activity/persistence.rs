@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::params;
 
@@ -58,28 +58,71 @@ pub(crate) fn persist_event(db: &Database, event: &ActivityEvent) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn load_entries(db: &Database) -> Result<HashMap<String, ActivityEntry>, CoreError> {
+pub(crate) struct LoadedActivityEntries {
+    pub entries: HashMap<String, ActivityEntry>,
+    pub quarantined: HashSet<String>,
+}
+
+/// Isolate malformed historical journals by storage key, without rewriting
+/// their evidence or switching new operations to an ephemeral runtime.
+pub(crate) fn load_entries(db: &Database) -> Result<LoadedActivityEntries, CoreError> {
     let conn = db.conn();
-    let mut records_stmt =
-        conn.prepare("SELECT record_json FROM activity_records ORDER BY updated_at, activity_id")?;
-    let records = records_stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut records_stmt = conn.prepare(
+        "SELECT activity_id, record_json FROM activity_records ORDER BY updated_at, activity_id",
+    )?;
+    let records = records_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut entries = HashMap::new();
-    for record_json in records {
-        let record: ActivityRecord = serde_json::from_str(&record_json)?;
-        entries.insert(record.activity_id.clone(), ActivityEntry::new(record));
+    let mut quarantined = HashSet::new();
+    for row in records {
+        let (id, record_json) = row?;
+        match serde_json::from_str::<ActivityRecord>(&record_json) {
+            Ok(record)
+                if record.activity_id == id
+                    && record.last_event_seq > 0
+                    && record.last_event_seq < i64::MAX as u64 =>
+            {
+                entries.insert(id, ActivityEntry::new(record));
+            }
+            _ => {
+                tracing::error!(activity_id=%id, "Quarantined unreadable activity record; original database row retained");
+                quarantined.insert(id);
+            }
+        }
     }
 
-    let mut events_stmt =
-        conn.prepare("SELECT event_json FROM activity_events ORDER BY activity_id, seq")?;
-    let events = events_stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    for event_json in events {
-        let event: ActivityEvent = serde_json::from_str(&event_json)?;
-        if let Some(entry) = entries.get_mut(&event.activity_id) {
-            entry.events.push_back(event);
+    let mut events_stmt = conn.prepare(
+        "SELECT activity_id, seq, event_json FROM activity_events ORDER BY activity_id, seq",
+    )?;
+    let events = events_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in events {
+        let (id, seq, event_json) = row?;
+        if quarantined.contains(&id) {
+            continue;
+        }
+        match serde_json::from_str::<ActivityEvent>(&event_json) {
+            Ok(event)
+                if event.activity_id == id
+                    && seq > 0
+                    && u64::try_from(seq).ok() == Some(event.seq) =>
+            {
+                if let Some(entry) = entries.get_mut(&id) {
+                    entry.events.push_back(event);
+                }
+            }
+            _ => {
+                // A partial journal must not look like a complete replay.
+                entries.remove(&id);
+                tracing::error!(activity_id=%id, seq, "Quarantined unreadable activity journal; original database rows retained");
+                quarantined.insert(id);
+            }
         }
     }
     for entry in entries.values_mut() {
@@ -94,5 +137,8 @@ pub(crate) fn load_entries(db: &Database) -> Result<HashMap<String, ActivityEntr
             .rev()
             .collect::<VecDeque<_>>();
     }
-    Ok(entries)
+    Ok(LoadedActivityEntries {
+        entries,
+        quarantined,
+    })
 }

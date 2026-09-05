@@ -30,6 +30,12 @@ without an effect. The configured tool budget also applies to external callbacks
 callbacks. Process loss terminates the turn; it does not transparently resend
 an uncertain action.
 
+Malformed historical activity records or event journals are isolated by their
+database key. Their original rows remain available for repair, and their IDs
+cannot be observed, mutated or reused as valid activities. Unrelated new chats
+retain durable activity storage. SQL/storage failures still fail initialization;
+the runtime does not silently switch to an in-memory journal.
+
 ## Official runtime boundaries
 
 - Copilot uses the pinned SDK/verified CLI in Empty mode, explicitly selects
