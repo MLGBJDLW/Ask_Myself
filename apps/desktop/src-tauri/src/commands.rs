@@ -118,6 +118,7 @@ mod media;
 mod media_generation;
 mod personas;
 mod preview;
+mod realtime_transcript;
 mod realtime_transcription;
 mod skills_mcp;
 mod sources;

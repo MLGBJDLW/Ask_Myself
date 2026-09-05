@@ -76,8 +76,9 @@ export function SpeechToTextSettingsPanel({
   const [showKey, setShowKey] = useState(false);
   const config = appConfig.speechToText ?? DEFAULT_STT_CONFIG;
   const scopedPresets = useMemo(
-    () => STT_PROVIDER_PRESETS.filter((preset) => providerScope === 'all'
-      || (providerScope === 'local' ? preset.local === true : preset.local !== true)),
+    () => STT_PROVIDER_PRESETS.filter((preset) => preset.id !== 'alibaba-qwen-asr'
+      && (providerScope === 'all'
+      || (providerScope === 'local' ? preset.local === true : preset.local !== true))),
     [providerScope],
   );
   const cloudPresets = useMemo(() => scopedPresets.filter((preset) => preset.local !== true), [scopedPresets]);

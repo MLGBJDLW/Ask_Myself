@@ -210,6 +210,46 @@ impl Default for SpeechToTextConfig {
 }
 
 impl SpeechToTextConfig {
+    /// The microphone's Qwen preset is realtime. Upgrade the old official
+    /// file-only preset without changing the account, region, or custom URLs.
+    fn normalize_dictation(&mut self) -> bool {
+        if self.provider != "alibaba_model_studio"
+            || self.api_style != "dashscope_asr"
+            || self.model.trim() != "qwen3-asr-flash"
+        {
+            return false;
+        }
+        let Some(base) = self.base_url.as_deref() else {
+            return false;
+        };
+        let Ok(mut url) = url::Url::parse(base.trim()) else {
+            return false;
+        };
+        if url.scheme() != "https"
+            || !matches!(
+                url.host_str(),
+                Some(
+                    "dashscope.aliyuncs.com"
+                        | "dashscope-intl.aliyuncs.com"
+                        | "dashscope-us.aliyuncs.com"
+                )
+            )
+            || url.path().trim_end_matches('/') != "/compatible-mode/v1"
+            || url.port().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return false;
+        }
+        url.set_path("/api-ws/v1");
+        self.base_url = Some(url.to_string());
+        self.api_style = "dashscope_realtime_asr".to_string();
+        self.model = "qwen3-asr-flash-realtime".to_string();
+        true
+    }
+
     pub fn is_configured(&self) -> bool {
         match self.api_style.as_str() {
             "local_whisper" => true,
@@ -978,6 +1018,7 @@ impl Default for AppConfig {
 
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.companion.normalize();
+    config.speech_to_text.normalize_dictation();
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
@@ -1044,8 +1085,9 @@ impl Database {
                 if let Some(locale) = persisted_ui_locale {
                     config.ui_locale = locale;
                 }
-                let (config, visibility_migrated) = migrate_tool_visibility_defaults(config);
-                if visibility_migrated {
+                let (mut config, visibility_migrated) = migrate_tool_visibility_defaults(config);
+                let speech_migrated = config.speech_to_text.normalize_dictation();
+                if visibility_migrated || speech_migrated {
                     self.save_app_config(&config)?;
                 }
                 Ok(config)
@@ -1334,6 +1376,38 @@ mod tests {
         assert_eq!(config.local_model_root, "D:\\NexaModels");
         let json = serde_json::to_value(config).expect("serialize app config");
         assert_eq!(json["localModelRoot"], "D:\\NexaModels");
+    }
+
+    #[test]
+    fn qwen_microphone_upgrade_preserves_region_and_refuses_custom_routes() {
+        for host in [
+            "dashscope.aliyuncs.com",
+            "dashscope-intl.aliyuncs.com",
+            "dashscope-us.aliyuncs.com",
+        ] {
+            let mut config = SpeechToTextConfig {
+                provider: "alibaba_model_studio".into(),
+                api_style: "dashscope_asr".into(),
+                model: "qwen3-asr-flash".into(),
+                api_key: "test-account".into(),
+                base_url: Some(format!("https://{host}/compatible-mode/v1")),
+                ..Default::default()
+            };
+            assert!(config.normalize_dictation());
+            assert_eq!(config.base_url, Some(format!("https://{host}/api-ws/v1")));
+            assert_eq!(config.api_key, "test-account");
+            assert_eq!(config.model, "qwen3-asr-flash-realtime");
+            assert!(!config.normalize_dictation());
+        }
+        let mut custom = SpeechToTextConfig {
+            provider: "alibaba_model_studio".into(),
+            api_style: "dashscope_asr".into(),
+            model: "qwen3-asr-flash".into(),
+            base_url: Some("https://relay.example/compatible-mode/v1".into()),
+            ..Default::default()
+        };
+        assert!(!custom.normalize_dictation());
+        assert_eq!(custom.model, "qwen3-asr-flash");
     }
 
     #[test]
