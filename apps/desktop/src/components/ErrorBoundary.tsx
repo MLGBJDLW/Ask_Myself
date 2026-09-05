@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useState, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import enErrorBoundary from '../i18n/locales/en/errorBoundary.json';
 import zhCNErrorBoundary from '../i18n/locales/zh-CN/errorBoundary.json';
@@ -18,7 +18,6 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
-  showDetails: boolean;
 }
 
 /**
@@ -59,7 +58,7 @@ function getLabels() {
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null, showDetails: false };
+    this.state = { hasError: false, error: null };
   }
 
   static getDerivedStateFromError(error: Error): Partial<State> {
@@ -70,22 +69,16 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('[ErrorBoundary]', error, info.componentStack);
   }
 
-  handleRestart = () => {
-    window.location.reload();
-  };
-
-  toggleDetails = () => {
-    this.setState((prev) => ({ showDetails: !prev.showDetails }));
-  };
-
   render() {
-    if (!this.state.hasError) {
-      return this.props.children;
-    }
+    return this.state.hasError
+      ? <ErrorScreen error={this.state.error} />
+      : this.props.children;
+  }
+}
 
-    const labels = getLabels();
-    const { error, showDetails } = this.state;
-
+export function ErrorScreen({ error }: { error: Error | null }) {
+  const labels = getLabels();
+  const [showDetails, setShowDetails] = useState(false);
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-surface-0 p-8">
         <div className="mx-auto max-w-md text-center">
@@ -101,7 +94,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </p>
 
           <button
-            onClick={this.handleRestart}
+            onClick={() => window.location.reload()}
             className="inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent/90"
           >
             <RefreshCw size={14} />
@@ -111,7 +104,7 @@ export class ErrorBoundary extends Component<Props, State> {
           {error && (
             <div className="mt-6">
               <button
-                onClick={this.toggleDetails}
+                onClick={() => setShowDetails(current => !current)}
                 className="inline-flex items-center gap-1 text-xs text-text-tertiary transition-colors hover:text-text-secondary"
               >
                 {showDetails ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -129,5 +122,4 @@ export class ErrorBoundary extends Component<Props, State> {
         </div>
       </div>
     );
-  }
 }

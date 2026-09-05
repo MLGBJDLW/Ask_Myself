@@ -9,11 +9,12 @@ import {
   RouterProvider,
   useLocation,
   useNavigate,
+  useRouteError,
 } from "react-router";
 import { listen } from "@tauri-apps/api/event";
 import { motion, MotionConfig, useReducedMotion } from "framer-motion";
 import { I18nProvider, useTranslation } from "./i18n";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ErrorBoundary, ErrorScreen } from "./components/ErrorBoundary";
 import { Layout } from "./components/Layout";
 import { AppWindowFrame } from "./components/AppWindowFrame";
 
@@ -93,6 +94,11 @@ function InitialRouteLoader() {
       <AppWindowFrame area={location.pathname === '/' ? 'home' : 'task'}><PageLoader /></AppWindowFrame>
     </I18nProvider>
   );
+}
+
+function RouteErrorScreen() {
+  const error = useRouteError();
+  return <ErrorScreen error={error instanceof Error ? error : new Error(String(error))} />;
 }
 
 function AppShell() {
@@ -181,6 +187,7 @@ const router = createBrowserRouter(
     <>
       <Route
         path="/companion"
+        ErrorBoundary={RouteErrorScreen}
         hydrateFallbackElement={null}
         lazy={async () => {
           const { CompanionWindowPage } = await import("./pages/CompanionWindowPage");
@@ -191,7 +198,7 @@ const router = createBrowserRouter(
           ) };
         }}
       />
-      <Route element={<AppShell />} HydrateFallback={InitialRouteLoader}>
+      <Route element={<AppShell />} HydrateFallback={InitialRouteLoader} ErrorBoundary={RouteErrorScreen}>
         <Route path="/wizard" lazy={async () => ({ Component: (await import("./pages/WizardPage")).WizardPage })} />
         <Route element={<Layout />}>
           <Route path="/" lazy={async () => ({ Component: withPageTransition((await import("./pages/SearchPage")).SearchPage) })} />

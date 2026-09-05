@@ -204,6 +204,16 @@ test('offers a working reload when the interface bootstrap cannot load', async (
   await expect(page.getByText('404', { exact: true })).toBeVisible();
 });
 
+test('keeps route module failures behind the recoverable application error screen', async ({ page }) => {
+  await page.route('**/src/pages/ChatPage.tsx*', route => route.abort());
+  await page.goto('/chat/route-load-probe');
+  await expect(page.getByRole('heading', { name: 'Something went wrong' })).toBeVisible();
+  await expect(page.getByText('Unexpected Application Error!')).toHaveCount(0);
+  await page.unroute('**/src/pages/ChatPage.tsx*');
+  await page.getByRole('button', { name: 'Restart', exact: true }).click();
+  await expect(page.getByTestId('chat-input-textarea')).toBeVisible();
+});
+
 test('hydrates the startup surface from the last validated theme snapshot before React', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nexa-startup-appearance-v1', JSON.stringify({
