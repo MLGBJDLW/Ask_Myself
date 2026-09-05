@@ -684,13 +684,15 @@ class StreamStoreImpl {
       if (!state || !state.isStreaming) return;
       if (outcome.kind === 'active') {
         this.setWatchdogConnectionState(state, 'recovered');
-        appendStatusTraceEvent(
-          state,
-          'Durable backend state is active; live recovery remains armed.',
-          'success',
-          'user',
-          'recovery',
-        );
+        if (state._watchdogRecoveryAttempt === 1) {
+          appendStatusTraceEvent(
+            state,
+            'Durable backend state is active; live recovery remains armed.',
+            'success',
+            'user',
+            'recovery',
+          );
+        }
         this.touch(conversationId);
         capStreamCollections(state);
         this.notifyImmediately(conversationId);
