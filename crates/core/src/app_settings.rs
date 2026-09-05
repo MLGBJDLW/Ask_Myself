@@ -8,6 +8,7 @@ const APP_CONFIG_KEY: &str = "app_config";
 const UI_LOCALE_KEY: &str = "ui_locale";
 const WIZARD_STATE_KEY: &str = "wizard_state";
 const CURRENT_TOOL_VISIBILITY_DEFAULTS_VERSION: u32 = 3;
+const CURRENT_DICTATION_DEFAULTS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -740,6 +741,9 @@ impl Default for CompanionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Distinguishes legacy microphone defaults from an explicit current preset.
+    #[serde(default)]
+    pub dictation_defaults_version: u32,
     /// UI locale shared with native desktop surfaces such as the system tray.
     #[serde(default = "default_ui_locale")]
     pub ui_locale: String,
@@ -980,6 +984,7 @@ fn default_stt_num_threads() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            dictation_defaults_version: CURRENT_DICTATION_DEFAULTS_VERSION,
             ui_locale: default_ui_locale(),
             default_search_limit: default_search_limit(),
             min_search_similarity: default_min_search_similarity(),
@@ -1010,7 +1015,9 @@ impl Default for AppConfig {
 
 fn encrypt_app_config_secrets(mut config: AppConfig) -> Result<AppConfig, CoreError> {
     config.companion.normalize();
-    config.speech_to_text.normalize_dictation();
+    // Saving is an explicit choice. Only loading an unversioned legacy
+    // configuration may upgrade the former microphone default.
+    config.dictation_defaults_version = CURRENT_DICTATION_DEFAULTS_VERSION;
     config.image_generation.api_key =
         crate::crypto::encrypt_api_key(&config.image_generation.api_key)?;
     config.text_to_speech.api_key = crate::crypto::encrypt_api_key(&config.text_to_speech.api_key)?;
@@ -1078,7 +1085,12 @@ impl Database {
                     config.ui_locale = locale;
                 }
                 let (mut config, visibility_migrated) = migrate_tool_visibility_defaults(config);
-                let speech_migrated = config.speech_to_text.normalize_dictation();
+                let speech_migrated =
+                    config.dictation_defaults_version < CURRENT_DICTATION_DEFAULTS_VERSION;
+                if speech_migrated {
+                    config.speech_to_text.normalize_dictation();
+                    config.dictation_defaults_version = CURRENT_DICTATION_DEFAULTS_VERSION;
+                }
                 if visibility_migrated || speech_migrated {
                     self.save_app_config(&config)?;
                 }
@@ -1400,6 +1412,44 @@ mod tests {
         };
         assert!(!custom.normalize_dictation());
         assert_eq!(custom.model, "qwen3-asr-flash");
+    }
+
+    #[test]
+    fn legacy_qwen_migrates_once_and_explicit_batch_choice_survives_saves() {
+        let db = Database::open_memory().unwrap();
+        let mut config = AppConfig::default();
+        config.speech_to_text = SpeechToTextConfig {
+            provider: "alibaba_model_studio".into(),
+            api_style: "dashscope_asr".into(),
+            model: "qwen3-asr-flash".into(),
+            base_url: Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1".into()),
+            ..Default::default()
+        };
+        db.save_app_config(&config).unwrap();
+        assert_eq!(
+            db.load_app_config().unwrap().speech_to_text.api_style,
+            "dashscope_asr"
+        );
+        // Simulate the persisted pre-upgrade configuration, not a new choice.
+        db.conn().execute("UPDATE app_config SET value = json_remove(value, '$.dictationDefaultsVersion') WHERE key = ?1", [APP_CONFIG_KEY]).unwrap();
+        let upgraded = db.load_app_config().unwrap();
+        assert_eq!(upgraded.speech_to_text.api_style, "dashscope_realtime_asr");
+        assert_eq!(
+            upgraded.dictation_defaults_version,
+            CURRENT_DICTATION_DEFAULTS_VERSION
+        );
+        config.default_search_limit = 37;
+        db.save_app_config(&config).unwrap();
+        let mut selected = db.load_app_config().unwrap();
+        assert_eq!(selected.speech_to_text.model, "qwen3-asr-flash");
+        selected.default_search_limit = 38;
+        db.save_app_config(&selected).unwrap();
+        let reloaded = db.load_app_config().unwrap();
+        assert_eq!(reloaded.speech_to_text.api_style, "dashscope_asr");
+        assert_eq!(
+            reloaded.speech_to_text.base_url,
+            config.speech_to_text.base_url
+        );
     }
 
     #[test]

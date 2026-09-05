@@ -595,6 +595,7 @@ export interface AppConfig {
   maxAudioFileSize: number;
   dynamicToolVisibility?: boolean;
   toolVisibilityDefaultsVersion?: number;
+  dictationDefaultsVersion?: number;
   traceEnabled?: boolean;
   windowCloseBehavior?: 'exit' | 'minimize_to_tray';
   localModelRoot?: string;
