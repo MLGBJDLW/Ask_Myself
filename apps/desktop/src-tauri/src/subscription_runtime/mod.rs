@@ -61,6 +61,7 @@ struct PreparedTurn {
     events: mpsc::Sender<AgentEvent>,
     cancellation: CancellationToken,
     steering: mpsc::UnboundedReceiver<AgentSteeringMessage>,
+    privacy: nexa_core::privacy::PrivacyConfig,
 }
 
 impl SubscriptionTurnRequest {
@@ -75,8 +76,19 @@ impl SubscriptionTurnRequest {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let history_context = history_context(&self.history, &user_text)?;
-        let prompt = user_text.clone();
+        let privacy = self.db.load_privacy_config()?;
+        let mut history = self.history;
+        for message in &mut history {
+            if message.role == nexa_core::llm::Role::User {
+                for part in &mut message.parts {
+                    if let ContentPart::Text { text } = part {
+                        *text = redact_user_text(text, &privacy);
+                    }
+                }
+            }
+        }
+        let history_context = history_context(&history, &user_text)?;
+        let prompt = redact_user_text(&user_text, &privacy);
         let mut sections = self.config.volatile_system_sections.clone();
         if !history_context.is_empty() {
             sections.push(history_context);
@@ -132,7 +144,16 @@ impl SubscriptionTurnRequest {
             events: self.events,
             cancellation,
             steering: self.steering,
+            privacy,
         })
+    }
+}
+
+fn redact_user_text(text: &str, privacy: &nexa_core::privacy::PrivacyConfig) -> String {
+    if privacy.enabled {
+        nexa_core::privacy::redact_content(text, &privacy.redact_patterns)
+    } else {
+        text.to_string()
     }
 }
 

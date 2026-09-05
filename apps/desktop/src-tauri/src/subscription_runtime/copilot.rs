@@ -224,7 +224,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                             if !native_vision && !attachments.is_empty() { return Err(protocol_error("the selected Copilot model does not accept steering images")); }
                             turn.events.send(AgentEvent::Steering { content:message.content.clone() }).await.map_err(protocol_error)?;
                             projection.answer.clear();
-                            session.send(MessageOptions::new(message.content).with_attachments(attachments)).await.map_err(protocol_error)?;
+                            session.send(MessageOptions::new(redact_user_text(&message.content,&turn.privacy)).with_attachments(attachments)).await.map_err(protocol_error)?;
                         } else { return Ok(()); }
                     }
                 }

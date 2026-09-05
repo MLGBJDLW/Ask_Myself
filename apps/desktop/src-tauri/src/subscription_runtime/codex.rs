@@ -447,7 +447,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                         if message.recovery_control.is_some() { return Err(protocol_error("Codex owns recovery; start a new turn to change its reasoning mode")); }
                         let images = message.parts.into_iter().filter_map(|part| match part { ContentPart::Image {media_type,data}=>Some((media_type,data)),_=>None }).collect::<Vec<_>>();
                         if !native_vision && !images.is_empty() { return Err(protocol_error("this Codex model does not accept images")); }
-                        let id = wire.send("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":user_input(&message.content,&images)})).await?;
+                        let id = wire.send("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":user_input(&redact_user_text(&message.content,&turn.privacy),&images)})).await?;
                         replies.insert(id,message.content);
                     }
                     None => steering_closed = true,

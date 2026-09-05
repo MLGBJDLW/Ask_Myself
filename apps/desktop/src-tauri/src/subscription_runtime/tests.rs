@@ -48,6 +48,30 @@ fn saved_subscription_configs_keep_the_native_route_and_reasoning_level() {
         assert!(SubscriptionRuntimeKind::from_provider(&loaded.provider).is_some());
     }
 }
+
+#[test]
+fn subscription_input_and_history_obey_the_saved_privacy_policy() {
+    let (mut request, _rx, _, _) = fixture(SubscriptionRuntimeKind::Codex, "test");
+    let mut privacy = request.db.load_privacy_config().unwrap();
+    privacy.enabled = true;
+    privacy.redact_patterns = vec![nexa_core::privacy::RedactRule {
+        name: "private marker".into(),
+        pattern: "private-marker-123".into(),
+        replacement: "[PRIVATE]".into(),
+    }];
+    request.db.save_privacy_config(&privacy).unwrap();
+    request.user_parts = vec![ContentPart::Text {
+        text: "Inspect private-marker-123".into(),
+    }];
+    request.history = vec![Message::text(Role::User, "Earlier private-marker-123")];
+    let prepared = request.prepare(false).unwrap();
+    assert_eq!(prepared.prompt, "Inspect [PRIVATE]");
+    assert!(!prepared.system_prompt.contains("private-marker-123"));
+    assert_eq!(
+        redact_user_text("Steer private-marker-123", &prepared.privacy),
+        "Steer [PRIVATE]"
+    );
+}
 #[async_trait::async_trait]
 impl Tool for NonceTool {
     fn name(&self) -> &str {
@@ -155,7 +179,12 @@ pub(super) fn fixture(
 
 pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     let (mut request, mut rx, calls, nonce) = fixture(kind, model);
-    for definition in nexa_core::tools::default_tool_registry().definitions() {
+    let assembler =
+        nexa_core::package_host::PackageRuntimeAssembler::database_builtin(&request.db).unwrap();
+    let catalog = assembler
+        .assemble_tool_registry(assembler.builtin_tool_registry())
+        .unwrap();
+    for definition in catalog.tools.definitions() {
         request
             .dependencies
             .tools
