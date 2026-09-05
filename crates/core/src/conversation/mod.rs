@@ -2174,6 +2174,20 @@ impl Database {
         })
     }
 
+    /// Read message-to-turn identities without loading potentially large traces.
+    pub fn conversation_turn_assistant_ids(
+        &self,
+        conversation_id: &str,
+    ) -> Result<std::collections::HashSet<String>, CoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT assistant_message_id FROM conversation_turns
+             WHERE conversation_id = ?1 AND assistant_message_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([conversation_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// List turns for a conversation ordered by creation time.
     pub fn get_conversation_turns(
         &self,
@@ -6059,6 +6073,18 @@ mod tests {
         let all = db.get_conversation_turns(&conv.id).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, turn.id);
+        // Display metadata does not parse the trace a second time. Even a
+        // broken trace cannot prevent independently stored messages loading.
+        db.conn()
+            .execute(
+                "UPDATE conversation_turns SET trace_json = 'broken' WHERE id = ?1",
+                [&turn.id],
+            )
+            .unwrap();
+        assert_eq!(
+            db.conversation_turn_assistant_ids(&conv.id).unwrap(),
+            std::collections::HashSet::from([assistant_msg.id])
+        );
     }
 
     #[test]
