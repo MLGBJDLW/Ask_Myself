@@ -150,8 +150,6 @@ pub async fn scan_source(
     .await
     .map_err(|e| e.to_string())??;
 
-    // Invalidate cached answers that may reference this source.
-    let _ = state.db.invalidate_cache_for_source(&source_id);
     emit_file_changed_after_scan(&app_handle, &result);
 
     Ok(result)
