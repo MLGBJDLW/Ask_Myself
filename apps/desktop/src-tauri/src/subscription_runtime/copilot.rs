@@ -217,7 +217,10 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                 error = fatal_rx.recv() => if let Some(error) = error { return Err(error); },
                 _ = turn.cancellation.cancelled() => return Err(CoreError::Cancelled("Stopped by user".into())),
                 message = turn.steering.recv(), if !steering_closed => match message {
-                    Some(message) => steering.push_back(message),
+                    Some(message) => {
+                        if steering.len() >= 64 || message.content.len() > 256 * 1024 { return Err(protocol_error("Copilot steering input budget exceeded")); }
+                        steering.push_back(message);
+                    },
                     None => steering_closed = true,
                 },
                 event = events.recv() => {
@@ -239,8 +242,10 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                     if idle {
                         if let Some(message) = steering.pop_front() {
                             if message.recovery_control.is_some() { return Err(protocol_error("Copilot manages its own recovery. Stop and start a new turn to change reasoning.")); }
-                            let attachments = message.parts.into_iter().filter_map(|part| match part { ContentPart::Image {media_type,data} => Some(Attachment::Blob{data,mime_type:media_type,display_name:None}),_=>None }).collect::<Vec<_>>();
+                            let attachments = message.parts.iter().filter_map(|part| match part { ContentPart::Image {media_type,data} => Some(Attachment::Blob{data:data.clone(),mime_type:media_type.clone(),display_name:None}),_=>None }).collect::<Vec<_>>();
                             if !native_vision && !attachments.is_empty() { return Err(protocol_error("the selected Copilot model does not accept steering images")); }
+                            turn.tools.persist_steering(&message).await?;
+                            if turn.cancellation.is_cancelled() { return Err(CoreError::Cancelled("Stopped by user".into())); }
                             turn.events.send(AgentEvent::Steering { content:message.content.clone() }).await.map_err(protocol_error)?;
                             projection.answer.clear();
                             session.send(MessageOptions::new(redact_user_text(&message.content,&turn.privacy)).with_attachments(attachments)).await.map_err(protocol_error)?;
@@ -252,16 +257,19 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     }.await;
     turn.cancellation.cancel();
     if run.is_err() {
+        projection.persist_partial(&turn).await?;
+        for message in steering {
+            if message.recovery_control.is_none() {
+                turn.tools.persist_steering(&message).await?;
+            }
+        }
         let _ = tokio::time::timeout(Duration::from_secs(5), session.abort()).await;
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), session.disconnect()).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), client.stop()).await;
     match run {
         Ok(()) => projection.finish(&turn).await,
-        Err(error) => {
-            projection.persist_partial(&turn).await?;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 

@@ -2,7 +2,7 @@ use super::{protocol_error, PreparedTurn};
 use nexa_core::agent::{AgentEvent, StreamBlockChannel};
 use nexa_core::error::CoreError;
 use nexa_core::llm::Usage;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::sync::mpsc;
 
 #[derive(Default)]
@@ -12,6 +12,7 @@ pub(super) struct Projection {
     drafts: HashMap<String, String>,
     draft_order: Vec<String>,
     draft_bytes: usize,
+    async_messages: VecDeque<(String, String)>,
     pub(super) answer: String,
     pub(super) usage: Usage,
     pub(super) last_prompt_tokens: u32,
@@ -115,7 +116,27 @@ impl Projection {
         self.draft_order.retain(|key| key != id);
     }
 
-    pub(super) async fn persist_partial(&self, turn: &PreparedTurn) -> Result<(), CoreError> {
+    pub(super) fn queue_async_message(&mut self, id: String, text: String) {
+        self.async_messages.push_back((id, text));
+    }
+
+    /// Called only at a tool boundary; the app-server reader must remain free
+    /// to answer native clock requests while a tool waits for approval.
+    pub(super) async fn flush_async_messages(
+        &mut self,
+        turn: &PreparedTurn,
+    ) -> Result<(), CoreError> {
+        while let Some((id, text)) = self.async_messages.front() {
+            turn.tools.persist_answer(text).await?;
+            let id = id.clone();
+            self.async_messages.pop_front();
+            self.mark_persisted(&id);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn persist_partial(&mut self, turn: &PreparedTurn) -> Result<(), CoreError> {
+        self.flush_async_messages(turn).await?;
         let text = self
             .draft_order
             .iter()
@@ -131,9 +152,10 @@ impl Projection {
     }
 
     pub(super) async fn finish(
-        self,
+        mut self,
         turn: &PreparedTurn,
     ) -> Result<nexa_core::llm::Message, CoreError> {
+        self.flush_async_messages(turn).await?;
         if self.answer.trim().is_empty() {
             return Err(protocol_error("upstream completed without a final answer"));
         }

@@ -197,6 +197,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn steering_is_durable_between_tool_results_and_the_next_answer() {
+        let (session, _, _rx) = session(4);
+        session.execute(call("first", 1)).await.unwrap();
+        session
+            .persist_steering(&AgentSteeringMessage::text("Use the corrected scope"))
+            .await
+            .unwrap();
+        session
+            .persist_answer("Applied the corrected scope")
+            .await
+            .unwrap();
+        let history = session
+            .input
+            .db
+            .get_messages(&session.input.conversation_id)
+            .unwrap();
+        let result = history
+            .iter()
+            .position(|message| message.tool_call_id.as_deref() == Some("first"))
+            .unwrap();
+        let steering = history
+            .iter()
+            .position(|message| message.content == "Use the corrected scope")
+            .unwrap();
+        assert!(result < steering && steering < history.len() - 1);
+        assert_eq!(
+            history[steering].artifacts.as_ref().unwrap()["kind"],
+            "steering"
+        );
+        assert!(history
+            .windows(2)
+            .all(|pair| pair[0].sort_order < pair[1].sort_order));
+    }
+
+    #[tokio::test]
     async fn denial_and_cancellation_while_awaiting_approval_have_no_effect() {
         let (mut session, count, _rx) = session(4);
         session.input.config.tool_approval_mode = crate::approval::ToolApprovalMode::Ask;
@@ -492,6 +527,26 @@ impl ExternalToolSession {
             result,
             visual_parts,
         })
+    }
+
+    pub async fn persist_steering(&self, steering: &AgentSteeringMessage) -> Result<(), CoreError> {
+        if steering.recovery_control.is_some() {
+            return Err(CoreError::InvalidInput(
+                "Recovery controls are not conversation messages".into(),
+            ));
+        }
+        // The tool-state lock keeps accepted user input outside a pending
+        // assistant-call/result pair and gives all messages one sort owner.
+        let mut state = self.state.lock().await;
+        self.input.db.add_message(&ConversationMessage {
+            id: Uuid::new_v4().to_string(), conversation_id:self.input.conversation_id.clone(), role:Role::User,
+            content:steering.content.clone(),tool_call_id:None,tool_calls:vec![],
+            artifacts:Some(serde_json::json!({"kind":"steering","turnId":self.input.turn_id,"runtime":"subscription"})),
+            token_count:estimate_tokens_for_model(self.input.config.model.as_deref().unwrap_or("subscription"),&steering.content),
+            created_at:String::new(),sort_order:state.next_sort_order,thinking:None,image_attachments:steering.image_attachments.clone(),
+        })?;
+        state.next_sort_order += 1;
+        Ok(())
     }
 
     pub async fn persist_answer(&self, text: &str) -> Result<Message, CoreError> {

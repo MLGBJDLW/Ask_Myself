@@ -426,10 +426,23 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     let mut pending = FuturesUnordered::new();
     let mut replies = HashMap::new();
     let mut steering_closed = false;
+    let mut steering_queue: VecDeque<AgentSteeringMessage> = VecDeque::new();
     let mut async_items = HashSet::new();
     let mut server_requests = 0u32;
     let result = async {
         loop {
+            if turn.cancellation.is_cancelled() { return Err(CoreError::Cancelled("Stopped by user".into())); }
+            if pending.is_empty() {
+                projection.flush_async_messages(&turn).await?;
+                if let Some(message) = steering_queue.pop_front() {
+                    let images = message.parts.iter().filter_map(|part| match part { ContentPart::Image {media_type,data}=>Some((media_type.clone(),data.clone())),_=>None }).collect::<Vec<_>>();
+                    turn.tools.persist_steering(&message).await?;
+                    if turn.cancellation.is_cancelled() { return Err(CoreError::Cancelled("Stopped by user".into())); }
+                    let id = wire.send("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":user_input(&redact_user_text(&message.content,&turn.privacy),&images)})).await?;
+                    replies.insert(id,message.content);
+                }
+            }
+
             tokio::select! {
                 biased;
                 _ = turn.cancellation.cancelled() => return Err(CoreError::Cancelled("Stopped by user".into())),
@@ -444,12 +457,10 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                 }
                 message = turn.steering.recv(), if !steering_closed => match message {
                     Some(message) => {
-                        if replies.len() >= 64 { return Err(protocol_error("too many unacknowledged steering messages")); }
+                        if replies.len() + steering_queue.len() >= 64 || message.content.len() > 256 * 1024 { return Err(protocol_error("Codex steering input budget exceeded")); }
                         if message.recovery_control.is_some() { return Err(protocol_error("Codex owns recovery; start a new turn to change its reasoning mode")); }
-                        let images = message.parts.into_iter().filter_map(|part| match part { ContentPart::Image {media_type,data}=>Some((media_type,data)),_=>None }).collect::<Vec<_>>();
-                        if !native_vision && !images.is_empty() { return Err(protocol_error("this Codex model does not accept images")); }
-                        let id = wire.send("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":user_input(&redact_user_text(&message.content,&turn.privacy),&images)})).await?;
-                        replies.insert(id,message.content);
+                        if !native_vision && message.parts.iter().any(|part| matches!(part,ContentPart::Image {..})) { return Err(protocol_error("this Codex model does not accept images")); }
+                        steering_queue.push_back(message);
                     }
                     None => steering_closed = true,
                 },
@@ -489,7 +500,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
                     if params["threadId"].as_str().is_some_and(|id| id != thread_id) { continue; }
                     if params["turnId"].as_str().is_some_and(|id| id != turn_id) { continue; }
                     if project_event(&mut projection,&turn,&mut async_items,method,params).await? {
-                        if !pending.is_empty() || !replies.is_empty() { return Err(protocol_error("Codex completed with unacknowledged work")); }
+                        if !pending.is_empty() || !replies.is_empty() || !steering_queue.is_empty() { return Err(protocol_error("Codex completed with unacknowledged work")); }
                         return Ok(());
                     }
                 }
@@ -502,7 +513,14 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
         while pending.next().await.is_some() {}
     })
     .await;
+    // Dropping cancelled dispatch futures releases their timeline locks and
+    // runs receipt guards before persisting pending user/assistant messages.
+    pending.clear();
     if result.is_err() {
+        projection.persist_partial(&turn).await?;
+        for message in steering_queue {
+            turn.tools.persist_steering(&message).await?;
+        }
         let _ = tokio::time::timeout(
             Duration::from_secs(1),
             wire.send(
@@ -516,10 +534,7 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
     let _ = tokio::time::timeout(Duration::from_secs(1), wire.child.wait()).await;
     match result {
         Ok(()) => projection.finish(&turn).await,
-        Err(error) => {
-            projection.persist_partial(&turn).await?;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 
@@ -590,11 +605,10 @@ async fn project_event(
                             }
                         }
                         // This durable intermediate message is not a Done event.
-                        turn.tools.persist_answer(&text).await?;
                         projection
                             .delta(&turn.events, &id, StreamBlockChannel::Answer, &text)
                             .await?;
-                        projection.mark_persisted(&id);
+                        projection.queue_async_message(id, text);
                     }
                 } else {
                     projection.complete(&turn.events, &id, text).await?;
@@ -643,6 +657,86 @@ async fn project_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct PauseTool {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait::async_trait]
+    impl nexa_core::tools::Tool for PauseTool {
+        fn name(&self) -> &str {
+            "pause_for_projection"
+        }
+        fn description(&self) -> &str {
+            "Hold a test tool boundary"
+        }
+        fn parameters_schema(&self) -> Value {
+            json!({"type":"object","properties":{}})
+        }
+        async fn execute(
+            &self,
+            context: nexa_core::tools::ToolExecutionContext<'_>,
+        ) -> Result<nexa_core::tools::ToolResult, CoreError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(nexa_core::tools::ToolResult {
+                call_id: context.call_id.to_string(),
+                content: "released".into(),
+                is_error: false,
+                artifacts: None,
+            })
+        }
+    }
+    #[tokio::test]
+    async fn async_ui_does_not_block_the_protocol_reader_behind_a_tool() {
+        let (mut request, _rx, _, _) =
+            super::super::tests::fixture(SubscriptionRuntimeKind::Codex, "test");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        request.dependencies.tools.register(Box::new(PauseTool {
+            started: started.clone(),
+            release: release.clone(),
+        }));
+        let db = request.db.clone();
+        let conversation = request.conversation_id.clone();
+        let turn = request.prepare(false).unwrap();
+        let tools = turn.tools.clone();
+        let worker = tokio::spawn(async move {
+            tools
+                .execute(ToolCallRequest {
+                    id: "blocked".into(),
+                    name: "pause_for_projection".into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        let mut projection = Projection::default();
+        let mut seen = HashSet::new();
+        let params = json!({"item":{"type":"agentMessage","id":"async","delivery":"async","phase":"final_answer","text":"A question while the tool waits","questions":null}});
+        let done = tokio::time::timeout(
+            Duration::from_millis(200),
+            project_event(&mut projection, &turn, &mut seen, "item/completed", &params),
+        )
+        .await
+        .expect("protocol reader must not wait for the tool's timeline lock")
+        .unwrap();
+        assert!(!done);
+        assert!(!worker.is_finished());
+        release.notify_one();
+        worker.await.unwrap().unwrap();
+        projection.flush_async_messages(&turn).await.unwrap();
+        assert_eq!(
+            db.get_messages(&conversation)
+                .unwrap()
+                .last()
+                .unwrap()
+                .content,
+            "A question while the tool waits"
+        );
+    }
     #[tokio::test]
     async fn async_question_is_durable_and_never_becomes_final_answer() {
         let (request, mut rx, _, _) =
@@ -664,6 +758,7 @@ mod tests {
                 .unwrap()
         );
         assert!(projection.answer.is_empty());
+        projection.flush_async_messages(&turn).await.unwrap();
         let history = db.get_messages(&conversation).unwrap();
         assert_eq!(
             history

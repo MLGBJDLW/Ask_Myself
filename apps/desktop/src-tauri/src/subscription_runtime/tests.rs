@@ -192,17 +192,33 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
     }
     let db = request.db.clone();
     let conversation = request.conversation_id.clone();
+    let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+    request.steering = steering_rx;
+    let correction = "Keep the current read_test_nonce call, and do not call any tool again. After its result arrives, reply with STEERING_CONFIRMED followed by that nonce.";
     let drain = tokio::spawn(async move {
         let mut done = 0;
         let mut deltas = 0;
+        let mut steered = false;
+        let mut applied = 0;
+        let mut tool_events = Vec::new();
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::Done { .. } => done += 1,
                 AgentEvent::StreamBlockDelta { .. } => deltas += 1,
+                AgentEvent::ToolRunStarted { ref run } | AgentEvent::ToolRunUpdated { ref run } => {
+                    tool_events.push((run.tool_name.clone(), format!("{:?}", run.status)));
+                    if run.tool_name == "read_test_nonce" && !steered {
+                        steering_tx
+                            .send(AgentSteeringMessage::text(correction))
+                            .unwrap();
+                        steered = true;
+                    }
+                }
+                AgentEvent::Steering { .. } => applied += 1,
                 _ => {}
             }
         }
-        (done, deltas)
+        (done, deltas, steered, applied, tool_events)
     });
     let result = tokio::time::timeout(std::time::Duration::from_secs(150), run(request))
         .await
@@ -213,10 +229,26 @@ pub(super) async fn run_live(kind: SubscriptionRuntimeKind, model: &str) {
         "answer must use actual Nexa tool evidence"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let (done, deltas) = drain.await.unwrap();
+    let (done, deltas, steered, applied, tool_events) = drain.await.unwrap();
+    assert!(
+        result.text_content().contains("STEERING_CONFIRMED"),
+        "steered={steered}, applied={applied}, tools={tool_events:?}, synthetic answer={}",
+        result.text_content()
+    );
     assert_eq!(done, 1);
     assert!(deltas > 0);
     let history = db.get_messages(&conversation).unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|message| message.content == correction
+                && message
+                    .artifacts
+                    .as_ref()
+                    .is_some_and(|artifact| artifact["kind"] == "steering"))
+            .count(),
+        1
+    );
     assert_eq!(
         history
             .iter()
