@@ -435,6 +435,22 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('expanded browser controls stay below the app titlebar and close only the browser', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('nexa:open-browser-workspace', {
+    detail: { url: 'https://example.com' }, cancelable: true,
+  })));
+  const dock = page.getByTestId('browser-dock');
+  await expect(dock).toBeVisible();
+  await dock.getByRole('button', { name: 'Open Browser full screen', exact: true }).click();
+  const titlebar = await page.getByTestId('app-titlebar').boundingBox();
+  const expanded = await dock.boundingBox();
+  expect(expanded!.y).toBeGreaterThanOrEqual(titlebar!.y + titlebar!.height);
+  await dock.getByRole('button', { name: 'Close Browser Workspace', exact: true }).click();
+  await expect(dock).toHaveCount(0);
+  await expect(page.getByTestId('app-titlebar')).toBeVisible();
+});
+
 test('opens a shared Browser Workspace and attaches pointed page context', async ({ page }) => {
   await page.goto('/chat/conv-browser-workspace');
 

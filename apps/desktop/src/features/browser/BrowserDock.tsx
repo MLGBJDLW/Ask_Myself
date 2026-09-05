@@ -7,6 +7,7 @@ import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import {
@@ -444,7 +445,7 @@ export function BrowserDock({
         nextVisibilityRevision(scopedSessionId),
       ).catch(() => undefined);
     };
-  }, [nextVisibilityRevision, open, session?.conversationId, session?.id, syncBounds]);
+  }, [effectiveFullScreen, nextVisibilityRevision, open, session?.conversationId, session?.id, syncBounds]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -927,10 +928,10 @@ export function BrowserDock({
   if (!open) return null;
 
   const control = ownerType(session?.controlOwner);
-  return (
+  const dock = (
     <aside
       data-testid="browser-dock"
-      className={`${effectiveFullScreen ? 'fixed inset-0 z-40' : 'relative h-full shrink-0'} flex min-h-0 flex-col overflow-hidden border-l border-border/70 bg-surface-1 shadow-[-24px_0_60px_rgba(0,0,0,.2)]`}
+      className={`${effectiveFullScreen ? 'absolute inset-0 z-40' : 'relative h-full shrink-0'} flex min-h-0 flex-col overflow-hidden border-l border-border/70 bg-surface-1 shadow-[-24px_0_60px_rgba(0,0,0,.2)]`}
       style={effectiveFullScreen ? undefined : { width }}
       aria-label={t('browser.title')}
     >
@@ -1047,4 +1048,8 @@ export function BrowserDock({
       </div>
     </aside>
   );
+  // Expand inside the application content area. The titlebar owns its own
+  // native controls and must never share coordinates with browser controls.
+  const workspace = document.getElementById('app-window-content');
+  return effectiveFullScreen && workspace ? createPortal(dock, workspace) : dock;
 }
