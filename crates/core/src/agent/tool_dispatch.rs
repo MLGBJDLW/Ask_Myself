@@ -1585,7 +1585,9 @@ impl ToolDispatchRuntime<'_> {
                 };
                 loop_recorder.record(finished.clone());
                 append_persisted_trace_loop_event(persisted_trace_items, finished);
-                if let Some(intervention) = loop_guard.observe_tool_result(tool_is_error) {
+                if let Some(intervention) =
+                    loop_guard.observe_tool_result(&tc, tool_is_error, tool_artifacts.as_ref())
+                {
                     let event = TurnLoopEvent::LoopGuardIntervention {
                         reason: intervention.reason.clone(),
                         action: intervention.action.as_str().to_string(),
