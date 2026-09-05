@@ -762,6 +762,14 @@ struct AgentRunEventOutboxActorContext {
 }
 
 impl AgentRunEventOutbox {
+    /// Highest sequence whose durable ledger commit is already visible to readers.
+    pub fn durable_high_water(&self) -> Option<u64> {
+        match &*self.durability.borrow() {
+            AgentRunEventOutboxDurability::Committed(sequence) => Some(*sequence),
+            AgentRunEventOutboxDurability::Failed(_) => None,
+        }
+    }
+
     pub fn submit(&self, event: AgentRunEvent) -> Result<(), AgentRunEventSubmitError> {
         if !event.is_durable() {
             return Err(AgentRunEventSubmitError::EphemeralEvent);

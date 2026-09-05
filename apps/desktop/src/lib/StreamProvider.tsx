@@ -38,7 +38,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
           || typeof heartbeat.runId !== 'string'
           || typeof heartbeat.turnId !== 'string'
         ) return;
-        streamStore.recordHeartbeat(heartbeat.conversationId, heartbeat.runId);
+        streamStore.recordHeartbeat(heartbeat.conversationId, heartbeat.runId, heartbeat.durableHighWater);
       }),
     ]).then((callbacks) => {
       if (cancelled) {

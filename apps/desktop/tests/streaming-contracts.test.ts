@@ -2536,6 +2536,28 @@ test('watchdog arms, fires, and clears timeout handles', async () => {
   assertEqual(state._timeoutId, null, 'cleared watchdog handle');
 });
 
+test('backend heartbeats cannot postpone recovery of missing chat events', () => {
+  const conversationId = 'heartbeat-missing-events';
+  streamStore.startStream(conversationId);
+  streamStore.bindTurnHandle(conversationId, {
+    sessionId: conversationId, runId: 'heartbeat-run', turnId: 'heartbeat-turn', state: 'running',
+  });
+  const originalClearTimeout = globalThis.clearTimeout;
+  let discardedRecoveryTimers = 0;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    discardedRecoveryTimers += 1;
+    originalClearTimeout(handle);
+  }) as typeof clearTimeout;
+  try {
+    for (let i = 0; i < 20; i += 1) streamStore.recordHeartbeat(conversationId, 'heartbeat-run');
+    assertEqual(discardedRecoveryTimers, 0, 'heartbeats without new events must not cancel durable recovery');
+    assertEqual(streamStore.getStream(conversationId)?.isStreaming, true, 'reconciliation must not cancel the backend run');
+  } finally {
+    globalThis.clearTimeout = originalClearTimeout;
+    streamStore.clearStream(conversationId);
+  }
+});
+
 test('restoreFromRunEvents projects terminal error replay into stream state', () => {
   const conversationId = 'conversation-terminal-restore';
 

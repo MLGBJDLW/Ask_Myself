@@ -295,10 +295,16 @@ class StreamStoreImpl {
     this.scheduleNotify(event.conversationId);
   }
 
-  recordHeartbeat(conversationId: string, runId: string): void {
+  recordHeartbeat(conversationId: string, runId: string, durableHighWater?: number | null): void {
     const state = this._streams[conversationId];
     if (!state?.isStreaming || state.turnHandle?.runId !== runId) return;
-    this.resetTimeout(conversationId);
+    // A live executor does not prove its output reached this webview. Keep the
+    // recovery deadline intact, including while a reconciliation is in flight.
+    if (typeof durableHighWater === 'number'
+      && Number.isSafeInteger(durableHighWater)
+      && durableHighWater > state._lastEventSeq) {
+      this.recoverMissingRunEvents(conversationId, state, runId);
+    }
   }
 
   /** Settle the live transport while the durable turn waits for a response. */

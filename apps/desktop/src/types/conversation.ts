@@ -1053,6 +1053,7 @@ export interface AgentHeartbeatEvent {
   conversationId: string;
   runId: string;
   turnId: string;
+  durableHighWater?: number | null;
 }
 
 export type ActivityEventKind =

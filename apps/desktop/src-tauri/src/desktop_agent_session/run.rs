@@ -100,6 +100,7 @@ pub async fn run_desktop_agent_turn(request: DesktopAgentTurnRequest) -> Desktop
                             "conversationId": conversation_id,
                             "runId": stream.task_run_id,
                             "turnId": turn_id,
+                            "durableHighWater": stream.event_seq.durable_high_water(),
                         }),
                     );
                 }
