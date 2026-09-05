@@ -395,8 +395,9 @@ pub(super) async fn run(request: SubscriptionTurnRequest) -> Result<Message, Cor
         drop(skills);
         let turn = request.prepare(native_vision)?;
         let tools = turn.tools.definitions().into_iter().map(|tool| json!({"type":"function","name":tool.name,"description":tool.description,"inputSchema":tool.parameters})).collect::<Vec<_>>();
-        let response = wire.request("thread/start", json!({"model":model_id,"allowProviderModelFallback":false,"cwd":cwd,"config":overrides,"developerInstructions":turn.system_prompt,"dynamicTools":tools,"environments":[],"selectedCapabilityRoots":[],"approvalPolicy":"never","sandbox":"read-only","ephemeral":true})).await?;
+        let response = wire.request("thread/start", json!({"model":model_id,"modelProvider":"openai","allowProviderModelFallback":false,"cwd":cwd,"config":overrides,"developerInstructions":turn.system_prompt,"dynamicTools":tools,"environments":[],"selectedCapabilityRoots":[],"approvalPolicy":"never","sandbox":"read-only","ephemeral":true})).await?;
         if response["model"].as_str() != Some(&model_id)
+            || response["modelProvider"] != "openai"
             || response["approvalPolicy"] != "never"
             || response.pointer("/sandbox/type").and_then(Value::as_str) != Some("readOnly")
         {
@@ -734,8 +735,9 @@ mod tests {
         let overrides = disable_ambient(&config, &skills, &cwd).unwrap();
         drop(config);
         drop(skills);
-        let result = wire.request("thread/start",json!({"model":model["model"],"allowProviderModelFallback":false,"cwd":cwd,"config":overrides,"developerInstructions":"Nexa integration preflight. No model turn will be requested.","dynamicTools":[],"environments":[],"selectedCapabilityRoots":[],"approvalPolicy":"never","sandbox":"read-only","ephemeral":true})).await.unwrap();
+        let result = wire.request("thread/start",json!({"model":model["model"],"modelProvider":"openai","allowProviderModelFallback":false,"cwd":cwd,"config":overrides,"developerInstructions":"Nexa integration preflight. No model turn will be requested.","dynamicTools":[],"environments":[],"selectedCapabilityRoots":[],"approvalPolicy":"never","sandbox":"read-only","ephemeral":true})).await.unwrap();
         assert_eq!(result["model"], model["model"]);
+        assert_eq!(result["modelProvider"], "openai");
         assert_eq!(result["approvalPolicy"], "never");
         assert_eq!(result["sandbox"]["type"], "readOnly");
     }

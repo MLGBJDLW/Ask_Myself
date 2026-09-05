@@ -42,6 +42,9 @@ the runtime does not silently switch to an in-memory journal.
   custom Nexa tools and denies native permissions. Its official home remains the
   credential owner; Nexa does not copy tokens. User steering is queued until the
   current Copilot operation becomes idle, then sent in the same upstream session.
+  Empty mode's forced keychain-disable environment setting is overridden with
+  the caller's original setting, so enrollment and execution use the same
+  system-keychain or explicitly selected file credential backend.
 - Codex uses a fresh ephemeral app-server thread, no executor environments,
   read-only policy and disabled shell, web, plugins, hooks, agents and automation.
   Effective MCP names and skill paths are inventoried and disabled for that

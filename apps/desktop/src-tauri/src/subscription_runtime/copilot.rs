@@ -26,10 +26,29 @@ fn client_options(binary: std::path::PathBuf) -> Result<ClientOptions, CoreError
         })
         .filter(|path| path.is_absolute())
         .ok_or_else(|| protocol_error("Copilot home must be an absolute directory"))?;
-    Ok(ClientOptions::default()
-        .with_program(CliProgram::Path(binary))
-        .with_mode(ClientMode::Empty)
-        .with_base_directory(directory))
+    Ok(with_login_credential_backend(
+        ClientOptions::default()
+            .with_program(CliProgram::Path(binary))
+            .with_mode(ClientMode::Empty)
+            .with_base_directory(directory),
+        std::env::var_os("COPILOT_DISABLE_KEYTAR"),
+    ))
+}
+
+fn with_login_credential_backend(
+    options: ClientOptions,
+    inherited: Option<std::ffi::OsString>,
+) -> ClientOptions {
+    // SDK 1.0.11 injects DISABLE_KEYTAR=1 in Empty mode, then applies caller
+    // env/env_remove. Tool isolation remains Empty; authentication must use
+    // precisely the same keychain setting as the ordinary login/account CLI.
+    // Neither path extracts or copies a token into Nexa.
+    match inherited {
+        Some(value) => {
+            options.with_env([(std::ffi::OsString::from("COPILOT_DISABLE_KEYTAR"), value)])
+        }
+        None => options.with_env_remove(["COPILOT_DISABLE_KEYTAR"]),
+    }
 }
 
 #[async_trait::async_trait]
@@ -346,6 +365,36 @@ async fn project_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_tool_mode_preserves_normal_system_keychain_login() {
+        let options = with_login_credential_backend(
+            ClientOptions::default().with_mode(ClientMode::Empty),
+            None,
+        );
+        assert_eq!(options.mode, ClientMode::Empty);
+        assert!(options
+            .env_remove
+            .contains(&std::ffi::OsString::from("COPILOT_DISABLE_KEYTAR")));
+        assert!(options.github_token.is_none());
+    }
+    #[test]
+    fn explicit_login_keychain_setting_is_preserved_without_copying_credentials() {
+        for value in ["0", "1", ""] {
+            let options = with_login_credential_backend(
+                ClientOptions::default().with_mode(ClientMode::Empty),
+                Some(value.into()),
+            );
+            assert_eq!(options.mode, ClientMode::Empty);
+            assert!(options
+                .env
+                .iter()
+                .any(|(key, current)| key == "COPILOT_DISABLE_KEYTAR" && current == value));
+            assert!(!options
+                .env_remove
+                .contains(&std::ffi::OsString::from("COPILOT_DISABLE_KEYTAR")));
+            assert!(options.github_token.is_none());
+        }
+    }
     #[tokio::test]
     #[ignore = "uses the official Copilot subscription for one read-only tool inference"]
     async fn native_copilot_executes_nexa_tool_and_streams_persisted_answer() {
