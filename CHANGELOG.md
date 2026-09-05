@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.13.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.8...nexa-monorepo-v0.13.9) (2026-09-05)
+
+
+### Features
+
+* **providers:** run Copilot and Codex subscriptions through Nexa tools ([269e253](https://github.com/MLGBJDLW/Nexa/commit/269e2535a3928660c11a5369bc03f04d4a471bc0))
+
+
+### Bug Fixes
+
+* **activity:** isolate corrupt journals while preserving durable execution ([55c7428](https://github.com/MLGBJDLW/Nexa/commit/55c74280e624f605c4a24437754af5f2c02893cf))
+* **agent:** recognize changing browser observations as loop progress ([0d0c662](https://github.com/MLGBJDLW/Nexa/commit/0d0c6628e5e62ef77f02c416ed587e0bfe28aa2f))
+* **agent:** share a finite model request budget across recovery paths ([8c93e23](https://github.com/MLGBJDLW/Nexa/commit/8c93e230bd7ba873dc90a3d1f4f5b0660c7a3a5a))
+* assemble complete Copilot response chunks before finalization ([8feb399](https://github.com/MLGBJDLW/Nexa/commit/8feb399458ab8b94820989456fee31241b7b6728))
+* atomically close native turns with their final answer identity ([06f6585](https://github.com/MLGBJDLW/Nexa/commit/06f6585ecb4d9a89e6a45e8509df7d68bcd22347))
+* **browser:** avoid cross-thread getter waits under runtime locks ([2fbedc4](https://github.com/MLGBJDLW/Nexa/commit/2fbedc4be051ef5bc2c3c6189692a1418c06fb3e))
+* **browser:** keep expanded controls inside the app workspace ([b63d458](https://github.com/MLGBJDLW/Nexa/commit/b63d458e48df705ca83ab052b7b405e5f620ab4f))
+* **chat:** avoid repeated recovery notices while preserving silent turns ([3aee933](https://github.com/MLGBJDLW/Nexa/commit/3aee93382b83262e25c11a2e9375af72fc64814c))
+* **chat:** block unsupported subscription context compaction ([01ee9f6](https://github.com/MLGBJDLW/Nexa/commit/01ee9f60d24bfdf9a4ab12eede99fb6173b5b32d))
+* **chat:** cancel in-flight restoration at user lifecycle boundaries ([72db092](https://github.com/MLGBJDLW/Nexa/commit/72db09260368f3a63d115be73af1992e674e866a))
+* **chat:** preserve newer run facts and pending tools during hydration ([e68ca8b](https://github.com/MLGBJDLW/Nexa/commit/e68ca8b3f938f27d2c8a0ace7ea67ecca71c91d2))
+* **chat:** reconcile missed run events without heartbeat starvation ([5e05bba](https://github.com/MLGBJDLW/Nexa/commit/5e05bbae08c205d72289470741efd08bd0e35488))
+* **chat:** retain native answer deltas when a subscription run fails ([2dfe485](https://github.com/MLGBJDLW/Nexa/commit/2dfe485c1ba4c01e9c89f94660b4d37a3b3c919f))
+* discard abandoned Copilot retry drafts across live and durable state ([cd384d9](https://github.com/MLGBJDLW/Nexa/commit/cd384d951c1630458f42cf54d13ffba47b5690e5))
+* keep both Qwen transcription transports selectable ([e5a64fe](https://github.com/MLGBJDLW/Nexa/commit/e5a64fedbf083b3c5c937ddffbbe5a2b6185be8c))
+* keep route loading failures recoverable ([3cf51cb](https://github.com/MLGBJDLW/Nexa/commit/3cf51cbe8d06a3773506e3d6f6febbac95d12137))
+* migrate Qwen dictation defaults only once ([c046b7b](https://github.com/MLGBJDLW/Nexa/commit/c046b7b0bd563ee05c139cffad748caf401e06e6))
+* **providers:** align subscription execution with official account authentication ([1e83a02](https://github.com/MLGBJDLW/Nexa/commit/1e83a02016d8c8d5824268a26603e7087b21ca1e))
+* **providers:** persist completed replies before queued steering ([686883e](https://github.com/MLGBJDLW/Nexa/commit/686883e811ba134a9e6c760b2ac598edeb66101a))
+* **providers:** persist steering without blocking native protocol readers ([6a1130e](https://github.com/MLGBJDLW/Nexa/commit/6a1130e1f87a402b6391d89248a290c8765170aa))
+* **providers:** preserve input privacy and package tool ownership ([178ae6c](https://github.com/MLGBJDLW/Nexa/commit/178ae6ca69f55ce5a8b102e4c196a72f4f1380b0))
+* refresh Windows proxy clients and preserve provider failure causes ([9f3e1d8](https://github.com/MLGBJDLW/Nexa/commit/9f3e1d82168282d9c9d2f1b93867d9d66fdd6805))
+* reject Copilot messages missing required text content ([ae09107](https://github.com/MLGBJDLW/Nexa/commit/ae0910738f9e05ef83b887088b8411654fd07d86))
+* remove routine agent lifecycle notices from chat ([606a5ca](https://github.com/MLGBJDLW/Nexa/commit/606a5ca54845b8c262e9a5995624534b69265d55))
+* **streaming:** flush output bursts before the provider queue can starve delivery ([b9ede99](https://github.com/MLGBJDLW/Nexa/commit/b9ede99aa6668200e4c47d099eee5040da5ee56a))
+* **streaming:** reconcile authoritative output block snapshots ([31abbbf](https://github.com/MLGBJDLW/Nexa/commit/31abbbf3ac4925ed7970f8dcd510e687a5db96c7))
+* **tools:** provide actionable errors without unsafe retry advice ([cee16a9](https://github.com/MLGBJDLW/Nexa/commit/cee16a9e68f4a526320a74bab89c8e55f2743732))
+* **voice:** retain custom routes and check inherited microphone readiness ([ac08745](https://github.com/MLGBJDLW/Nexa/commit/ac08745d4d68a0a8df6de94d3f3c489809ca7854))
+* **voice:** use Qwen live dictation with ordered utterance finalization ([110bb8a](https://github.com/MLGBJDLW/Nexa/commit/110bb8a546ca8725a48af992a207fd314d2457a0))
+
+
+### Performance Improvements
+
+* bound live code rendering and preserve stable chat history ([1a7ed34](https://github.com/MLGBJDLW/Nexa/commit/1a7ed3475b948e36adf913a4ee7da5c833ff2d6b))
+* **browser:** coalesce workspace refreshes and project only the active session ([8939ce8](https://github.com/MLGBJDLW/Nexa/commit/8939ce8fc324a946f1e72058f0fd4d627f0c3ab2))
+* **chat:** load history through database readers without reparsing traces ([068ca9d](https://github.com/MLGBJDLW/Nexa/commit/068ca9d486c65e2ca505bc3cb75943a97d767bbd))
+* **chat:** paginate and cooperatively rebuild bounded conversation previews ([700a00e](https://github.com/MLGBJDLW/Nexa/commit/700a00ea9c5c532c57bad8c9845db4b9973303a5))
+* publish first response blocks without batching delay ([1f4999e](https://github.com/MLGBJDLW/Nexa/commit/1f4999e2f07ca88f0cf4fdab9f46a2a2d61e5bdc))
+* reuse tool scheduling preparation and defer error schemas ([e14e978](https://github.com/MLGBJDLW/Nexa/commit/e14e97826f8129ceb7e720c35017533bd3cdac44))
+* scope shell change tracking and wake on process exit ([5fae628](https://github.com/MLGBJDLW/Nexa/commit/5fae62805edf301abbbea79c359ce7387413d8a8))
+* skip embedding work when learned memory is empty ([54279af](https://github.com/MLGBJDLW/Nexa/commit/54279af7c56ab3ab5c4daf196b8b57dab48cc08c))
+* streamline route startup and reveal the window before React loads ([4d20e56](https://github.com/MLGBJDLW/Nexa/commit/4d20e565a9be30c2eb21fb3039de971f1a4d6482))
+
 ## [0.13.8](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.7...nexa-monorepo-v0.13.8) (2026-09-03)
 
 
