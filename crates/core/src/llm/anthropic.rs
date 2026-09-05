@@ -928,7 +928,12 @@ async fn parse_anthropic_stream(
     )
     .await?
     {
-        let chunk = chunk_result.map_err(|e| CoreError::Llm(format!("Stream read error: {e}")))?;
+        let chunk = chunk_result.map_err(|e| {
+            CoreError::TransientLlm(format!(
+                "Stream read error: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
         let text = std::str::from_utf8(&chunk)
             .map_err(|e| CoreError::Llm(format!("Invalid UTF-8 in stream: {e}")))?;
         buffer.push_str(text);
@@ -1405,7 +1410,10 @@ impl AnthropicProvider {
             .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
 
         if status.is_server_error() {
-            Err(CoreError::TransientLlm(message))
+            Err(CoreError::ProviderUnavailable {
+                status: status.as_u16(),
+                message,
+            })
         } else {
             Err(CoreError::Llm(message))
         }
@@ -2101,6 +2109,7 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
@@ -2108,7 +2117,7 @@ impl LlmProvider for AnthropicProvider {
         let body_bytes = serialized_json_body(&body, "Anthropic completion request")?;
 
         let response = with_request_timeout(
-            self.transport
+            transport
                 .client()
                 .post(&url)
                 .header("x-api-key", api_key)
@@ -2121,9 +2130,14 @@ impl LlmProvider for AnthropicProvider {
         .send()
         .await
         .inspect_err(|error| {
-            self.transport.record_transport_failure(&error.to_string());
+            transport.record_transport_failure(error);
         })
-        .map_err(|e| CoreError::Llm(format!("Request failed: {e}")))?;
+        .map_err(|e| {
+            CoreError::Llm(format!(
+                "Request failed: {}",
+                super::transport::describe_http_error(&e)
+            ))
+        })?;
 
         let response = self.check_response(response).await?;
 
@@ -2131,9 +2145,14 @@ impl LlmProvider for AnthropicProvider {
             .json()
             .await
             .inspect_err(|error| {
-                self.transport.record_transport_failure(&error.to_string());
+                transport.record_transport_failure(error);
             })
-            .map_err(|e| CoreError::Llm(format!("Failed to parse response: {e}")))?;
+            .map_err(|e| {
+                CoreError::Llm(format!(
+                    "Failed to parse response: {}",
+                    super::transport::describe_http_error(&e)
+                ))
+            })?;
         let raw_content_blocks = raw_response
             .get("content")
             .and_then(serde_json::Value::as_array)
@@ -2141,7 +2160,7 @@ impl LlmProvider for AnthropicProvider {
             .unwrap_or_default();
         let resp: AnthropicResponse = serde_json::from_value(raw_response)
             .map_err(|e| CoreError::Llm(format!("Failed to decode response: {e}")))?;
-        self.transport.record_transport_success();
+        transport.record_transport_success();
 
         // Extract text, thinking, and tool calls from content blocks.
         let mut text_parts = Vec::new();
@@ -2303,6 +2322,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &CompletionRequest,
     ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        let transport = self.transport.for_request()?;
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
@@ -2312,7 +2332,7 @@ impl LlmProvider for AnthropicProvider {
         info!("Anthropic stream request to {url}, model={}", request.model);
 
         let response = send_stream_start_request(
-            self.transport
+            transport
                 .client()
                 .post(&url)
                 .header("x-api-key", api_key)
@@ -2325,7 +2345,7 @@ impl LlmProvider for AnthropicProvider {
         )
         .await
         .inspect_err(|e| {
-            self.transport.record_transport_failure(&e.to_string());
+            transport.record_transport_failure(e);
             error!("Anthropic stream send failed: {e}");
         })?;
 
@@ -2335,7 +2355,6 @@ impl LlmProvider for AnthropicProvider {
         let (tx, rx) = mpsc::channel(64);
         info!("Anthropic SSE stream started");
 
-        let transport = Arc::clone(&self.transport);
         let search_mode = anthropic_search_mode(request);
         let stream_idle_timeout = self.config.streaming.stream_idle_timeout();
         tokio::spawn(async move {
@@ -2346,7 +2365,7 @@ impl LlmProvider for AnthropicProvider {
                 result = parse_anthropic_stream(response, parser_tx, search_mode, stream_idle_timeout) => result,
             };
             if let Err(e) = result {
-                transport.record_transport_failure(&e.to_string());
+                transport.record_transport_failure(&e);
                 error!("Anthropic SSE stream error: {e}");
                 let _ = tx.send(Err(e)).await;
             } else {
@@ -2376,12 +2395,13 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn health_check(&self) -> Result<(), CoreError> {
+        let transport = self.transport.for_request()?;
         // Verify API key by making a minimal request.
         let url = self.messages_url();
         let api_key = self.api_key()?;
 
         let response = with_request_timeout(
-            self.transport
+            transport
                 .client()
                 .post(&url)
                 .header("x-api-key", api_key)

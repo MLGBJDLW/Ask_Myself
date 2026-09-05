@@ -1153,6 +1153,7 @@ impl LlmProvider for RecoverablePrimaryRouteProvider {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Box::pin(stream::iter(vec![
             ProviderStreamEvent::RecoverableError {
+                category: crate::llm::ProviderRecoveryCategory::Network,
                 message: "primary disconnected before visible output".to_string(),
             },
         ])))
@@ -1993,6 +1994,7 @@ impl LlmProvider for LengthThenCancelledProvider {
                     }),
                 },
                 ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "connection lost after hosted recovery action".to_string(),
                 },
             ])));

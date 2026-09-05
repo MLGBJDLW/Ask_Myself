@@ -52,6 +52,11 @@ pub enum CoreError {
     #[error("LLM transient error (retriable): {0}")]
     TransientLlm(String),
 
+    /// An HTTP response was received from the provider. This is not evidence
+    /// of a client/VPN connection failure even when retrying is appropriate.
+    #[error("Provider HTTP {status}: {message}")]
+    ProviderUnavailable { status: u16, message: String },
+
     #[error("Stream interrupted: {0}")]
     StreamIncomplete(String),
 

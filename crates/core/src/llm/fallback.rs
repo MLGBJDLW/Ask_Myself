@@ -398,7 +398,7 @@ impl LlmProvider for AutomaticFallbackProvider {
                         state.emitted_output = true;
                         return Some((ProviderStreamEvent::ReplayState { replay }, Some(state)));
                     }
-                    Some(ProviderStreamEvent::RecoverableError { message })
+                    Some(ProviderStreamEvent::RecoverableError { message, .. })
                         if !state.emitted_output
                             && state.current_position + 1 < state.end_position =>
                     {
@@ -454,6 +454,7 @@ impl LlmProvider for AutomaticFallbackProvider {
                     None if !state.emitted_output => {
                         return Some((
                             ProviderStreamEvent::RecoverableError {
+                                category: crate::llm::ProviderRecoveryCategory::Provider,
                                 message: "Provider stream ended before producing output"
                                     .to_string(),
                             },
@@ -487,7 +488,10 @@ impl LlmProvider for AutomaticFallbackProvider {
 fn automatic_fallback_error(error: &CoreError) -> bool {
     matches!(
         error,
-        CoreError::RateLimited { .. } | CoreError::TransientLlm(_) | CoreError::StreamIncomplete(_)
+        CoreError::RateLimited { .. }
+            | CoreError::TransientLlm(_)
+            | CoreError::ProviderUnavailable { .. }
+            | CoreError::StreamIncomplete(_)
     )
 }
 
@@ -702,6 +706,7 @@ mod tests {
             provider(
                 "primary",
                 Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "connection reset".to_string(),
                 }]),
                 Arc::clone(&primary_models),
@@ -759,6 +764,7 @@ mod tests {
             provider(
                 "primary",
                 Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "connection reset".to_string(),
                 }]),
                 Arc::new(Mutex::new(Vec::new())),
@@ -815,6 +821,7 @@ mod tests {
             provider(
                 "primary",
                 Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "connection reset".to_string(),
                 }]),
                 Arc::new(Mutex::new(Vec::new())),
@@ -950,6 +957,7 @@ mod tests {
             provider_with_policy_and_history(
                 "primary",
                 Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "primary unavailable".to_string(),
                 }]),
                 Arc::clone(&models),
@@ -1153,6 +1161,7 @@ mod tests {
             provider_with_policy_and_history(
                 "primary",
                 Behavior::Stream(vec![ProviderStreamEvent::RecoverableError {
+                    category: crate::llm::ProviderRecoveryCategory::Network,
                     message: "primary unavailable".to_string(),
                 }]),
                 Arc::clone(&models),
@@ -1228,6 +1237,7 @@ mod tests {
                 Behavior::Stream(vec![
                     chunk("visible"),
                     ProviderStreamEvent::RecoverableError {
+                        category: crate::llm::ProviderRecoveryCategory::Network,
                         message: "late reset".to_string(),
                     },
                 ]),
@@ -1258,7 +1268,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[1],
-            ProviderStreamEvent::RecoverableError { message } if message == "late reset"
+            ProviderStreamEvent::RecoverableError { message, .. } if message == "late reset"
         ));
         assert!(fallback_models.lock().unwrap().is_empty());
     }

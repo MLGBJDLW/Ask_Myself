@@ -547,6 +547,7 @@ pub struct ProviderHostedToolEvent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ProviderStreamFailure {
     Provider { message: String },
+    ProviderUnavailable { status: u16, message: String },
     RateLimited { retry_after_secs: u64 },
     ContextOverflow { prompt_tokens: u32, max_tokens: u32 },
     Internal { message: String },
@@ -562,6 +563,9 @@ impl ProviderStreamFailure {
     pub fn into_core_error(self) -> CoreError {
         match self {
             Self::Provider { message } => CoreError::Llm(message),
+            Self::ProviderUnavailable { status, message } => {
+                CoreError::ProviderUnavailable { status, message }
+            }
             Self::RateLimited { retry_after_secs } => CoreError::RateLimited { retry_after_secs },
             Self::ContextOverflow {
                 prompt_tokens,
@@ -576,6 +580,9 @@ impl From<CoreError> for ProviderStreamFailure {
     fn from(error: CoreError) -> Self {
         match error {
             CoreError::Llm(message) => Self::Provider { message },
+            CoreError::ProviderUnavailable { status, message } => {
+                Self::ProviderUnavailable { status, message }
+            }
             CoreError::RateLimited { retry_after_secs } => Self::RateLimited { retry_after_secs },
             CoreError::ContextOverflow(prompt_tokens, max_tokens) => Self::ContextOverflow {
                 prompt_tokens,
@@ -587,6 +594,13 @@ impl From<CoreError> for ProviderStreamFailure {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderRecoveryCategory {
+    Network,
+    Provider,
 }
 
 /// Canonical incremental event emitted by every LLM provider.
@@ -606,6 +620,7 @@ pub enum ProviderStreamEvent {
     },
     RecoverableError {
         message: String,
+        category: ProviderRecoveryCategory,
     },
     Cancelled {
         message: String,
@@ -642,9 +657,14 @@ fn provider_stream_event_from_chunk_result(
 
 pub(crate) fn provider_stream_event_from_error(error: CoreError) -> ProviderStreamEvent {
     match error {
-        CoreError::StreamIncomplete(message) | CoreError::TransientLlm(message) => {
-            ProviderStreamEvent::RecoverableError { message }
-        }
+        CoreError::StreamIncomplete(message) => ProviderStreamEvent::RecoverableError {
+            message,
+            category: ProviderRecoveryCategory::Provider,
+        },
+        CoreError::TransientLlm(message) => ProviderStreamEvent::RecoverableError {
+            message,
+            category: ProviderRecoveryCategory::Network,
+        },
         CoreError::Cancelled(message) => ProviderStreamEvent::Cancelled { message },
         error => ProviderStreamEvent::TerminalError {
             failure: error.into(),
@@ -842,7 +862,7 @@ pub(crate) async fn send_stream_start_request(
     };
 
     result.map_err(|e| {
-        let message = format!("{context} failed: {e}");
+        let message = format!("{context} failed: {}", transport::describe_http_error(&e));
         if e.is_connect() || e.is_timeout() {
             CoreError::TransientLlm(message)
         } else {
@@ -865,7 +885,7 @@ where
 
     match tokio::time::timeout(idle_timeout, stream.next()).await {
         Ok(item) => Ok(item),
-        Err(_) => Err(CoreError::StreamIncomplete(format!(
+        Err(_) => Err(CoreError::TransientLlm(format!(
             "{context} was idle for {}s",
             idle_timeout.as_secs()
         ))),
@@ -1370,7 +1390,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(CoreError::StreamIncomplete(message))
+            Err(CoreError::TransientLlm(message))
                 if message.contains("test stream") && message.contains("idle")
         ));
     }
@@ -1392,7 +1412,7 @@ mod tests {
         ));
         assert!(matches!(
             &events[1],
-            ProviderStreamEvent::RecoverableError { message } if message == "connection closed"
+            ProviderStreamEvent::RecoverableError { message, .. } if message == "connection closed"
         ));
     }
 
@@ -1408,8 +1428,37 @@ mod tests {
 
         assert!(matches!(
             &events[0],
-            ProviderStreamEvent::RecoverableError { message }
+            ProviderStreamEvent::RecoverableError { message, .. }
                 if message == "temporary network failure"
+        ));
+    }
+
+    #[test]
+    fn protocol_failures_and_transport_failures_keep_distinct_recovery_categories() {
+        assert!(matches!(
+            provider_stream_event_from_error(CoreError::StreamIncomplete(
+                "invalid tool arguments".into()
+            )),
+            ProviderStreamEvent::RecoverableError {
+                category: ProviderRecoveryCategory::Provider,
+                ..
+            }
+        ));
+        assert!(matches!(
+            provider_stream_event_from_error(CoreError::TransientLlm("connection reset".into())),
+            ProviderStreamEvent::RecoverableError {
+                category: ProviderRecoveryCategory::Network,
+                ..
+            }
+        ));
+        let error = ProviderStreamFailure::from(CoreError::ProviderUnavailable {
+            status: 503,
+            message: "service unavailable".into(),
+        })
+        .into_core_error();
+        assert!(matches!(
+            error,
+            CoreError::ProviderUnavailable { status: 503, .. }
         ));
     }
 
