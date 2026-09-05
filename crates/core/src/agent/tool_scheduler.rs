@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::llm::ToolCallRequest;
-use crate::tools::{structured_tool_error_result, ToolRegistry, ToolResult};
+use crate::tools::{structured_tool_error_result, ToolInvocation, ToolRegistry, ToolResult};
 
 /// Maximum characters to keep in a generic tool result for LLM context.
 /// This keeps normal read/edit/search results useful while still leaving room
@@ -22,7 +22,7 @@ pub(crate) struct ToolSchedulerPolicy {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSchedulingDecision {
-    pub(crate) parsed_args: serde_json::Value,
+    pub(crate) invocation: ToolInvocation,
     pub(crate) timeout: Option<Duration>,
     pub(crate) synthetic_result: Option<ToolResult>,
     pub(crate) policy_label: &'static str,
@@ -92,7 +92,7 @@ impl ToolSchedulerPolicy {
         };
 
         ToolSchedulingDecision {
-            parsed_args,
+            invocation: tools.build_invocation(&call.id, &call.name, parsed_args),
             timeout,
             policy_label: if hidden_registered_tool {
                 "executeHiddenRegistered"
@@ -427,8 +427,8 @@ mod tests {
             },
         );
 
-        assert_eq!(decision.parsed_args["timeout_secs"], 0);
-        assert_eq!(decision.parsed_args["ready_timeout_secs"], 120);
+        assert_eq!(decision.invocation.arguments["timeout_secs"], 0);
+        assert_eq!(decision.invocation.arguments["ready_timeout_secs"], 120);
         assert_eq!(decision.timeout, Some(Duration::from_secs(30)));
     }
 
@@ -452,8 +452,8 @@ mod tests {
             },
         );
 
-        assert_eq!(decision.parsed_args["action"], "apply");
-        assert!(tools.requires_confirmation("appearance", &decision.parsed_args));
+        assert_eq!(decision.invocation.arguments["action"], "apply");
+        assert!(tools.requires_confirmation("appearance", &decision.invocation.arguments));
     }
 
     #[test]

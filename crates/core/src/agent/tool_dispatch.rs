@@ -632,8 +632,13 @@ impl ToolDispatchRuntime<'_> {
             offered_tool_names,
             registered_tool_names,
         );
-        for tc in tool_calls {
-            let decision = tool_policy.decision_for(self.tools, tc);
+        // Prepare once for the scheduling trace, conflict batching, and approval.
+        // Execution still validates at the registry's authoritative entry point.
+        let scheduling: Vec<_> = tool_calls
+            .iter()
+            .map(|tc| tool_policy.decision_for(self.tools, tc))
+            .collect();
+        for (tc, decision) in tool_calls.iter().zip(&scheduling) {
             let policy_label = tool_dispatch_block
                 .as_ref()
                 .map(ToolDispatchBlock::policy_label)
@@ -682,7 +687,8 @@ impl ToolDispatchRuntime<'_> {
             is_error: bool,
         }
 
-        let tool_batches = tool_call_execution_batches(self.tools, &tool_policy, tool_calls);
+        let tool_batches = tool_call_execution_batches(scheduling.iter().map(|s| &s.invocation));
+        let mut scheduling: Vec<_> = scheduling.into_iter().map(Some).collect();
         let mut completed_for_context: Vec<Option<CompletedToolForContext>> =
             vec![None; tool_calls.len()];
         let mut post_tool_loop_guard_prompt: Option<String> = None;
@@ -697,6 +703,9 @@ impl ToolDispatchRuntime<'_> {
             let batch_action_reconciliation_pending = dispatch_action_reconciliation;
             let mut tool_futures = FuturesUnordered::new();
             for &index in &tool_batch {
+                let scheduling = scheduling[index]
+                    .take()
+                    .expect("each scheduled call executes once");
                 let tc = tool_calls[index].clone();
                 let tool_span = info_span!("tool_execution", tool = %tc.name);
                 let progress_tx = tx.clone();
@@ -704,19 +713,15 @@ impl ToolDispatchRuntime<'_> {
                 let run_tx = tx.clone();
                 let progress_call_id = tc.id.clone();
                 let progress_tool_name = tc.name.clone();
-                let tool_policy = &tool_policy;
                 let tool_dispatch_block = tool_dispatch_block.clone();
                 tool_futures.push(
                     async move {
-                        let scheduling = tool_policy.decision_for(self.tools, &tc);
-                        let invocation = self
-                            .tools
-                            .build_invocation(&tc.id, &tc.name, scheduling.parsed_args);
-                        let parsed_args = invocation.arguments.clone();
+                        let invocation = scheduling.invocation;
+                        let parsed_args = &invocation.arguments;
                         let tool_timeout = scheduling.timeout;
                         let capabilities = invocation.capabilities.clone();
                         if batch_action_reconciliation_pending
-                            && action_reconciliation_blocks(&tc.name, &parsed_args)
+                            && action_reconciliation_blocks(&tc.name, parsed_args)
                         {
                             let blocked = crate::tools::ToolResult {
                                 call_id: tc.id.clone(),
@@ -766,7 +771,7 @@ impl ToolDispatchRuntime<'_> {
                         }
                         let tool_requires_confirm = self
                             .tools
-                            .requires_confirmation(&tc.name, &parsed_args)
+                            .requires_confirmation(&tc.name, parsed_args)
                             || invocation.access_profile.needs_approval;
                         let hard_confirmation = tc.name == "computer_control"
                             || (tc.name == "browser_session" && tool_requires_confirm)
@@ -852,11 +857,11 @@ impl ToolDispatchRuntime<'_> {
                                 } else {
                                     let reason = match self.tools.confirmation_message_in_context(
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         conversation_id,
                                     ) {
                                         Ok(Some(reason)) => reason,
-                                        Ok(None) => describe_request(&tc.name, &parsed_args),
+                                        Ok(None) => describe_request(&tc.name, parsed_args),
                                         Err(error) => {
                                             let failed = approval_context_failure(
                                                 &tc.id,
@@ -879,7 +884,7 @@ impl ToolDispatchRuntime<'_> {
                                         .tools
                                         .confirmation_message_for_persistence_in_context(
                                             &tc.name,
-                                            &parsed_args,
+                                            parsed_args,
                                             conversation_id,
                                         ) {
                                         Ok(reason) => reason,
@@ -921,7 +926,7 @@ impl ToolDispatchRuntime<'_> {
                                     let req = ApprovalRequest::new(
                                         Uuid::new_v4().to_string(),
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         risk,
                                         reason,
                                     )
@@ -1062,7 +1067,7 @@ impl ToolDispatchRuntime<'_> {
                                 } else if let Some(ref cb) = self.confirmation_callback {
                                     let message = match self.tools.confirmation_message_in_context(
                                         &tc.name,
-                                        &parsed_args,
+                                        parsed_args,
                                         conversation_id,
                                     ) {
                                         Ok(Some(message)) => message,

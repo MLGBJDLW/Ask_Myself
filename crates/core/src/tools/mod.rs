@@ -1053,7 +1053,7 @@ impl ToolRegistry {
         Ok(normalize_tool_execution_result(
             call_id,
             name,
-            tool.parameters_schema(),
+            || tool.parameters_schema(),
             result,
         ))
     }
@@ -1597,11 +1597,12 @@ fn conservative_unstructured_computer_failure(
 fn normalize_tool_execution_result(
     call_id: &str,
     tool_name: &str,
-    schema: serde_json::Value,
+    schema: impl FnOnce() -> serde_json::Value,
     result: Result<ToolResult, CoreError>,
 ) -> ToolResult {
     match result {
         Ok(result) if result.is_error && result.artifacts.is_none() => {
+            let schema = schema();
             if tool_name == "computer_control" {
                 tracing::error!(
                     tool = tool_name,
@@ -1629,6 +1630,7 @@ fn normalize_tool_execution_result(
         }
         Ok(result) => result,
         Err(error) => {
+            let schema = schema();
             if tool_name == "computer_control" {
                 tracing::error!(
                     tool = tool_name,
@@ -1857,7 +1859,7 @@ mod tests {
         let normalized = normalize_tool_execution_result(
             "call",
             "external_tool",
-            serde_json::json!({}),
+            || serde_json::json!({}),
             Ok(ToolResult {
                 call_id: "call".into(),
                 content: "request timed out after writing the document".into(),
@@ -2977,7 +2979,7 @@ mod tests {
         let projected = normalize_tool_execution_result(
             "call-sensitive",
             "computer_control",
-            serde_json::json!({ "type": "object" }),
+            || serde_json::json!({ "type": "object" }),
             Err(CoreError::InvalidInput(format!(
                 "unsupported key {sentinel}"
             ))),

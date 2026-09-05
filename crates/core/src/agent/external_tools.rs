@@ -30,7 +30,7 @@ mod tests {
     use super::*;
     use crate::tools::{Tool, ToolExecutionContext};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct CountTool(Arc<AtomicUsize>);
+    struct CountTool(Arc<AtomicUsize>, Arc<AtomicUsize>);
     #[async_trait::async_trait]
     impl Tool for CountTool {
         fn name(&self) -> &str {
@@ -40,6 +40,7 @@ mod tests {
             "Record an effect for runtime contract tests"
         }
         fn parameters_schema(&self) -> serde_json::Value {
+            self.1.fetch_add(1, Ordering::SeqCst);
             serde_json::json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"],"additionalProperties":false})
         }
         fn requires_confirmation(&self, _args: &serde_json::Value) -> bool {
@@ -105,7 +106,10 @@ mod tests {
         .unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(CountTool(count.clone())));
+        tools.register(Box::new(CountTool(
+            count.clone(),
+            Arc::new(AtomicUsize::new(0)),
+        )));
         let (events, rx) = mpsc::channel(256);
         let input = ExternalToolSessionInput {
             tools,
@@ -137,6 +141,26 @@ mod tests {
             arguments: serde_json::json!({"value":value}).to_string(),
             thought_signature: None,
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_does_not_rebuild_schemas_for_each_scheduling_consumer() {
+        let (mut session, count, _rx) = session(4);
+        let schemas = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountTool(count.clone(), schemas.clone())));
+        session.input.tools = tools;
+        let result = session
+            .execute(call("schema-preparation", 1))
+            .await
+            .unwrap();
+        assert!(!result.result.is_error);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let constructed = schemas.load(Ordering::SeqCst);
+        eprintln!("tool_dispatch_schema_constructions={constructed}");
+        // One provider surface, one shared scheduling preparation, one final
+        // execution validation. Successful output needs no error schema.
+        assert_eq!(constructed, 3);
     }
 
     #[tokio::test]

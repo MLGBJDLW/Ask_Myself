@@ -5875,7 +5875,11 @@ fn test_resource_keys_allow_independent_writes_to_share_batch() {
         test_tool_call("c", "locked_write", serde_json::json!({ "path": "a.txt" })),
     ];
 
-    let batches = tool_call_execution_batches(&registry, &policy, &calls);
+    let scheduled: Vec<_> = calls
+        .iter()
+        .map(|call| policy.decision_for(&registry, call))
+        .collect();
+    let batches = tool_call_execution_batches(scheduled.iter().map(|s| &s.invocation));
 
     assert_eq!(batches, vec![vec![0, 1], vec![2]]);
 }
@@ -5893,7 +5897,11 @@ fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
         test_tool_call("c", "locked_write", serde_json::json!({})),
     ];
 
-    let batches = tool_call_execution_batches(&registry, &policy, &calls);
+    let scheduled: Vec<_> = calls
+        .iter()
+        .map(|call| policy.decision_for(&registry, call))
+        .collect();
+    let batches = tool_call_execution_batches(scheduled.iter().map(|s| &s.invocation));
 
     assert_eq!(batches, vec![vec![0], vec![1], vec![2]]);
 }
@@ -5918,7 +5926,11 @@ fn test_wait_for_previous_forces_new_execution_batch() {
         test_tool_call("c", "fast_tool", serde_json::json!({ "value": "c" })),
     ];
 
-    let batches = tool_call_execution_batches(&registry, &policy, &calls);
+    let scheduled: Vec<_> = calls
+        .iter()
+        .map(|call| policy.decision_for(&registry, call))
+        .collect();
+    let batches = tool_call_execution_batches(scheduled.iter().map(|s| &s.invocation));
 
     assert_eq!(batches, vec![vec![0], vec![1, 2]]);
 }
