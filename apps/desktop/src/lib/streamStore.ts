@@ -84,6 +84,7 @@ function nextAnimationFrame(callback: () => void): void {
 }
 
 class StreamStoreImpl {
+  private readonly _pendingRestores = new Map<string, symbol>();
   private _streams: Record<string, InternalStreamState> = {};
   private _recency = new Map<string, number>();
   private _recencyTick = 0;
@@ -202,22 +203,31 @@ class StreamStoreImpl {
     taskEvents: AgentTaskRunEvent[] = [],
     isCurrent: () => boolean = () => true,
   ): Promise<void> {
+    const restoreId = Symbol();
+    this._pendingRestores.set(conversationId, restoreId);
     const original = this._streams[conversationId];
     const originalSequence = original?._lastEventSeq;
-    const ownsRestore = () => isCurrent() && this._streams[conversationId] === original
+    const originalStreaming = original?.isStreaming;
+    const ownsRestore = () => isCurrent() && this._pendingRestores.get(conversationId) === restoreId
+      && this._streams[conversationId] === original && original?.isStreaming === originalStreaming
       && original?._lastEventSeq === originalSequence;
-    const projected = await projectRunEventsToStreamStateAsync(taskRun, runEvents, taskEvents, ownsRestore);
-    if (!projected || !ownsRestore()) return;
-    // Events buffered while the historical prefix loaded remain authoritative.
-    if (original && !runEvents.some(event => classifyAgentRunEventLifecycle(event) === 'terminal')) {
-      applyBufferedRunEventsToState(projected, [...original._pendingRunEvents.values()]);
+    try {
+      const projected = await projectRunEventsToStreamStateAsync(taskRun, runEvents, taskEvents, ownsRestore);
+      if (!projected || !ownsRestore()) return;
+      // Events buffered while the historical prefix loaded remain authoritative.
+      if (original && !runEvents.some(event => classifyAgentRunEventLifecycle(event) === 'terminal')) {
+        applyBufferedRunEventsToState(projected, [...original._pendingRunEvents.values()]);
+      }
+      capStreamCollections(projected);
+      this.restoreProjectedState(conversationId, () => projected);
+    } finally {
+      if (this._pendingRestores.get(conversationId) === restoreId) this._pendingRestores.delete(conversationId);
     }
-    capStreamCollections(projected);
-    this.restoreProjectedState(conversationId, () => projected);
   }
 
   /** Initialize (or reset) stream state for a conversation. */
   startStream(conversationId: string, launchStartedAt?: number): void {
+    this._pendingRestores.delete(conversationId);
     const existing = this._streams[conversationId];
     if (existing) {
       clearStreamWatchdog(existing);
@@ -308,6 +318,7 @@ class StreamStoreImpl {
 
   /** Remove stream state entirely. */
   clearStream(conversationId: string): void {
+    this._pendingRestores.delete(conversationId);
     const existing = this._streams[conversationId];
     if (!existing) return;
     clearStreamWatchdog(existing);
@@ -336,6 +347,7 @@ class StreamStoreImpl {
 
   /** Mark stream as stopped by user. */
   stopStream(conversationId: string): void {
+    this._pendingRestores.delete(conversationId);
     const s = this._streams[conversationId];
     if (!s) return;
     clearStreamWatchdog(s);
@@ -354,6 +366,7 @@ class StreamStoreImpl {
 
   /** Handle a send() failure (api.agentChat threw). */
   sendError(conversationId: string, errorMessage: string): void {
+    this._pendingRestores.delete(conversationId);
     const s = this._streams[conversationId];
     if (!s) return;
     clearStreamWatchdog(s);

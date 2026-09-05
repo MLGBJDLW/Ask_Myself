@@ -3531,6 +3531,10 @@ test('large hydration yields to input and retains a bounded trace', async () => 
   await stale;
   assertEqual(streamStore.getStream(conversationId)?.streamText, 'New request', 'old hydration cannot replace a new stream');
   streamStore.clearStream(conversationId);
+  const stoppedHydration = streamStore.restoreFromRunEvents(conversationId, taskRun('running'), events);
+  streamStore.stopStream(conversationId);
+  await stoppedHydration;
+  assertEqual(streamStore.getStream(conversationId), undefined, 'stop cancels hydration before a preview is installed');
 });
 
 test('completed stream state is bounded and recoverable from durable events', async () => {

@@ -286,13 +286,18 @@ test.beforeEach(async ({ page }) => {
           ];
         case 'get_agent_task_run_events_cmd':
           return [];
-        case 'get_agent_run_event_page_cmd':
+        case 'get_agent_run_event_page_cmd': {
+          const history = await invoke('get_agent_run_events_cmd', args) as Array<{ eventSeq: number }>;
+          const after = Number(args.afterEventSeq ?? 0);
+          const highWater = Number(args.durableHighWater ?? Math.max(after, ...history.map(event => event.eventSeq)));
+          const events = history.filter(event => event.eventSeq > after && event.eventSeq <= highWater);
           return {
-            events: [],
-            durableHighWater: Number(args.durableHighWater ?? args.afterEventSeq ?? 0),
-            nextAfterEventSeq: null,
+            events,
+            durableHighWater: highWater,
+            nextAfterEventSeq: events.length ? events[events.length - 1].eventSeq : null,
             hasMore: false,
           };
+        }
         case 'get_agent_run_events_cmd':
           if (String(args.runId ?? '') === 'task-paused-hydration') {
             return [
