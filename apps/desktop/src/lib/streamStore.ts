@@ -174,14 +174,6 @@ class StreamStoreImpl {
     };
   }
 
-  /** Find the conversation ID of any currently active stream. */
-  getActiveStreamId(): string | null {
-    for (const [id, state] of Object.entries(this._streams)) {
-      if (state.isStreaming) return id;
-    }
-    return null;
-  }
-
   /** Return every conversation that currently owns a live stream. */
   getRunningConversationIds(): string[] {
     return Object.entries(this._streams)
