@@ -84,23 +84,32 @@ impl Projection {
                 "upstream answer exceeded the bounded event protocol",
             ));
         }
-        if !self.completed.contains(id) {
-            let offset = self.offsets.get(id).copied().unwrap_or(0);
-            // Full records restore missing ephemeral deltas after subscriber
-            // lag. Done remains the authority if the upstream revised text.
-            if let Some(suffix) = text.get(offset..) {
-                self.delta(tx, id, StreamBlockChannel::Answer, suffix)
-                    .await?;
-            }
-            self.completed.insert(id.to_string());
-        }
-        self.answer = text.to_string();
-        let previous = self.drafts.get(id).map_or(0, String::len);
+        let draft = self.drafts.get(id).map(String::as_str).unwrap_or_default();
+        let previous = draft.len();
         if self.draft_bytes - previous + text.len() > 4 * 1024 * 1024 {
             return Err(protocol_error(
                 "subscription answer history exceeded its byte budget",
             ));
         }
+        // A byte count alone cannot prove that the full record extends the
+        // observed deltas: a middle delta may have been lost or text revised.
+        if !self.completed.contains(id) && text.starts_with(draft) {
+            self.delta(tx, id, StreamBlockChannel::Answer, &text[previous..])
+                .await?;
+            // delta already charged the suffix to the draft byte budget.
+        } else if draft != text {
+            tx.send(AgentEvent::StreamBlockSnapshot {
+                block_id: id.to_string(),
+                channel: StreamBlockChannel::Answer,
+                text: text.to_string(),
+            })
+            .await
+            .map_err(protocol_error)?;
+        }
+        self.completed.insert(id.to_string());
+        self.offsets.insert(id.to_string(), text.len());
+        self.answer = text.to_string();
+        let previous = self.drafts.get(id).map_or(0, String::len);
         if !self.drafts.contains_key(id) {
             self.draft_order.push(id.to_string());
         }
@@ -178,6 +187,57 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn full_records_replace_corrupt_prefixes_and_repeated_revisions() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut projection = Projection::default();
+        projection
+            .delta(&tx, "a", StreamBlockChannel::Answer, "你错")
+            .await
+            .unwrap();
+        projection.complete(&tx, "a", "你好🙂").await.unwrap();
+        projection.complete(&tx, "a", "修正🙂").await.unwrap();
+        assert_eq!(projection.drafts["a"], "修正🙂");
+        assert_eq!(projection.draft_bytes, "修正🙂".len());
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            AgentEvent::StreamBlockDelta { .. }
+        ));
+        for expected in ["你好🙂", "修正🙂"] {
+            let event = rx.recv().await.unwrap();
+            assert!(
+                matches!(&event, AgentEvent::StreamBlockSnapshot { text, .. } if text == expected)
+            );
+            let wire = nexa_core::agent_run::AgentRunEvent::from_agent_event(&event);
+            assert_eq!(
+                wire.kind,
+                nexa_core::agent_run::AgentRunEventKind::OutputSnapshot
+            );
+            assert_eq!(wire.payload["text"], expected);
+        }
+        projection.complete(&tx, "a", "修正🙂").await.unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "identical full records are idempotent"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_record_appends_only_a_verified_prefix_suffix() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut projection = Projection::default();
+        projection
+            .delta(&tx, "a", StreamBlockChannel::Answer, "你")
+            .await
+            .unwrap();
+        projection.complete(&tx, "a", "你好🙂").await.unwrap();
+        rx.recv().await.unwrap();
+        assert!(
+            matches!(rx.recv().await.unwrap(), AgentEvent::StreamBlockDelta { offset: 3, delta, .. } if delta == "好🙂")
+        );
+        assert_eq!(projection.draft_bytes, "你好🙂".len());
+    }
+
     #[tokio::test]
     async fn disconnected_answer_deltas_survive_reload_without_reasoning_or_duplicate_questions() {
         let (request, mut rx, _, _) =

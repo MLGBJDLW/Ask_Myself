@@ -280,6 +280,7 @@ fn state_from_event(event: &AgentRunEvent) -> (CompanionState, String) {
         AgentRunEventKind::Thinking
         | AgentRunEventKind::PlanUpdated
         | AgentRunEventKind::OutputDelta
+        | AgentRunEventKind::OutputSnapshot
         | AgentRunEventKind::StreamReset
         | AgentRunEventKind::RecoveryAttempt => CompanionState::Thinking,
         AgentRunEventKind::AutoCompacted => CompanionState::Reviewing,

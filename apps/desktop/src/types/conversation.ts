@@ -196,6 +196,7 @@ export type AgentRunPhase =
 
 export type AgentRunEventKind =
   | 'outputDelta'
+  | 'outputSnapshot'
   | 'streamReset'
   | 'thinking'
   | 'status'

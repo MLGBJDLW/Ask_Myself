@@ -3288,6 +3288,35 @@ test('block projection buffers future UTF-8 byte offsets for answer and thinking
   assertEqual(state.thinkingText, '你🙂完', 'thinking fragments drain by UTF-8 byte offset');
 });
 
+test('block snapshots repair missed deltas in live and replay projections', () => {
+  const conversationId = 'snapshot-correction';
+  const events = [
+    runEvent({ eventSeq: 1, kind: 'outputDelta', payload: { blockId: 'a', channel: 'answer', offset: 0, delta: '你错' } }),
+    runEvent({ eventSeq: 2, kind: 'outputDelta', payload: { blockId: 'a', channel: 'answer', offset: 100, delta: 'stale gap' } }),
+    runEvent({ eventSeq: 3, kind: 'outputSnapshot', payload: { blockId: 'a', channel: 'answer', text: '你好🙂' } }),
+    runEvent({ eventSeq: 4, kind: 'outputDelta', payload: { blockId: 'b', channel: 'answer', offset: 0, delta: 'Current' } }),
+    runEvent({ eventSeq: 5, kind: 'outputSnapshot', payload: { blockId: 'a', channel: 'answer', text: '修正🙂' } }),
+  ];
+  streamStore.startStream(conversationId);
+  for (const event of events) {
+    const parsed = parseAgentFrontendEvent(frontendEvent(event));
+    assert(parsed !== null, 'snapshots cross the canonical wire parser');
+    streamStore.dispatch(conversationId, parsed);
+  }
+  const live = streamStore.getStream(conversationId);
+  assert(live, 'live state exists');
+  assertEqual(live.streamText, 'Current', 'historical correction preserves the active block');
+  const reply = live.traceEvents.find(event => event.kind === 'reply' && event.blockId === 'a');
+  assert(reply?.kind === 'reply', 'corrected block is retained');
+  assertEqual(reply.text, '修正🙂', 'the whole block replaces a corrupt prefix');
+  assertEqual(reply.nextOffset, 10, 'offset counts UTF-8 bytes');
+  const replay = projectRunEventsToStreamState(taskRun('running'), events);
+  assertEqual(replay.streamText, live.streamText, 'reload restores the current output');
+  assertEqual(JSON.stringify(replay.traceEvents.map(event => event.kind === 'reply' ? event.text : null)),
+    JSON.stringify(live.traceEvents.map(event => event.kind === 'reply' ? event.text : null)), 'reload restores corrected history');
+  streamStore.clearStream(conversationId);
+});
+
 test('Done message replaces an incomplete streamed answer as the terminal authority', () => {
   const conversationId = 'conversation-authoritative-done';
   streamStore.startStream(conversationId);

@@ -424,6 +424,7 @@ impl<'a> AgentTaskRuntime<'a> {
         let emits_snapshot = !matches!(
             event.kind,
             AgentRunEventKind::OutputDelta
+                | AgentRunEventKind::OutputSnapshot
                 | AgentRunEventKind::Thinking
                 | AgentRunEventKind::UsageUpdated
         );
@@ -571,6 +572,7 @@ impl<'a> AgentTaskRuntime<'a> {
                 )
             }
             AgentRunEventKind::OutputDelta
+            | AgentRunEventKind::OutputSnapshot
             | AgentRunEventKind::StreamReset
             | AgentRunEventKind::Thinking
             | AgentRunEventKind::UsageUpdated

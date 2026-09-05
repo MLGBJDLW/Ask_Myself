@@ -377,6 +377,7 @@ impl SubagentEventPump {
                     .await;
                 }
                 AgentEvent::StreamBlockDelta { .. }
+                | AgentEvent::StreamBlockSnapshot { .. }
                 | AgentEvent::StreamReset { .. }
                 | AgentEvent::AutoCompacted { .. }
                 | AgentEvent::ToolCallPreparing { .. }

@@ -70,6 +70,13 @@ pub enum AgentEvent {
         offset: usize,
         delta: String,
     },
+    /// Replace one output block from an authoritative full record.
+    StreamBlockSnapshot {
+        #[serde(rename = "blockId")]
+        block_id: String,
+        channel: StreamBlockChannel,
+        text: String,
+    },
     /// Reset stream projection before a recovery or controller restart.
     StreamReset {
         reason: String,

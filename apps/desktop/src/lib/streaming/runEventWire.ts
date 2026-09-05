@@ -10,6 +10,7 @@ import type {
 
 const RUN_EVENT_KINDS = new Set<AgentRunEventKind>([
   'outputDelta',
+  'outputSnapshot',
   'streamReset',
   'thinking',
   'status',
