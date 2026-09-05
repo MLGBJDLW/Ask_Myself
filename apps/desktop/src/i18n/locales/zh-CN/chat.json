@@ -693,4 +693,5 @@
   "companionFailed": "任务失败",
   "companionCancelled": "任务已取消",
   "companionSleeping": "Companion 正在睡觉"
+,"compactUnavailable": "此会话暂不支持手动压缩上下文。"
 }

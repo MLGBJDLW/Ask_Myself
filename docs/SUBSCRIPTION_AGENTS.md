@@ -51,6 +51,10 @@ an uncertain action.
 - Mixture of Agents, delegated API workers and scheduled isolated patch runs are
   unavailable for subscription configurations. Their incompatible tool paths
   are excluded or rejected before inference.
+- Manual `/compact` is unavailable for subscription conversations. Its API
+  summarizer cannot consume an official subscription login; the action is hidden
+  and direct requests fail before constructing an HTTP provider. The native
+  runtime continues to manage context inside each active turn.
 
 ## Reconciliation and microphone behavior
 

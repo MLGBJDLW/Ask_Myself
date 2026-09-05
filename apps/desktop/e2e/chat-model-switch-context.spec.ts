@@ -99,6 +99,9 @@ test.beforeEach(async ({ page }) => {
         case 'plugin:event|unlisten':
           listeners.delete(Number(args.eventId ?? 0));
           return null;
+        case 'start_context_compaction_cmd':
+          localStorage.setItem('e2e-compact-started', '1');
+          throw new Error('Unexpected subscription compaction API request');
         case 'list_subscription_models_cmd':
           return [{ id: 'gpt-native', name: 'Native GPT', reasoningEfforts: ['low', 'ultra'] }];
         case 'list_agent_configs_cmd':
@@ -292,4 +295,17 @@ test('subscription model and native reasoning selection reach the chat request',
   await page.locator('textarea').press('Enter');
   await expect.poll(() => page.evaluate(() => (window as unknown as { __lastAgentChatArgs?: Record<string,unknown> }).__lastAgentChatArgs)).toMatchObject({ agentConfigId: 'cfg-subscription' });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfigInputs?: Array<Record<string,unknown>> }).__savedAgentConfigInputs?.at(-1))).toMatchObject({ provider: 'github_copilot', model: 'gpt-native', reasoningEffort: 'ultra' });
+});
+
+
+test('subscription compact command is rejected without starting an API summarizer', async ({ page }) => {
+  await page.goto('/chat/conv-model-switch');
+  await page.getByTestId('agent-model-picker-trigger').click();
+  await page.getByTestId('agent-model-provider-cfg-subscription').click();
+  await page.getByTestId('agent-model-option-cfg-subscription-gpt-native').click();
+  await page.locator('textarea').fill('/compact');
+  await page.locator('textarea').press('Escape');
+  await page.locator('textarea').press('Enter');
+  await expect(page.getByText('Manual compaction is unavailable for this conversation.', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('e2e-compact-started'))).toBeNull();
 });

@@ -24,6 +24,7 @@ import { useChatSession } from '../lib/useChatSession';
 import { useResizablePanel } from '../lib/useResizablePanel';
 import { undoableAction } from '../lib/undoToast';
 import * as api from '../lib/api';
+import { findProviderPreset } from '../lib/providerPresets';
 import type { AgentConfig, AppConfig, Conversation, ImageAttachment, SaveAgentConfigInput } from '../types/conversation';
 import { formatUserError } from '../lib/userError';
 import { useSpeechPlayback } from '../features/voice/SpeechPlaybackProvider';
@@ -960,6 +961,7 @@ export function ChatPage() {
   }, []);
   const selectedAgentConfig =
     agentConfigs.find((config) => config.id === chat.agentConfig?.id) ?? chat.agentConfig;
+  const manualCompactionAvailable = !selectedAgentConfig || !findProviderPreset(selectedAgentConfig)?.runtime;
   const selectedPersona = personas.find((persona) => persona.id === activePersonaId);
   const selectedPersonaLabel = selectedPersona?.name || activePersonaId;
   const selectedPersonaDetail = selectedPersona?.description || activePersonaId;
@@ -1482,6 +1484,7 @@ export function ChatPage() {
   }, [chat.applyCompactionUsage, t]);
 
   const handleCompactConversation = useCallback(async () => {
+    if (!manualCompactionAvailable) { toast.error(t('chat.compactUnavailable')); return; }
     const conversationId = chat.activeId;
     if (!conversationId) return;
     if (chat.isStreaming) {
@@ -1523,7 +1526,7 @@ export function ChatPage() {
       });
       toast.error(formatUserError(t('chat.compact'), e));
     }
-  }, [chat.activeId, chat.isStreaming, compactionStatusByConversation, observeCompaction, t]);
+  }, [chat.activeId, chat.isStreaming, compactionStatusByConversation, manualCompactionAvailable, observeCompaction, t]);
 
   const handleCancelCompaction = useCallback(async () => {
     const conversationId = chat.activeId;
@@ -2007,7 +2010,7 @@ export function ChatPage() {
               sessionControls={sessionControls}
               prefillText={prefillText}
               prefillKey={prefillKey}
-              onCompact={chat.activeId ? handleCompactConversation : undefined}
+              onCompact={chat.activeId && manualCompactionAvailable ? handleCompactConversation : undefined}
               isCompacting={isCompacting}
               planModeEnabled={planModeEnabled}
               onPlanModeChange={setPlanModeEnabled}

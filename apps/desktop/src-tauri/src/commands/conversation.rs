@@ -1229,6 +1229,7 @@ pub async fn start_context_compaction_cmd(
             let conversation = database.get_conversation(&conversation_id)?;
             let config = select_agent_config_for_conversation(database, &conversation, None)
                 .map_err(nexa_core::error::CoreError::InvalidInput)?;
+            ensure_manual_compaction_supported(&config.provider)?;
             let summary_provider = resolve_desktop_summarization_provider_config(database, &config)
                 .map_err(nexa_core::error::CoreError::InvalidInput)?;
             Ok((conversation, config, summary_provider))
@@ -1269,6 +1270,24 @@ pub async fn start_context_compaction_cmd(
         .start(job)
         .await
         .map_err(|error| error.to_string())
+}
+
+fn ensure_manual_compaction_supported(provider: &str) -> Result<(), nexa_core::error::CoreError> {
+    if crate::subscription_runtime::SubscriptionRuntimeKind::from_provider(provider).is_some() {
+        return Err(nexa_core::error::CoreError::InvalidInput("Manual context compaction is unavailable for subscription conversations. Their official runtime manages context during each active turn.".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod subscription_compaction_tests {
+    #[test]
+    fn native_routes_are_rejected_before_constructing_an_http_summarizer() {
+        for provider in ["github_copilot", "openai_codex"] {
+            assert!(super::ensure_manual_compaction_supported(provider).is_err());
+        }
+        assert!(super::ensure_manual_compaction_supported("open_ai").is_ok());
+    }
 }
 
 #[tauri::command]

@@ -693,4 +693,5 @@
   "companionFailed": "タスクに失敗しました",
   "companionCancelled": "タスクをキャンセルしました",
   "companionSleeping": "コンパニオンは眠っています"
+,"compactUnavailable": "この会話では手動のコンテキスト圧縮を利用できません。"
 }

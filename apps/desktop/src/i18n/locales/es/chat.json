@@ -693,4 +693,5 @@
   "companionFailed": "La tarea falló",
   "companionCancelled": "Tarea cancelada",
   "companionSleeping": "El compañero está durmiendo"
+,"compactUnavailable": "La compactación manual no está disponible para esta conversación."
 }
