@@ -74,6 +74,7 @@ test.beforeEach(async ({ page }) => {
       },
     ];
     configs.push({ ...configs[0], id: 'cfg-subscription', name: 'My Copilot plan', provider: 'github_copilot', model: 'unavailable-old-model', isDefault: false });
+    configs.push({ ...configs[0], id: 'cfg-codex', name: 'My Codex plan', provider: 'openai_codex', model: 'unavailable-old-model', isDefault: false });
     const savedAgentConfigInputs: Array<Record<string, unknown>> = [];
     (window as unknown as { __savedAgentConfigInputs?: Array<Record<string, unknown>> }).__savedAgentConfigInputs = savedAgentConfigInputs;
 
@@ -280,22 +281,24 @@ test('model selector saves model and reasoning changes to the agent config', asy
 });
 
 
-test('subscription model and native reasoning selection reach the chat request', async ({ page }) => {
+for (const [provider, configId] of [['github_copilot', 'cfg-subscription'], ['openai_codex', 'cfg-codex']]) {
+test(`${provider} model and native reasoning selection reach the chat request`, async ({ page }) => {
   await page.goto('/chat/conv-model-switch');
   const picker = page.getByTestId('agent-model-picker-trigger');
   await picker.click();
-  await page.getByTestId('agent-model-provider-cfg-subscription').click();
-  await expect(page.getByTestId('agent-model-option-cfg-subscription-unavailable-old-model')).toHaveCount(0);
-  await page.getByTestId('agent-model-option-cfg-subscription-gpt-native').click();
-  await expect(picker).toHaveAttribute('title', 'github_copilot / gpt-native');
+  await page.getByTestId(`agent-model-provider-${configId}`).click();
+  await expect(page.getByTestId(`agent-model-option-${configId}-unavailable-old-model`)).toHaveCount(0);
+  await page.getByTestId(`agent-model-option-${configId}-gpt-native`).click();
+  await expect(picker).toHaveAttribute('title', `${provider} / gpt-native`);
   await page.getByTestId('agent-reasoning-picker-trigger').click();
   await expect(page.getByTestId('agent-model-reasoning-none')).toHaveCount(0);
   await page.getByTestId('agent-model-reasoning-ultra').click();
   await page.locator('textarea').fill('Please inspect the current page');
   await page.locator('textarea').press('Enter');
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __lastAgentChatArgs?: Record<string,unknown> }).__lastAgentChatArgs)).toMatchObject({ agentConfigId: 'cfg-subscription' });
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfigInputs?: Array<Record<string,unknown>> }).__savedAgentConfigInputs?.at(-1))).toMatchObject({ provider: 'github_copilot', model: 'gpt-native', reasoningEffort: 'ultra' });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __lastAgentChatArgs?: Record<string,unknown> }).__lastAgentChatArgs)).toMatchObject({ agentConfigId: configId });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfigInputs?: Array<Record<string,unknown>> }).__savedAgentConfigInputs?.at(-1))).toMatchObject({ provider, model: 'gpt-native', reasoningEffort: 'ultra' });
 });
+}
 
 
 test('subscription compact command is rejected without starting an API summarizer', async ({ page }) => {

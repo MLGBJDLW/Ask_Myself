@@ -729,6 +729,7 @@ pub async fn list_tool_access_map_cmd(
 
     let mut names = registry.tool_names();
     names.extend([
+        "list_subagent_models".to_string(),
         "spawn_subagent".to_string(),
         "spawn_subagent_batch".to_string(),
         "judge_subagent_results".to_string(),

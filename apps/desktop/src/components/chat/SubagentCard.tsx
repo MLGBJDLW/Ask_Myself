@@ -264,6 +264,8 @@ export function SubagentCard({
               <div className="grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-3">
                 {providerId && <div className="min-w-0 break-all">{t('chat.subagentRuntimeProvider')}: {providerId}</div>}
                 {effectiveModel && <div className="min-w-0 break-all">{t('chat.subagentEffectiveModel')}: {effectiveModel}</div>}
+                {run.effectiveModelBudgets?.reasoningEffort && <div>{t('settings.reasoningEffort')}: {run.effectiveModelBudgets.reasoningEffort}</div>}
+                {run.effectiveModelBudgets?.maxIterations != null && run.effectiveModelBudgets.maxIterations < 4_294_967_295 && <div>{t('settings.maxIterations')}: {run.effectiveModelBudgets.maxIterations}</div>}
                 {run.modelPolicy && <div>{t('chat.subagentModelPolicy')}: {formatModelPolicy(run.modelPolicy)}</div>}
               </div>
             </div>

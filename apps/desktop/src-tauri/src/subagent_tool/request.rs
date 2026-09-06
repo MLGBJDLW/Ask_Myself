@@ -169,16 +169,26 @@ pub(super) fn normalize_spawn_args(
     args.role_id = trim_optional(args.role_id).map(|role_id| normalize_role_id(&role_id));
     resolve_role_profile(args.role_id.as_deref(), args.role.as_deref())?;
     args.role = trim_optional(args.role);
+    args.route.agent_config_id = trim_optional(args.route.agent_config_id);
+    args.route.provider = trim_optional(args.route.provider);
+    args.route.model = trim_optional(args.route.model);
     args.task_id = trim_optional(args.task_id);
     args.context = trim_optional(args.context);
     args.expected_output = trim_optional(args.expected_output);
     args.parallel_group = trim_optional(args.parallel_group);
     args.deliverable_style = trim_optional(args.deliverable_style);
-    args.timeout_secs = args.timeout_secs.map(|value| value.clamp(15, 180));
+    if args.timeout_secs == Some(0) {
+        return Err(CoreError::InvalidInput(
+            "timeout_secs must be positive".into(),
+        ));
+    }
     args.acceptance_criteria = normalize_string_list(args.acceptance_criteria.take(), 8);
     args.evidence_chunk_ids = normalize_string_list(args.evidence_chunk_ids.take(), 8);
     args.source_ids = normalize_string_list(args.source_ids.take(), 16);
-    args.allowed_tools = normalize_string_list(args.allowed_tools.take(), 16);
+    args.allowed_tools = args
+        .allowed_tools
+        .take()
+        .map(|tools| normalize_string_list(Some(tools), usize::MAX).unwrap_or_default());
     args.return_sections = normalize_string_list(args.return_sections.take(), 8);
     Ok(args)
 }
@@ -187,6 +197,7 @@ pub(super) fn normalize_batch_task_args(
 ) -> Result<(Option<String>, SpawnSubagentArgs), CoreError> {
     let worker_id = trim_optional(task.id);
     let args = normalize_spawn_args(SpawnSubagentArgs {
+        route: task.route,
         task: task.task,
         task_id: task.task_id,
         role_id: task.role_id,

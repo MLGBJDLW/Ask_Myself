@@ -792,6 +792,13 @@ for the UI, lifecycle, and security contract.
 
 ## 🧭 Delegation Tools
 
+### `list_subagent_models`
+
+Return configured account IDs, provider IDs and known models without credentials
+or endpoint secrets. Reuse the returned routes when assigning workers. API
+parents inherit their route by default; subscription parents explicitly select
+an available API worker account.
+
 ### `spawn_subagent`
 
 Spawn one short-lived worker for an isolated subtask. Subagents inherit the supervisor's source scope by default, can be narrowed further, and run under a shared per-turn budget.
@@ -799,6 +806,10 @@ Spawn one short-lived worker for an isolated subtask. Subagents inherit the supe
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `task` | string | yes | Concrete delegated task |
+| `agent_config_id` | string | no | Saved worker account/endpoint from `list_subagent_models` |
+| `provider` | string | no | Configured provider ID; use the account ID if ambiguous |
+| `model` | string | no | Model on the selected route; overrides `model_policy` |
+| `reasoning_effort` | string | no | Supported worker reasoning level; overrides role defaults |
 | `role_id` | string | no | Structured role: `researcher`, `verifier`, `critic`, `planner`, `writer`, `connector`, or `desktop_operator` |
 | `role` | string | no | Free-form role nuance; prefer `role_id` for known profiles |
 | `context` | string | no | Supervisor handoff context |
@@ -810,14 +821,28 @@ Spawn one short-lived worker for an isolated subtask. Subagents inherit the supe
 | `parallel_group` | string | no | Label for sibling workers |
 | `deliverable_style` | string | no | Style hint such as critique, plan, or fact check |
 | `return_sections` | string[] | no | Ordered response section titles |
-| `max_iterations` | integer | no | 1-6 worker loop budget |
-| `timeout_secs` | integer | no | 15-180 second timeout |
+| `max_iterations` | integer | no | Inherit parent tool-round budget when omitted; zero is answer-only |
+| `timeout_secs` | integer | no | Positive deadline bounded by the configured delegation run deadline |
 
-Role profiles set default return sections, conservative iteration/time budgets, and recommended tool subsets when the caller does not provide `allowed_tools`.
+Role profiles set default return sections, timeout estimates and recommended tool
+subsets when `allowed_tools` is omitted. Explicit tool lists can select any
+parent-granted tool, and `[]` grants no tools. The six-round cap and 180-second
+explicit argument cap no longer override worker configuration. Shared call,
+token, concurrency and run-deadline budgets still apply. Workers run their own
+handoff policy without inheriting the parent's Nexus fan-out requirements.
+
+Delegation remains one level deep: nested workers would need scheduler support
+to release a waiting parent's concurrency permit. Interactive browser/computer
+tools remain parent-owned until workers have scoped surface leases and approval
+proxies. These unavailable tools are excluded from worker discovery.
 
 ### `spawn_subagent_batch`
 
 Launch several workers under one shared budget. Provide explicit `tasks`, or provide a `workflow_template` plus `batch_goal` and let Nexa expand the batch.
+
+Each task accepts its own account, model and reasoning selection. A batch can
+contain up to 32 workers, with up to 12 concurrent workers subject to the user's
+shared limits. Oversized batches fail explicitly instead of dropping tasks.
 
 Built-in workflow templates:
 

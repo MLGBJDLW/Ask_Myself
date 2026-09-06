@@ -58,6 +58,8 @@ pub struct SubagentTool {
     runtime: DelegationRuntime,
 }
 
+pub struct SubagentModelsTool;
+
 pub struct SubagentBatchTool {
     runtime: DelegationRuntime,
 }
@@ -108,6 +110,7 @@ pub struct DelegationRuntime {
     budget: SubagentBudgetController,
     cancel_token: CancellationToken,
     delegation_depth: u8,
+    requires_explicit_route: bool,
 }
 
 impl SubagentTool {
@@ -181,6 +184,7 @@ impl DelegationRuntime {
             budget,
             cancel_token,
             delegation_depth: 0,
+            requires_explicit_route: false,
         }
     }
 
@@ -188,6 +192,11 @@ impl DelegationRuntime {
         if let Ok(mut slot) = self.tool_registry.lock() {
             *slot = Some(registry);
         }
+    }
+
+    pub fn require_explicit_route(mut self) -> Self {
+        self.requires_explicit_route = true;
+        self
     }
 
     fn get_tool_registry(&self) -> Result<ToolRegistry, CoreError> {
@@ -220,6 +229,7 @@ impl DelegationRuntime {
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth.saturating_add(1),
+            requires_explicit_route: self.requires_explicit_route,
         }
     }
 
@@ -241,9 +251,11 @@ impl DelegationRuntime {
             budget: self.budget.clone(),
             cancel_token,
             delegation_depth: self.delegation_depth,
+            requires_explicit_route: self.requires_explicit_route,
         }
     }
 
+    #[cfg(test)]
     fn can_delegate_further(&self) -> bool {
         self.delegation_depth < MAX_SUBAGENT_DELEGATION_DEPTH
     }
@@ -352,6 +364,8 @@ impl DelegationRuntime {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct SpawnSubagentArgs {
     task: String,
+    #[serde(flatten)]
+    route: SubagentRouteArgs,
     #[serde(default)]
     task_id: Option<String>,
     #[serde(default)]
@@ -386,6 +400,8 @@ struct SpawnSubagentArgs {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct BatchSubagentTaskArgs {
+    #[serde(flatten)]
+    route: SubagentRouteArgs,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -500,7 +516,7 @@ impl DelegationCompletionPolicy {
             }
             "first_success" | "firstsuccess" => Ok(Self::FirstSuccess),
             "deadline" => Ok(Self::Deadline {
-                deadline_ms: args.deadline_ms.unwrap_or(60_000).clamp(250, 180_000),
+                deadline_ms: args.deadline_ms.unwrap_or(60_000).clamp(250, 3_600_000),
             }),
             "parent_decides" | "parentdecides" => Ok(Self::ParentDecides),
             _ => Err(CoreError::InvalidInput(format!(
@@ -684,6 +700,7 @@ fn subtask_input_payload(
         "roleName": role_profile.map(|profile| profile.label),
         "role": &args.role,
         "modelPolicy": &args.model_policy,
+        "requestedRoute": &args.route,
         "context": &args.context,
         "expectedOutput": &args.expected_output,
         "acceptanceCriteria": &args.acceptance_criteria,
@@ -964,6 +981,7 @@ mod judge;
 mod policy;
 mod preflight;
 mod request;
+mod routing;
 mod stages;
 mod tools;
 mod worker;
@@ -973,6 +991,7 @@ use event_pump::*;
 use policy::*;
 use preflight::*;
 use request::*;
+use routing::*;
 use stages::*;
 use worker::*;
 

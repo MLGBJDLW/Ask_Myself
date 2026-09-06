@@ -229,6 +229,16 @@ test.beforeEach(async ({ page }) => {
         }
         case 'get_conversation_usage_snapshot_cmd':
           return null;
+        case 'agent_chat_cmd':
+          setTimeout(() => {
+            for (const [id, listener] of listeners) {
+              if (listener.event === 'agent://run-event') callbackMap.get(listener.handlerId)?.({
+                event: listener.event, id,
+                payload: { conversationId: conversation.id, type: 'thinking', content: 'Working on the request.' },
+              });
+            }
+          }, 25);
+          return null;
         case 'get_app_config_cmd': {
           if (microphoneControl.deferAppConfig) {
             microphoneControl.appConfigPending = true;
@@ -356,7 +366,52 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('recording dock exposes responsive live, pause, details, processing, and cancel states', async ({ page }) => {
+test('dictation and next-turn Nexus controls remain usable during an active response', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByTestId('chat-input-textarea').fill('Start a long task');
+  await page.getByTestId('chat-send').click();
+  await expect(page.getByTestId('chat-stop')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start voice input' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+  await page.getByTestId('chat-nexus-mode').click();
+  await page.getByTestId('chat-nexus-confirm').click();
+  await expect(page.getByTestId('chat-nexus-mode')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('chat-stop')).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void })
+      .__EMIT_TAURI_EVENT__('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test', kind: 'interim', update: 'replaceSnapshot', sequence: 1,
+        text: 'Here is my next instruction',
+      });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('Here is my next instruction');
+});
+
+test('recording dock retracts through intermediate layout heights', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+  const heights = await page.evaluate(async () => {
+    const dock = document.querySelector('[data-testid="voice-recording-dock"]')!;
+    const container = dock.parentElement!;
+    const initial = container.getBoundingClientRect().height;
+    (dock.querySelector('[aria-label="Cancel and delete recording"]') as HTMLButtonElement).click();
+    const samples: number[] = [];
+    const start = performance.now();
+    while (performance.now() - start < 450) {
+      await new Promise(requestAnimationFrame);
+      const height = container.isConnected ? container.getBoundingClientRect().height : 0;
+      if (height > 0 && height < initial - 1) samples.push(Math.round(height));
+    }
+    return [...new Set(samples)];
+  });
+  expect(heights.length).toBeGreaterThan(2);
+  await expect(page.getByTestId('voice-recording-dock')).toHaveCount(0);
+});
+
+test('recording dock exposes responsive live, pause, details, processing, and cancel states', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/chat/conv-voice-dock');
@@ -367,6 +422,7 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect(dock).toHaveAttribute('data-state', 'online');
   await expect(dock).toContainText('en · gpt-live-transcribe');
   expect((await dock.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(420);
+  await page.screenshot({ path: testInfo.outputPath('voice-dock-desktop.png') });
 
   const waveform = page.getByTestId('microphone-waveform');
   await expect(waveform).toHaveAttribute('data-animated', 'false');
@@ -446,9 +502,10 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await page.setViewportSize({ width: 700, height: 800 });
   await expect.poll(() => dock.evaluate((element) => {
     const dockWidth = element.getBoundingClientRect().width;
-    const toolbarWidth = element.parentElement?.parentElement?.getBoundingClientRect().width ?? 0;
+    const toolbarWidth = element.closest('[data-testid="chat-input-toolbar"]')?.getBoundingClientRect().width ?? 0;
     return Math.abs(toolbarWidth - dockWidth - 20);
   })).toBeLessThan(8);
+  await page.screenshot({ path: testInfo.outputPath('voice-dock-narrow.png') });
   await expect.poll(() => dock.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     return bounds.top >= 0 && bounds.bottom <= window.innerHeight;

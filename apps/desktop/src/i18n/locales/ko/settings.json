@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "공식 Copilot CLI로 로그인하고 구독 모델을 선택해 채팅 공급자로 저장하세요. Nexa가 도구 실행과 승인을 처리하며 GitHub 토큰은 Copilot에 보관됩니다."
 ,"subscriptionSelectModel": "사용 가능한 모델 선택"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "공급자를 저장한 후 채팅에서 모델과 추론 수준을 선택하세요."
 }

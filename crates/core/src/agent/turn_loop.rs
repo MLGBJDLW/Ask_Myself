@@ -1194,6 +1194,7 @@ impl AgentExecutor {
                 let dispatch_outcome = match self
                     .dispatch_tool_calls(
                         tool_dispatch::ToolDispatchContext {
+                            workspace_isolation: workspace_isolation.is_some(),
                             db,
                             tx: &tx,
                             conversation_id,
@@ -2686,6 +2687,7 @@ impl AgentExecutor {
             let dispatch_outcome = match self
                 .dispatch_tool_calls(
                     tool_dispatch::ToolDispatchContext {
+                        workspace_isolation: workspace_isolation.is_some(),
                         db,
                         tx: &tx,
                         conversation_id,

@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "公式 Copilot CLI でログインし、サブスクリプションのモデルを選んでチャットプロバイダーとして保存します。ツールの実行と承認は Nexa が管理し、GitHub トークンは Copilot に保持されます。"
 ,"subscriptionSelectModel": "利用可能なモデルを選択"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "プロバイダーを保存した後、チャットでモデルと推論レベルを選択してください。"
 }

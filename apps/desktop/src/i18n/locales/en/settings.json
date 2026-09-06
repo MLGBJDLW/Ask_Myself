@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "Sign in with the official Copilot CLI, select a subscription model, and save it as a chat provider. Nexa handles tool execution and approvals; your GitHub token stays with Copilot."
 ,"subscriptionSelectModel": "Select an available model"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "Choose the model and reasoning level in Chat after saving this provider."
 }

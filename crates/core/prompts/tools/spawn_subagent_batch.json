@@ -7,57 +7,159 @@
       "tasks": {
         "type": "array",
         "minItems": 1,
-        "maxItems": 8,
+        "maxItems": 32,
         "description": "Explicit workers to launch. Omit this when using workflow_template with batch_goal.",
         "items": {
           "type": "object",
           "properties": {
-            "id": { "type": "string" },
+            "id": {
+              "type": "string"
+            },
             "task_id": {
               "type": "string",
               "description": "Optional reusable subagent session id. Reuse a task_id returned by an earlier worker to continue that worker's prior context within the current supervisor turn."
             },
-            "task": { "type": "string" },
+            "task": {
+              "type": "string"
+            },
             "role_id": {
               "type": "string",
               "description": "Structured role profile for this worker."
             },
-            "role": { "type": "string", "description": "Optional free-form perspective for this worker." },
+            "role": {
+              "type": "string",
+              "description": "Optional free-form perspective for this worker."
+            },
             "model_policy": {
               "type": "string",
-              "enum": ["fast", "strong", "independentReviewer"],
+              "enum": [
+                "fast",
+                "strong",
+                "independentReviewer"
+              ],
               "description": "Optional workflow model class. Fast and independent-review phases use a compatible auxiliary model when one is configured for the same provider; otherwise they safely fall back to the parent model."
             },
-            "context": { "type": "string" },
-            "expected_output": { "type": "string" },
-            "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
-            "evidence_chunk_ids": { "type": "array", "items": { "type": "string" } },
-            "source_ids": { "type": "array", "items": { "type": "string" } },
-            "allowed_tools": { "type": "array", "items": { "type": "string" } },
-            "parallel_group": { "type": "string" },
-            "deliverable_style": { "type": "string" },
-            "return_sections": { "type": "array", "items": { "type": "string" } },
-            "max_iterations": { "type": "integer", "minimum": 1, "maximum": 6 },
-            "timeout_secs": { "type": "integer", "minimum": 15, "maximum": 180 }
+            "context": {
+              "type": "string"
+            },
+            "expected_output": {
+              "type": "string"
+            },
+            "acceptance_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "evidence_chunk_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "source_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "allowed_tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "parallel_group": {
+              "type": "string"
+            },
+            "deliverable_style": {
+              "type": "string"
+            },
+            "return_sections": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "max_iterations": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional tool-round budget. Zero allows an answer without tools. Omit to inherit the parent round budget; shared delegation token/call limits still apply."
+            },
+            "timeout_secs": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Optional worker deadline in seconds, bounded by the configured delegation run deadline."
+            },
+            "agent_config_id": {
+              "type": "string",
+              "description": "Saved provider/account configuration ID from list_subagent_models. Omit to inherit the parent route."
+            },
+            "provider": {
+              "type": "string",
+              "description": "Optional configured provider ID. Use agent_config_id when multiple accounts/endpoints share a provider. Never pass credentials or an endpoint."
+            },
+            "model": {
+              "type": "string",
+              "description": "Explicit model on the selected route. Omit to inherit its default. This overrides model_policy."
+            },
+            "reasoning_effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ],
+              "description": "Optional supported reasoning effort for this worker. Explicit selection takes precedence over automatic role policy."
+            }
           },
-          "required": ["task"],
+          "required": [
+            "task"
+          ],
           "additionalProperties": false
         }
       },
-      "batch_goal": { "type": "string" },
+      "batch_goal": {
+        "type": "string"
+      },
       "workflow_template": {
         "type": "string",
         "description": "Optional built-in workflow to expand from batch_goal when tasks is omitted. Choose one of the available workflow template IDs."
       },
-      "parallel_group": { "type": "string" },
-      "max_parallel": { "type": "integer", "minimum": 1, "maximum": 8 },
+      "parallel_group": {
+        "type": "string"
+      },
+      "max_parallel": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 12
+      },
       "completion_policy": {
         "type": "string",
-        "enum": ["all", "quorum", "first_success", "deadline", "parent_decides"],
+        "enum": [
+          "all",
+          "quorum",
+          "first_success",
+          "deadline",
+          "parent_decides"
+        ],
         "description": "When the parent may continue: after all workers, a successful quorum, the first success, a deadline, or after the first settled result for an explicit parent decision. If workers remain, use observe_subagent_batch with the returned batchId to collect supplemental evidence or cancel them before final synthesis."
       },
-      "quorum": { "type": "integer", "minimum": 1, "maximum": 8 },
-      "deadline_ms": { "type": "integer", "minimum": 250, "maximum": 180000 },
+      "quorum": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 32
+      },
+      "deadline_ms": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 3600000
+      },
       "cancel_remaining": {
         "type": "boolean",
         "description": "Cancel workers still running when a completion policy releases the parent. Defaults to false; remaining results are available through observe_subagent_batch as supplemental evidence."

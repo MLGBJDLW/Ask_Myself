@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "Connectez-vous avec le CLI officiel Copilot, choisissez un modèle de votre abonnement et enregistrez-le comme fournisseur de chat. Nexa gère les outils et les approbations ; le jeton GitHub reste dans Copilot."
 ,"subscriptionSelectModel": "Choisir un modèle disponible"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "Après avoir enregistré ce fournisseur, choisissez le modèle et le niveau de raisonnement dans le chat."
 }

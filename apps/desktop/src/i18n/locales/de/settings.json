@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "Über die offizielle Copilot CLI anmelden, ein Abonnementmodell wählen und als Chat-Anbieter speichern. Nexa verwaltet Werkzeuge und Genehmigungen; das GitHub-Token bleibt bei Copilot."
 ,"subscriptionSelectModel": "Verfügbares Modell wählen"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "Wähle nach dem Speichern dieses Anbieters das Modell und die Denkstufe im Chat."
 }

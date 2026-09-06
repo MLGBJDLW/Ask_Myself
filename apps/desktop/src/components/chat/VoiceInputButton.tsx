@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
@@ -18,6 +19,7 @@ export interface VoiceInputButtonHandle {
 export const VoiceInputButton = forwardRef<VoiceInputButtonHandle, VoiceInputButtonProps>(
 function VoiceInputButton({ onDictationEvent, disabled }, ref) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const voiceRuntime = useVoiceInputRuntime();
   const {
     isRecording,
@@ -168,10 +170,17 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
       : t('voice.startRecording');
 
   return (
-    <div className={recordingDockVisible
-      ? 'order-first flex w-full min-w-0 shrink-0 basis-full lg:order-none lg:w-auto lg:min-w-[420px] lg:flex-1 lg:basis-auto'
-      : 'flex shrink-0 items-center gap-0.5'}>
+    <div className="contents">
+      <AnimatePresence initial={false}>
       {recordingDockVisible && (
+        <motion.div
+          key="recording-dock"
+          className="order-first w-full min-w-0 shrink-0 basis-full overflow-hidden"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: reducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
+        >
         <VoiceRecordingDock
           analyser={analyser}
           captureState={captureState}
@@ -186,7 +195,9 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
           onPauseResume={() => { void handlePauseResume(); }}
           onStop={() => { void handleClick(); }}
         />
+        </motion.div>
       )}
+      </AnimatePresence>
       {hasPendingVoiceSpool && !isRecording && !recordingDockVisible && (
         <button
           type="button"
@@ -203,7 +214,7 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
         type="button"
         onClick={handleClick}
         disabled={disabled || busy}
-        className={`relative h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${recordingDockVisible ? 'hidden' : 'flex'} ${
+        className={`relative flex h-8 shrink-0 items-center justify-center rounded-md transition-colors duration-fast ease-out cursor-pointer disabled:pointer-events-none disabled:opacity-40 ${
           isRecording
             ? 'gap-1.5 bg-danger/10 px-2.5 text-danger voice-btn-recording'
             : 'w-8 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'

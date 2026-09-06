@@ -22,7 +22,11 @@
       },
       "model_policy": {
         "type": "string",
-        "enum": ["fast", "strong", "independentReviewer"],
+        "enum": [
+          "fast",
+          "strong",
+          "independentReviewer"
+        ],
         "description": "Optional workflow model class. Fast and independent-review phases use a compatible auxiliary model when one is configured for the same provider; otherwise they safely fall back to the parent model."
       },
       "context": {
@@ -35,22 +39,30 @@
       },
       "acceptance_criteria": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Optional checklist the subagent should satisfy before returning."
       },
       "evidence_chunk_ids": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Optional chunk IDs that should be treated as handed-off evidence from the supervisor."
       },
       "source_ids": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Optional narrower source scope for this subagent. When omitted, it inherits the supervisor scope."
       },
       "allowed_tools": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Optional narrower tool whitelist for this subagent. Tool names must be from the delegated allowlist."
       },
       "parallel_group": {
@@ -63,23 +75,51 @@
       },
       "return_sections": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Optional ordered section titles the subagent should use in its response."
       },
       "max_iterations": {
         "type": "integer",
-        "minimum": 1,
-        "maximum": 6,
-        "description": "Optional round budget for the subagent. Keep this small."
+        "minimum": 0,
+        "description": "Optional tool-round budget. Zero allows an answer without tools. Omit to inherit the parent round budget; shared delegation token/call limits still apply."
       },
       "timeout_secs": {
         "type": "integer",
-        "minimum": 15,
-        "maximum": 180,
-        "description": "Optional hard timeout for this delegated worker in seconds."
+        "minimum": 1,
+        "description": "Optional worker deadline in seconds, bounded by the configured delegation run deadline."
+      },
+      "agent_config_id": {
+        "type": "string",
+        "description": "Saved provider/account configuration ID from list_subagent_models. Omit to inherit the parent route."
+      },
+      "provider": {
+        "type": "string",
+        "description": "Optional configured provider ID. Use agent_config_id when multiple accounts/endpoints share a provider. Never pass credentials or an endpoint."
+      },
+      "model": {
+        "type": "string",
+        "description": "Explicit model on the selected route. Omit to inherit its default. This overrides model_policy."
+      },
+      "reasoning_effort": {
+        "type": "string",
+        "enum": [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "description": "Optional supported reasoning effort for this worker. Explicit selection takes precedence over automatic role policy."
       }
     },
-    "required": ["task"],
+    "required": [
+      "task"
+    ],
     "additionalProperties": false
   }
 }

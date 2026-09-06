@@ -52,6 +52,11 @@ export interface SubagentContextSnapshot {
 }
 
 export interface SubagentEffectiveModelBudgets {
+  provider?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  maxIterations?: number | null;
+  runDeadlineMs?: number | null;
   contextCapacity: number | null;
   parentHistoryHandoff: number;
   maxOutputPerStep: number | null;
@@ -471,6 +476,11 @@ function parseEffectiveModelBudgets(value: unknown): SubagentEffectiveModelBudge
       && outputAuthority !== 'safe_default')
   ) return null;
   return {
+    provider: typeof record.provider === 'string' ? record.provider : null,
+    model: typeof record.model === 'string' ? record.model : null,
+    reasoningEffort: typeof record.reasoningEffort === 'string' ? record.reasoningEffort : null,
+    maxIterations: asNumber(record.maxIterations),
+    runDeadlineMs: asNumber(record.runDeadlineMs),
     contextCapacity: asNumber(record.contextCapacity),
     parentHistoryHandoff,
     maxOutputPerStep: asNumber(record.maxOutputPerStep),

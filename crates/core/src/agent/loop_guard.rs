@@ -40,6 +40,9 @@ pub(crate) struct AgentLoopGuard {
     repeated_tool_signature_count: u32,
     repeated_tool_intervention_used: bool,
     observation_fingerprints: HashMap<String, blake3::Hash>,
+    discovery_fingerprints: std::collections::HashSet<(String, blake3::Hash)>,
+    repeated_discovery_results: u32,
+    discovery_intervention_used: bool,
     last_text_shape: Option<String>,
     repeated_text_fingerprint_count: u32,
     repeated_text_intervention_used: bool,
@@ -223,8 +226,36 @@ impl AgentLoopGuard {
         &mut self,
         call: &ToolCallRequest,
         is_error: bool,
+        content: &str,
         artifacts: Option<&Value>,
     ) -> Option<LoopGuardIntervention> {
+        if !is_error && tool_call_is_discovery(&call.name) {
+            // Compare actual results across alternating discovery tools and
+            // changing queries. A new page remains progress; new call IDs do not.
+            let fingerprint = (
+                call.name.clone(),
+                discovery_result_fingerprint(call, content, artifacts),
+            );
+            if self.discovery_fingerprints.insert(fingerprint) {
+                self.repeated_discovery_results = 0;
+                self.discovery_intervention_used = false;
+            } else {
+                self.repeated_discovery_results += 1;
+                if self.repeated_discovery_results >= 3 {
+                    let stop = self.discovery_intervention_used;
+                    self.discovery_intervention_used = true;
+                    return Some(LoopGuardIntervention {
+                        reason: "Discovery keeps returning already-seen entries without reading evidence or executing the task.".into(),
+                        action: if stop { LoopGuardAction::StopLoop } else { LoopGuardAction::ChangeStrategy },
+                        prompt: "## Loop Guard\nThe discovery results are already available. Use a returned exact file path with read_file/read_files, or call the discovered tool now. Do not list or search again unless a new scope, page, or changed result is needed. If an advertised tool is unavailable, report that concrete limitation instead of repeating discovery.".into(),
+                    });
+                }
+            }
+        } else if !is_error && tool_call_is_action_progress(&call.name) {
+            self.discovery_fingerprints.clear();
+            self.repeated_discovery_results = 0;
+            self.discovery_intervention_used = false;
+        }
         // Only a read-only observation with a changed content receipt proves
         // progress here. New IDs/timestamps and action successes do not.
         if !is_error && call.name == "browser_session" {
@@ -293,7 +324,7 @@ impl AgentLoopGuard {
 }
 
 fn tool_call_batch_signature(tool_calls: &[ToolCallRequest]) -> String {
-    tool_calls
+    let mut signatures = tool_calls
         .iter()
         .map(|call| {
             format!(
@@ -302,8 +333,49 @@ fn tool_call_batch_signature(tool_calls: &[ToolCallRequest]) -> String {
                 canonical_json_text(&call.arguments).unwrap_or_else(|| call.arguments.clone())
             )
         })
-        .collect::<Vec<_>>()
-        .join("|")
+        .collect::<Vec<_>>();
+    signatures.sort();
+    signatures.join("|")
+}
+
+fn tool_call_is_discovery(name: &str) -> bool {
+    matches!(
+        name,
+        "tool_search"
+            | "list_dir"
+            | "list_sources"
+            | "list_documents"
+            | "glob_files"
+            | "search_files"
+            | "grep_files"
+            | "list_subagent_models"
+    )
+}
+
+fn discovery_result_fingerprint(
+    call: &ToolCallRequest,
+    content: &str,
+    artifacts: Option<&Value>,
+) -> blake3::Hash {
+    if call.name == "tool_search" {
+        if let Some(matches) = artifacts
+            .and_then(|value| {
+                value
+                    .get("matches")
+                    .or_else(|| value.pointer("/artifacts/matches"))
+            })
+            .and_then(Value::as_array)
+        {
+            // Query echo, relevance ranking, and scores do not make the same
+            // advertised capabilities new evidence.
+            let mut entries: Vec<_> = matches.iter().map(|item| {
+                serde_json::json!({"name": item.get("name"), "description": item.get("description")}).to_string()
+            }).collect();
+            entries.sort();
+            return blake3::hash(entries.join("\n").as_bytes());
+        }
+    }
+    blake3::hash(content.as_bytes())
 }
 
 pub(crate) fn tool_call_is_action_progress(name: &str) -> bool {
@@ -419,6 +491,71 @@ mod tests {
     }
 
     #[test]
+    fn alternating_discovery_without_new_results_changes_strategy_then_stops() {
+        let mut guard = AgentLoopGuard::new();
+        let mut list = call(r#"{"path":"src"}"#);
+        list.name = "list_dir".into();
+        let mut search = call(r#"{"query":"read files"}"#);
+        search.name = "tool_search".into();
+        let calls = [list, search];
+        let mut actions = Vec::new();
+        for index in 0..8 {
+            let call = &calls[index % 2];
+            assert!(guard
+                .observe_model_step("", std::slice::from_ref(call))
+                .is_none());
+            if let Some(intervention) =
+                guard.observe_tool_result(call, false, "same discovered entries", None)
+            {
+                actions.push(intervention.action);
+            }
+        }
+        assert_eq!(actions.first(), Some(&LoopGuardAction::ChangeStrategy));
+        assert!(actions.contains(&LoopGuardAction::StopLoop));
+    }
+
+    #[test]
+    fn discovery_pagination_and_reading_evidence_are_progress() {
+        let mut guard = AgentLoopGuard::new();
+        for index in 0..12 {
+            let mut list = call(&format!(r#"{{"cursor":{index}}}"#));
+            list.name = "list_documents".into();
+            assert!(guard.observe_model_step("", &[list.clone()]).is_none());
+            assert!(guard
+                .observe_tool_result(&list, false, &format!("page {index}"), None)
+                .is_none());
+        }
+        assert!(guard
+            .observe_tool_result(&call("{}"), false, "actual file content", None)
+            .is_none());
+        assert!(guard.discovery_fingerprints.is_empty());
+    }
+
+    #[test]
+    fn rephrasing_tool_search_does_not_make_the_same_matches_new_evidence() {
+        let mut guard = AgentLoopGuard::new();
+        let mut intervention = None;
+        for index in 0..4 {
+            let mut search = call(&format!(r#"{{"query":"read files {index}"}}"#));
+            search.name = "tool_search".into();
+            assert!(guard.observe_model_step("", &[search.clone()]).is_none());
+            intervention = guard.observe_tool_result(
+                &search,
+                false,
+                &format!("query echo {index}"),
+                Some(&serde_json::json!({
+                    "kind": "toolSearchResults", "query": index.to_string(),
+                    "matches": [{"name":"read_file", "description":"Read a file", "score":index}],
+                })),
+            );
+        }
+        assert_eq!(
+            intervention.unwrap().action,
+            LoopGuardAction::ChangeStrategy
+        );
+    }
+
+    #[test]
     fn changed_browser_observations_are_progress_but_random_ids_are_not() {
         for screenshot_field in ["screenshotHash", "screenshot"] {
             let mut guard = AgentLoopGuard::new();
@@ -435,7 +572,12 @@ mod tests {
                     serde_json::json!(index.to_string())
                 };
                 assert!(guard
-                    .observe_tool_result(&observe, false, Some(&serde_json::json!({"data": data})))
+                    .observe_tool_result(
+                        &observe,
+                        false,
+                        "",
+                        Some(&serde_json::json!({"data": data}))
+                    )
                     .is_none());
             }
         }
@@ -446,7 +588,7 @@ mod tests {
             assert!(guard
                 .observe_model_step("", std::slice::from_ref(&observe))
                 .is_none());
-            guard.observe_tool_result(&observe, false, Some(&serde_json::json!({"data":{"contentHash":"same", "observationId":index, "timestamp":index}})));
+            guard.observe_tool_result(&observe, false, "", Some(&serde_json::json!({"data":{"contentHash":"same", "observationId":index, "timestamp":index}})));
         }
         assert_eq!(
             guard.observe_model_step("", &[observe]).unwrap().action,
@@ -467,6 +609,7 @@ mod tests {
                 guard.observe_tool_result(
                     &request,
                     is_error,
+                    "",
                     Some(&serde_json::json!({"data":{"contentHash":index.to_string()}})),
                 );
             }
@@ -480,25 +623,31 @@ mod tests {
     #[test]
     fn detects_consecutive_tool_errors() {
         let mut guard = AgentLoopGuard::new();
-        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
-        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
-        assert!(guard.observe_tool_result(&call("{}"), true, None).is_none());
+        assert!(guard
+            .observe_tool_result(&call("{}"), true, "", None)
+            .is_none());
+        assert!(guard
+            .observe_tool_result(&call("{}"), true, "", None)
+            .is_none());
+        assert!(guard
+            .observe_tool_result(&call("{}"), true, "", None)
+            .is_none());
         assert_eq!(
             guard
-                .observe_tool_result(&call("{}"), true, None)
+                .observe_tool_result(&call("{}"), true, "", None)
                 .unwrap()
                 .action,
             LoopGuardAction::ChangeStrategy
         );
         assert_eq!(
             guard
-                .observe_tool_result(&call("{}"), true, None)
+                .observe_tool_result(&call("{}"), true, "", None)
                 .unwrap()
                 .action,
             LoopGuardAction::StopLoop
         );
         assert!(guard
-            .observe_tool_result(&call("{}"), false, None)
+            .observe_tool_result(&call("{}"), false, "", None)
             .is_none());
     }
 

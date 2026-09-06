@@ -144,6 +144,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_delivers_and_caches_guard_advice_without_persisting_controller_text() {
+        let (session, count, _rx) = session(3);
+        session.execute(call("first", 1)).await.unwrap();
+        session.execute(call("second", 1)).await.unwrap();
+        let result = session.execute(call("third", 1)).await.unwrap();
+        assert!(result.result.is_error);
+        assert!(result
+            .result
+            .content
+            .contains("Do not retry the same calls"));
+        let replay = session.execute(call("third", 1)).await.unwrap();
+        assert_eq!(replay.result.content, result.result.content);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert!(
+            !session
+                .execute(call("changed-strategy", 2))
+                .await
+                .unwrap()
+                .result
+                .is_error
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        let messages = session
+            .input
+            .db
+            .get_messages(&session.input.conversation_id)
+            .unwrap();
+        assert!(!messages
+            .iter()
+            .any(|message| message.content.contains("## Loop Guard")));
+    }
+
+    #[tokio::test]
     async fn dispatch_does_not_rebuild_schemas_for_each_scheduling_consumer() {
         let (mut session, count, _rx) = session(4);
         let schemas = Arc::new(AtomicUsize::new(0));
@@ -340,6 +373,7 @@ pub struct ExternalToolSession {
     privacy: privacy::PrivacyConfig,
     activity: crate::activity::ActivityRuntime,
     state: TokioMutex<ExternalToolState>,
+    routing_prompt: String,
 }
 
 struct ExternalToolState {
@@ -389,7 +423,12 @@ impl ExternalToolSession {
             privacy,
             activity,
             state: TokioMutex::new(state),
+            routing_prompt: route.prompt_section,
         })
+    }
+
+    pub fn routing_prompt(&self) -> &str {
+        &self.routing_prompt
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -458,6 +497,8 @@ impl ExternalToolSession {
             image_attachments: None,
         })?;
         state.next_sort_order += 1;
+        let pre_tool_guidance = block.as_ref().map(|block| block.prompt.clone());
+        let spends_tool_budget = block.is_none();
         let block = block.map(|block| tool_dispatch::ToolDispatchBlock::LoopGuard(block.reason));
         let mut definitions = self.definitions();
         let mut messages = Vec::new();
@@ -504,13 +545,16 @@ impl ExternalToolSession {
                 trace: &mut trace,
                 sort_order: next_sort_order,
                 pending_action_reconciliation: action_reconciliation.blocks_interactive_input(),
+                workspace_isolation: false,
             },
             &batch,
             block,
             &mut started,
         )
         .await?;
-        *rounds += 1;
+        if spends_tool_budget {
+            *rounds += 1;
+        }
         action_reconciliation.observe_tool_results(batch.as_slice(), &outcome.summaries);
         let awaiting_interaction =
             super::turn_loop::awaiting_user_input_interaction_id(&outcome.summaries);
@@ -519,12 +563,20 @@ impl ExternalToolSession {
             .into_iter()
             .next()
             .ok_or_else(|| CoreError::Internal("Tool dispatcher returned no result".into()))?;
-        let result = ToolResult {
+        let mut result = ToolResult {
             call_id: summary.call_id,
             content: summary.content,
             is_error: summary.is_error,
             artifacts: summary.artifacts,
         };
+        // Keep continuation advice in the callback result and idempotency
+        // cache, but never turn internal controller state into chat history.
+        if let Some(guidance) = outcome.continuation_guidance.or(pre_tool_guidance) {
+            if !guidance.is_empty() {
+                result.content.push_str("\n\n");
+                result.content.push_str(&guidance);
+            }
+        }
         state.completed.insert(call.id, (signature, result.clone()));
         if let Some(interaction_id) = awaiting_interaction {
             create_task_checkpoint_for_turn_with_state(

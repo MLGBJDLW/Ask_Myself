@@ -109,7 +109,9 @@ pub(super) fn apply_nexus_worker_reasoning_policy(
     } else {
         4_096
     };
-    let Some(reasoning) = model_capabilities_from_catalog(provider, model)
+    let Some(reasoning) = (config.catalog_limits_authoritative != Some(false))
+        .then(|| model_capabilities_from_catalog(provider, model))
+        .flatten()
         .and_then(|capabilities| capabilities.reasoning)
     else {
         // Unknown/local/custom endpoints must not inherit an unbounded parent
@@ -386,7 +388,7 @@ pub(super) fn build_subagent_executor_tools(
             "cancel_subagent",
             "close_subagent",
         ]);
-    if !runtime.can_delegate_further() {
+    if runtime.delegation_depth.saturating_add(1) >= MAX_SUBAGENT_DELEGATION_DEPTH {
         return Ok(filtered);
     }
     let child_runtime = runtime.spawn_child_runtime(worker_cancel_token.child_token());

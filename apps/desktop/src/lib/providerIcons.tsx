@@ -1,13 +1,21 @@
 import type { CSSProperties } from 'react';
+import { GoCopilot } from 'react-icons/go';
 
 interface ProviderIconMeta {
   asset?: string;
+  glyph?: typeof GoCopilot;
   fallback: string;
   label: string;
   tone: string;
 }
 
 const PROVIDER_ICON_META: Record<string, ProviderIconMeta> = {
+  copilot: {
+    glyph: GoCopilot,
+    fallback: 'GH',
+    label: 'GitHub Copilot',
+    tone: 'bg-text-primary/10 text-text-primary',
+  },
   openai: {
     asset: '/provider-icons/openai.svg',
     fallback: 'AI',
@@ -169,6 +177,8 @@ const PROVIDER_ICON_META: Record<string, ProviderIconMeta> = {
 };
 
 const PROVIDER_TYPE_TO_ICON: Record<string, string> = {
+  github_copilot: 'copilot',
+  openai_codex: 'openai',
   open_ai: 'openai',
   openrouter: 'openrouter',
   anthropic: 'anthropic',
@@ -194,6 +204,8 @@ const PROVIDER_TYPE_TO_ICON: Record<string, string> = {
 };
 
 const PRESET_ID_TO_ICON: Record<string, string> = {
+  githubcopilot: 'copilot',
+  openaicodex: 'openai',
   openai: 'openai',
   openrouter: 'openrouter',
   anthropic: 'anthropic',
@@ -348,6 +360,7 @@ export function ProviderIcon({
   size = 'md',
 }: ProviderIconProps) {
   const meta = resolveProviderIconMeta({ provider, providerId, baseUrl, label });
+  const Glyph = meta.glyph;
   const maskStyle = meta.asset
     ? ({
         WebkitMask: `url("${meta.asset}") center / contain no-repeat`,
@@ -362,7 +375,9 @@ export function ProviderIcon({
       title={meta.label}
       aria-hidden="true"
     >
-      {meta.asset ? (
+      {Glyph ? (
+        <Glyph className={glyphSizeClasses[size]} aria-hidden="true" />
+      ) : meta.asset ? (
         <span className={glyphSizeClasses[size]} style={maskStyle} />
       ) : (
         <span className={`font-semibold leading-none tracking-normal ${fallbackTextClasses[size]}`}>

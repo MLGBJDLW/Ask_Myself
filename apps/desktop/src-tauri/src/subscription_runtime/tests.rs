@@ -50,6 +50,33 @@ fn saved_subscription_configs_keep_the_native_route_and_reasoning_level() {
 }
 
 #[test]
+fn subscription_prompt_preserves_one_kernel_and_the_active_routing_guidance() {
+    let (mut request, _rx, _, _) = fixture(SubscriptionRuntimeKind::Copilot, "native-model");
+    request.config.system_prompt =
+        nexa_core::agent::build_system_prompt(Some("Project instruction sentinel"), &[]);
+    request.user_parts = vec![ContentPart::Text {
+        text: "Fix the Rust function in src/main.rs and test it".into(),
+    }];
+    let prepared = request.prepare(false).unwrap();
+    assert_eq!(
+        prepared
+            .system_prompt
+            .matches("## Evidence and Context Discipline")
+            .count(),
+        1
+    );
+    assert_eq!(
+        prepared
+            .system_prompt
+            .matches("Project instruction sentinel")
+            .count(),
+        1
+    );
+    assert!(prepared.system_prompt.contains("## Active Routing Plan"));
+    assert!(prepared.system_prompt.contains("read it directly"));
+}
+
+#[test]
 fn subscription_input_and_history_obey_the_saved_privacy_policy() {
     let (mut request, _rx, _, _) = fixture(SubscriptionRuntimeKind::Codex, "test");
     let mut privacy = request.db.load_privacy_config().unwrap();

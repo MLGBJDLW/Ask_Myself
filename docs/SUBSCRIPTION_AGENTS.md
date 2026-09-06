@@ -1,8 +1,8 @@
 # Subscription agents
 
 Add **GitHub Copilot** or **ChatGPT / Codex** from Settings → AI Providers →
-Add Provider. Sign in through the official runtime, refresh its model list,
-select a model and save. The saved provider and its currently available models
+Add Provider. Sign in through the official runtime and save the provider.
+Choose the model and reasoning level in Chat. The saved provider and its currently available models
 then appear in the Chat model picker. Reasoning levels come from that account's
 model catalog. Signing in does not automatically create a provider.
 
@@ -68,15 +68,23 @@ the runtime does not silently switch to an in-memory journal.
   tool traces and already-finalized API turns are preserved.
 - Subscription drivers validate the selected model and reasoning level before
   inference. There is no automatic switch to another model or API credential.
-- Mixture of Agents, delegated API workers and scheduled isolated patch runs are
-  unavailable for subscription configurations. Their incompatible tool paths
-  are excluded or rejected before inference.
+- Copilot and Codex parents can delegate to configured API workers through Nexa.
+  Use `list_subagent_models` and select `agent_config_id` on each worker; a
+  subscription cannot be silently inherited as API credentials. Subscription
+  child runtimes, Mixture of Agents and scheduled isolated patch runs remain
+  unavailable. Unsupported routes fail before inference.
 - Manual `/compact` is unavailable for subscription conversations. Its API
   summarizer cannot consume an official subscription login; the action is hidden
   and direct requests fail before constructing an HTTP provider. The native
   runtime continues to manage context inside each active turn.
 
 ## Reconciliation and microphone behavior
+
+Dictation and next-turn orchestration controls remain available while the
+current response streams. Changing Nexus, quality or MoA updates the next-turn
+selection; it does not mutate the already-running executor. The recording dock
+expands above the controls and remains mounted through its exit animation,
+respecting reduced-motion preferences.
 
 The heartbeat carries the committed event high-water mark. Receiving a heartbeat
 does not postpone the recovery watchdog, so an alive backend cannot indefinitely

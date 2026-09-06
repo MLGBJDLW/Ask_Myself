@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useIsPresent } from 'framer-motion';
 import {
   ChevronDown,
   Loader2,
@@ -63,6 +64,7 @@ export function VoiceRecordingDock({
   onStop,
 }: VoiceRecordingDockProps) {
   const { t } = useTranslation();
+  const isPresent = useIsPresent();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const stateKey = isProcessing
     ? 'processing'
@@ -90,6 +92,7 @@ export function VoiceRecordingDock({
   return (
     <section
       data-testid="voice-recording-dock"
+      inert={!isPresent}
       data-state={stateKey}
       className="min-w-0 flex-1 overflow-hidden rounded-lg border border-danger/25 bg-surface-1/92 shadow-[0_8px_24px_rgba(0,0,0,0.14)]"
       aria-label={t('voice.recordingDock')}

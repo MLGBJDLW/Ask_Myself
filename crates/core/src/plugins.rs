@@ -388,6 +388,7 @@ const DELEGATION_PACKAGE: BuiltinCapabilityDeclaration = BuiltinCapabilityDeclar
     description: "Delegates bounded work to subagents and adjudicates their outputs.",
     surface: EcosystemSurfaceKind::CapabilityPackage,
     tools: &[
+        "list_subagent_models",
         "spawn_subagent",
         "spawn_subagent_batch",
         "judge_subagent_results",
