@@ -375,6 +375,10 @@ test.beforeEach(async ({ page }) => {
           return clone(appearanceRegistry);
         }
         case "list_agent_configs_cmd":
+          if (localStorage.getItem("nexa-e2e-stale-subscription-provider")) return [{
+            ...clone(anthropicConfig), provider: localStorage.getItem("nexa-e2e-stale-subscription-provider"),
+            name: "Existing plan", apiKey: "", baseUrl: null, model: "retired-native-model", reasoningEffort: "high",
+          }];
           return [clone(anthropicConfig), clone(qwenConfig)];
         case "list_subscription_models_cmd": {
           if (localStorage.getItem("nexa-e2e-subscription-models-fail") === "1") throw new Error("Subscription model catalog unavailable");
@@ -2275,6 +2279,28 @@ for (const runtime of ["GitHub Copilot", "ChatGPT / Codex"]) {
       model, apiKey: "", baseUrl: null,
     }));
   });
+}
+
+for (const provider of ["github_copilot", "openai_codex"]) {
+  for (const offline of [false, true]) {
+    test(`existing ${provider} can be renamed without replacing a retired model (offline=${offline})`, async ({ page }) => {
+      await page.addInitScript(({ provider, offline }) => {
+        localStorage.setItem("nexa-e2e-stale-subscription-provider", provider);
+        if (offline) localStorage.setItem("nexa-e2e-subscription-models-fail", "1");
+      }, { provider, offline });
+      await page.goto("/settings");
+      await page.getByRole("button", { name: "AI Providers" }).click();
+      await page.getByTitle("Edit").first().click();
+      const form = page.getByTestId("subscription-agent-form");
+      if (offline) await expect(form.getByRole("alert")).toContainText("catalog unavailable");
+      await form.locator("input").last().fill("Renamed plan");
+      await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+      await form.getByRole("button", { name: "Save", exact: true }).click();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfig?: unknown }).__savedAgentConfig)).toMatchObject({
+        provider, name: "Renamed plan", model: "retired-native-model", reasoningEffort: "high",
+      });
+    });
+  }
 }
 
 test("subscription catalog failure invalidates stale models and prevents saving", async ({ page }) => {

@@ -30,15 +30,22 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
   }, [preset.provider]);
   useEffect(() => { void refresh(); return () => { generation.current += 1; }; }, [refresh]);
   const current = models.find(item => item.id === model);
+  // Renaming an enrolled account does not select a model or start inference.
+  // Retain its exact selection even if the catalog is unavailable or retired it.
+  const preservesSavedSelection = config?.provider === preset.provider
+    && config?.model === model && !!model.trim();
+  const canSave = !!name.trim() && !isSaving
+    && (preservesSavedSelection || (!!current && !loading));
   const save = async () => {
-    if (!current || !name.trim()) return;
+    if (!canSave) return;
     setError(null);
     try { await onSave({
       id: config?.id ?? null, name: name.trim(), provider: preset.provider, apiKey: '', baseUrl: null, model,
       modelId: model, providerEndpointId: null, temperature: null, maxTokens: null, contextWindow: null,
-      isDefault: config?.isDefault ?? false, reasoningEnabled: null, thinkingBudget: null,
-      reasoningEffort: model === config?.model && current.reasoningEfforts.includes(config.reasoningEffort ?? '')
-        ? config.reasoningEffort : null,
+      isDefault: config?.isDefault ?? false,
+      reasoningEnabled: preservesSavedSelection ? config?.reasoningEnabled ?? null : null,
+      thinkingBudget: preservesSavedSelection ? config?.thinkingBudget ?? null : null,
+      reasoningEffort: preservesSavedSelection ? config?.reasoningEffort ?? null : null,
       maxIterations: config?.maxIterations ?? null, summarizationModel: null, summarizationProvider: null,
       imageGenerationModel: null, subagentAllowedTools: config?.subagentAllowedTools ?? null,
       subagentAllowedSkillIds: config?.subagentAllowedSkillIds,
@@ -59,7 +66,7 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     <div className="flex gap-2">
       <Button variant="secondary" loading={loading} onClick={() => void refresh()}>{t('settings.subscriptionRefresh')}</Button>
-      <Button loading={isSaving} disabled={!current || !name.trim() || loading} onClick={() => void save()}>{t('common.save')}</Button>
+      <Button loading={isSaving} disabled={!canSave} onClick={() => void save()}>{t('common.save')}</Button>
       <Button variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button>
     </div>
   </div>;
