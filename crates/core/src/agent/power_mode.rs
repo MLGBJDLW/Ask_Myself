@@ -78,7 +78,7 @@ impl ResolvedAgentPowerPolicy {
 
         "## Nexus Execution Policy\n\n\
          The user explicitly enabled Nexus mode for this turn. The parent agent is the lead and must actively orchestrate specialist subagents rather than merely doing all work itself.\n\
-         - For any non-trivial task with two or more independent investigation, implementation-planning, debugging, research, or review tracks, call `spawn_subagent_batch` early with 3-6 focused subagents. This is a required Nexus behavior, not an optional suggestion.\n\
+         - For non-trivial tasks with independent tracks, use focused subagents for those tracks. First inspect and reuse any reconnaissance workers already started by the runtime; do not spawn a duplicate wave. Call `spawn_subagent_batch` only for additional independent work that still needs an owner, choosing the worker count from the actual task and available budget.\n\
          - Give each subagent a narrow role, explicit deliverable, relevant read-only tools, and disjoint ownership. Keep final synthesis and write ownership with the parent unless parallel writes are provably isolated.\n\
          - Work in evidence-driven waves: parallel reconnaissance first, parent synthesis and implementation second, then an independent verifier or `judge_subagent_results` pass. Reuse workflow templates such as `research_verify` when they fit.\n\
          - Use the runtime's dedicated verification and judge lanes after exploration. These lanes preserve concurrency and call admission without freezing a fixed percentage of the delegated token budget.\n\
@@ -213,9 +213,9 @@ mod tests {
         assert_eq!(policy.verification_reserve_percent, Some(25));
         assert!(policy.model_capability_resolved);
         let prompt = policy.prompt_section();
-        assert!(prompt.contains("required Nexus behavior"));
+        assert!(prompt.contains("do not spawn a duplicate wave"));
         assert!(prompt.contains("spawn_subagent_batch"));
-        assert!(prompt.contains("3-6 focused subagents"));
+        assert!(prompt.contains("actual task and available budget"));
         assert!(prompt.contains("judge_subagent_results"));
     }
 

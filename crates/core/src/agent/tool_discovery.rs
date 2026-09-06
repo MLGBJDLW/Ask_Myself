@@ -17,6 +17,7 @@ pub(super) struct ToolSearchActivation {
     pub(super) already_available: Vec<String>,
     pub(super) unknown: Vec<String>,
     pub(super) capacity_limited: Vec<String>,
+    pub(super) evicted: Vec<String>,
 }
 
 impl ToolSearchActivation {
@@ -61,6 +62,10 @@ pub(super) fn activate_tool_search_matches_bounded(
     let mut newly_selected = Vec::new();
     let mut selected_count = tool_defs.len();
     let mut selected_tokens = context::estimate_tool_tokens_for_model(model, tool_defs);
+    let requested: HashSet<&str> = matches
+        .iter()
+        .filter_map(|item| item.get("name").and_then(|name| name.as_str()))
+        .collect();
 
     for item in matches {
         let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
@@ -80,8 +85,48 @@ pub(super) fn activate_tool_search_matches_bounded(
             if selected_count >= max_definitions
                 || selected_tokens.saturating_add(definition_tokens) > max_tool_tokens
             {
-                activation.capacity_limited.push(name.to_string());
-                continue;
+                // Rotate stale deferred definitions out of a full surface.
+                // Resident tools and every match in this result stay pinned.
+                let mut retained = tool_defs.clone();
+                let mut count = selected_count;
+                let mut tokens = selected_tokens;
+                let mut evicted = Vec::new();
+                while count >= max_definitions
+                    || tokens.saturating_add(definition_tokens) > max_tool_tokens
+                {
+                    let candidate = retained.iter().rposition(|definition| {
+                        definition.name != "tool_search"
+                            && !requested.contains(definition.name.as_str())
+                            && registry.get(&definition.name).is_some_and(|tool| {
+                                !tool
+                                    .categories()
+                                    .contains(&crate::tools::ToolCategory::Core)
+                            })
+                    });
+                    let Some(index) = candidate else {
+                        break;
+                    };
+                    let removed = retained.remove(index);
+                    count -= 1;
+                    tokens = tokens.saturating_sub(context::estimate_tool_tokens_for_model(
+                        model,
+                        std::slice::from_ref(&removed),
+                    ));
+                    evicted.push(removed.name);
+                }
+                if count >= max_definitions
+                    || tokens.saturating_add(definition_tokens) > max_tool_tokens
+                {
+                    activation.capacity_limited.push(name.to_string());
+                    continue;
+                }
+                *tool_defs = retained;
+                selected_count = count;
+                selected_tokens = tokens;
+                for name in &evicted {
+                    available.remove(name);
+                }
+                activation.evicted.extend(evicted);
             }
             selected_count = selected_count.saturating_add(1);
             selected_tokens = selected_tokens.saturating_add(definition_tokens);
@@ -220,5 +265,67 @@ mod tests {
             vec!["mcp__fake_server__search_docs".to_string()]
         );
         assert_eq!(tool_defs.len(), 1);
+    }
+
+    #[test]
+    fn a_full_surface_rotates_deferred_tools_but_keeps_resident_search() {
+        struct OldTool;
+        #[async_trait]
+        impl Tool for OldTool {
+            fn name(&self) -> &str {
+                "old_deferred_tool"
+            }
+            fn description(&self) -> &str {
+                "Older deferred capability"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type":"object"})
+            }
+            fn categories(&self) -> &'static [ToolCategory] {
+                &[ToolCategory::Mcp]
+            }
+            async fn execute(
+                &self,
+                _: crate::tools::ToolExecutionContext<'_>,
+            ) -> Result<ToolResult, CoreError> {
+                unreachable!()
+            }
+        }
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(OldTool));
+        registry.register(Box::new(DeferredFakeTool));
+        let old = registry.get("old_deferred_tool").unwrap().definition();
+        let mut resident = old.clone();
+        resident.name = "tool_search".into();
+        let mut definitions = vec![resident, old];
+        let artifacts = serde_json::json!({"kind":"toolSearchResults", "matches":[{"name":"mcp__fake_server__search_docs"}]});
+        let result = activate_tool_search_matches_bounded(
+            &registry,
+            &mut definitions,
+            Some(&artifacts),
+            "gpt-4o",
+            2,
+            u32::MAX,
+        );
+        assert_eq!(result.activated, vec!["mcp__fake_server__search_docs"]);
+        assert_eq!(result.evicted, vec!["old_deferred_tool"]);
+        assert_eq!(definitions.len(), 2);
+        assert!(definitions
+            .iter()
+            .any(|definition| definition.name == "tool_search"));
+        // An oversized definition must not evict unrelated tools pointlessly.
+        let before = definitions.clone();
+        let reverse = serde_json::json!({"kind":"toolSearchResults", "matches":[{"name":"old_deferred_tool"}]});
+        let blocked = activate_tool_search_matches_bounded(
+            &registry,
+            &mut definitions,
+            Some(&reverse),
+            "gpt-4o",
+            2,
+            1,
+        );
+        assert_eq!(blocked.capacity_limited, vec!["old_deferred_tool"]);
+        assert_eq!(definitions.len(), before.len());
+        assert!(blocked.evicted.is_empty());
     }
 }

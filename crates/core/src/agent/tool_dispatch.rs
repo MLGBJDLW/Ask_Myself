@@ -349,6 +349,7 @@ pub(super) struct ToolDispatchContext<'a> {
     pub(super) trace: &'a mut Option<AgentTrace>,
     pub(super) sort_order: &'a mut i64,
     pub(super) pending_action_reconciliation: bool,
+    pub(super) workspace_isolation: bool,
 }
 
 fn action_reconciliation_blocks(tool_name: &str, args: &serde_json::Value) -> bool {
@@ -480,6 +481,7 @@ pub(super) struct ToolDispatchSummary {
 pub(super) struct ToolDispatchOutcome {
     pub(super) summaries: Vec<ToolDispatchSummary>,
     pub(super) terminal_loop_guard_reason: Option<String>,
+    pub(super) continuation_guidance: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -570,7 +572,18 @@ impl ToolDispatchRuntime<'_> {
             trace,
             sort_order,
             pending_action_reconciliation,
+            workspace_isolation,
         } = ctx;
+        let scoped_registry = workspace_isolation.then(|| {
+            let names = self
+                .tools
+                .tool_names()
+                .into_iter()
+                .filter(|name| !super::workspace_isolation::is_unscoped_isolation_tool(name))
+                .collect::<Vec<_>>();
+            self.tools.filtered(&names)
+        });
+        let discovery_tools = scoped_registry.as_ref().unwrap_or(self.tools);
 
         // -- 4e. Execute tool calls in parallel ------------------------------
         // ToolRun is the sole produced execution lifecycle. Retired ToolCall
@@ -599,7 +612,8 @@ impl ToolDispatchRuntime<'_> {
         // Build futures for all tool calls and execute concurrently.
         let offered_tool_names: HashSet<String> =
             tool_defs.iter().map(|tool| tool.name.clone()).collect();
-        let registered_tool_names: HashSet<String> = self.tools.tool_names().into_iter().collect();
+        let registered_tool_names: HashSet<String> =
+            discovery_tools.tool_names().into_iter().collect();
         let has_hidden_registered_tools = offered_tool_names.len() < registered_tool_names.len();
         let layout = prompt_layout::PromptLayout::for_request(
             self.config.provider_type,
@@ -1143,7 +1157,7 @@ impl ToolDispatchRuntime<'_> {
                                     source_scope,
                                     conversation_id,
                                     turn_id,
-                                    tool_registry: Some(self.tools),
+                                    tool_registry: Some(discovery_tools),
                                     cancel_token: Some(self.cancel_token),
                                     activity_runtime: Some(self.activity_runtime),
                                     event_tx: Some(&progress_tx),
@@ -1510,7 +1524,7 @@ impl ToolDispatchRuntime<'_> {
                                 self.config.resolved_max_response_tokens(model),
                             );
                         tool_discovery::activate_tool_search_matches_bounded(
-                            self.tools,
+                            discovery_tools,
                             tool_defs,
                             tool_artifacts.as_ref(),
                             model,
@@ -1519,7 +1533,7 @@ impl ToolDispatchRuntime<'_> {
                         )
                     } else {
                         tool_discovery::activate_tool_search_matches(
-                            self.tools,
+                            discovery_tools,
                             tool_defs,
                             tool_artifacts.as_ref(),
                         )
@@ -1541,10 +1555,13 @@ impl ToolDispatchRuntime<'_> {
                             })
                             .await;
                     }
+                    if !activation.evicted.is_empty() {
+                        tool_context_msg.push_str(&format!("\n\nActivated the requested tools by unloading older deferred definitions: {}. Their implementations remain available through later discovery if needed.", activation.evicted.join(", ")));
+                    }
                     if !activation.capacity_limited.is_empty() {
                         let names = std::mem::take(&mut activation.capacity_limited).join(", ");
                         let content = format!(
-                            "Tool-surface capacity prevented activating: {names}. Refine tool_search to a smaller, more specific match set."
+                            "Tool-surface capacity prevented activating: {names}. Repeating or rephrasing discovery will not increase capacity. Use an already available tool for the task, or report that these definitions cannot fit the current model's tool budget."
                         );
                         tool_context_msg.push_str("\n\n");
                         tool_context_msg.push_str(&content);
@@ -1590,9 +1607,12 @@ impl ToolDispatchRuntime<'_> {
                 };
                 loop_recorder.record(finished.clone());
                 append_persisted_trace_loop_event(persisted_trace_items, finished);
-                if let Some(intervention) =
-                    loop_guard.observe_tool_result(&tc, tool_is_error, tool_artifacts.as_ref())
-                {
+                if let Some(intervention) = loop_guard.observe_tool_result(
+                    &tc,
+                    tool_is_error,
+                    &content,
+                    tool_artifacts.as_ref(),
+                ) {
                     let event = TurnLoopEvent::LoopGuardIntervention {
                         reason: intervention.reason.clone(),
                         action: intervention.action.as_str().to_string(),
@@ -1812,7 +1832,7 @@ impl ToolDispatchRuntime<'_> {
             provider_tool_results,
             visual_context_messages,
         );
-        if let Some(prompt) = post_tool_loop_guard_prompt {
+        if let Some(prompt) = post_tool_loop_guard_prompt.as_ref() {
             if let Some(message) = prompt_ir::controller_state_message(prompt) {
                 messages.push(message);
             }
@@ -1820,6 +1840,7 @@ impl ToolDispatchRuntime<'_> {
         Ok(ToolDispatchOutcome {
             summaries,
             terminal_loop_guard_reason,
+            continuation_guidance: post_tool_loop_guard_prompt,
         })
     }
 }

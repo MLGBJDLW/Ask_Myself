@@ -799,10 +799,8 @@ fn test_route_user_turn_treats_tool_repair_as_file_operation() {
         .contains(&ToolCategory::FileSystem));
     assert!(route.prompt_section.contains("code_intelligence"));
     assert!(route.prompt_section.contains("grep_files/search_files"));
-    assert!(route.prompt_section.contains("before reading"));
-    assert!(route
-        .prompt_section
-        .contains("read_file/read_files as follow-up"));
+    assert!(route.prompt_section.contains("read it directly"));
+    assert!(route.prompt_section.contains("do not repeat discovery"));
     assert!(route.prompt_section.contains("project_tool"));
 }
 
