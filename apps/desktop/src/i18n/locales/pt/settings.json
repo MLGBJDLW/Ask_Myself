@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "Entre pela CLI oficial do Copilot, escolha um modelo da assinatura e salve como provedor de chat. O Nexa gerencia ferramentas e aprovações; o token do GitHub permanece no Copilot."
 ,"subscriptionSelectModel": "Selecione um modelo disponível"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "Depois de salvar este provedor, escolha o modelo e o nível de raciocínio no chat."
 }

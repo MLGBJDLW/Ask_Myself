@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "Войдите через официальный CLI Copilot, выберите модель подписки и сохраните её как провайдера чата. Nexa управляет инструментами и разрешениями; токен GitHub остаётся в Copilot."
 ,"subscriptionSelectModel": "Выберите доступную модель"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "После сохранения провайдера выберите модель и уровень рассуждений в чате."
 }

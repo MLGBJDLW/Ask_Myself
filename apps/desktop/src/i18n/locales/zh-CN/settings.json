@@ -975,4 +975,5 @@
   ,"copilotOwnershipNotice": "通过 Copilot 官方 CLI 登录，选择订阅模型后保存为聊天提供商。工具执行与审批由 Nexa 处理，GitHub 令牌保留在 Copilot 中。"
 ,"subscriptionSelectModel": "选择可用模型"
 ,"reasoningUltra": "Ultra"
+,"subscriptionModelsInChat": "保存此提供商后，在 Chat 中选择模型和推理强度。"
 }

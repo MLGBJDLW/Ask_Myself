@@ -2266,7 +2266,9 @@ for (const runtime of ["GitHub Copilot", "ChatGPT / Codex"]) {
     await page.getByRole("button", { name: runtime, exact: false }).click();
     const form = page.getByTestId("subscription-agent-form");
     const model = runtime === "GitHub Copilot" ? "claude-sonnet-4.6" : "gpt-6";
-    await expect(form.getByTestId("subscription-model-select")).toHaveValue(model);
+    await expect(form.getByRole("combobox")).toHaveCount(0);
+    await expect(form).toContainText("Choose the model and reasoning level in Chat");
+    await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
     await form.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAgentConfig?: unknown }).__savedAgentConfig)).toEqual(expect.objectContaining({
       provider: runtime === "GitHub Copilot" ? "github_copilot" : "openai_codex",

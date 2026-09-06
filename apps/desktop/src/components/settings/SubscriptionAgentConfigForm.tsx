@@ -13,7 +13,6 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
   const { t } = useTranslation();
   const [name, setName] = useState(config?.name ?? preset.name);
   const [model, setModel] = useState(config?.model ?? '');
-  const [effort, setEffort] = useState(config?.reasoningEffort ?? '');
   const [models, setModels] = useState<api.CopilotModelSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,9 +37,16 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
       id: config?.id ?? null, name: name.trim(), provider: preset.provider, apiKey: '', baseUrl: null, model,
       modelId: model, providerEndpointId: null, temperature: null, maxTokens: null, contextWindow: null,
       isDefault: config?.isDefault ?? false, reasoningEnabled: null, thinkingBudget: null,
-      reasoningEffort: current.reasoningEfforts.includes(effort) ? effort : null,
+      reasoningEffort: model === config?.model && current.reasoningEfforts.includes(config.reasoningEffort ?? '')
+        ? config.reasoningEffort : null,
       maxIterations: config?.maxIterations ?? null, summarizationModel: null, summarizationProvider: null,
       imageGenerationModel: null, subagentAllowedTools: config?.subagentAllowedTools ?? null,
+      subagentAllowedSkillIds: config?.subagentAllowedSkillIds,
+      subagentMaxParallel: config?.subagentMaxParallel,
+      subagentMaxCallsPerTurn: config?.subagentMaxCallsPerTurn,
+      subagentTokenBudget: config?.subagentTokenBudget,
+      delegationLimitsV2: config?.delegationLimitsV2,
+      providerStreaming: config?.providerStreaming,
     }); } catch (error) { setError(String(error)); }
   };
   return <div className="space-y-4" data-testid="subscription-agent-form">
@@ -49,18 +55,7 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
       <input className="mt-1 w-full rounded-md border border-border bg-surface-2 p-2 text-text-primary" value={name}
         onChange={event => { setName(event.target.value); onDirtyChange(true); }} />
     </label>
-    <label className="block text-sm text-text-secondary">{t('settings.model')}
-      <select data-testid="subscription-model-select" className="mt-1 w-full rounded-md border border-border bg-surface-2 p-2 text-text-primary" value={model}
-        onChange={event => { setModel(event.target.value); setEffort(''); onDirtyChange(true); }}>
-        {!current && <option value={model} disabled>{loading ? t('common.loading') : t('settings.subscriptionSelectModel')}</option>}
-        {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
-      </select>
-    </label>
-    {!!current?.reasoningEfforts.length && <select aria-label={t('settings.reasoningEffort')} className="rounded-md border border-border bg-surface-2 p-2 text-text-primary" value={effort}
-      onChange={event => { setEffort(event.target.value); onDirtyChange(true); }}>
-      <option value="">{t('settings.isDefault')}</option>
-      {current.reasoningEfforts.map(value => <option key={value} value={value}>{value}</option>)}
-    </select>}
+    <p className="text-sm text-text-secondary">{t('settings.subscriptionModelsInChat')}</p>
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     <div className="flex gap-2">
       <Button variant="secondary" loading={loading} onClick={() => void refresh()}>{t('settings.subscriptionRefresh')}</Button>
