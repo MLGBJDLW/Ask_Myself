@@ -242,8 +242,8 @@ pub async fn build_desktop_agent_session_dependencies(
     drop(snapshot_guard);
     drop(manager);
 
-    let delegation_runtime = if !subscription_runtime {
-        let runtime = DelegationRuntime::new(
+    let delegation_runtime = {
+        let mut runtime = DelegationRuntime::new(
             provider_config,
             executor_config,
             subagent_allowed_tools,
@@ -253,11 +253,17 @@ pub async fn build_desktop_agent_session_dependencies(
             Some(task_run_id.to_string()),
             Some(conversation_id.to_string()),
         );
+        if subscription_runtime {
+            runtime = runtime.require_explicit_route();
+        }
         tools.register(Box::new(SubagentTool::from_runtime(runtime.clone())));
+        tools.register(Box::new(SubagentModelsTool));
         tools.register(Box::new(SubagentBatchTool::from_runtime(runtime.clone())));
-        tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
-            runtime.clone(),
-        )));
+        if !subscription_runtime {
+            tools.register(Box::new(JudgeSubagentResultsTool::from_runtime(
+                runtime.clone(),
+            )));
+        }
         tools.register(Box::new(ObserveSubagentBatchTool::from_runtime(
             runtime.clone(),
         )));
@@ -265,8 +271,6 @@ pub async fn build_desktop_agent_session_dependencies(
             tools.register(Box::new(lifecycle_tool));
         }
         Some(runtime)
-    } else {
-        None
     };
     if let Some(terminal_state) = terminal_state {
         tools.register(Box::new(TerminalAgentTool::new(terminal_state)));

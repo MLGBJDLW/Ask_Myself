@@ -386,7 +386,7 @@ pub(super) fn build_subagent_executor_tools(
             "cancel_subagent",
             "close_subagent",
         ]);
-    if !runtime.can_delegate_further() {
+    if runtime.delegation_depth.saturating_add(1) >= MAX_SUBAGENT_DELEGATION_DEPTH {
         return Ok(filtered);
     }
     let child_runtime = runtime.spawn_child_runtime(worker_cancel_token.child_token());

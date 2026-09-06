@@ -72,13 +72,26 @@ pub(super) async fn prepare_subagent_worker(
         .and_then(|task_id| runtime.get_session_snapshot(task_id));
     let history_load_ms = instant_elapsed_ms(history_load_started);
     let context_build_started = Instant::now();
-    let mut config = runtime.base_config.clone();
-    let model_route_fallback = apply_delegated_model_policy(
-        &mut config,
-        &runtime.provider_config,
-        args.model_policy.as_ref(),
-    );
+    let (mut config, provider_config) = resolve_subagent_route(runtime, db, &args.route)?;
+    let model_route_fallback = args.route.model.is_none()
+        && apply_delegated_model_policy(&mut config, &provider_config, args.model_policy.as_ref());
     apply_nexus_worker_reasoning_policy(&mut config, role_profile);
+    apply_explicit_worker_reasoning(&mut config, &args.route)?;
+    // Workers execute a handoff; the parent's fan-out and final-synthesis
+    // policies must not become recursive worker completion requirements.
+    config.power_mode = Default::default();
+    config.collaboration_mode = Default::default();
+    config.orchestration_profile = Default::default();
+    config.custom_orchestration = None;
+    config.volatile_system_sections.retain(|section| {
+        ![
+            "## Nexus Execution Policy",
+            "## Orchestration Quality Profile",
+            "## Mixture-of-Agents Collaboration",
+        ]
+        .iter()
+        .any(|header| section.starts_with(header))
+    });
     let effective_model = config.model.clone();
     let effective_model_id = effective_model
         .as_deref()
@@ -93,7 +106,7 @@ pub(super) async fn prepare_subagent_worker(
             )
         })?
         .to_string();
-    let provider = create_provider(runtime.provider_config.clone()).map_err(|error| {
+    let provider = create_provider(provider_config.clone()).map_err(|error| {
         subagent_preflight_failure(
             SubagentPreflightStage::Provider,
             "provider_configuration_invalid",
@@ -104,22 +117,32 @@ pub(super) async fn prepare_subagent_worker(
     let provider_id = provider.name().to_string();
     let effective_provider_type = config
         .provider_type
-        .unwrap_or(runtime.provider_config.provider_type);
+        .unwrap_or(provider_config.provider_type);
     let catalog_limits = effective_model
         .as_deref()
         .and_then(|model| model_limits_from_catalog(effective_provider_type, model));
-    let delegation_limits = runtime.budget.limits().await;
-    config.max_iterations = args
-        .max_iterations
-        .unwrap_or_else(|| {
-            role_profile
-                .map(|profile| profile.default_max_iterations)
-                .unwrap_or(3)
-        })
-        .clamp(1, 6);
+    let mut delegation_limits = runtime.budget.limits().await;
+    if runtime.base_config.delegation_limits_v2.is_none()
+        && (args.route.agent_config_id.is_some()
+            || effective_model != runtime.base_config.model
+            || provider_config.provider_type != runtime.provider_config.provider_type
+            || provider_config.base_url != runtime.provider_config.base_url)
+    {
+        // Legacy parent model limits are not explicit worker limits. Resolve
+        // those defaults from the selected route while keeping shared budgets.
+        delegation_limits.input_context_policy = config
+            .context_window
+            .map(|limit| DelegationLimitPolicy::Explicit(u64::from(limit)))
+            .unwrap_or(DelegationLimitPolicy::Auto);
+        delegation_limits.max_output_tokens_per_worker = config
+            .max_tokens
+            .map(|limit| DelegationLimitPolicy::Explicit(u64::from(limit)))
+            .unwrap_or(DelegationLimitPolicy::Auto);
+    }
+    config.max_iterations = args.max_iterations.unwrap_or(config.max_iterations);
     let resolved_model_context = resolve_endpoint_model_context_window(
-        provider_catalog_key(runtime.provider_config.provider_type),
-        runtime.provider_config.base_url.as_deref(),
+        provider_catalog_key(provider_config.provider_type),
+        provider_config.base_url.as_deref(),
         &effective_model_id,
         None,
     );
@@ -216,7 +239,7 @@ pub(super) async fn prepare_subagent_worker(
         args.allowed_tools.as_deref(),
         role_profile,
     );
-    if !runtime.can_delegate_further() {
+    if runtime.delegation_depth.saturating_add(1) >= MAX_SUBAGENT_DELEGATION_DEPTH {
         effective_allowed_tools.retain(|name| !is_subagent_tool_name(name));
     }
     // Interactive browser/computer control is parent-scoped until delegated
@@ -337,6 +360,11 @@ pub(super) async fn prepare_subagent_worker(
         DelegationLimitPolicy::Auto => "safe_default",
     };
     let effective_model_budgets = serde_json::json!({
+        "provider": provider_catalog_key(provider_config.provider_type),
+        "model": config.model,
+        "reasoningEffort": config.reasoning_effort,
+        "maxIterations": config.max_iterations,
+        "runDeadlineMs": run_deadline_ms,
         "contextCapacity": config.context_window,
         "parentHistoryHandoff": context_snapshot.handoff_token_budget,
         "maxOutputPerStep": config.max_tokens,

@@ -385,6 +385,10 @@ test.beforeEach(async ({ page }) => {
               droppedInvalidMessages: 1,
             },
             effectiveModelBudgets: {
+              provider: 'custom',
+              model: 'private-model',
+              reasoningEffort: 'high',
+              maxIterations: 24,
               contextCapacity: null,
               parentHistoryHandoff: 24000,
               maxOutputPerStep: 8192,
@@ -653,6 +657,8 @@ test('projects resolved context budgets and preflight into the subagent card', a
   const route = chatLog.getByTestId('subagent-runtime-route');
   await expect(route).toContainText('Runtime provider: Custom');
   await expect(route).toContainText('Effective model: private-model');
+  await expect(route).toContainText('Reasoning Effort: high');
+  await expect(route).toContainText('Max Verified Tool Rounds: 24');
   await expect(route).toContainText('Requested model route: independent reviewer');
   await expect(chatLog.getByTestId('subagent-preflight')).toContainText('Preflight passed 5 stages');
   await expect(chatLog.getByTestId('subagent-preflight')).toContainText('1 invalid context messages dropped');

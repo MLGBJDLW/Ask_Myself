@@ -22,6 +22,230 @@ fn test_runtime() -> DelegationRuntime {
     )
 }
 
+#[test]
+fn explicit_empty_delegated_tools_remain_empty_and_long_lists_are_preserved() {
+    for names in [
+        Vec::new(),
+        (0..32).map(|index| format!("tool_{index}")).collect(),
+    ] {
+        let args: SpawnSubagentArgs = serde_json::from_value(serde_json::json!({
+            "task": "Inspect", "allowed_tools": names,
+        }))
+        .unwrap();
+        let normalized = normalize_spawn_args(args).unwrap();
+        assert_eq!(normalized.allowed_tools, Some(names));
+    }
+}
+
+#[tokio::test]
+async fn delegated_provider_route_keeps_credentials_model_limits_and_reasoning_together() {
+    let db = Database::open_memory().unwrap();
+    let selected = db.save_agent_config(&serde_json::from_value(serde_json::json!({
+        "name": "Independent reviewer", "provider": "anthropic", "apiKey": "test-review-key",
+        "baseUrl": "https://api.anthropic.com", "model": "claude-sonnet-4-6", "isDefault": false,
+        "thinkingBudget": 2048,
+    })).unwrap()).unwrap();
+    let mut runtime = test_runtime();
+    runtime.provider_config.api_key = Some("test-parent-key".into());
+    runtime.base_config.model = Some("gpt-parent".into());
+    runtime.base_config.context_window = Some(1234);
+    runtime.base_config.max_iterations = 32;
+    runtime.base_config.power_mode = nexa_core::agent::power_mode::AgentPowerMode::Nexus;
+    runtime
+        .base_config
+        .volatile_system_sections
+        .push("## Nexus Execution Policy\nParent fan-out".into());
+    runtime.set_tool_registry(ToolRegistry::new());
+    let args: SpawnSubagentArgs = serde_json::from_value(serde_json::json!({
+        "task": "Review the supplied evidence", "agent_config_id": selected.id, "provider": "anthropic",
+        "model": "test-worker-model", "reasoning_effort": "high", "max_iterations": 24, "allowed_tools": [],
+    })).unwrap();
+    let (config, provider) = resolve_subagent_route(&runtime, &db, &args.route).unwrap();
+    assert_eq!(provider.provider_type, ProviderType::Anthropic);
+    assert_eq!(provider.api_key.as_deref(), Some("test-review-key"));
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("https://api.anthropic.com")
+    );
+    assert_eq!(config.model.as_deref(), Some("test-worker-model"));
+    assert_ne!(config.context_window, Some(1234));
+    let worker = prepare_subagent_worker(&runtime, &db, vec![], &args, "route-test", None)
+        .await
+        .unwrap();
+    assert_eq!(worker.effective_provider_type, ProviderType::Anthropic);
+    assert_eq!(worker.config.max_iterations, 24);
+    assert_ne!(worker.config.context_window, Some(1234));
+    assert_eq!(worker.config.reasoning_effort, Some(ReasoningEffort::High));
+    assert!(worker.config.thinking_budget.is_none());
+    assert!(!worker.config.power_mode.is_nexus());
+    assert!(!worker
+        .config
+        .volatile_system_sections
+        .iter()
+        .any(|section| section.starts_with("## Nexus Execution Policy")));
+    assert!(worker.effective_allowed_tools.is_empty());
+    assert_eq!(worker.effective_model_budgets["provider"], "anthropic");
+}
+
+#[tokio::test]
+async fn route_catalog_is_secret_free_and_conflicting_or_missing_routes_fail() {
+    let db = Database::open_memory().unwrap();
+    let saved = db
+        .save_agent_config(
+            &serde_json::from_value(serde_json::json!({
+                "name": "Reviewer", "provider": "anthropic", "apiKey": "test-secret-never-expose",
+                "model": "claude-worker", "isDefault": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let runtime = test_runtime();
+    let conflicting = SubagentRouteArgs {
+        agent_config_id: Some(saved.id),
+        provider: Some("open_ai".into()),
+        ..Default::default()
+    };
+    assert!(resolve_subagent_route(&runtime, &db, &conflicting).is_err());
+    let missing = SubagentRouteArgs {
+        agent_config_id: Some("missing".into()),
+        ..Default::default()
+    };
+    assert!(resolve_subagent_route(&runtime, &db, &missing).is_err());
+    let result = SubagentModelsTool
+        .execute(nexa_core::tools::ToolExecutionContext::new(
+            "models",
+            "{}",
+            &db,
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert!(result.content.contains("anthropic"));
+    assert!(!result.content.contains("test-secret-never-expose"));
+    assert!(!result.content.contains("apiKey"));
+    let native_parent = runtime.require_explicit_route();
+    assert!(resolve_subagent_route(&native_parent, &db, &SubagentRouteArgs::default()).is_err());
+    let route = SubagentRouteArgs {
+        provider: Some("anthropic".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_subagent_route(&native_parent, &db, &route)
+            .unwrap()
+            .1
+            .provider_type,
+        ProviderType::Anthropic
+    );
+}
+
+#[test]
+fn batch_worker_preserves_explicit_route_and_large_execution_budget() {
+    let task: BatchSubagentTaskArgs = serde_json::from_value(serde_json::json!({
+        "id": "reviewer", "task": "Review", "provider": "anthropic", "agent_config_id": "review-account",
+        "model": "review-model", "reasoning_effort": "high", "max_iterations": 48, "timeout_secs": 900,
+    })).unwrap();
+    let (_, args) = normalize_batch_task_args(task).unwrap();
+    assert_eq!(
+        args.route.agent_config_id.as_deref(),
+        Some("review-account")
+    );
+    assert_eq!(args.route.model.as_deref(), Some("review-model"));
+    assert_eq!(args.route.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(args.max_iterations, Some(48));
+    assert_eq!(args.timeout_secs, Some(900));
+}
+
+#[tokio::test]
+async fn worker_inference_reaches_the_selected_endpoint_with_its_own_model_and_key() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let (headers, body) = loop {
+            let mut buffer = [0u8; 4096];
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]).into_owned();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if bytes.len() >= end + 4 + length {
+                    break (
+                        headers,
+                        serde_json::from_slice::<serde_json::Value>(
+                            &bytes[end + 4..end + 4 + length],
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+        };
+        let payload = concat!(
+            "data: {\"id\":\"child-response\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"route verified\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"child-response\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes()).await.unwrap();
+        (headers, body)
+    });
+    let db = Database::open_memory().unwrap();
+    let selected = db
+        .save_agent_config(
+            &serde_json::from_value(serde_json::json!({
+                "name":"Worker account", "provider":"open_ai", "apiKey":"test-child-key",
+                "baseUrl":format!("http://{address}/v1"), "model":"child-model", "isDefault":false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let mut runtime = test_runtime().require_explicit_route();
+    runtime.provider_config.api_key = Some("test-parent-key".into());
+    runtime.provider_config.base_url = Some("http://127.0.0.1:1/never-use-parent".into());
+    runtime.base_config.model = Some("parent-model".into());
+    runtime.set_tool_registry(ToolRegistry::new());
+    let args = serde_json::from_value(serde_json::json!({
+        "task":"Reply with route verified", "agent_config_id":selected.id,
+        "model":"child-model", "max_iterations":0, "timeout_secs":30, "allowed_tools":[],
+    }))
+    .unwrap();
+    let run = tokio::time::timeout(
+        Duration::from_secs(40),
+        run_subagent_once(
+            runtime,
+            db,
+            vec![],
+            "network-route".into(),
+            None,
+            args,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (headers, body) = server.await.unwrap();
+    assert!(headers
+        .to_ascii_lowercase()
+        .contains("authorization: bearer test-child-key"));
+    assert!(!headers.contains("test-parent-key"));
+    assert!(headers.starts_with("POST /v1/chat/completions "));
+    assert_eq!(body["model"], "child-model");
+    assert_eq!(run.effective_model.as_deref(), Some("child-model"));
+    assert!(run.result.contains("route verified"));
+    assert!(!run.is_error);
+}
+
 fn observed_batch_run(id: &str) -> SubagentRunArtifact {
     failed_subagent_run_artifact(
         id.to_string(),
@@ -31,6 +255,7 @@ fn observed_batch_run(id: &str) -> SubagentRunArtifact {
             role_id: None,
             role: None,
             model_policy: None,
+            route: SubagentRouteArgs::default(),
             context: None,
             expected_output: None,
             max_iterations: None,
@@ -84,13 +309,14 @@ async fn observe_batch_returns_after_one_new_supplemental_result() {
 }
 
 #[test]
-fn test_normalize_spawn_args_clamps_timeout() {
+fn test_normalize_spawn_args_preserves_explicit_timeout() {
     let args = normalize_spawn_args(SpawnSubagentArgs {
         task: "Investigate".into(),
         task_id: Some("  worker-1  ".into()),
         role_id: None,
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,
@@ -105,7 +331,7 @@ fn test_normalize_spawn_args_clamps_timeout() {
     })
     .unwrap();
 
-    assert_eq!(args.timeout_secs, Some(180));
+    assert_eq!(args.timeout_secs, Some(999));
     assert_eq!(args.task_id.as_deref(), Some("worker-1"));
 }
 
@@ -187,6 +413,7 @@ fn test_normalize_spawn_args_accepts_structured_role_id() {
         role_id: Some("Verifier".into()),
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,
@@ -224,6 +451,7 @@ fn test_unknown_role_id_is_rejected() {
         role_id: Some("wizard".into()),
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,
@@ -263,7 +491,7 @@ fn test_role_profile_narrows_default_tools() {
 }
 
 #[test]
-fn test_explicit_request_cannot_widen_role_tool_policy() {
+fn test_explicit_request_can_use_parent_granted_tools_outside_role_defaults() {
     let base_tools = vec!["web_search".to_string(), "desktop_automation".to_string()];
     let verifier = role_profile_by_id("verifier").unwrap();
 
@@ -273,7 +501,7 @@ fn test_explicit_request_cannot_widen_role_tool_policy() {
         Some(verifier),
     );
 
-    assert!(tools.is_empty());
+    assert_eq!(tools, vec!["desktop_automation"]);
 }
 
 #[test]
@@ -302,6 +530,7 @@ fn test_preflight_rejects_tools_outside_parent_capabilities() {
         role_id: None,
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,
@@ -351,6 +580,7 @@ fn test_preflight_rejects_interactive_surface_tools_even_when_parent_has_them() 
         role_id: Some("desktop_operator".into()),
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,
@@ -398,6 +628,7 @@ fn test_preflight_classifies_invalid_inherited_history() {
         role_id: None,
         role: None,
         model_policy: None,
+        route: SubagentRouteArgs::default(),
         context: None,
         expected_output: None,
         max_iterations: None,

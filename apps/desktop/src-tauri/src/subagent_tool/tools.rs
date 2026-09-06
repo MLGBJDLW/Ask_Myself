@@ -152,14 +152,18 @@ impl Tool for SubagentBatchTool {
         let workflow_template_label = workflow_template.map(|template| template.label);
         let workflow_template_description = workflow_template.map(|template| template.description);
         let parallel_group = args.parallel_group.clone();
-        let completion_policy =
-            DelegationCompletionPolicy::resolve(&args, args.tasks.len().min(8))?;
+        if args.tasks.len() > 32 {
+            return Err(CoreError::InvalidInput(
+                "A batch may contain at most 32 workers; split larger work into separate batches."
+                    .into(),
+            ));
+        }
+        let completion_policy = DelegationCompletionPolicy::resolve(&args, args.tasks.len())?;
         let requested_max_parallel = args.max_parallel;
         let cancel_remaining = args.cancel_remaining.unwrap_or(false);
         let normalized_tasks: Vec<(Option<String>, SpawnSubagentArgs)> = args
             .tasks
             .into_iter()
-            .take(8)
             .enumerate()
             .map(|(index, mut task)| {
                 if task.parallel_group.is_none() {
@@ -178,7 +182,7 @@ impl Tool for SubagentBatchTool {
                     .map(|template| template.max_parallel)
                     .unwrap_or(budget_before.max_parallel)
             })
-            .clamp(1, 8);
+            .clamp(1, 12);
         let effective_parallel = requested_parallel.min(budget_before.max_parallel).max(1) as usize;
         let runtime = self.runtime.clone();
         let db = db.clone();

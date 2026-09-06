@@ -83,7 +83,7 @@ use crate::commands::{PendingToolApproval, PendingToolApprovals, TerminalState};
 use crate::subagent_lifecycle::SubagentLifecycleRuntime;
 use crate::subagent_tool::{
     DelegationRuntime, JudgeSubagentResultsTool, ObserveSubagentBatchTool, SubagentBatchTool,
-    SubagentLifecycleTool, SubagentTool,
+    SubagentLifecycleTool, SubagentModelsTool, SubagentTool,
 };
 use crate::terminal_agent_tool::TerminalAgentTool;
 

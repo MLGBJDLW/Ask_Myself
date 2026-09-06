@@ -271,7 +271,6 @@ pub(super) struct SubagentRoleProfile {
     pub(super) instructions: &'static str,
     pub(super) default_sections: &'static [&'static str],
     pub(super) recommended_tools: &'static [&'static str],
-    pub(super) default_max_iterations: u32,
     pub(super) default_timeout_secs: u32,
 }
 pub(super) const ROLE_RESEARCHER_SECTIONS: &[&str] =
@@ -315,7 +314,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "get_related_concepts",
             "record_verification",
         ],
-        default_max_iterations: 3,
         default_timeout_secs: 90,
     },
     SubagentRoleProfile {
@@ -339,7 +337,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "run_health_check",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 75,
     },
     SubagentRoleProfile {
@@ -358,7 +355,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "retrieve_evidence",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 60,
     },
     SubagentRoleProfile {
@@ -374,7 +370,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "list_documents",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 60,
     },
     SubagentRoleProfile {
@@ -393,7 +388,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "search_playbooks",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 75,
     },
     SubagentRoleProfile {
@@ -410,7 +404,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "web_research_context",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 75,
     },
     SubagentRoleProfile {
@@ -424,7 +417,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "list_dir",
             "record_verification",
         ],
-        default_max_iterations: 2,
         default_timeout_secs: 60,
     },
 ];

@@ -122,6 +122,7 @@ pub fn scheduled_workspace_tool_class(name: &str) -> ScheduledWorkspaceToolClass
         | "search_sessions"
         | "session_search"
         | "send_subagent_input"
+        | "list_subagent_models"
         | "spawn_subagent"
         | "spawn_subagent_batch"
         | "summarize_document"
@@ -209,7 +210,8 @@ pub fn capability_render_kind(name: &str) -> ToolRenderKind {
         | "list_sources"
         | "session_search"
         | "tool_search"
-        | "code_intelligence" => ToolRenderKind::Search,
+        | "code_intelligence"
+        | "list_subagent_models" => ToolRenderKind::Search,
         "spawn_subagent"
         | "spawn_subagent_batch"
         | "observe_subagent"
@@ -764,7 +766,7 @@ pub fn infer_tool_access_profile(
             ApprovalRisk::Medium,
             "Delegates bounded work to another agent with narrowed tool and source access.",
         ),
-        "judge_subagent_results" => (
+        "judge_subagent_results" | "list_subagent_models" => (
             "delegation",
             true,
             false,

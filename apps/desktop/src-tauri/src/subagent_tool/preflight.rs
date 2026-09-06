@@ -266,6 +266,7 @@ pub(super) fn expand_workflow_template_tasks(
                     .to_string(),
             );
             BatchSubagentTaskArgs {
+                route: SubagentRouteArgs::default(),
                 id: Some(format!("{}-{}", template.id, task_template.id)),
                 task_id: None,
                 task: format!(
@@ -389,6 +390,11 @@ pub(super) fn resolve_allowed_tools_for_role(
     requested_allowed_tools: Option<&[String]>,
     role_profile: Option<&SubagentRoleProfile>,
 ) -> Vec<String> {
+    // Role recommendations supply defaults, not a second hidden permission
+    // boundary. Explicit selections may use any tool granted by the parent.
+    if requested_allowed_tools.is_some() {
+        return resolve_allowed_tools(base_allowed_tools, requested_allowed_tools);
+    }
     let role_allowed_tools = match role_profile {
         Some(profile) => {
             let base: BTreeSet<&str> = base_allowed_tools.iter().map(String::as_str).collect();
