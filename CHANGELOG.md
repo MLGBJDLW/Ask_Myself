@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.9...nexa-monorepo-v0.13.10) (2026-09-06)
+
+
+### Features
+
+* **agents:** upgrade delegated model routing and chat controls ([98ea72d](https://github.com/MLGBJDLW/Nexa/commit/98ea72da8160b9f7ae097f32c399eaa469bc4dd9))
+* **subagents:** select configured worker routes and honor execution budgets ([b0f411e](https://github.com/MLGBJDLW/Nexa/commit/b0f411e6b99e70f0ffc839c5b7fd45943dd7a17e))
+
+
+### Bug Fixes
+
+* **agent:** advance from tool discovery and preserve recovery guidance ([31cecb2](https://github.com/MLGBJDLW/Nexa/commit/31cecb2a53c703fdbdf4645b794f38b445d89a45))
+* **chat:** animate dictation and keep draft controls usable while streaming ([a3a2f80](https://github.com/MLGBJDLW/Nexa/commit/a3a2f8034eb09467479d261394f06ed8ed712f2c))
+* **providers:** unify subscription model selection in chat ([dbe4ac6](https://github.com/MLGBJDLW/Nexa/commit/dbe4ac6bfd49780a778d0046dc330932bd81d1d4))
+* **settings:** preserve account edits when subscription models retire ([98302ec](https://github.com/MLGBJDLW/Nexa/commit/98302ec4c5d41699bc1e11919d051455c7a238d0))
+* **subagents:** scope model capabilities to configured endpoints ([50c6eb1](https://github.com/MLGBJDLW/Nexa/commit/50c6eb1082bbf72a0e76d6d1012c0e514c4ce799))
+
 ## [0.13.9](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.8...nexa-monorepo-v0.13.9) (2026-09-05)
 
 
