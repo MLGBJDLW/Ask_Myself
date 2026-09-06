@@ -109,7 +109,9 @@ pub(super) fn apply_nexus_worker_reasoning_policy(
     } else {
         4_096
     };
-    let Some(reasoning) = model_capabilities_from_catalog(provider, model)
+    let Some(reasoning) = (config.catalog_limits_authoritative != Some(false))
+        .then(|| model_capabilities_from_catalog(provider, model))
+        .flatten()
         .and_then(|capabilities| capabilities.reasoning)
     else {
         // Unknown/local/custom endpoints must not inherit an unbounded parent

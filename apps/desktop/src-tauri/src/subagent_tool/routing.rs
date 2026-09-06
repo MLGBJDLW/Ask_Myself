@@ -117,13 +117,22 @@ pub(super) fn resolve_subagent_route(
 
 pub(super) fn apply_explicit_worker_reasoning(
     config: &mut AgentConfig,
+    provider_config: &ProviderConfig,
     route: &SubagentRouteArgs,
 ) -> Result<(), CoreError> {
     let Some(effort) = route.reasoning_effort.as_ref() else {
         return Ok(());
     };
     if let (Some(provider), Some(model)) = (config.provider_type, config.model.as_deref()) {
-        if let Some(capabilities) = model_capabilities_from_catalog(provider, model) {
+        let capabilities =
+            nexa_core::provider_catalog::endpoint_model_catalog_limits_are_authoritative(
+                provider_catalog_key(provider_config.provider_type),
+                provider_config.base_url.as_deref(),
+                model,
+            )
+            .then(|| model_capabilities_from_catalog(provider, model))
+            .flatten();
+        if let Some(capabilities) = capabilities {
             let supported = match capabilities.reasoning {
                 Some(reasoning) if !reasoning.effort_levels.is_empty() => reasoning
                     .effort_levels

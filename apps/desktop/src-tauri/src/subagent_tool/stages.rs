@@ -75,8 +75,16 @@ pub(super) async fn prepare_subagent_worker(
     let (mut config, provider_config) = resolve_subagent_route(runtime, db, &args.route)?;
     let model_route_fallback = args.route.model.is_none()
         && apply_delegated_model_policy(&mut config, &provider_config, args.model_policy.as_ref());
+    let catalog_authoritative = config.model.as_deref().is_some_and(|model| {
+        nexa_core::provider_catalog::endpoint_model_catalog_limits_are_authoritative(
+            provider_catalog_key(provider_config.provider_type),
+            provider_config.base_url.as_deref(),
+            model,
+        )
+    });
+    config.catalog_limits_authoritative = Some(catalog_authoritative);
     apply_nexus_worker_reasoning_policy(&mut config, role_profile);
-    apply_explicit_worker_reasoning(&mut config, &args.route)?;
+    apply_explicit_worker_reasoning(&mut config, &provider_config, &args.route)?;
     // Workers execute a handoff; the parent's fan-out and final-synthesis
     // policies must not become recursive worker completion requirements.
     config.power_mode = Default::default();
@@ -120,6 +128,7 @@ pub(super) async fn prepare_subagent_worker(
         .unwrap_or(provider_config.provider_type);
     let catalog_limits = effective_model
         .as_deref()
+        .filter(|_| catalog_authoritative)
         .and_then(|model| model_limits_from_catalog(effective_provider_type, model));
     let mut delegation_limits = runtime.budget.limits().await;
     if runtime.base_config.delegation_limits_v2.is_none()

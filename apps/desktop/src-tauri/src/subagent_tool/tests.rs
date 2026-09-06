@@ -88,6 +88,40 @@ async fn delegated_provider_route_keeps_credentials_model_limits_and_reasoning_t
 }
 
 #[tokio::test]
+async fn private_endpoint_model_alias_keeps_its_own_reasoning_contract() {
+    let db = Database::open_memory().unwrap();
+    let mut runtime = test_runtime();
+    runtime.base_config.model = Some("gpt-4.1".into());
+    runtime.base_config.provider_type = Some(ProviderType::OpenAi);
+    runtime.provider_config.api_key = Some("test-key".into());
+    runtime.provider_config.base_url = Some("https://private.example/v1".into());
+    runtime.set_tool_registry(ToolRegistry::new());
+    let args: SpawnSubagentArgs = serde_json::from_value(serde_json::json!({
+        "task":"Review supplied context", "reasoning_effort":"ultra", "allowed_tools":[],
+    }))
+    .unwrap();
+    let worker = prepare_subagent_worker(&runtime, &db, vec![], &args, "private-alias", None)
+        .await
+        .unwrap();
+    assert_eq!(worker.config.reasoning_effort, Some(ReasoningEffort::Ultra));
+    assert_eq!(worker.config.catalog_limits_authoritative, Some(false));
+    assert_eq!(
+        worker.effective_model_budgets["contextAuthority"],
+        "provider_managed"
+    );
+    assert_eq!(
+        worker.effective_model_budgets["outputAuthority"],
+        "safe_default"
+    );
+    runtime.provider_config.base_url = Some("https://api.openai.com/v1".into());
+    assert!(
+        prepare_subagent_worker(&runtime, &db, vec![], &args, "official-model", None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn route_catalog_is_secret_free_and_conflicting_or_missing_routes_fail() {
     let db = Database::open_memory().unwrap();
     let saved = db
