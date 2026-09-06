@@ -1935,7 +1935,7 @@ export function ChatInput({
         />
         </NexaPopoverAnchor>
 
-        <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t border-border/35 px-2.5 py-2">
+        <div data-testid="chat-input-toolbar" className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t border-border/35 px-2.5 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden">
             {sessionControls}
 
@@ -1952,7 +1952,7 @@ export function ChatInput({
                 data-testid="chat-moa-preset"
                 aria-label={t("chat.moaMode")}
                 value={moaModeEnabled ? moaPreset : "direct"}
-                disabled={attachmentLocked}
+                disabled={inputLocked}
                 onChange={(event) => {
                   if (event.target.value === "direct") {
                     persistRuntimePolicy({ collaborationMode: "direct" });
@@ -1986,7 +1986,7 @@ export function ChatInput({
                 data-testid="chat-quality-profile"
                 aria-label={t("chat.qualityProfile")}
                 value={orchestrationProfile}
-                disabled={attachmentLocked}
+                disabled={inputLocked}
                 onChange={(event) => persistRuntimePolicy({
                   orchestrationProfile: event.target.value as OrchestrationProfile,
                 })}
@@ -2012,7 +2012,7 @@ export function ChatInput({
                   setNexusDialogOpen(true);
                 }
               }}
-              disabled={attachmentLocked}
+              disabled={inputLocked}
               aria-pressed={nexusModeEnabled}
               className={`flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-all duration-fast disabled:pointer-events-none disabled:opacity-40 ${
                 nexusModeEnabled
@@ -2054,7 +2054,7 @@ export function ChatInput({
           <VoiceInputButton
             ref={voiceInputRef}
             onDictationEvent={handleVoiceDictationEvent}
-            disabled={attachmentLocked}
+            disabled={inputLocked}
           />
 
           <div className="flex shrink-0 items-center gap-1.5">
@@ -2067,7 +2067,7 @@ export function ChatInput({
                 });
                 textareaRef.current?.focus();
               }}
-              disabled={attachmentLocked}
+              disabled={inputLocked}
             />
 
             {isStreaming && (
