@@ -642,7 +642,8 @@ test('voice runtime no longer builds an unbounded Promise chain or JSON byte arr
     path.join(root, 'src-tauri', 'src', 'commands', 'realtime_transcription.rs'),
     'utf8',
   );
-  assert.match(realtimeNativeSource, /REPLAY_PCM_CHUNK_BYTES: usize = 64 \* 1024/);
+  assert.match(realtimeNativeSource, /REPLAY_CHUNK_MILLIS: u64 = 100/);
+  assert.match(realtimeNativeSource, /wait_for_session_ready\(&mut socket\)/);
   assert.match(realtimeNativeSource, /transcribe_realtime_spool/);
   assert.doesNotMatch(realtimeNativeSource, /std::fs::read\(wav_path\)/);
 });

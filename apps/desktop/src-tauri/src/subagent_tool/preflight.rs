@@ -510,8 +510,8 @@ pub(super) struct SubagentPreflightReport {
     pub(super) dropped_invalid_context_messages: usize,
     pub(super) reserved_tokens: u32,
     pub(super) remaining_token_budget: u32,
-    pub(super) remaining_call_budget: u32,
-    pub(super) run_deadline_ms: u64,
+    pub(super) remaining_call_budget: Option<u32>,
+    pub(super) run_deadline_ms: Option<u64>,
 }
 pub(super) fn validate_subagent_preflight(
     args: &SpawnSubagentArgs,
@@ -623,17 +623,17 @@ pub(super) fn validate_subagent_preflight(
         dropped_invalid_context_messages: context_snapshot.dropped_invalid_messages,
         reserved_tokens: 0,
         remaining_token_budget: 0,
-        remaining_call_budget: 0,
-        run_deadline_ms: 0,
+        remaining_call_budget: None,
+        run_deadline_ms: None,
     })
 }
 pub(super) fn finalize_subagent_preflight(
     report: &mut SubagentPreflightReport,
     budget: &BudgetSnapshot,
     reserved_tokens: u32,
-    run_deadline_ms: u64,
+    run_deadline_ms: Option<u64>,
 ) -> Result<(), CoreError> {
-    if budget.remaining_calls == 0 {
+    if budget.remaining_calls == Some(0) {
         return Err(subagent_preflight_failure(
             SubagentPreflightStage::Budget,
             "call_budget_exhausted",
@@ -645,7 +645,7 @@ pub(super) fn finalize_subagent_preflight(
     report.remaining_token_budget = budget.remaining_tokens;
     report.remaining_call_budget = budget.remaining_calls;
     report.completed_stages.push(SubagentPreflightStage::Budget);
-    if run_deadline_ms == 0 {
+    if run_deadline_ms == Some(0) {
         return Err(subagent_preflight_failure(
             SubagentPreflightStage::Timeout,
             "run_deadline_invalid",

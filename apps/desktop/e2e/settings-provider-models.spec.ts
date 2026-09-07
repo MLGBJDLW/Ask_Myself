@@ -1036,20 +1036,12 @@ test("provider catalog prioritizes configured entries and reflows at 320px", asy
   expect(gridSize.scrollWidth).toBeLessThanOrEqual(gridSize.clientWidth);
 });
 
-test("provider output limit is automatic when the explicit cap is cleared", async ({ page }) => {
+test("legacy provider output caps are retired without manual cleanup", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByTitle("Edit").first().click();
 
-  const maxTokensField = page
-    .locator("label")
-    .filter({ hasText: "Per-request output limit" })
-    .locator("xpath=..");
-  const input = maxTokensField.getByRole("spinbutton");
-  await expect(input).toHaveValue("4096");
-  await input.fill("");
-  await expect(input).toHaveAttribute("placeholder", "Auto (verified model capability)");
-  await expect(maxTokensField).toContainText("verified model-catalog output capability");
+  await expect(page.getByText('Per-request output limit', { exact: true })).toHaveCount(0);
   const toolRoundsInput = page
     .locator("label")
     .filter({ hasText: "Max Verified Tool Rounds" })
@@ -1057,7 +1049,7 @@ test("provider output limit is automatic when the explicit cap is cleared", asyn
     .getByRole("spinbutton");
   await toolRoundsInput.fill("0");
 
-  const form = maxTokensField.locator("xpath=ancestor::form");
+  const form = toolRoundsInput.locator("xpath=ancestor::form");
   const invalidInputs = await form.locator("input:invalid").evaluateAll((inputs) =>
     inputs.map((input) => {
       const element = input as HTMLInputElement;
@@ -1208,7 +1200,7 @@ test("settings exposes Meta Model API with Muse Spark 1.3 as its verified defaul
   await expectNexaOptionCount(effortSelect, 4);
 });
 
-test("settings exposes current Qwen3.8 Token Plan models with the retired preview disabled", async ({ page }) => {
+test("settings exposes current Qwen3.8 Token Plan models without the retired preview", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "AI Providers" }).click();
   await page.getByRole("button", { name: "Add Provider" }).click();
@@ -1235,12 +1227,11 @@ test("settings exposes current Qwen3.8 Token Plan models with the retired previe
   const modelSelect = modelField.locator("[data-nexa-select-trigger]");
   await expectNexaValue(modelSelect, "");
   await expectNexaOptions(modelSelect, ["Qwen3.8 Max", "Qwen3.8 Flash"]);
-  await expectNexaOptionCount(modelSelect, 3);
+  await expectNexaOptionCount(modelSelect, 2);
   await expectNexaOption(modelSelect, "qwen3.7-flash", "absent");
   await modelSelect.click();
   const retiredPreview = page.locator('[role="option"][data-value="qwen3.8-max-preview"]');
-  await expect(retiredPreview).toBeVisible();
-  await expect(retiredPreview).toHaveAttribute("data-disabled", "true");
+  await expect(retiredPreview).toHaveCount(0);
   await page.keyboard.press("Escape");
   await selectNexaOption(modelSelect, "qwen3.8-flash");
   await expect(modelField.getByTestId("model-descriptor-badges")).toContainText("Access: account enablement");

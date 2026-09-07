@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "Выберите доступную модель"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "После сохранения провайдера выберите модель и уровень рассуждений в чате."
+  ,"modelCatalogLoading": "Загрузка моделей…"
+  ,"modelCatalogRefreshing": "Обновление моделей…"
+  ,"modelCatalogLoadFailed": "Не удалось загрузить модели."
+  ,"modelCatalogCached": "Используется предыдущий список моделей."
+  ,"modelCatalogReady": "Список моделей обновлён"
+  ,"modelCatalogEmpty": "Для этой учётной записи нет доступных моделей."
 }

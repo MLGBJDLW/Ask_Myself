@@ -135,7 +135,7 @@ pub async fn compile_document(
                 format!("Compile this document:\n\n{compile_input}"),
             ),
         ],
-        max_tokens: Some(2000),
+        max_tokens: None,
         temperature: Some(0.2),
         tools: None,
         stop: None,
@@ -826,8 +826,15 @@ mod tests {
 
         async fn complete(
             &self,
-            _request: &CompletionRequest,
+            request: &CompletionRequest,
         ) -> Result<CompletionResponse, CoreError> {
+            // A reasoning model may need more tokens than the compact JSON
+            // it eventually returns. Exercise that shared output allowance.
+            if request.max_tokens.is_some_and(|limit| limit < 8_000) {
+                return Err(CoreError::Llm(
+                    "reasoning exhausted the output allowance before document JSON".into(),
+                ));
+            }
             Ok(CompletionResponse {
                 content: self.content.clone(),
                 tool_calls: None,

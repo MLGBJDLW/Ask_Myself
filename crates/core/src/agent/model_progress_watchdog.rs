@@ -136,6 +136,28 @@ pub(super) fn recovery_controls(
     }
 }
 
+/// Keep DeepSeek's same-turn reasoning replay valid when continuing a real
+/// output limit. Disabling it and later enabling it again invalidates the
+/// native tool history and makes the model repeat already completed work.
+pub(super) fn continuation_controls(
+    provider: Option<ProviderType>,
+    model: &str,
+) -> ModelProgressRecoveryControls {
+    if provider == Some(ProviderType::DeepSeek)
+        && model_capabilities_from_catalog(ProviderType::DeepSeek, model)
+            .and_then(|capabilities| capabilities.reasoning)
+            .is_some_and(|reasoning| reasoning.effort_levels.iter().any(|effort| effort == "low"))
+    {
+        return ModelProgressRecoveryControls {
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(ReasoningEffort::Low),
+            thinking_budget: None,
+            description: "reasoning reduced while preserving native continuation state",
+        };
+    }
+    recovery_controls(provider, model)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModelProgressDeadlineAction {
     StopConnecting,

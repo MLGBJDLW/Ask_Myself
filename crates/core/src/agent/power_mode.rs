@@ -4,8 +4,6 @@ use crate::llm::{ProviderType, ReasoningEffort};
 use crate::provider_catalog::model_capabilities_from_catalog;
 
 pub const NEXUS_MAX_PARALLEL: u32 = 6;
-pub const NEXUS_MAX_CALLS_PER_TURN: u32 = 12;
-pub const NEXUS_TOKEN_BUDGET: u32 = 96_000;
 /// Backward-compatible signal that enables dedicated verification/judge lanes.
 /// Delegation v2 no longer freezes this percentage of the token budget.
 pub const NEXUS_VERIFICATION_RESERVE_PERCENT: u32 = 25;
@@ -146,9 +144,9 @@ pub fn resolve_agent_power_policy(input: AgentPowerPolicyInput<'_>) -> ResolvedA
         reasoning_enabled,
         thinking_budget,
         reasoning_effort,
-        subagent_max_parallel: Some(NEXUS_MAX_PARALLEL),
-        subagent_max_calls_per_turn: Some(NEXUS_MAX_CALLS_PER_TURN),
-        subagent_token_budget: Some(NEXUS_TOKEN_BUDGET),
+        subagent_max_parallel: input.subagent_max_parallel.or(Some(NEXUS_MAX_PARALLEL)),
+        subagent_max_calls_per_turn: input.subagent_max_calls_per_turn,
+        subagent_token_budget: input.subagent_token_budget,
         verification_reserve_percent: Some(NEXUS_VERIFICATION_RESERVE_PERCENT),
         model_capability_resolved,
     }
@@ -204,12 +202,9 @@ mod tests {
 
         assert_eq!(policy.reasoning_effort, Some(ReasoningEffort::Max));
         assert_eq!(policy.max_iterations, 20);
-        assert_eq!(policy.subagent_max_parallel, Some(NEXUS_MAX_PARALLEL));
-        assert_eq!(
-            policy.subagent_max_calls_per_turn,
-            Some(NEXUS_MAX_CALLS_PER_TURN)
-        );
-        assert_eq!(policy.subagent_token_budget, Some(NEXUS_TOKEN_BUDGET));
+        assert_eq!(policy.subagent_max_parallel, Some(2));
+        assert_eq!(policy.subagent_max_calls_per_turn, Some(3));
+        assert_eq!(policy.subagent_token_budget, Some(12_000));
         assert_eq!(policy.verification_reserve_percent, Some(25));
         assert!(policy.model_capability_resolved);
         let prompt = policy.prompt_section();
@@ -217,6 +212,18 @@ mod tests {
         assert!(prompt.contains("spawn_subagent_batch"));
         assert!(prompt.contains("actual task and available budget"));
         assert!(prompt.contains("judge_subagent_results"));
+    }
+
+    #[test]
+    fn nexus_does_not_invent_task_budgets() {
+        let mut request = input(AgentPowerMode::Nexus, ProviderType::OpenAi, "gpt-6-astra");
+        request.subagent_max_parallel = None;
+        request.subagent_max_calls_per_turn = None;
+        request.subagent_token_budget = None;
+        let policy = resolve_agent_power_policy(request);
+        assert_eq!(policy.subagent_max_parallel, Some(NEXUS_MAX_PARALLEL));
+        assert_eq!(policy.subagent_max_calls_per_turn, None);
+        assert_eq!(policy.subagent_token_budget, None);
     }
 
     #[test]

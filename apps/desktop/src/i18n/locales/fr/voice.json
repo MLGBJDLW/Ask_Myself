@@ -21,7 +21,7 @@
   "realtimeDeferred": "La transcription en direct est indisponible. L’enregistrement continue dans le spool local sécurisé et sera réessayé après l’arrêt.",
   "cleanupPending": "La suppression de l’audio vocal privé est en attente ; utilisez le bouton de suppression pour réessayer.",
   "discardPending": "Supprimer l’audio en attente",
-  "transcriptionFailed": "La transcription a échoué. Vérifiez les réglages du fournisseur vocal et réessayez.",
+  "transcriptionFailed": "La transcription est incomplète. Votre enregistrement est conservé pour réessayer.",
   "recordingDock": "Commandes d’enregistrement vocal",
   "cancelRecording": "Annuler et supprimer l’enregistrement",
   "cancel": "Annuler",
@@ -42,5 +42,6 @@
   "statusDegraded": "Direct indisponible · relais local",
   "statusOffline": "Microphone déconnecté",
   "statusProcessing": "Traitement",
-  "statusPaused": "En pause"
+  "statusPaused": "En pause",
+  "retryTranscription": "Réessayer la transcription"
 }

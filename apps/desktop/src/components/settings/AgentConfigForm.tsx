@@ -24,6 +24,7 @@ import type {
 import type { Skill } from "../../types/extensions";
 import {
   findProviderPreset,
+  isRemovedProviderModel,
   getReasoningCapability,
   type ReasoningEffortLevel,
   type ProviderPreset,
@@ -169,9 +170,7 @@ export function AgentConfigForm({
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [model, setModel] = useState(initialModel);
   const [temperature, setTemperature] = useState(config?.temperature ?? 0.3);
-  const [maxTokens, setMaxTokens] = useState<number | null>(
-    config?.maxTokens ?? null,
-  );
+  const maxTokens = null;
   const [contextWindow, setContextWindow] = useState<number | null>(
     config?.contextWindow ?? null,
   );
@@ -295,7 +294,7 @@ export function AgentConfigForm({
     }),
     modelId: initialPresetModel?.descriptor.id ?? config?.modelId ?? initialModel,
     temperature: config?.temperature ?? 0.3,
-    maxTokens: config?.maxTokens ?? null,
+    maxTokens: null,
     contextWindow: config?.contextWindow ?? null,
     providerStreaming: {
       streamIdleTimeoutMs:
@@ -380,7 +379,8 @@ export function AgentConfigForm({
   const activePreset = useMemo(() => {
     if (!matchingModelCatalog) return curatedPreset;
     if (curatedPreset) {
-      return { ...curatedPreset, models: catalogModelsForSnapshot(matchingModelCatalog) };
+      return { ...curatedPreset, models: catalogModelsForSnapshot(matchingModelCatalog)
+        .filter(model => !isRemovedProviderModel(curatedPreset.id, model.id)) };
     }
     return {
       id: `discovered-${provider}`,
@@ -1104,27 +1104,6 @@ export function AgentConfigForm({
                 step={0.1}
               />
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-text-primary">
-                {t("settings.maxTokens")}
-              </label>
-              <Input
-                type="number"
-                value={maxTokens ?? ""}
-                onChange={(e) => {
-                  const value = e.target.value.trim();
-                  const parsed = Number.parseInt(value, 10);
-                  setMaxTokens(value === "" || Number.isNaN(parsed) ? null : parsed);
-                }}
-                placeholder={t("settings.maxTokensAutoPlaceholder")}
-                min={1}
-                max={4294967295}
-                step={1}
-              />
-              <p className="text-xs text-text-tertiary">
-                {t("settings.maxTokensHelp")}
-              </p>
-            </div>
           </div>
 
           {/* Context Window Override */}
@@ -1443,7 +1422,6 @@ export function AgentConfigForm({
                   );
                 }}
                 min={1}
-                max={32}
                 step={1}
               />
               <p className="text-xs text-text-tertiary">
@@ -1494,7 +1472,7 @@ export function AgentConfigForm({
                 setValue: setSubagentMaxOutputTokens,
                 min: 256,
                 step: 256,
-                placeholder: "Auto: profile/fair share, catalog ceiling",
+                placeholder: "Auto from model capacity",
               },
               {
                 label: "Max actual tokens per worker",
@@ -1502,7 +1480,7 @@ export function AgentConfigForm({
                 setValue: setSubagentMaxActualTokens,
                 min: 1024,
                 step: 1024,
-                placeholder: "Auto from Nexus fair share",
+                placeholder: "Unlimited",
               },
               {
                 label: "Total cost soft limit (µUSD)",
@@ -1518,7 +1496,7 @@ export function AgentConfigForm({
                 setValue: setSubagentQueueDeadlineMs,
                 min: 100,
                 step: 100,
-                placeholder: "Auto: 15000",
+                placeholder: "Unlimited",
               },
               {
                 label: "Provider connect deadline (ms)",
@@ -1542,7 +1520,7 @@ export function AgentConfigForm({
                 setValue: setSubagentRunDeadlineMs,
                 min: 1000,
                 step: 1000,
-                placeholder: "Auto: 180000 / long model 360000",
+                placeholder: "Unlimited",
               },
             ].map(({ label, value, setValue, min, step, placeholder }) => (
               <div key={label} className="space-y-2">

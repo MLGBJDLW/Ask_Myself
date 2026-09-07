@@ -64,6 +64,7 @@ test.beforeEach(async ({ page }) => {
       deferRealtimeStart: false,
       realtimeStartPending: false,
       failRealtimeFinish: false,
+      failSpoolTranscription: false,
       failVoiceSpoolCancel: false,
       voiceSpoolStartCalls: 0,
       realtimeStartCalls: 0,
@@ -325,6 +326,7 @@ test.beforeEach(async ({ page }) => {
           realtimeCancelCalls.push(String(args.sessionId ?? ''));
           return null;
         case 'transcribe_voice_audio_spool_cmd':
+          if (microphoneControl.failSpoolTranscription) throw new Error('Realtime replay closed while uploading audio. Managed audio test is retained for retry until expiry or cancellation');
           return { transcript: 'fallback voice transcript', cleanupPending: false };
         case 'finish_realtime_transcription_cmd':
           if (microphoneControl.failRealtimeFinish) {
@@ -535,6 +537,45 @@ test('recording dock exposes responsive live, pause, details, processing, and ca
   await expect.poll(() => page.evaluate(() =>
     (window as unknown as { __VOICE_CANCEL_CALLS__: string[] }).__VOICE_CANCEL_CALLS__,
   )).toContain('voice-2');
+});
+
+test('failed realtime replay preserves words and retries the same draft without duplication', async ({ page }) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await page.evaluate(() => {
+    const fixture = window as unknown as { __VOICE_MICROPHONE_CONTROL__: { failRealtimeFinish: boolean; failSpoolTranscription: boolean }; __EMIT_TAURI_EVENT__: (name: string, payload: unknown) => void };
+    fixture.__VOICE_MICROPHONE_CONTROL__.failRealtimeFinish = true;
+    fixture.__VOICE_MICROPHONE_CONTROL__.failSpoolTranscription = true;
+    fixture.__EMIT_TAURI_EVENT__('speech-to-text:realtime', { sessionId:'realtime-voice-test', kind:'interim', update:'replaceSnapshot', sequence:1, text:'已有的转写内容' });
+  });
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('已有的转写内容');
+  await page.getByRole('button', { name: 'Stop & Transcribe' }).click();
+  const retry = page.getByRole('button', { name: 'Retry transcription', exact: true });
+  await expect(retry).toBeVisible();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('已有的转写内容');
+  await page.evaluate(() => { (window as unknown as { __VOICE_MICROPHONE_CONTROL__: { failSpoolTranscription: boolean } }).__VOICE_MICROPHONE_CONTROL__.failSpoolTranscription = false; });
+  await retry.click();
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue('fallback voice transcript');
+});
+
+test('rapid revised Chinese snapshots remain identical in the dock and composer', async ({ page }, testInfo) => {
+  await page.goto('/chat/conv-voice-dock');
+  await page.getByRole('button', { name: 'Start voice input' }).click();
+  await expect(page.getByTestId('voice-recording-dock')).toBeVisible();
+  const corrected = '所以情况就是这么个情况，所以我不认为你这么做的是最合适的，我们要做一些更加适合他的，就是只给他几留一两，比如说三四个目标让他做就行了。';
+  await page.evaluate(async (text) => {
+    const emit = (window as unknown as { __EMIT_TAURI_EVENT__: (event: string, payload: unknown) => void }).__EMIT_TAURI_EVENT__;
+    for (let sequence = 1; sequence <= 150; sequence += 1) {
+      emit('speech-to-text:realtime', {
+        sessionId: 'realtime-voice-test', kind: 'interim', update: 'replaceSnapshot', sequence,
+        text: sequence === 150 ? text : `${sequence % 2 ? '我只是想让这个实习生完成这些任。' : '我只是想让这个实习生完成这些任务。'}${text.slice(0, Math.ceil(sequence / 2))}`,
+      });
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  }, corrected);
+  await expect(page.getByTestId('voice-partial-transcript')).toContainText(corrected);
+  await expect(page.getByTestId('chat-input-textarea')).toHaveValue(corrected);
+  await page.getByTestId('chat-input').screenshot({ path: testInfo.outputPath('corrected-live-transcript.png') });
 });
 
 test('live dictation stays pinned to the draft where recording started', async ({ page }) => {

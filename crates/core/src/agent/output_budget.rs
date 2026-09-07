@@ -41,8 +41,28 @@ impl OutputBudgetPlan {
         match self.authority {
             OutputBudgetAuthority::AutomaticFallbackReserve => None,
             OutputBudgetAuthority::SavedExplicitOverride
-            | OutputBudgetAuthority::VerifiedCatalogCapability => Some(self.effective_tokens),
+            | OutputBudgetAuthority::VerifiedCatalogCapability => Some(
+                self.catalog_cap
+                    .into_iter()
+                    .chain(self.context_cap)
+                    .fold(self.requested_tokens, u32::min),
+            ),
         }
+    }
+
+    pub(super) fn wire_max_tokens_for_prompt(self, prompt_tokens: u32) -> Option<u32> {
+        self.wire_max_tokens().map(|limit| {
+            self.context_cap.map_or(limit, |capacity| {
+                limit.min(
+                    capacity
+                        .saturating_sub(prompt_tokens)
+                        .saturating_sub(crate::conversation::memory::context_safety_buffer(
+                            capacity,
+                        ))
+                        .max(1),
+                )
+            })
+        })
     }
 
     pub(super) fn diagnostic(self) -> String {
@@ -121,16 +141,20 @@ impl AgentConfig {
                     .and_then(|limits| limits.context_tokens)
                     .and_then(|tokens| u32::try_from(tokens).ok())
             })
-            .map(|capacity| {
-                if automatic {
-                    capacity.saturating_div(2).max(1)
-                } else {
-                    capacity.max(1)
-                }
-            });
+            .map(|capacity| capacity.max(1));
+        // Reserve space before prompt construction without turning the local
+        // input/output allocation into a provider output ceiling. The wire
+        // limit uses the actual prompt headroom once that prompt exists.
+        let reserve_cap = context_cap.map(|capacity| {
+            if automatic {
+                capacity.saturating_div(2).max(1)
+            } else {
+                capacity
+            }
+        });
         let effective_tokens = catalog_cap
             .into_iter()
-            .chain(context_cap)
+            .chain(reserve_cap)
             .fold(requested_tokens, u32::min);
 
         OutputBudgetPlan {

@@ -9,8 +9,8 @@ pub(super) const SPAWN_SUBAGENT_BATCH_JSON: &str =
 pub(super) const JUDGE_SUBAGENT_RESULTS_JSON: &str =
     include_str!("../../../../../crates/core/prompts/tools/judge_subagent_results.json");
 pub(super) const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
-pub(super) const DEFAULT_SUBAGENT_MAX_TOKENS: u32 = 8_192;
-pub(super) const CONSERVATIVE_SUBAGENT_MAX_TOKENS: u32 = 65_536;
+// Initial scheduler credit; this is not sent as a per-request output ceiling.
+pub(super) const INITIAL_SUBAGENT_OUTPUT_CREDIT: u32 = 8_192;
 pub(super) const SUBAGENT_INTERACTIVE_SURFACE_TOOLS: &[&str] = &[
     "browser_session",
     "computer_observe",
@@ -271,7 +271,6 @@ pub(super) struct SubagentRoleProfile {
     pub(super) instructions: &'static str,
     pub(super) default_sections: &'static [&'static str],
     pub(super) recommended_tools: &'static [&'static str],
-    pub(super) default_timeout_secs: u32,
 }
 pub(super) const ROLE_RESEARCHER_SECTIONS: &[&str] =
     &["Conclusion", "Evidence gathered", "Gaps or uncertainty"];
@@ -314,7 +313,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "get_related_concepts",
             "record_verification",
         ],
-        default_timeout_secs: 90,
     },
     SubagentRoleProfile {
         id: "verifier",
@@ -337,7 +335,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "run_health_check",
             "record_verification",
         ],
-        default_timeout_secs: 75,
     },
     SubagentRoleProfile {
         id: "critic",
@@ -355,7 +352,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "retrieve_evidence",
             "record_verification",
         ],
-        default_timeout_secs: 60,
     },
     SubagentRoleProfile {
         id: "planner",
@@ -370,7 +366,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "list_documents",
             "record_verification",
         ],
-        default_timeout_secs: 60,
     },
     SubagentRoleProfile {
         id: "writer",
@@ -388,7 +383,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "search_playbooks",
             "record_verification",
         ],
-        default_timeout_secs: 75,
     },
     SubagentRoleProfile {
         id: "connector",
@@ -404,7 +398,6 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "web_research_context",
             "record_verification",
         ],
-        default_timeout_secs: 75,
     },
     SubagentRoleProfile {
         id: "desktop_operator",
@@ -417,6 +410,5 @@ pub(super) const SUBAGENT_ROLE_PROFILES: &[SubagentRoleProfile] = &[
             "list_dir",
             "record_verification",
         ],
-        default_timeout_secs: 60,
     },
 ];

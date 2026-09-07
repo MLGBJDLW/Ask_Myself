@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "利用可能なモデルを選択"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "プロバイダーを保存した後、チャットでモデルと推論レベルを選択してください。"
+  ,"modelCatalogLoading": "モデルを読み込み中…"
+  ,"modelCatalogRefreshing": "モデルを更新中…"
+  ,"modelCatalogLoadFailed": "モデルを読み込めませんでした。"
+  ,"modelCatalogCached": "前回のモデル一覧を使用しています。"
+  ,"modelCatalogReady": "モデル一覧は最新です"
+  ,"modelCatalogEmpty": "このアカウントで利用できるモデルはありません。"
 }

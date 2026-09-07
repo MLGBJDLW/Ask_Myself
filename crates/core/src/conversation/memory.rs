@@ -233,7 +233,7 @@ fn model_profile_context_window(m: &str) -> Option<u32> {
     // ── Exact matches for verified model IDs (highest priority) ────
     let context_tokens = match m {
         // OpenAI GPT-5.6 / GPT-5.5 / GPT-5.4 series (1.05M)
-        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => 1_050_000,
+        "gpt-6-astra" | "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => 1_050_000,
         "gpt-5.5" | "gpt-5.5-2026-04-23" | "gpt-5.5-pro" | "gpt-5.5-pro-2026-04-23" => 1_050_000,
         "gpt-5.4" | "gpt-5.4-2026-03-05" | "gpt-5.4-pro" | "gpt-5.4-pro-2026-03-05" => 1_050_000,
         "gpt-5.4-mini" | "gpt-5.4-mini-2026-03-05" => 400_000,
@@ -269,7 +269,7 @@ fn model_profile_context_window(m: &str) -> Option<u32> {
         "codex-mini-latest" => 200_000,
 
         // Anthropic current models with a default 1M context window.
-        "claude-fable-5" | "claude-mythos-5" | "claude-sonnet-5" => 1_000_000,
+        "claude-fable-5-1" | "claude-fable-5" | "claude-mythos-5" | "claude-sonnet-5" => 1_000_000,
         "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" => 1_000_000,
         "claude-sonnet-4-6" => 1_000_000,
         // Other Claude 4.x models default to 200K.

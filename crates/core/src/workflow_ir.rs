@@ -1885,7 +1885,7 @@ pub fn compile_workflow_ir(
             completed_node_ids: Vec::new(),
             active_node_ids: Vec::new(),
             failed_node_ids: Vec::new(),
-            remaining_delegated_tokens: profile.delegated_token_budget,
+            remaining_delegated_tokens: profile.delegated_token_budget.unwrap_or(u32::MAX),
         },
         completion_contract: WorkflowCompletionContract {
             // Balanced is the default interactive profile. Its task plan is

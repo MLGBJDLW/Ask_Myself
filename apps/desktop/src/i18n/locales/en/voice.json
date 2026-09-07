@@ -21,7 +21,7 @@
   "realtimeDeferred": "Live transcription is unavailable. Recording continues safely in the local spool and will retry after you stop.",
   "cleanupPending": "Private voice-audio deletion is pending; use the delete control to retry.",
   "discardPending": "Delete pending voice audio",
-  "transcriptionFailed": "Transcription failed. Check the speech provider settings and try again.",
+  "transcriptionFailed": "Transcription did not finish. Your recording is retained; click Retry transcription to continue.",
   "recordingDock": "Voice recording controls",
   "cancelRecording": "Cancel and delete recording",
   "cancel": "Cancel",
@@ -42,5 +42,6 @@
   "statusDegraded": "Live unavailable · local fallback",
   "statusOffline": "Microphone disconnected",
   "statusProcessing": "Processing",
-  "statusPaused": "Paused"
+  "statusPaused": "Paused",
+  "retryTranscription": "Retry transcription"
 }

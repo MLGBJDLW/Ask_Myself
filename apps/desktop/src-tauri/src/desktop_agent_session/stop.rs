@@ -26,14 +26,6 @@ pub fn power_mode_artifact(config: &AgentConfig) -> serde_json::Value {
     })
 }
 
-pub(crate) fn automatic_delegated_worker_cap(total: u32, parallel: u32) -> u64 {
-    u64::from(total)
-        .div_ceil(u64::from(parallel.max(1)))
-        .saturating_mul(2)
-        .max(8_192)
-        .min(u64::from(total))
-}
-
 pub fn collaboration_mode_artifact(config: &AgentConfig) -> serde_json::Value {
     serde_json::json!({
         "kind": "agentCollaborationMode",

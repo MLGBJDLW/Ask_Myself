@@ -21,7 +21,7 @@
   "realtimeDeferred": "ライブ文字起こしを利用できません。録音はローカルスプールへ安全に継続され、停止後に再試行されます。",
   "cleanupPending": "非公開の音声データは削除待ちです。削除ボタンで再試行できます。",
   "discardPending": "保留中の音声を削除",
-  "transcriptionFailed": "文字起こしに失敗しました。音声プロバイダーの設定を確認して再試行してください。",
+  "transcriptionFailed": "文字起こしが完了しませんでした。録音は保存されています。再試行してください。",
   "recordingDock": "音声録音コントロール",
   "cancelRecording": "録音をキャンセルして削除",
   "cancel": "キャンセル",
@@ -42,5 +42,6 @@
   "statusDegraded": "ライブ利用不可 · ローカルへ切替",
   "statusOffline": "マイクが切断されました",
   "statusProcessing": "処理中",
-  "statusPaused": "一時停止中"
+  "statusPaused": "一時停止中",
+  "retryTranscription": "文字起こしを再試行"
 }

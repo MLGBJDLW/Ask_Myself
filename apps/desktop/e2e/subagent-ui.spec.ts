@@ -405,8 +405,8 @@ test.beforeEach(async ({ page }) => {
               droppedInvalidContextMessages: 1,
               reservedTokens: 12000,
               remainingTokenBudget: 48000,
-              remainingCallBudget: 2,
-              runDeadlineMs: 60000,
+              remainingCallBudget: /unlimited/i.test(userText) ? null : 2,
+              runDeadlineMs: /unlimited/i.test(userText) ? null : 60000,
             },
           };
 
@@ -667,6 +667,19 @@ test('projects resolved context budgets and preflight into the subagent card', a
   await expect(preflightBudgets).toContainText('Tokens remaining at preflight: 48,000');
   await expect(preflightBudgets).toContainText('Calls remaining at preflight: 2');
   await expect(preflightBudgets).toContainText('Run deadline: 1 min');
+});
+
+test('shows unlimited delegation budgets without losing the preflight report', async ({ page }) => {
+  await page.goto('/chat/conv-subagent');
+  await page.getByTestId('chat-input-textarea').fill('Review with unlimited delegation budgets.');
+  await page.getByTestId('chat-send').click();
+  const thinkingToggle = page.getByRole('button', { name: /Thinking completed/ });
+  if (await thinkingToggle.getAttribute('aria-expanded') !== 'true') await thinkingToggle.click();
+  const chatLog = page.getByLabel('Chat messages');
+  await chatLog.getByRole('button', { name: /Spawn Subagent/i }).click();
+  await expect(chatLog.getByTestId('subagent-preflight')).toContainText('Preflight passed 5 stages');
+  await expect(chatLog.getByTestId('subagent-preflight-budgets')).toContainText('Calls remaining at preflight: ∞');
+  await expect(chatLog.getByTestId('subagent-preflight-budgets')).toContainText('Run deadline: ∞');
 });
 
 test('marks persisted lifecycle handles interrupted instead of presenting stale controls', async ({ page }) => {

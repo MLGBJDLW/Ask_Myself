@@ -63,8 +63,8 @@ pub struct ResolvedOrchestrationProfile {
     pub profile: OrchestrationProfile,
     pub max_iterations: u32,
     pub max_parallel: u32,
-    pub max_calls_per_turn: u32,
-    pub delegated_token_budget: u32,
+    pub max_calls_per_turn: Option<u32>,
+    pub delegated_token_budget: Option<u32>,
     pub verification_reserve_percent: u32,
     pub retry_limit: u8,
     pub min_evidence_sources: u8,
@@ -108,8 +108,8 @@ pub fn resolve_orchestration_profile(
         OrchestrationProfile::Balanced => (
             input.max_iterations,
             input.max_parallel.unwrap_or(2),
-            input.max_calls_per_turn.unwrap_or(4),
-            input.delegated_token_budget.unwrap_or(24_000),
+            input.max_calls_per_turn,
+            input.delegated_token_budget,
             input.verification_reserve_percent.unwrap_or(0),
             1,
             1,
@@ -119,23 +119,48 @@ pub fn resolve_orchestration_profile(
         // Named quality profiles tune orchestration depth, not the lifetime of
         // the semantic tool loop. Only a saved tool-round limit or an explicit
         // Custom value may bound verified tool dispatches.
-        OrchestrationProfile::Deep => (input.max_iterations, 4, 8, 64_000, 30, 2, 2, true, false),
-        OrchestrationProfile::CodeUltra => {
-            (input.max_iterations, 6, 12, 96_000, 30, 3, 1, true, true)
-        }
-        OrchestrationProfile::ResearchUltra => {
-            (input.max_iterations, 6, 12, 96_000, 35, 3, 3, true, false)
-        }
+        OrchestrationProfile::Deep => (
+            input.max_iterations,
+            input.max_parallel.unwrap_or(4),
+            input.max_calls_per_turn,
+            input.delegated_token_budget,
+            30,
+            2,
+            2,
+            true,
+            false,
+        ),
+        OrchestrationProfile::CodeUltra => (
+            input.max_iterations,
+            input.max_parallel.unwrap_or(6),
+            input.max_calls_per_turn,
+            input.delegated_token_budget,
+            30,
+            3,
+            1,
+            true,
+            true,
+        ),
+        OrchestrationProfile::ResearchUltra => (
+            input.max_iterations,
+            input.max_parallel.unwrap_or(6),
+            input.max_calls_per_turn,
+            input.delegated_token_budget,
+            35,
+            3,
+            3,
+            true,
+            false,
+        ),
         OrchestrationProfile::Custom => {
             let custom = input.custom.as_ref().cloned().unwrap_or_default();
             (
                 custom.max_iterations.unwrap_or(input.max_iterations),
                 custom.max_parallel.unwrap_or(3).clamp(1, 8),
-                custom.max_calls_per_turn.unwrap_or(6).clamp(1, 24),
+                custom.max_calls_per_turn.or(input.max_calls_per_turn),
                 custom
                     .delegated_token_budget
-                    .unwrap_or(48_000)
-                    .clamp(4_096, 192_000),
+                    .or(input.delegated_token_budget),
                 custom
                     .verification_reserve_percent
                     .unwrap_or(25)
@@ -187,6 +212,28 @@ mod tests {
             .prompt_section()
             .contains("not a provider reasoning-effort"));
         assert!(OrchestrationProfile::from_wire(Some("ultra")).is_err());
+    }
+
+    #[test]
+    fn quality_profiles_only_use_explicit_task_budgets() {
+        for profile in [
+            OrchestrationProfile::Balanced,
+            OrchestrationProfile::Deep,
+            OrchestrationProfile::CodeUltra,
+            OrchestrationProfile::ResearchUltra,
+            OrchestrationProfile::Custom,
+        ] {
+            let automatic = resolve_orchestration_profile(input(profile));
+            assert_eq!(automatic.max_calls_per_turn, None);
+            assert_eq!(automatic.delegated_token_budget, None);
+            let explicit = resolve_orchestration_profile(OrchestrationProfileInput {
+                max_calls_per_turn: Some(128),
+                delegated_token_budget: Some(500_000),
+                ..input(profile)
+            });
+            assert_eq!(explicit.max_calls_per_turn, Some(128));
+            assert_eq!(explicit.delegated_token_budget, Some(500_000));
+        }
     }
 
     #[test]

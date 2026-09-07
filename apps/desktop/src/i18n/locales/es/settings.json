@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "Selecciona un modelo disponible"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "Después de guardar este proveedor, elige el modelo y el nivel de razonamiento en el chat."
+  ,"modelCatalogLoading": "Cargando modelos…"
+  ,"modelCatalogRefreshing": "Actualizando modelos…"
+  ,"modelCatalogLoadFailed": "No se pudieron cargar los modelos."
+  ,"modelCatalogCached": "Se usa la lista anterior."
+  ,"modelCatalogReady": "Modelos actualizados"
+  ,"modelCatalogEmpty": "No hay modelos disponibles para esta cuenta."
 }

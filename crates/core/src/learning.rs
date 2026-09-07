@@ -127,7 +127,7 @@ pub async fn distill_text_llm(
             Message::text(Role::System, system_prompt),
             Message::text(Role::User, format!("Summarize this:\n\n{}", trimmed)),
         ],
-        max_tokens: Some(256),
+        max_tokens: None,
         temperature: Some(0.2),
         tools: None,
         stop: None,

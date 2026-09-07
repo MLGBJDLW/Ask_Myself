@@ -299,8 +299,8 @@ export function SubagentCard({
                   <div className="mt-2 grid gap-2 text-[11px] text-text-secondary sm:grid-cols-2 lg:grid-cols-4" data-testid="subagent-preflight-budgets">
                     <div>{t('chat.subagentPreflightReserved')}: {run.preflight.reservedTokens.toLocaleString()}</div>
                     <div>{t('chat.subagentPreflightTokens')}: {run.preflight.remainingTokenBudget.toLocaleString()}</div>
-                    <div>{t('chat.subagentPreflightCalls')}: {run.preflight.remainingCallBudget.toLocaleString()}</div>
-                    <div>{t('chat.subagentRunDeadline')}: {formatDurationMs(run.preflight.runDeadlineMs)}</div>
+                    <div>{t('chat.subagentPreflightCalls')}: {run.preflight.remainingCallBudget?.toLocaleString() ?? '∞'}</div>
+                    <div>{t('chat.subagentRunDeadline')}: {run.preflight.runDeadlineMs == null ? '∞' : formatDurationMs(run.preflight.runDeadlineMs)}</div>
                   </div>
                 </div>
               )}

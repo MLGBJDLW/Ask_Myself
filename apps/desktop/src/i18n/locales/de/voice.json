@@ -21,7 +21,7 @@
   "realtimeDeferred": "Live-Transkription ist nicht verfügbar. Die Aufnahme wird sicher im lokalen Spool fortgesetzt und nach dem Stoppen erneut versucht.",
   "cleanupPending": "Das Löschen privater Sprachaufnahmen steht noch aus; versuchen Sie es über die Löschtaste erneut.",
   "discardPending": "Ausstehende Sprachaufnahme löschen",
-  "transcriptionFailed": "Die Transkription ist fehlgeschlagen. Prüfen Sie die Einstellungen des Sprachanbieters und versuchen Sie es erneut.",
+  "transcriptionFailed": "Die Transkription wurde nicht abgeschlossen. Die Aufnahme bleibt für einen erneuten Versuch erhalten.",
   "recordingDock": "Sprachaufnahme-Steuerung",
   "cancelRecording": "Aufnahme abbrechen und löschen",
   "cancel": "Abbrechen",
@@ -42,5 +42,6 @@
   "statusDegraded": "Live nicht verfügbar · lokaler Fallback",
   "statusOffline": "Mikrofon getrennt",
   "statusProcessing": "Verarbeitung",
-  "statusPaused": "Pausiert"
+  "statusPaused": "Pausiert",
+  "retryTranscription": "Transkription wiederholen"
 }

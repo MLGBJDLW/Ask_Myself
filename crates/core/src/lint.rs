@@ -319,7 +319,7 @@ pub async fn check_contradictions(
                 ),
             ),
         ],
-        max_tokens: Some(1000),
+        max_tokens: None,
         temperature: Some(0.1),
         tools: None,
         stop: None,

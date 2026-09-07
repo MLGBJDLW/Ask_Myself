@@ -4857,7 +4857,7 @@ impl Database {
                 &normalized_base_url,
                 &model_id,
                 input.temperature,
-                input.max_tokens,
+                None::<i64>, // Retired saved cap; model capabilities own output space.
                 input.context_window,
                 input.is_default as i32,
                 input.reasoning_enabled,
@@ -5381,7 +5381,7 @@ pub async fn generate_title_with_usage(
             crate::llm::Message::text(crate::llm::Role::User, &user_content),
         ],
         temperature: Some(0.3),
-        max_tokens: Some(60),
+        max_tokens: None,
         tools: None,
         stop: None,
         thinking_budget: None,

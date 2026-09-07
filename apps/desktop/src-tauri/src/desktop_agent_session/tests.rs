@@ -217,13 +217,6 @@ fn root_tool_allowlist_only_narrows_the_assembled_registry() {
 }
 
 #[test]
-fn automatic_worker_cap_never_exceeds_small_aggregate_budget() {
-    assert_eq!(automatic_delegated_worker_cap(96_000, 6), 32_000);
-    assert_eq!(automatic_delegated_worker_cap(500, 6), 500);
-    assert_eq!(automatic_delegated_worker_cap(256, 1), 256);
-}
-
-#[test]
 fn desktop_allow_all_never_bypasses_computer_or_screen_disclosure_approval() {
     let control = ApprovalRequest::new(
         "control",
@@ -1109,7 +1102,10 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     assert_eq!(executor.max_iterations, 7);
     assert_eq!(executor.model.as_deref(), Some("gpt-test"));
     assert_eq!(executor.temperature, Some(0.2));
-    assert_eq!(executor.max_tokens, Some(1024));
+    assert_eq!(
+        executor.max_tokens, None,
+        "plan turns must not inherit retired per-request caps"
+    );
     assert_eq!(executor.context_window, Some(128_000));
     assert_eq!(executor.catalog_limits_authoritative, Some(false));
     assert_eq!(executor.reasoning_enabled, Some(true));
@@ -1135,7 +1131,7 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
         .expect("legacy/empty desktop configs are upgraded to independent V2 limits");
     assert_eq!(standard_limits.input_context_limit, None);
     assert_eq!(standard_limits.max_output_tokens_per_step, None);
-    assert_eq!(standard_limits.max_actual_tokens_per_worker, Some(4_096));
+    assert_eq!(standard_limits.max_actual_tokens_per_worker, None);
 
     let prompt_sections = executor.volatile_system_sections.join("\n");
     assert!(prompt_sections.contains("## Current Turn Time"));
@@ -1172,19 +1168,19 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     .executor_config;
     assert_eq!(nexus.max_iterations, 7);
     assert_eq!(nexus.reasoning_effort, Some(ReasoningEffort::Max));
-    assert_eq!(nexus.subagent_max_parallel, Some(6));
-    assert_eq!(nexus.subagent_max_calls_per_turn, Some(12));
-    assert_eq!(nexus.subagent_token_budget, Some(96_000));
+    assert_eq!(nexus.subagent_max_parallel, Some(3));
+    assert_eq!(nexus.subagent_max_calls_per_turn, Some(6));
+    assert_eq!(nexus.subagent_token_budget, Some(32_000));
     assert_eq!(nexus.subagent_verification_reserve_percent, Some(25));
     let nexus_limits = nexus
         .delegation_limits_v2
         .as_ref()
         .expect("saved V2 limits remain available");
-    assert_eq!(nexus_limits.max_parallel, Some(6));
-    assert_eq!(nexus_limits.max_calls_per_turn, Some(12));
-    assert_eq!(nexus_limits.total_actual_tokens_soft_limit, Some(96_000));
+    assert_eq!(nexus_limits.max_parallel, Some(3));
+    assert_eq!(nexus_limits.max_calls_per_turn, Some(6));
+    assert_eq!(nexus_limits.total_actual_tokens_soft_limit, Some(32_000));
     assert_eq!(nexus_limits.max_output_tokens_per_step, None);
-    assert_eq!(nexus_limits.max_actual_tokens_per_worker, Some(32_000));
+    assert_eq!(nexus_limits.max_actual_tokens_per_worker, None);
     assert_eq!(nexus_limits.queue_deadline_ms, Some(9_000));
     assert_eq!(nexus.power_mode, AgentPowerMode::Nexus);
     assert!(nexus
@@ -1195,6 +1191,9 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
     let mut nexus_auto_db_config = test_agent_config();
     nexus_auto_db_config.model = "qwen3.8-max".to_string();
     nexus_auto_db_config.delegation_limits_v2 = None;
+    nexus_auto_db_config.subagent_max_parallel = None;
+    nexus_auto_db_config.subagent_max_calls_per_turn = None;
+    nexus_auto_db_config.subagent_token_budget = None;
     let nexus_auto = build_desktop_agent_turn_config(DesktopAgentTurnConfigRequest {
         db: &db,
         conversation: &conversation,
@@ -1217,12 +1216,10 @@ fn desktop_agent_turn_config_projects_prompt_and_executor_fields() {
         .expect("Nexus creates independent auto limits even without saved V2 settings");
     assert_eq!(nexus_auto_limits.input_context_limit, None);
     assert_eq!(nexus_auto_limits.max_output_tokens_per_worker, None);
-    assert_eq!(
-        nexus_auto_limits.total_actual_tokens_soft_limit,
-        Some(96_000)
-    );
+    assert_eq!(nexus_auto_limits.total_actual_tokens_soft_limit, None);
     assert_eq!(nexus_auto_limits.max_output_tokens_per_step, None);
-    assert_eq!(nexus_auto_limits.max_actual_tokens_per_worker, Some(32_000));
+    assert_eq!(nexus_auto_limits.max_actual_tokens_per_worker, None);
+    assert_eq!(nexus_auto_limits.max_calls_per_turn, None);
 
     let mut unlimited_db_config = test_agent_config();
     unlimited_db_config.max_iterations = None;

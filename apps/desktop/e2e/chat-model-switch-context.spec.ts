@@ -103,8 +103,13 @@ test.beforeEach(async ({ page }) => {
         case 'start_context_compaction_cmd':
           localStorage.setItem('e2e-compact-started', '1');
           throw new Error('Unexpected subscription compaction API request');
-        case 'list_subscription_models_cmd':
+        case 'list_subscription_models_cmd': {
+          const fixture = window as unknown as { __catalogCalls?: string[]; __catalogDelay?: number; __catalogError?: string };
+          (fixture.__catalogCalls ??= []).push(String(args.provider));
+          if (fixture.__catalogDelay) await new Promise(resolve => setTimeout(resolve, fixture.__catalogDelay));
+          if (fixture.__catalogError) throw new Error(fixture.__catalogError);
           return [{ id: 'gpt-native', name: 'Native GPT', reasoningEfforts: ['low', 'ultra'] }];
+        }
         case 'list_agent_configs_cmd':
           return configs.map(clone);
         case 'set_default_agent_config_cmd': {
@@ -311,4 +316,40 @@ test('subscription compact command is rejected without starting an API summarize
   await page.locator('textarea').press('Enter');
   await expect(page.getByText('Manual compaction is unavailable for this conversation.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('e2e-compact-started'))).toBeNull();
+});
+
+for (const [provider, configId] of [['github_copilot', 'cfg-subscription'], ['openai_codex', 'cfg-codex']]) {
+  test(`${provider} shows catalog loading and reuses it for direct reasoning changes`, async ({ page }, testInfo) => {
+    await page.addInitScript(() => { (window as unknown as { __catalogDelay: number }).__catalogDelay = 1800; });
+    await page.goto('/chat/conv-model-switch');
+    const picker = page.getByTestId('agent-model-picker-trigger');
+    await picker.click();
+    await page.getByTestId(`agent-model-provider-${configId}`).click();
+    await expect(page.getByTestId('agent-model-catalog-status')).toContainText('Loading models');
+    await page.getByTestId('agent-model-picker-menu').screenshot({ path: testInfo.outputPath('model-loading.png') });
+    await page.getByTestId(`agent-model-option-${configId}-gpt-native`).click();
+    await page.getByTestId('agent-reasoning-picker-trigger').click();
+    await page.getByTestId('agent-model-picker-menu').screenshot({ path: testInfo.outputPath('native-reasoning.png') });
+    await page.getByTestId('agent-model-reasoning-ultra').click();
+    await page.getByTestId('agent-reasoning-picker-trigger').click();
+    await page.getByTestId('agent-model-reasoning-low').click();
+    const calls = await page.evaluate(() => (window as unknown as { __catalogCalls: string[] }).__catalogCalls);
+    expect(calls.filter(entry => entry === provider)).toHaveLength(1);
+  });
+}
+
+test('subscription catalog errors offer retry and retain cached models during refresh', async ({ page }) => {
+  await page.addInitScript(() => { (window as unknown as { __catalogError: string }).__catalogError = 'offline'; });
+  await page.goto('/chat/conv-model-switch');
+  await page.getByTestId('agent-model-picker-trigger').click();
+  await page.getByTestId('agent-model-provider-cfg-subscription').click();
+  await expect(page.getByTestId('agent-model-catalog-status')).toContainText('Could not load models');
+  await page.evaluate(() => { (window as unknown as { __catalogError: string }).__catalogError = ''; });
+  await page.getByTestId('agent-model-catalog-refresh').click();
+  const model = page.getByTestId('agent-model-option-cfg-subscription-gpt-native');
+  await expect(model).toBeVisible();
+  await page.evaluate(() => { (window as unknown as { __catalogError: string }).__catalogError = 'offline'; });
+  await page.getByTestId('agent-model-catalog-refresh').click();
+  await expect(page.getByTestId('agent-model-catalog-status')).toContainText('Using the previous model list');
+  await expect(model).toBeEnabled();
 });

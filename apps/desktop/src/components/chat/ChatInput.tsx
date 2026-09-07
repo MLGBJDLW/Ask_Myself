@@ -636,7 +636,12 @@ export function ChatInput({
 
   useEffect(() => {
     if (loadedDraftKey !== draftKey) return;
-    persistDraft(value, attachments, activeSlashCommandId);
+    // Text edits and voice projection synchronously update draftsRef. A child
+    // dictation effect can publish a newer snapshot before this parent effect
+    // runs with the previous render's value. Never roll that authoritative text
+    // back: the next snapshot would mistake the rollback for a manual edit.
+    const currentDraft = draftsRef.current[draftKey];
+    persistDraft(currentDraft?.value ?? value, attachments, activeSlashCommandId);
   }, [activeSlashCommandId, attachments, draftKey, loadedDraftKey, persistDraft, value]);
 
   // Accept prefilled text from outside (e.g. suggestion cards)

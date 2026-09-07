@@ -370,8 +370,26 @@ pub fn resolve_endpoint_model_context_window(
 
 pub fn preset_model_ids(provider: &str, base_url: Option<&str>) -> Vec<String> {
     find_provider_preset(provider, base_url)
-        .map(|preset| preset.models.into_iter().map(|model| model.id).collect())
+        .map(|preset| {
+            preset
+                .models
+                .into_iter()
+                .filter(|model| model.status != Some(ModelLifecycleStatus::Removed))
+                .map(|model| model.id)
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+/// Output capacity is authoritative only for the selected endpoint and model.
+pub fn endpoint_model_output_limit(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    find_endpoint_model_preset(provider, base_url, model)
+        .and_then(|model| model.max_output_tokens)
+        .and_then(|tokens| u32::try_from(tokens).ok())
 }
 
 /// Merge the provider's account-scoped live model list with the curated
@@ -1006,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_catalog_defaults_to_fable_5() {
+    fn anthropic_catalog_defaults_to_fable_51() {
         let anthropic = find_provider_preset("anthropic", Some("https://api.anthropic.com/v1"))
             .expect("anthropic preset should match");
         let ids = anthropic
@@ -1015,7 +1033,7 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"claude-fable-5"));
+        assert_eq!(ids.first(), Some(&"claude-fable-5-1"));
         assert!(ids.contains(&"claude-mythos-5"));
         assert!(ids.contains(&"claude-sonnet-5"));
         assert!(ids.contains(&"claude-opus-4-8"));
@@ -1025,7 +1043,7 @@ mod tests {
         let fable_5 = anthropic
             .models
             .iter()
-            .find(|model| model.id == "claude-fable-5")
+            .find(|model| model.id == "claude-fable-5-1")
             .expect("claude-fable-5 should be listed");
         assert_eq!(fable_5.recommended, Some(true));
 

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::delegation_scheduler::{
-    BudgetSnapshot, DelegationLimitPolicy, DelegationLimitsV2,
+    with_optional_timeout, BudgetSnapshot, DelegationLimitPolicy, DelegationLimitsV2,
     DelegationScheduler as SubagentBudgetController,
 };
 use crate::subagent_lifecycle::{
@@ -688,7 +688,7 @@ fn subtask_input_payload(
     effective_allowed_tools: &[String],
     applied_skill_refs: &[AppliedSkillRef],
     reserved_tokens: u32,
-    timeout_secs: u64,
+    timeout_secs: Option<u64>,
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": kind,
@@ -772,13 +772,14 @@ async fn acquire_batch_slot(
     cancel_token: &CancellationToken,
     call_label: &str,
     queue_started: Instant,
-    queue_deadline_ms: u64,
+    queue_deadline_ms: Option<u64>,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, CoreError> {
     let elapsed_ms = u64::try_from(queue_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let remaining_ms = queue_deadline_ms.saturating_sub(elapsed_ms);
-    if remaining_ms == 0 {
+    let remaining_ms = queue_deadline_ms.map(|limit| limit.saturating_sub(elapsed_ms));
+    if remaining_ms == Some(0) {
         return Err(CoreError::Agent(format!(
-            "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+            "Delegated execution '{call_label}' exceeded its {}ms queue deadline while waiting for a batch slot.",
+            queue_deadline_ms.unwrap_or_default()
         )));
     }
 
@@ -796,8 +797,8 @@ async fn acquire_batch_slot(
         _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
             "Delegated execution '{call_label}' was cancelled while waiting for its batch slot."
         ))),
-        result = tokio::time::timeout(
-            Duration::from_millis(remaining_ms),
+        result = with_optional_timeout(
+            remaining_ms,
             batch_slots.acquire_owned(),
         ) => match result {
             Ok(Ok(permit)) => Ok(permit),
@@ -805,7 +806,8 @@ async fn acquire_batch_slot(
                 "delegated batch semaphore closed".into()
             )),
             Err(_) => Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' exceeded its {queue_deadline_ms}ms queue deadline while waiting for a batch slot."
+                "Delegated execution '{call_label}' exceeded its {}ms queue deadline while waiting for a batch slot.",
+                queue_deadline_ms.unwrap_or_default()
             ))),
         },
     }

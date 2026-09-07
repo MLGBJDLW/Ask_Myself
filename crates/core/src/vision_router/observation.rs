@@ -16,8 +16,6 @@ use super::types::{
     VisionRouteTrace, VISION_OBSERVATION_SCHEMA_VERSION,
 };
 
-const VISION_RESPONSE_MAX_TOKENS: u32 = 4_096;
-
 pub struct VisionProviderInput<'a> {
     pub provider: &'a dyn LlmProvider,
     pub provider_type: ProviderType,
@@ -288,7 +286,7 @@ async fn run_vision(
                 prompt_cache_hint: None,
             }],
             temperature: Some(0.0),
-            max_tokens: Some(VISION_RESPONSE_MAX_TOKENS),
+            max_tokens: None,
             tools: None,
             stop: None,
             thinking_budget: None,

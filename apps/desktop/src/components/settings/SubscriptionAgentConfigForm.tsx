@@ -17,11 +17,11 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const generation = useRef(0);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     const request = ++generation.current;
-    setLoading(true); setError(null); setModels([]);
+    setLoading(true); setError(null);
     try {
-      const next = await api.listSubscriptionModels(preset.provider);
+      const next = await api.listSubscriptionModels(preset.provider, force);
       if (generation.current !== request) return;
       setModels(next);
       setModel(previous => previous || next[0]?.id || '');
@@ -35,7 +35,7 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
   const preservesSavedSelection = config?.provider === preset.provider
     && config?.model === model && !!model.trim();
   const canSave = !!name.trim() && !isSaving
-    && (preservesSavedSelection || (!!current && !loading));
+    && (preservesSavedSelection || (!!current && !loading && !error));
   const save = async () => {
     if (!canSave) return;
     setError(null);
@@ -65,7 +65,7 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
     <p className="text-sm text-text-secondary">{t('settings.subscriptionModelsInChat')}</p>
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     <div className="flex gap-2">
-      <Button variant="secondary" loading={loading} onClick={() => void refresh()}>{t('settings.subscriptionRefresh')}</Button>
+      <Button variant="secondary" loading={loading} onClick={() => void refresh(true)}>{t('settings.subscriptionRefresh')}</Button>
       <Button loading={isSaving} disabled={!canSave} onClick={() => void save()}>{t('common.save')}</Button>
       <Button variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button>
     </div>

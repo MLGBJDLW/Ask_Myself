@@ -125,6 +125,66 @@ pub struct ResponsesReplayPayload {
 }
 
 impl ResponsesReplayPayload {
+    /// A provider-confirmed output limit can leave read-only reasoning state.
+    /// It is useful for continuation, but never authorizes a client tool.
+    fn is_output_continuation(&self, encrypted_reasoning_required: bool) -> bool {
+        if self.response_status != "incomplete" || self.items.is_empty() {
+            return false;
+        }
+        let mut has_reasoning = false;
+        for item in &self.items {
+            if item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|id| id.is_empty())
+                || !matches!(
+                    item.get("status").and_then(serde_json::Value::as_str),
+                    Some("completed" | "incomplete")
+                )
+            {
+                return false;
+            }
+            match item.get("type").and_then(serde_json::Value::as_str) {
+                Some("reasoning") => {
+                    let valid = if encrypted_reasoning_required {
+                        item.get("encrypted_content")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.is_empty())
+                    } else {
+                        item.get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|parts| {
+                                !parts.is_empty()
+                                    && parts.iter().all(|part| {
+                                        part.get("type").and_then(serde_json::Value::as_str)
+                                            == Some("reasoning_text")
+                                            && part
+                                                .get("text")
+                                                .and_then(serde_json::Value::as_str)
+                                                .is_some()
+                                    })
+                            })
+                    };
+                    if !valid {
+                        return false;
+                    }
+                    has_reasoning = true;
+                }
+                Some("message") => {
+                    if item.get("role").and_then(serde_json::Value::as_str) != Some("assistant")
+                        || item
+                            .get("content")
+                            .and_then(serde_json::Value::as_array)
+                            .is_none_or(|parts| parts.is_empty())
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        has_reasoning
+    }
     fn completed_item(item: &serde_json::Value) -> bool {
         item.get("id")
             .and_then(serde_json::Value::as_str)
@@ -399,8 +459,12 @@ impl ProviderReplayPayload {
                 anthropic_paused_turn_blocks_are_replayable(blocks)
             }
             Self::OpenRouterReasoningDetails(details) => !details.is_empty(),
-            Self::DeepSeekResponseItems(payload) => payload.is_structurally_complete(false),
-            Self::OpenAiResponseItems(payload) => payload.is_structurally_complete(true),
+            Self::DeepSeekResponseItems(payload) => {
+                payload.is_structurally_complete(false) || payload.is_output_continuation(false)
+            }
+            Self::OpenAiResponseItems(payload) => {
+                payload.is_structurally_complete(true) || payload.is_output_continuation(true)
+            }
             Self::GeminiThoughtSignatures(payload) => {
                 !payload.signatures.is_empty() && payload.has_valid_signature_positions()
             }
@@ -842,6 +906,8 @@ impl ProviderTurnEnvelope {
 
     pub fn is_compatible_with(&self, route: &RouteSnapshot) -> bool {
         self.route == *route
+            || (route.replay_policy == ReasoningReplayPolicy::NotRequired
+                && self.route.same_route_identity(route))
     }
 }
 
