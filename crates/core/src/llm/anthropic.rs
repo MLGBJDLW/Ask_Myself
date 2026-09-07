@@ -27,7 +27,6 @@ use std::sync::Arc;
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
-const DEFAULT_MAX_TOKENS: u32 = 4096;
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 // ---------------------------------------------------------------------------
@@ -74,7 +73,8 @@ struct AnthropicSystemBlock {
 #[derive(Serialize)]
 struct AnthropicRequest {
     model: String,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Vec<AnthropicSystemBlock>>,
     messages: Vec<AnthropicMessage>,
@@ -783,21 +783,20 @@ fn build_request_body(
                 }),
                 Some(AnthropicOutputConfig { effort }),
                 None,
-                request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+                request.max_tokens,
             )
         } else {
-            (
-                None,
-                None,
-                temperature,
-                request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-            )
+            (None, None, temperature, request.max_tokens)
         }
     } else if let Some(budget) = request.thinking_budget {
-        let budget = budget.max(1024); // Anthropic requires budget_tokens >= 1024
-        let base_max = request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-        // Ensure max_tokens > budget_tokens, with headroom for the response
-        let effective_max = base_max.max(budget + 4096);
+        // Anthropic requires budget_tokens >= 1024. Honor the selected sample
+        // capacity instead of silently adding another fixed output allowance.
+        let budget = budget.max(1024);
+        let budget = request
+            .max_tokens
+            .map(|limit| budget.min(limit.saturating_sub(1)))
+            .unwrap_or(budget);
+        let effective_max = request.max_tokens;
         (
             Some(AnthropicThinking {
                 r#type: "enabled".to_string(),
@@ -809,12 +808,7 @@ fn build_request_body(
             effective_max,
         )
     } else {
-        (
-            None,
-            None,
-            temperature,
-            request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        )
+        (None, None, temperature, request.max_tokens)
     };
 
     let anthropic_tools = request.tools.as_ref().map(|t| convert_tools(t, true));
@@ -1411,6 +1405,25 @@ impl AnthropicProvider {
         }
     }
 
+    fn resolve_output_capacity(&self, request: &CompletionRequest) -> CompletionRequest {
+        let mut resolved = request.clone();
+        if resolved.max_tokens.is_none() {
+            let provider_key = if self.config.provider_type == super::ProviderType::DeepSeek {
+                "deepseek"
+            } else {
+                "anthropic"
+            };
+            // The native API requires max_tokens; use the current catalog for
+            // its exact route. Custom gateways retain their own default contract.
+            resolved.max_tokens = crate::provider_catalog::endpoint_model_output_limit(
+                provider_key,
+                self.config.base_url.as_deref(),
+                &request.model,
+            );
+        }
+        resolved
+    }
+
     fn api_key(&self) -> Result<&str, CoreError> {
         self.config
             .api_key
@@ -1723,6 +1736,57 @@ mod tests {
             routing_session_id: None,
             parallel_tool_calls: true,
         }
+    }
+
+    #[test]
+    fn automatic_output_uses_endpoint_capacity_without_a_4096_fallback() {
+        let mut provider = AnthropicProvider::new(ProviderConfig {
+            provider_type: super::super::ProviderType::Anthropic,
+            base_url: None,
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+            streaming: Default::default(),
+        })
+        .unwrap();
+        let mut request = request_with_messages(vec![Message::text(Role::User, "hello")], None);
+        request.model = "claude-fable-5-1".into();
+        request.max_tokens = None;
+        let resolved = provider.resolve_output_capacity(&request);
+        assert_eq!(resolved.max_tokens, Some(128_000));
+        let (system, messages) = convert_messages(&resolved.messages);
+        let body =
+            serde_json::to_value(build_request_body(&resolved, system, messages, true)).unwrap();
+        assert_eq!(body["max_tokens"], 128_000);
+
+        provider.config.base_url = Some("https://private.example/v1".into());
+        let resolved = provider.resolve_output_capacity(&request);
+        assert_eq!(resolved.max_tokens, None);
+        let (system, messages) = convert_messages(&resolved.messages);
+        let body =
+            serde_json::to_value(build_request_body(&resolved, system, messages, false)).unwrap();
+        assert!(body.get("max_tokens").is_none());
+        request.max_tokens = Some(24_000);
+        assert_eq!(
+            provider.resolve_output_capacity(&request).max_tokens,
+            Some(24_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_model_list_uses_active_shared_catalog() {
+        let provider = AnthropicProvider::new(ProviderConfig {
+            provider_type: super::super::ProviderType::Anthropic,
+            base_url: None,
+            api_key: None,
+            org_id: None,
+            timeout_secs: None,
+            streaming: Default::default(),
+        })
+        .unwrap();
+        let models = provider.list_models().await.unwrap();
+        assert!(models.contains(&"claude-fable-5-1".into()));
+        assert!(!models.contains(&"claude-haiku-3-5-20241022".into()));
     }
 
     #[test]
@@ -2149,22 +2213,10 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, CoreError> {
-        // Anthropic doesn't have a public list-models endpoint.
-        // Return commonly available models.
-        Ok(vec![
-            "claude-fable-5".to_string(),
-            "claude-mythos-5".to_string(),
-            "claude-opus-4-8".to_string(),
-            "claude-opus-4-7".to_string(),
-            "claude-opus-4-6".to_string(),
-            "claude-sonnet-4-6".to_string(),
-            "claude-opus-4-5".to_string(),
-            "claude-sonnet-4-5".to_string(),
-            "claude-haiku-4-5".to_string(),
-            "claude-sonnet-4-20250514".to_string(),
-            "claude-opus-4-20250514".to_string(),
-            "claude-haiku-3-5-20241022".to_string(),
-        ])
+        Ok(crate::provider_catalog::preset_model_ids(
+            "anthropic",
+            self.config.base_url.as_deref(),
+        ))
     }
 
     async fn complete(&self, request: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
@@ -2172,7 +2224,8 @@ impl LlmProvider for AnthropicProvider {
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
-        let body = build_request_body(request, system, messages, false);
+        let resolved_request = self.resolve_output_capacity(request);
+        let body = build_request_body(&resolved_request, system, messages, false);
         let body_bytes = serialized_json_body(&body, "Anthropic completion request")?;
 
         let response = with_request_timeout(
@@ -2385,7 +2438,8 @@ impl LlmProvider for AnthropicProvider {
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
-        let body = build_request_body(request, system, messages, true);
+        let resolved_request = self.resolve_output_capacity(request);
+        let body = build_request_body(&resolved_request, system, messages, true);
         let body_bytes = serialized_json_body(&body, "Anthropic stream request")?;
 
         info!("Anthropic stream request to {url}, model={}", request.model);

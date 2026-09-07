@@ -630,7 +630,6 @@ fn is_cjk_char(ch: char) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Maximum tokens the memory extraction LLM call may produce.
-const EXTRACT_MAX_TOKENS: u32 = 400;
 
 /// Maximum input characters sent to the extraction prompt.
 const EXTRACT_MAX_INPUT: usize = 6_000;
@@ -739,7 +738,7 @@ pub async fn extract_memories_from_conversation(
             Message::text(Role::System, EXTRACT_SYSTEM_PROMPT),
             Message::text(Role::User, user_prompt),
         ],
-        max_tokens: Some(EXTRACT_MAX_TOKENS),
+        max_tokens: None,
         temperature: Some(0.2),
         tools: None,
         stop: None,

@@ -5381,7 +5381,7 @@ pub async fn generate_title_with_usage(
             crate::llm::Message::text(crate::llm::Role::User, &user_content),
         ],
         temperature: Some(0.3),
-        max_tokens: Some(60),
+        max_tokens: None,
         tools: None,
         stop: None,
         thinking_budget: None,

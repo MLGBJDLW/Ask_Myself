@@ -874,7 +874,7 @@ pub async fn extract_text_via_llm_vision_with_llm_provider_type(
         model: String::new(),
         messages,
         temperature: Some(0.0),
-        max_tokens: Some(4096),
+        max_tokens: None,
         tools: None,
         stop: None,
         thinking_budget: None,

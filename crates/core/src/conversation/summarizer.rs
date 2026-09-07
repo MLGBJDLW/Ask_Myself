@@ -26,8 +26,8 @@ Return these compact sections, omitting only sections with no evidence:
 
 Merge any previous compacted checkpoint without duplication. Preserve exact identifiers and distinguish observed facts from inference. Use the conversation's language and optimize for lossless continuation, not prose quality."#;
 
-/// Maximum tokens the summary LLM call may produce.
-const MAX_SUMMARY_TOKENS: u32 = 900;
+/// Initial ledger credit for summary output; it never caps provider reasoning.
+const SUMMARY_OUTPUT_RESERVATION: u32 = 900;
 
 /// Maximum input characters sent into the summarisation request.
 /// Keeps the summarisation call itself cheap and predictable.
@@ -193,7 +193,7 @@ pub fn summarization_attempt_token_reservation(evicted_messages: &[Message]) -> 
     }
     estimate_tokens(SUMMARIZE_SYSTEM_PROMPT)
         .saturating_add(estimate_tokens(&input))
-        .saturating_add(MAX_SUMMARY_TOKENS)
+        .saturating_add(SUMMARY_OUTPUT_RESERVATION)
 }
 
 pub const fn maximum_summarization_attempts() -> u32 {
@@ -279,7 +279,9 @@ pub async fn summarize_evicted_messages_with_controls(
                 ),
             ),
         ],
-        max_tokens: Some(MAX_SUMMARY_TOKENS),
+        // Reasoning and visible checkpoint text share the provider output
+        // allowance. A short checkpoint must not mean a starved reasoning call.
+        max_tokens: None,
         temperature: Some(0.1),
         tools: None,
         stop: None,
@@ -540,8 +542,12 @@ mod tests {
 
         async fn complete(
             &self,
-            _request: &CompletionRequest,
+            request: &CompletionRequest,
         ) -> Result<crate::llm::CompletionResponse, CoreError> {
+            assert_eq!(
+                request.max_tokens, None,
+                "summary length must not cap reasoning tokens"
+            );
             std::future::pending().await
         }
 
