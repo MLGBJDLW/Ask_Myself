@@ -43,9 +43,14 @@ export interface ProviderPreset {
 
 type RawProviderPreset = Omit<ProviderPreset, 'models'> & { models: LegacyCatalogModel[] };
 
+export function isRemovedProviderModel(presetId: string, modelId: string): boolean {
+  const preset = (providerPresets as RawProviderPreset[]).find(preset => preset.id === presetId);
+  return preset?.models.some(model => model.id.toLowerCase() === modelId.toLowerCase() && model.status === 'removed') ?? false;
+}
+
 export const PROVIDER_PRESETS: ProviderPreset[] = ([...providerPresets, ...subscriptionPresets] as RawProviderPreset[]).map((preset) => ({
   ...preset,
-  models: attachModelDescriptors(preset.models, {
+  models: attachModelDescriptors(preset.models.filter(model => model.status !== 'removed'), {
     surface: 'text',
     providerId: canonicalModelProviderId(preset.id, preset.provider),
     endpointId: modelEndpointId('text', preset.id),

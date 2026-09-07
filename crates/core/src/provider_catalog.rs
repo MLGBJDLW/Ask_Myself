@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_catalog_defaults_to_fable_5() {
+    fn anthropic_catalog_defaults_to_fable_51() {
         let anthropic = find_provider_preset("anthropic", Some("https://api.anthropic.com/v1"))
             .expect("anthropic preset should match");
         let ids = anthropic
@@ -1015,7 +1015,7 @@ mod tests {
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(ids.first(), Some(&"claude-fable-5"));
+        assert_eq!(ids.first(), Some(&"claude-fable-5-1"));
         assert!(ids.contains(&"claude-mythos-5"));
         assert!(ids.contains(&"claude-sonnet-5"));
         assert!(ids.contains(&"claude-opus-4-8"));
@@ -1025,7 +1025,7 @@ mod tests {
         let fable_5 = anthropic
             .models
             .iter()
-            .find(|model| model.id == "claude-fable-5")
+            .find(|model| model.id == "claude-fable-5-1")
             .expect("claude-fable-5 should be listed");
         assert_eq!(fable_5.recommended, Some(true));
 

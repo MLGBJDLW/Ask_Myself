@@ -117,8 +117,9 @@ export function saveProviderModelCatalog(
 export function catalogModelsForSnapshot(
   snapshot: ProviderModelCatalogSnapshot,
 ): ProviderModelPreset[] {
+  const selectable = (_id: string, status: string | undefined) => status !== 'removed';
   if (snapshot.descriptors?.length) {
-    return snapshot.descriptors.map((descriptor) => {
+    return snapshot.descriptors.filter(descriptor => selectable(descriptor.id, descriptor.lifecycle)).map((descriptor) => {
       const legacy = snapshot.models.find(
         (candidate) => candidate.id.trim().toLowerCase() === descriptor.id.trim().toLowerCase(),
       );
@@ -141,7 +142,7 @@ export function catalogModelsForSnapshot(
   }
 
   const endpointId = snapshot.endpointId ?? modelEndpointId('text', snapshot.provider);
-  return attachModelDescriptors(snapshot.models, {
+  return attachModelDescriptors(snapshot.models.filter(model => selectable(model.id, model.status)), {
     surface: 'text',
     providerId: snapshot.provider,
     endpointId,
