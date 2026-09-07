@@ -792,10 +792,6 @@ fn build_request_body(
         // Anthropic requires budget_tokens >= 1024. Honor the selected sample
         // capacity instead of silently adding another fixed output allowance.
         let budget = budget.max(1024);
-        let budget = request
-            .max_tokens
-            .map(|limit| budget.min(limit.saturating_sub(1)))
-            .unwrap_or(budget);
         let effective_max = request.max_tokens;
         (
             Some(AnthropicThinking {
@@ -1405,7 +1401,10 @@ impl AnthropicProvider {
         }
     }
 
-    fn resolve_output_capacity(&self, request: &CompletionRequest) -> CompletionRequest {
+    fn resolve_output_capacity(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<CompletionRequest, CoreError> {
         let mut resolved = request.clone();
         if resolved.max_tokens.is_none() {
             let provider_key = if self.config.provider_type == super::ProviderType::DeepSeek {
@@ -1421,7 +1420,17 @@ impl AnthropicProvider {
                 &request.model,
             );
         }
-        resolved
+        if !uses_adaptive_thinking(&resolved.model) {
+            if let (Some(output), Some(thinking)) = (resolved.max_tokens, resolved.thinking_budget)
+            {
+                if output <= thinking.max(1024) {
+                    return Err(CoreError::InvalidInput(
+                        "Anthropic output capacity must exceed the configured thinking budget; increase the explicit output budget or reduce the thinking budget.".into()
+                    ));
+                }
+            }
+        }
+        Ok(resolved)
     }
 
     fn api_key(&self) -> Result<&str, CoreError> {
@@ -1752,7 +1761,7 @@ mod tests {
         let mut request = request_with_messages(vec![Message::text(Role::User, "hello")], None);
         request.model = "claude-fable-5-1".into();
         request.max_tokens = None;
-        let resolved = provider.resolve_output_capacity(&request);
+        let resolved = provider.resolve_output_capacity(&request).unwrap();
         assert_eq!(resolved.max_tokens, Some(128_000));
         let (system, messages) = convert_messages(&resolved.messages);
         let body =
@@ -1760,7 +1769,7 @@ mod tests {
         assert_eq!(body["max_tokens"], 128_000);
 
         provider.config.base_url = Some("https://private.example/v1".into());
-        let resolved = provider.resolve_output_capacity(&request);
+        let resolved = provider.resolve_output_capacity(&request).unwrap();
         assert_eq!(resolved.max_tokens, None);
         let (system, messages) = convert_messages(&resolved.messages);
         let body =
@@ -1768,9 +1777,20 @@ mod tests {
         assert!(body.get("max_tokens").is_none());
         request.max_tokens = Some(24_000);
         assert_eq!(
-            provider.resolve_output_capacity(&request).max_tokens,
+            provider
+                .resolve_output_capacity(&request)
+                .unwrap()
+                .max_tokens,
             Some(24_000)
         );
+        request.model = "claude-sonnet-4-5".into();
+        request.max_tokens = Some(1024);
+        request.thinking_budget = Some(2000);
+        assert!(provider
+            .resolve_output_capacity(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("must exceed"));
     }
 
     #[tokio::test]
@@ -2092,6 +2112,7 @@ mod tests {
         let mut request = request_with_messages(messages, None);
         request.model = "claude-sonnet-4-5".to_string();
         request.thinking_budget = Some(2_000);
+        request.max_tokens = Some(12_000);
 
         let body = build_request_body(&request, None, api_messages, false);
         let body_json = serde_json::to_value(body).unwrap();
@@ -2102,7 +2123,7 @@ mod tests {
         );
         assert!(body_json.get("output_config").is_none());
         assert!(body_json.get("temperature").is_none());
-        assert_eq!(body_json["max_tokens"], 6096);
+        assert_eq!(body_json["max_tokens"], 12_000);
     }
 
     #[test]
@@ -2224,7 +2245,7 @@ impl LlmProvider for AnthropicProvider {
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
-        let resolved_request = self.resolve_output_capacity(request);
+        let resolved_request = self.resolve_output_capacity(request)?;
         let body = build_request_body(&resolved_request, system, messages, false);
         let body_bytes = serialized_json_body(&body, "Anthropic completion request")?;
 
@@ -2438,7 +2459,7 @@ impl LlmProvider for AnthropicProvider {
         let url = self.messages_url();
         let api_key = self.api_key()?;
         let (system, messages) = convert_messages(&request.messages);
-        let resolved_request = self.resolve_output_capacity(request);
+        let resolved_request = self.resolve_output_capacity(request)?;
         let body = build_request_body(&resolved_request, system, messages, true);
         let body_bytes = serialized_json_body(&body, "Anthropic stream request")?;
 
