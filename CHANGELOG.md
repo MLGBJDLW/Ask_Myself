@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.13.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.10...nexa-monorepo-v0.13.11) (2026-09-07)
+
+
+### Features
+
+* **models:** add current frontier models and retire unavailable catalog entries ([fc36ba5](https://github.com/MLGBJDLW/Nexa/commit/fc36ba5e270c35d352f8bebb0b91f7b55927b091))
+
+
+### Bug Fixes
+
+* **agent:** preserve explicit budgets across quality profiles and desktop routing ([95be42b](https://github.com/MLGBJDLW/Nexa/commit/95be42bb43f47e5d6b0da5e13a429540e5951564))
+* **agent:** remove implicit delegation limits and preserve model output headroom ([a969ede](https://github.com/MLGBJDLW/Nexa/commit/a969ede0d60a9ad629e1fdebc2057a6d63890536))
+* **agent:** retire inherited output caps and use model capacity ([8a69610](https://github.com/MLGBJDLW/Nexa/commit/8a696102f45ade8e215f93a4b862079608b63f05))
+* **chat:** retain enrollment errors and simplify model loading feedback ([11dbb64](https://github.com/MLGBJDLW/Nexa/commit/11dbb64fb26f93fa056c7b86331dab96397d4c4a))
+* **chat:** share subscription catalogs and expose loading and retry states ([ae1f95a](https://github.com/MLGBJDLW/Nexa/commit/ae1f95a54def132c60f7ae18b2b0fd9801785044))
+* **llm:** preserve native continuation state and current reasoning contracts ([3d9ecc0](https://github.com/MLGBJDLW/Nexa/commit/3d9ecc08827c6534db337fbf0b14675360e529b0))
+* **llm:** remove fixed output caps from auxiliary requests ([508997b](https://github.com/MLGBJDLW/Nexa/commit/508997b0331b7727d7fbcdf67ad016b72ddc351a))
+* **llm:** validate explicit Anthropic thinking and output budgets ([196488f](https://github.com/MLGBJDLW/Nexa/commit/196488f14e84b4e25406702f9e7589580de6e4c6))
+* model catalogs, output budgets, continuation and speech streaming ([dffbf8e](https://github.com/MLGBJDLW/Nexa/commit/dffbf8e1b6355db2dbd9eba79daa6819b4465e6e))
+* **voice:** reconcile live drafts and recover interrupted audio replay ([542d0c9](https://github.com/MLGBJDLW/Nexa/commit/542d0c921d19d9e85a98f8cfd1ed4a8d7f9b49b4))
+
 ## [0.13.10](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.9...nexa-monorepo-v0.13.10) (2026-09-06)
 
 
