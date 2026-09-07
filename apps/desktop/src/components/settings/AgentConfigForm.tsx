@@ -1422,7 +1422,6 @@ export function AgentConfigForm({
                   );
                 }}
                 min={1}
-                max={32}
                 step={1}
               />
               <p className="text-xs text-text-tertiary">
@@ -1473,7 +1472,7 @@ export function AgentConfigForm({
                 setValue: setSubagentMaxOutputTokens,
                 min: 256,
                 step: 256,
-                placeholder: "Auto: profile/fair share, catalog ceiling",
+                placeholder: "Auto from model capacity",
               },
               {
                 label: "Max actual tokens per worker",
@@ -1481,7 +1480,7 @@ export function AgentConfigForm({
                 setValue: setSubagentMaxActualTokens,
                 min: 1024,
                 step: 1024,
-                placeholder: "Auto from Nexus fair share",
+                placeholder: "Unlimited",
               },
               {
                 label: "Total cost soft limit (µUSD)",
@@ -1497,7 +1496,7 @@ export function AgentConfigForm({
                 setValue: setSubagentQueueDeadlineMs,
                 min: 100,
                 step: 100,
-                placeholder: "Auto: 15000",
+                placeholder: "Unlimited",
               },
               {
                 label: "Provider connect deadline (ms)",
@@ -1521,7 +1520,7 @@ export function AgentConfigForm({
                 setValue: setSubagentRunDeadlineMs,
                 min: 1000,
                 step: 1000,
-                placeholder: "Auto: 180000 / long model 360000",
+                placeholder: "Unlimited",
               },
             ].map(({ label, value, setValue, min, step, placeholder }) => (
               <div key={label} className="space-y-2">

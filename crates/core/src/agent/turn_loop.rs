@@ -1476,7 +1476,9 @@ impl AgentExecutor {
             // send. Superseded step-scoped controls are not part of a reserved
             // final-answer request and must not consume its output allowance.
             let request_messages = prompt_ir::messages_for_model_step(&messages, force_answer_only);
-            let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some() {
+            let estimated_prompt = if self.config.max_actual_tokens_per_run.is_some()
+                || output_budget_plan.context_cap.is_some()
+            {
                 context::estimate_context_usage_breakdown_for_model(
                     model,
                     &request_messages,
@@ -1488,7 +1490,9 @@ impl AgentExecutor {
                 0
             };
             let Some(model_step_max_response_tokens) = cumulative_run_step_output_budget(
-                max_response_tokens,
+                output_budget_plan
+                    .wire_max_tokens_for_prompt(estimated_prompt)
+                    .unwrap_or(max_response_tokens),
                 self.config.max_actual_tokens_per_run,
                 total_usage.total_tokens,
                 estimated_prompt,
@@ -1525,7 +1529,7 @@ impl AgentExecutor {
                     // physical request as the remaining budget shrinks.
                     Some(model_step_max_response_tokens)
                 } else {
-                    output_budget_plan.wire_max_tokens()
+                    output_budget_plan.wire_max_tokens_for_prompt(estimated_prompt)
                 };
             let accumulated_content_before_model_step = accumulated_content.len();
             let model_step_result = self

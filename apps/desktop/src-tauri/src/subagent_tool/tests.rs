@@ -375,7 +375,10 @@ fn test_delegation_timeout_treats_unlimited_parent_as_default_budget() {
     config.tool_timeout_secs = Some(0);
     config.agent_timeout_secs = Some(0);
 
-    assert_eq!(resolve_delegation_timeout_secs(&config, None), 120);
+    assert_eq!(
+        resolve_delegation_run_deadline_ms(&config, None, None),
+        None
+    );
 }
 
 #[test]
@@ -420,11 +423,88 @@ fn test_model_policy_routes_only_to_same_provider_auxiliary_model() {
 }
 
 #[tokio::test]
-async fn test_budget_uses_realistic_default_token_budget() {
+async fn default_delegation_keeps_running_past_former_call_and_token_limits() {
     let budget = SubagentBudgetController::new(&AgentConfig::default());
+    let cancel = CancellationToken::new();
+    for _ in 0..40 {
+        let permit = budget
+            .begin_call("worker", 16_000, false, &cancel)
+            .await
+            .unwrap();
+        budget
+            .finish_call(
+                16_000,
+                &Usage {
+                    total_tokens: 16_000,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        drop(permit);
+    }
     let snapshot = budget.snapshot().await;
+    assert_eq!(snapshot.calls_started, 40);
+    assert_eq!(snapshot.remaining_calls, None);
+    assert_eq!(snapshot.tokens_spent, 640_000);
+    let limits = budget.limits().await;
+    assert_eq!(limits.total_actual_tokens_soft_limit, None);
+    assert_eq!(limits.run_deadline_ms, None);
+    assert_eq!(limits.queue_deadline_ms, None);
+}
 
-    assert_eq!(snapshot.token_budget, 32_000);
+#[tokio::test(start_paused = true)]
+async fn unlimited_worker_survives_long_reasoning_and_remains_cancellable() {
+    let (_fatal_tx, mut fatal_rx) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let result = await_subagent_worker_completion(
+        "long-worker",
+        &cancel,
+        &mut fatal_rx,
+        async {
+            tokio::time::sleep(Duration::from_secs(7_200)).await;
+            Ok::<_, CoreError>(42)
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, 42);
+    assert!(!cancel.is_cancelled());
+    cancel.cancel();
+    let error = await_subagent_worker_completion(
+        "cancelled-worker",
+        &cancel,
+        &mut fatal_rx,
+        std::future::pending::<Result<(), CoreError>>(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("cancelled by the parent"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_queue_waits_for_capacity_and_can_be_cancelled() {
+    let slots = Arc::new(tokio::sync::Semaphore::new(1));
+    let occupied = Arc::clone(&slots).acquire_owned().await.unwrap();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        drop(occupied);
+    });
+    let cancel = CancellationToken::new();
+    let permit = acquire_batch_slot(Arc::clone(&slots), &cancel, "queued", Instant::now(), None)
+        .await
+        .unwrap();
+    cancel.cancel();
+    assert!(
+        acquire_batch_slot(slots, &cancel, "cancelled", Instant::now(), None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    drop(permit);
 }
 
 #[test]
@@ -968,10 +1048,10 @@ async fn parent_worker_watchdog_keeps_only_the_hard_run_deadline() {
         &cancel,
         &mut fatal_rx,
         std::future::pending::<Result<(), CoreError>>(),
-        10,
+        Some(10),
     )
     .await
-    .expect_err("the parent must retain a hard total deadline");
+    .expect_err("an explicit total deadline must be enforced");
 
     assert!(error.to_string().contains("timed out after 10ms"));
     assert!(cancel.is_cancelled());
@@ -988,7 +1068,7 @@ async fn parent_worker_watchdog_preserves_fatal_error_priority() {
         &cancel,
         &mut fatal_rx,
         async { Ok::<_, CoreError>(()) },
-        1_000,
+        None,
     )
     .await
     .expect_err("biased fatal errors must win over cancellation and completion");
@@ -1002,7 +1082,7 @@ async fn batch_slot_wait_shares_the_global_queue_deadline() {
     let _occupied = Arc::clone(&slots).acquire_owned().await.unwrap();
     let cancel = CancellationToken::new();
 
-    let error = acquire_batch_slot(slots, &cancel, "queued-worker", Instant::now(), 20)
+    let error = acquire_batch_slot(slots, &cancel, "queued-worker", Instant::now(), Some(20))
         .await
         .expect_err("batch-local admission must remain bounded");
 
@@ -1074,26 +1154,62 @@ async fn judge_startup_failure_rolls_back_global_and_judge_admission() {
 }
 
 #[test]
-fn v2_run_deadline_replaces_legacy_role_default_unless_call_is_explicitly_shorter() {
+fn explicit_delegation_limits_are_not_replaced_by_hidden_floors_or_ceilings() {
     let config = AgentConfig {
         delegation_limits_v2: Some(nexa_core::agent::DelegationLimitsConfig {
-            run_deadline_ms: Some(240_000),
+            input_context_limit: Some(20_000_000),
+            handoff_context_tokens_per_worker: Some(32),
+            max_output_tokens_per_step: Some(32),
+            max_actual_tokens_per_worker: Some(20_000_000),
+            total_actual_tokens_soft_limit: Some(30_000_000),
+            max_calls_per_turn: Some(128),
+            run_deadline_ms: Some(7_200_000),
             ..Default::default()
         }),
         ..Default::default()
     };
+    let limits = DelegationLimitsV2::resolve(&config);
+    assert_eq!(
+        limits.input_context_policy,
+        DelegationLimitPolicy::Explicit(20_000_000)
+    );
+    assert_eq!(limits.handoff_context_tokens_per_worker, Some(32));
+    assert_eq!(
+        limits.max_output_tokens_per_worker,
+        DelegationLimitPolicy::Explicit(32)
+    );
+    assert_eq!(limits.max_actual_tokens_per_worker, Some(20_000_000));
+    assert_eq!(limits.total_actual_tokens_soft_limit, Some(30_000_000));
+    assert_eq!(limits.max_calls_per_turn, Some(128));
+    assert_eq!(limits.run_deadline_ms, Some(7_200_000));
+}
 
+#[test]
+fn delegated_deadlines_only_combine_explicit_task_budgets() {
+    let config = AgentConfig::default();
     assert_eq!(
-        resolve_delegation_run_deadline_ms(&config, None, 60, 240_000),
-        240_000
+        resolve_delegation_run_deadline_ms(&config, None, None),
+        None
     );
     assert_eq!(
-        resolve_delegation_run_deadline_ms(&config, Some(30), 60, 240_000),
-        30_000
+        resolve_delegation_run_deadline_ms(&config, None, Some(240_000)),
+        Some(240_000)
     );
     assert_eq!(
-        resolve_delegation_run_deadline_ms(&AgentConfig::default(), None, 60, 180_000),
-        60_000
+        resolve_delegation_run_deadline_ms(&config, Some(30), Some(240_000)),
+        Some(30_000)
+    );
+    let config = AgentConfig {
+        agent_timeout_secs: Some(900),
+        ..config
+    };
+    assert_eq!(
+        resolve_delegation_run_deadline_ms(&config, None, None),
+        Some(900_000)
+    );
+    assert_eq!(
+        resolve_delegation_run_deadline_ms(&config, Some(1800), None),
+        Some(900_000)
     );
 }
 
@@ -1229,160 +1345,51 @@ fn independent_auto_limits_prefer_model_catalog_over_parent_limits() {
     );
 
     assert_eq!(config.context_window, Some(1_000_000));
-    assert_eq!(config.max_tokens, Some(65_536));
+    assert_eq!(config.max_tokens, None);
 }
 
-#[test]
-fn nexus_long_reasoning_workers_use_interactive_effort_instead_of_parent_max() {
-    let mut qwen = AgentConfig {
-        power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-        provider_type: Some(ProviderType::Qwen),
-        model: Some("qwen3.8-max".to_string()),
-        reasoning_enabled: Some(true),
-        reasoning_effort: Some(ReasoningEffort::Max),
-        ..Default::default()
-    };
-    apply_nexus_worker_reasoning_policy(&mut qwen, role_profile_by_id("researcher"));
-    assert_eq!(qwen.reasoning_effort, Some(ReasoningEffort::Low));
-    assert_eq!(qwen.thinking_budget, None);
-
-    apply_nexus_worker_reasoning_policy(&mut qwen, role_profile_by_id("verifier"));
-    assert_eq!(qwen.reasoning_effort, Some(ReasoningEffort::Medium));
-
-    let mut direct_kimi = AgentConfig {
-        power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-        provider_type: Some(ProviderType::Moonshot),
-        model: Some("kimi-k3".to_string()),
-        reasoning_effort: Some(ReasoningEffort::Max),
-        ..Default::default()
-    };
-    apply_nexus_worker_reasoning_policy(&mut direct_kimi, role_profile_by_id("verifier"));
-    assert_eq!(direct_kimi.reasoning_effort, Some(ReasoningEffort::High));
-
-    let mut routed_kimi = AgentConfig {
-        power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-        provider_type: Some(ProviderType::AlibabaModelStudio),
-        model: Some("kimi/kimi-k3".to_string()),
-        reasoning_effort: Some(ReasoningEffort::Max),
-        ..Default::default()
-    };
-    apply_nexus_worker_reasoning_policy(&mut routed_kimi, role_profile_by_id("researcher"));
-    assert_eq!(routed_kimi.reasoning_effort, Some(ReasoningEffort::Max));
-
-    let mut qwen_request = CompletionRequest {
-        model: "qwen3.8-max".to_string(),
-        messages: Vec::new(),
-        temperature: None,
-        max_tokens: Some(4_000),
-        tools: None,
-        stop: None,
-        thinking_budget: None,
-        reasoning_enabled: Some(true),
-        reasoning_effort: Some(ReasoningEffort::Medium),
-        provider_type: Some(ProviderType::Qwen),
-        routing_session_id: None,
-        parallel_tool_calls: true,
-    };
-    apply_judge_recovery_controls(&mut qwen_request);
-    assert_eq!(qwen_request.reasoning_enabled, Some(false));
-
-    let mut kimi_request = CompletionRequest {
-        model: "kimi-k3".to_string(),
-        provider_type: Some(ProviderType::Moonshot),
-        ..qwen_request
-    };
-    apply_judge_recovery_controls(&mut kimi_request);
-    assert_eq!(kimi_request.reasoning_enabled, Some(true));
-    assert_eq!(kimi_request.reasoning_effort, Some(ReasoningEffort::Low));
-}
-
-#[test]
-fn nexus_reasoning_policy_is_catalog_driven_across_provider_families() {
-    for (provider, model) in [
-        (ProviderType::OpenAi, "gpt-5.6"),
-        (ProviderType::Anthropic, "claude-fable-5"),
-        (ProviderType::Google, "gemini-3.8-flash"),
-        (ProviderType::DeepSeek, "deepseek-v4-pro"),
-        (ProviderType::Moonshot, "kimi-k3"),
-        (ProviderType::Qwen, "qwen3.8-max"),
-        (ProviderType::AlibabaModelStudio, "qwen3.8-max"),
-        (ProviderType::Zhipu, "glm-5.3"),
-        (ProviderType::OpenRouter, "moonshotai/kimi-k3"),
+#[tokio::test]
+async fn nexus_workers_keep_selected_reasoning_and_have_no_implicit_task_deadline() {
+    let db = Database::open_memory().unwrap();
+    for (provider, model, budget, effort) in [
+        (
+            ProviderType::OpenAi,
+            "gpt-6-astra",
+            None,
+            Some(ReasoningEffort::Max),
+        ),
+        (
+            ProviderType::Custom,
+            "private-reasoner",
+            Some(262_144),
+            None,
+        ),
     ] {
-        let reasoning = model_capabilities_from_catalog(provider, model)
-            .and_then(|capabilities| capabilities.reasoning)
-            .unwrap_or_else(|| panic!("missing reasoning profile for {provider:?}:{model}"));
-        let mut config = AgentConfig {
-            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-            provider_type: Some(provider),
-            model: Some(model.to_string()),
-            reasoning_enabled: Some(true),
-            reasoning_effort: Some(ReasoningEffort::Max),
-            thinking_budget: Some(262_144),
-            ..Default::default()
-        };
-        apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("researcher"));
-        if reasoning.effort_levels.is_empty() {
-            assert!(config.thinking_budget.is_some_and(|budget| budget <= 4_096));
-        } else if reasoning.effort_levels.iter().any(|level| level == "low") {
-            assert_eq!(config.reasoning_effort, Some(ReasoningEffort::Low));
-            assert_eq!(config.thinking_budget, None);
-        } else {
-            assert!(config.reasoning_effort.is_some());
+        let mut runtime = test_runtime();
+        runtime.provider_config.provider_type = provider;
+        runtime.provider_config.api_key = Some("test-key".into());
+        runtime.provider_config.base_url = Some("https://private.example/v1".into());
+        runtime.base_config.provider_type = Some(provider);
+        runtime.base_config.model = Some(model.into());
+        runtime.base_config.power_mode = nexa_core::agent::power_mode::AgentPowerMode::Nexus;
+        runtime.base_config.reasoning_enabled = Some(true);
+        runtime.base_config.reasoning_effort = effort.clone();
+        runtime.base_config.thinking_budget = budget;
+        runtime.set_tool_registry(ToolRegistry::new());
+        for role in ["researcher", "verifier"] {
+            let args: SpawnSubagentArgs = serde_json::from_value(serde_json::json!({
+                "task": "Inspect the evidence", "role_id": role, "allowed_tools": [],
+            }))
+            .unwrap();
+            let worker = prepare_subagent_worker(&runtime, &db, vec![], &args, role, None)
+                .await
+                .unwrap();
+            assert_eq!(worker.config.reasoning_effort, effort);
+            assert_eq!(worker.config.thinking_budget, budget);
+            assert_eq!(worker.config.agent_timeout_secs, None);
+            assert_eq!(worker.run_deadline_ms, None);
         }
     }
-}
-
-#[test]
-fn nexus_unknown_model_reasoning_is_bounded_for_every_provider_type() {
-    for provider in [
-        ProviderType::OpenAi,
-        ProviderType::OpenRouter,
-        ProviderType::Anthropic,
-        ProviderType::Google,
-        ProviderType::DeepSeek,
-        ProviderType::Ollama,
-        ProviderType::LmStudio,
-        ProviderType::AzureOpenAi,
-        ProviderType::Zhipu,
-        ProviderType::Moonshot,
-        ProviderType::Qwen,
-        ProviderType::AlibabaModelStudio,
-        ProviderType::SiliconFlow,
-        ProviderType::Doubao,
-        ProviderType::Yi,
-        ProviderType::Baichuan,
-        ProviderType::Custom,
-    ] {
-        let mut config = AgentConfig {
-            power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-            provider_type: Some(provider),
-            model: Some("private-unknown-reasoner".to_string()),
-            reasoning_enabled: Some(true),
-            reasoning_effort: Some(ReasoningEffort::Max),
-            ..Default::default()
-        };
-        apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("researcher"));
-        assert_eq!(
-            config.reasoning_effort,
-            Some(ReasoningEffort::Low),
-            "unknown model inherited parent max for {provider:?}"
-        );
-        apply_nexus_worker_reasoning_policy(&mut config, role_profile_by_id("verifier"));
-        assert_eq!(config.reasoning_effort, Some(ReasoningEffort::Medium));
-    }
-
-    let mut budget_controlled = AgentConfig {
-        power_mode: nexa_core::agent::power_mode::AgentPowerMode::Nexus,
-        provider_type: Some(ProviderType::Custom),
-        model: Some("private-budget-reasoner".to_string()),
-        reasoning_enabled: Some(true),
-        thinking_budget: Some(262_144),
-        ..Default::default()
-    };
-    apply_nexus_worker_reasoning_policy(&mut budget_controlled, role_profile_by_id("researcher"));
-    assert_eq!(budget_controlled.thinking_budget, Some(4_096));
-    assert_eq!(budget_controlled.reasoning_effort, None);
 }
 
 #[test]
@@ -1428,7 +1435,10 @@ fn independent_auto_output_uses_model_capacity_without_an_artificial_ceiling() {
     );
 
     assert_eq!(config.context_window, Some(1_048_576));
-    assert_eq!(config.max_tokens, Some(1_048_576));
+    assert_eq!(
+        config.max_tokens, None,
+        "the executor must resolve automatic output capacity with prompt headroom"
+    );
     assert_eq!(model_context_window("moonshotai/kimi-k3:free"), 1_048_576);
     assert_eq!(model_context_window("qwen3.8-max-latest"), 1_000_000);
 }
@@ -1571,7 +1581,7 @@ async fn test_delegation_runtime_uses_distinct_connection_and_first_token_deadli
     .await;
     assert_eq!(ordinary.connect_deadline_ms, 15_000);
     assert_eq!(ordinary.first_token_deadline_ms, 45_000);
-    assert_eq!(ordinary.run_deadline_ms, 180_000);
+    assert_eq!(ordinary.run_deadline_ms, None);
 
     let qwen = SubagentBudgetController::new(&AgentConfig {
         model: Some("qwen3.8-max".to_string()),
@@ -1582,7 +1592,7 @@ async fn test_delegation_runtime_uses_distinct_connection_and_first_token_deadli
     .await;
     assert_eq!(qwen.connect_deadline_ms, 90_000);
     assert_eq!(qwen.first_token_deadline_ms, 150_000);
-    assert_eq!(qwen.run_deadline_ms, 360_000);
+    assert_eq!(qwen.run_deadline_ms, None);
 
     for (provider, model) in [
         (ProviderType::OpenAi, "gpt-5.6"),
@@ -1633,7 +1643,7 @@ async fn delegation_limits_v2_overrides_legacy_dimensions_and_deadlines() {
     let limits = SubagentBudgetController::new(&config).limits().await;
 
     assert_eq!(limits.max_parallel, 6);
-    assert_eq!(limits.max_calls_per_turn, 12);
+    assert_eq!(limits.max_calls_per_turn, Some(12));
     assert_eq!(
         limits.input_context_policy,
         DelegationLimitPolicy::Explicit(1_000_000)
@@ -1645,10 +1655,10 @@ async fn delegation_limits_v2_overrides_legacy_dimensions_and_deadlines() {
     assert_eq!(limits.total_actual_tokens_soft_limit, Some(240_000));
     assert_eq!(limits.total_cost_soft_limit_micros, Some(1_000));
     assert!(limits.cost_accounting_available);
-    assert_eq!(limits.queue_deadline_ms, 5_000);
+    assert_eq!(limits.queue_deadline_ms, Some(5_000));
     assert_eq!(limits.connect_deadline_ms, 20_000);
     assert_eq!(limits.first_token_deadline_ms, 60_000);
-    assert_eq!(limits.run_deadline_ms, 240_000);
+    assert_eq!(limits.run_deadline_ms, Some(240_000));
 }
 
 #[test]

@@ -622,26 +622,8 @@ impl ToolDispatchRuntime<'_> {
         let effective_dynamic_tool_visibility = layout
             .effective_dynamic_tool_visibility(self.config.dynamic_tool_visibility)
             || has_hidden_registered_tools;
-        let delegated_timeout_secs = self.config.delegation_limits_v2.as_ref().map(|limits| {
-            let run_ms = limits
-                .run_deadline_ms
-                .unwrap_or(180_000)
-                .clamp(1_000, 3_600_000);
-            let queue_ms = limits
-                .queue_deadline_ms
-                .unwrap_or(15_000)
-                .clamp(100, run_ms);
-            u32::try_from(
-                run_ms
-                    .saturating_add(queue_ms)
-                    .div_ceil(1_000)
-                    .saturating_add(5),
-            )
-            .unwrap_or(u32::MAX)
-        });
         let tool_policy = ToolSchedulerPolicy::new(
             self.config.tool_timeout_secs,
-            delegated_timeout_secs,
             effective_dynamic_tool_visibility,
             offered_tool_names,
             registered_tool_names,

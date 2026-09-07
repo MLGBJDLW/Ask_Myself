@@ -21,7 +21,7 @@ pub(super) struct PreparedSubagentWorker {
     pub(super) model_route_fallback: bool,
     pub(super) delegation_limits: DelegationLimitsV2,
     pub(super) context_snapshot: Arc<DelegationContextSnapshot>,
-    pub(super) run_deadline_ms: u64,
+    pub(super) run_deadline_ms: Option<u64>,
     pub(super) effective_allowed_tools: Vec<String>,
     pub(super) effective_source_scope: Vec<String>,
     pub(super) preflight: SubagentPreflightReport,
@@ -83,7 +83,6 @@ pub(super) async fn prepare_subagent_worker(
         )
     });
     config.catalog_limits_authoritative = Some(catalog_authoritative);
-    apply_nexus_worker_reasoning_policy(&mut config, role_profile);
     apply_explicit_worker_reasoning(&mut config, &provider_config, &args.route)?;
     // Workers execute a handoff; the parent's fan-out and final-synthesis
     // policies must not become recursive worker completion requirements.
@@ -180,7 +179,7 @@ pub(super) async fn prepare_subagent_worker(
     let handoff_budget_snapshot = runtime.budget.snapshot().await;
     let fair_share_divisor = handoff_budget_snapshot
         .max_parallel
-        .min(handoff_budget_snapshot.remaining_calls)
+        .min(handoff_budget_snapshot.remaining_calls.unwrap_or(u32::MAX))
         .max(1);
     let fair_share = handoff_budget_snapshot.remaining_tokens / fair_share_divisor;
     let control_lane_role = matches!(
@@ -215,18 +214,13 @@ pub(super) async fn prepare_subagent_worker(
         handoff_token_budget,
     );
     let context_build_ms = instant_elapsed_ms(context_build_started);
-    let timeout_secs = estimate_subagent_timeout_secs(&runtime, &args, role_profile);
     let run_deadline_ms = resolve_delegation_run_deadline_ms(
         &runtime.base_config,
         args.timeout_secs,
-        timeout_secs,
         delegation_limits.run_deadline_ms,
     );
-    config.agent_timeout_secs = Some(
-        u32::try_from(run_deadline_ms.div_ceil(1_000))
-            .unwrap_or(u32::MAX)
-            .max(1),
-    );
+    config.agent_timeout_secs =
+        run_deadline_ms.map(|ms| u32::try_from(ms.div_ceil(1_000)).unwrap_or(u32::MAX).max(1));
     config.request_kind = AgentRequestKind::SubagentWorker;
     config.system_prompt =
         build_subagent_system_prompt(&config.system_prompt, args.role.as_deref(), role_profile);
@@ -338,7 +332,7 @@ pub(super) async fn prepare_subagent_worker(
         &effective_allowed_tools,
         &applied_skill_refs,
         reserved_tokens,
-        timeout_secs,
+        run_deadline_ms.map(|ms| ms.div_ceil(1_000)),
     );
     subtask_input["delegationLimitsV2"] =
         serde_json::to_value(&delegation_limits).unwrap_or_else(|_| serde_json::json!({}));
@@ -619,7 +613,7 @@ pub(super) struct SubagentExecutionInput<'a> {
     pub(super) effective_provider_type: ProviderType,
     pub(super) effective_model: Option<String>,
     pub(super) worker_actual_token_limit: Option<u32>,
-    pub(super) run_deadline_ms: u64,
+    pub(super) run_deadline_ms: Option<u64>,
     pub(super) context_messages: Vec<Message>,
     pub(super) effective_source_scope: Vec<String>,
     pub(super) initial_output_credit: u32,

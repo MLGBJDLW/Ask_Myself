@@ -370,8 +370,26 @@ pub fn resolve_endpoint_model_context_window(
 
 pub fn preset_model_ids(provider: &str, base_url: Option<&str>) -> Vec<String> {
     find_provider_preset(provider, base_url)
-        .map(|preset| preset.models.into_iter().map(|model| model.id).collect())
+        .map(|preset| {
+            preset
+                .models
+                .into_iter()
+                .filter(|model| model.status != Some(ModelLifecycleStatus::Removed))
+                .map(|model| model.id)
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+/// Output capacity is authoritative only for the selected endpoint and model.
+pub fn endpoint_model_output_limit(
+    provider: &str,
+    base_url: Option<&str>,
+    model: &str,
+) -> Option<u32> {
+    find_endpoint_model_preset(provider, base_url, model)
+        .and_then(|model| model.max_output_tokens)
+        .and_then(|tokens| u32::try_from(tokens).ok())
 }
 
 /// Merge the provider's account-scoped live model list with the curated

@@ -74,8 +74,8 @@ export interface SubagentPreflightReport {
   droppedInvalidContextMessages: number;
   reservedTokens: number;
   remainingTokenBudget: number;
-  remainingCallBudget: number;
-  runDeadlineMs: number;
+  remainingCallBudget: number | null;
+  runDeadlineMs: number | null;
 }
 
 export interface SubagentPreflightFailure {
@@ -508,8 +508,8 @@ function parsePreflightReport(value: unknown): SubagentPreflightReport | null {
     || droppedInvalidContextMessages == null
     || reservedTokens == null
     || remainingTokenBudget == null
-    || remainingCallBudget == null
-    || runDeadlineMs == null
+    || (remainingCallBudget == null && record.remainingCallBudget !== null)
+    || (runDeadlineMs == null && record.runDeadlineMs !== null)
     || !providerId
     || !effectiveModel
   ) return null;

@@ -8,13 +8,21 @@ use nexa_core::llm::Usage;
 use serde::Serialize;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-const DEFAULT_QUEUE_DEADLINE_MS: u64 = 15_000;
 const DEFAULT_CONNECT_DEADLINE_MS: u64 = 15_000;
 const DEFAULT_FIRST_TOKEN_DEADLINE_MS: u64 = 45_000;
-const DEFAULT_RUN_DEADLINE_MS: u64 = 180_000;
 const LONG_REASONER_CONNECT_DEADLINE_MS: u64 = 90_000;
 const LONG_REASONER_FIRST_TOKEN_DEADLINE_MS: u64 = 150_000;
-const LONG_REASONER_RUN_DEADLINE_MS: u64 = 360_000;
+
+/// Task deadlines are optional; absence never becomes an arbitrary duration.
+pub(crate) async fn with_optional_timeout<F: std::future::Future>(
+    deadline_ms: Option<u64>,
+    future: F,
+) -> Result<F::Output, tokio::time::error::Elapsed> {
+    match deadline_ms {
+        Some(ms) => tokio::time::timeout(Duration::from_millis(ms), future).await,
+        None => Ok(future.await),
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -34,14 +42,14 @@ pub(crate) struct DelegationLimitsV2 {
     pub total_cost_soft_limit_micros: Option<u64>,
     pub cost_accounting_available: bool,
     pub max_parallel: u32,
-    pub max_calls_per_turn: u32,
+    pub max_calls_per_turn: Option<u32>,
     pub exploration_lane_slots: u32,
     pub verification_lane_slots: u32,
     pub judge_lane_slots: u32,
-    pub queue_deadline_ms: u64,
+    pub queue_deadline_ms: Option<u64>,
     pub connect_deadline_ms: u64,
     pub first_token_deadline_ms: u64,
-    pub run_deadline_ms: u64,
+    pub run_deadline_ms: Option<u64>,
 }
 
 impl DelegationLimitsV2 {
@@ -96,11 +104,6 @@ impl DelegationLimitsV2 {
         } else {
             DEFAULT_FIRST_TOKEN_DEADLINE_MS
         };
-        let default_run_deadline_ms = if long_prefill_profile {
-            LONG_REASONER_RUN_DEADLINE_MS
-        } else {
-            DEFAULT_RUN_DEADLINE_MS
-        };
         let max_parallel = configured
             .and_then(|limits| limits.max_parallel)
             .or(config.subagent_max_parallel)
@@ -108,25 +111,20 @@ impl DelegationLimitsV2 {
             .clamp(1, 12);
         let max_calls_per_turn = configured
             .and_then(|limits| limits.max_calls_per_turn)
-            .or(config.subagent_max_calls_per_turn)
-            .unwrap_or(6)
-            .clamp(1, 32);
+            .or(config.subagent_max_calls_per_turn);
         let dedicated_lanes = config
             .subagent_verification_reserve_percent
             .unwrap_or_default()
             > 0
             && max_parallel >= 3
-            && max_calls_per_turn >= 3;
+            && max_calls_per_turn.is_none_or(|limit| limit >= 3);
         let (exploration_lane_slots, verification_lane_slots, judge_lane_slots) = if dedicated_lanes
         {
             (max_parallel - 2, 1, 1)
         } else {
             (max_parallel, 0, 0)
         };
-        let run_deadline_ms = configured
-            .and_then(|limits| limits.run_deadline_ms)
-            .unwrap_or(default_run_deadline_ms)
-            .clamp(1_000, 3_600_000);
+        let run_deadline_ms = configured.and_then(|limits| limits.run_deadline_ms);
         Self {
             input_context_policy: configured
                 .and_then(|limits| limits.input_context_limit)
@@ -136,11 +134,10 @@ impl DelegationLimitsV2 {
                         .then_some(config.context_window.map(u64::from))
                         .flatten()
                 })
-                .map(|value| DelegationLimitPolicy::Explicit(value.clamp(1_024, 10_000_000)))
+                .map(DelegationLimitPolicy::Explicit)
                 .unwrap_or(DelegationLimitPolicy::Auto),
             handoff_context_tokens_per_worker: configured
-                .and_then(|limits| limits.handoff_context_tokens_per_worker)
-                .map(|value| value.clamp(1_024, 10_000_000)),
+                .and_then(|limits| limits.handoff_context_tokens_per_worker),
             max_output_tokens_per_worker: configured
                 .and_then(|limits| {
                     limits
@@ -153,21 +150,13 @@ impl DelegationLimitsV2 {
                         .then_some(config.max_tokens.map(u64::from))
                         .flatten()
                 })
-                .map(|value| DelegationLimitPolicy::Explicit(value.clamp(256, 1_000_000)))
+                .map(DelegationLimitPolicy::Explicit)
                 .unwrap_or(DelegationLimitPolicy::Auto),
             max_actual_tokens_per_worker: configured
-                .and_then(|limits| limits.max_actual_tokens_per_worker)
-                .map(|value| value.clamp(256, 10_000_000)),
+                .and_then(|limits| limits.max_actual_tokens_per_worker),
             total_actual_tokens_soft_limit: match configured {
-                Some(limits) => limits
-                    .total_actual_tokens_soft_limit
-                    .map(|value| value.clamp(256, 10_000_000)),
-                None => Some(u64::from(
-                    config
-                        .subagent_token_budget
-                        .unwrap_or(32_000)
-                        .clamp(256, 200_000),
-                )),
+                Some(limits) => limits.total_actual_tokens_soft_limit,
+                None => config.subagent_token_budget.map(u64::from),
             },
             total_cost_soft_limit_micros: configured
                 .and_then(|limits| limits.total_cost_soft_limit_micros),
@@ -183,16 +172,15 @@ impl DelegationLimitsV2 {
             judge_lane_slots,
             queue_deadline_ms: configured
                 .and_then(|limits| limits.queue_deadline_ms)
-                .unwrap_or(DEFAULT_QUEUE_DEADLINE_MS)
-                .clamp(100, run_deadline_ms),
+                .map(|limit| limit.min(run_deadline_ms.unwrap_or(u64::MAX))),
             connect_deadline_ms: configured
                 .and_then(|limits| limits.connect_deadline_ms)
                 .unwrap_or(default_connect_deadline_ms)
-                .clamp(100, run_deadline_ms),
+                .clamp(100, run_deadline_ms.unwrap_or(u64::MAX).max(100)),
             first_token_deadline_ms: configured
                 .and_then(|limits| limits.first_token_deadline_ms)
                 .unwrap_or(default_first_token_deadline_ms)
-                .clamp(100, run_deadline_ms),
+                .clamp(100, run_deadline_ms.unwrap_or(u64::MAX).max(100)),
             run_deadline_ms,
         }
     }
@@ -209,9 +197,9 @@ pub(crate) enum DelegationLane {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BudgetSnapshot {
     pub max_parallel: u32,
-    pub max_calls_per_turn: u32,
+    pub max_calls_per_turn: Option<u32>,
     pub calls_started: u32,
-    pub remaining_calls: u32,
+    pub remaining_calls: Option<u32>,
     pub token_budget: u32,
     pub tokens_spent: u32,
     pub tokens_reserved: u32,
@@ -276,7 +264,8 @@ impl DelegationScheduler {
     #[cfg(test)]
     pub(crate) fn new_with_queue_deadline(config: &AgentConfig, queue_deadline: Duration) -> Self {
         let mut limits = DelegationLimitsV2::resolve(config);
-        limits.queue_deadline_ms = u64::try_from(queue_deadline.as_millis()).unwrap_or(u64::MAX);
+        limits.queue_deadline_ms =
+            Some(u64::try_from(queue_deadline.as_millis()).unwrap_or(u64::MAX));
         Self::with_limits(limits)
     }
 
@@ -324,8 +313,8 @@ impl DelegationScheduler {
             _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
                 "Delegated execution '{label}' was cancelled while waiting for a worker slot."
             ))),
-            result = tokio::time::timeout(
-                Duration::from_millis(queue_deadline_ms),
+            result = with_optional_timeout(
+                queue_deadline_ms,
                 semaphore.acquire_owned(),
             ) => match result {
                 Ok(Ok(permit)) => Ok(permit),
@@ -333,7 +322,8 @@ impl DelegationScheduler {
                     "delegated execution semaphore closed".into()
                 )),
                 Err(_) => Err(CoreError::Agent(format!(
-                    "Delegated execution '{label}' exceeded its {queue_deadline_ms}ms queue deadline."
+                    "Delegated execution '{label}' exceeded its {}ms queue deadline.",
+                    queue_deadline_ms.unwrap_or_default()
                 ))),
             },
         }?;
@@ -375,12 +365,12 @@ impl DelegationScheduler {
         let lane_call_limit = state
             .limits
             .max_calls_per_turn
-            .saturating_sub(reserved_for_other_control_lanes);
-        if state.calls_started >= lane_call_limit {
+            .map(|limit| limit.saturating_sub(reserved_for_other_control_lanes));
+        if lane_call_limit.is_some_and(|limit| state.calls_started >= limit) {
             return Err(CoreError::InvalidInput(format!(
                 "Delegated execution budget exhausted before starting {label}: {} call(s) started and {reserved_for_other_control_lanes} call credit(s) remain reserved for unused control lanes (maximum {} per turn).",
                 state.calls_started,
-                state.limits.max_calls_per_turn,
+                state.limits.max_calls_per_turn.unwrap_or_default(),
             )));
         }
         let token_budget = state
@@ -481,7 +471,7 @@ impl DelegationScheduler {
             remaining_calls: state
                 .limits
                 .max_calls_per_turn
-                .saturating_sub(state.calls_started),
+                .map(|limit| limit.saturating_sub(state.calls_started)),
             token_budget,
             tokens_spent: state.tokens_spent,
             tokens_reserved: state.tokens_reserved,

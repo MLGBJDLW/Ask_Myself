@@ -61,22 +61,22 @@ fn test_tool_timeout_leaves_room_for_run_shell_default_timeout() {
 }
 
 #[test]
-fn test_tool_timeout_preserves_existing_multipliers_and_subagent_minimums() {
+fn test_tool_timeouts_keep_io_multipliers_without_limiting_subagent_tasks() {
     assert_eq!(
         tool_timeout_for_call(Some(30), "retrieve_evidence", &serde_json::json!({})),
         Some(Duration::from_secs(60))
     );
     assert_eq!(
         tool_timeout_for_call(Some(30), "spawn_subagent", &serde_json::json!({})),
-        Some(Duration::from_secs(180))
+        None
     );
     assert_eq!(
         tool_timeout_for_call(Some(30), "spawn_subagent_batch", &serde_json::json!({})),
-        Some(Duration::from_secs(240))
+        None
     );
     assert_eq!(
         tool_timeout_for_call(Some(300), "spawn_subagent", &serde_json::json!({})),
-        Some(Duration::from_secs(300))
+        None
     );
 }
 
@@ -634,8 +634,23 @@ fn model_step_output_reserve_is_provider_aware_and_respects_explicit_choice() {
         constrained
             .resolved_output_budget("deepseek-chat")
             .context_cap,
-        Some(4_096)
+        Some(8_192)
     );
+}
+
+#[test]
+fn automatic_output_uses_prompt_headroom_beyond_the_local_half_context_reserve() {
+    let plan = AgentConfig {
+        provider_type: Some(ProviderType::OpenAi),
+        context_window: Some(100_000),
+        ..Default::default()
+    }
+    .resolved_output_budget("gpt-6-astra");
+    assert_eq!(plan.effective_tokens, 50_000);
+    let output = plan.wire_max_tokens_for_prompt(10_000).unwrap();
+    assert!(output > 50_000);
+    assert!(output + 10_000 <= 100_000);
+    assert!(plan.wire_max_tokens_for_prompt(80_000).unwrap() <= 20_000);
 }
 
 #[test]
@@ -6039,7 +6054,7 @@ fn test_resource_keys_allow_independent_writes_to_share_batch() {
     registry.register(Box::new(ResourceLockedTool));
     let offered = HashSet::from(["locked_write".to_string()]);
     let registered = registry.tool_names().into_iter().collect();
-    let policy = ToolSchedulerPolicy::new(None, None, false, offered, registered);
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "locked_write", serde_json::json!({ "path": "a.txt" })),
         test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
@@ -6061,7 +6076,7 @@ fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
     registry.register(Box::new(ResourceLockedTool));
     let offered = HashSet::from(["locked_write".to_string()]);
     let registered = registry.tool_names().into_iter().collect();
-    let policy = ToolSchedulerPolicy::new(None, None, false, offered, registered);
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "locked_write", serde_json::json!({})),
         test_tool_call("b", "locked_write", serde_json::json!({ "path": "b.txt" })),
@@ -6086,7 +6101,7 @@ fn test_wait_for_previous_forces_new_execution_batch() {
     }));
     let offered = HashSet::from(["fast_tool".to_string()]);
     let registered = registry.tool_names().into_iter().collect();
-    let policy = ToolSchedulerPolicy::new(None, None, false, offered, registered);
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
     let calls = vec![
         test_tool_call("a", "fast_tool", serde_json::json!({ "value": "a" })),
         test_tool_call(

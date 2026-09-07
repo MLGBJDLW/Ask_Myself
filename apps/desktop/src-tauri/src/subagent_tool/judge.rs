@@ -160,7 +160,6 @@ impl Tool for JudgeSubagentResultsTool {
                 .unwrap_or_else(|| "gpt-4o-mini".to_string());
         let mut judge_config = self.runtime.base_config.clone();
         judge_config.model = Some(model.clone());
-        apply_nexus_worker_reasoning_policy(&mut judge_config, role_profile_by_id("verifier"));
         let system_prompt = build_judge_system_prompt(&self.runtime.base_config.system_prompt);
         let user_prompt = build_judge_request(&args);
         let reserved_tokens = estimate_tokens_for_model(&model, &system_prompt)
@@ -261,22 +260,26 @@ impl Tool for JudgeSubagentResultsTool {
                 return Err(err);
             }
         };
-        let mut request = CompletionRequest {
+        let judge_limits = self.runtime.budget.limits().await;
+        let catalog_output = nexa_core::provider_catalog::endpoint_model_output_limit(
+            provider_catalog_key(self.runtime.provider_config.provider_type),
+            self.runtime.provider_config.base_url.as_deref(),
+            &model,
+        );
+        let max_output = match judge_limits.max_output_tokens_per_worker {
+            DelegationLimitPolicy::Auto => catalog_output,
+            DelegationLimitPolicy::Explicit(limit) => {
+                Some(limit.min(u64::from(catalog_output.unwrap_or(u32::MAX))) as u32)
+            }
+        };
+        let request = CompletionRequest {
             model: model.clone(),
             messages: vec![
                 nexa_core::llm::Message::text(nexa_core::llm::Role::System, system_prompt),
                 nexa_core::llm::Message::text(nexa_core::llm::Role::User, user_prompt),
             ],
             temperature: Some(0.1),
-            max_tokens: Some(if self.runtime.base_config.power_mode.is_nexus() {
-                self.runtime
-                    .base_config
-                    .max_tokens
-                    .unwrap_or(4_000)
-                    .clamp(1_200, 4_000)
-            } else {
-                1_200
-            }),
+            max_tokens: max_output,
             tools: None,
             stop: None,
             thinking_budget: judge_config.thinking_budget,
@@ -287,12 +290,9 @@ impl Tool for JudgeSubagentResultsTool {
             parallel_tool_calls: true,
         };
         let judge_cancel_token = self.runtime.cancel_token.child_token();
-        let timeout_secs = resolve_delegation_timeout_secs(&self.runtime.base_config, None);
-        let judge_limits = self.runtime.budget.limits().await;
         let judge_timeout_ms = resolve_delegation_run_deadline_ms(
             &self.runtime.base_config,
             None,
-            timeout_secs,
             judge_limits.run_deadline_ms,
         );
         let judge_cost_micros =
@@ -307,46 +307,17 @@ impl Tool for JudgeSubagentResultsTool {
                 .unwrap_or("detached"),
             call_id
         );
-        let judge_sample_deadline_ms = judge_limits
-            .first_token_deadline_ms
-            .min(judge_timeout_ms)
-            .max(1_000);
-        let judge_deadline = tokio::time::Instant::now() + Duration::from_millis(judge_timeout_ms);
+        // complete() resolves when the entire answer is ready. A first-token
+        // deadline cannot measure progress here and must not restart reasoning.
         let judge_response = async {
-            let first = tokio::time::timeout(
-                Duration::from_millis(judge_sample_deadline_ms),
-                provider.complete(&request),
-            )
-            .await;
-            match first {
-                Ok(result) => result.map(|response| (response, 0_u32)),
-                Err(_) => {
-                    let remaining =
-                        judge_deadline.saturating_duration_since(tokio::time::Instant::now());
-                    if remaining.is_zero() {
-                        return Err(CoreError::Agent(format!(
-                            "Delegated adjudication timed out after {judge_timeout_ms}ms."
-                        )));
-                    }
-                    apply_judge_recovery_controls(&mut request);
-                    request.messages.push(Message::text(
-                        Role::System,
-                        "The previous adjudication sample exceeded its progress deadline. Do not continue private analysis. Return the requested compact judgement JSON now.",
-                    ));
-                    tokio::time::timeout(
-                        remaining.min(Duration::from_millis(60_000)),
-                        provider.complete(&request),
-                    )
-                    .await
-                    .map_err(|_| {
-                        CoreError::Agent(
-                            "Delegated adjudication remained reasoning-only after one bounded recovery."
-                                .to_string(),
-                        )
-                    })?
-                    .map(|response| (response, reserved_tokens))
-                }
-            }
+            with_optional_timeout(judge_timeout_ms, provider.complete(&request))
+                .await
+                .map_err(|_| {
+                    CoreError::Agent(format!(
+                        "Delegated adjudication timed out after {}ms.",
+                        judge_timeout_ms.unwrap_or_default()
+                    ))
+                })?
         };
         tokio::pin!(judge_response);
         let judge_failure_usage = Usage {
@@ -377,17 +348,10 @@ impl Tool for JudgeSubagentResultsTool {
                 return Err(err);
             }
             result = &mut judge_response => match result {
-                Ok((response, discarded_tokens)) => {
-                    let mut accounted_usage = response.usage.clone();
-                    accounted_usage.prompt_tokens = accounted_usage
-                        .prompt_tokens
-                        .saturating_add(discarded_tokens);
-                    accounted_usage.total_tokens = accounted_usage
-                        .total_tokens
-                        .saturating_add(discarded_tokens);
+                Ok(response) => {
                     self.runtime
                         .budget
-                        .finish_call(reserved_tokens, &accounted_usage, judge_cost_micros)
+                        .finish_call(reserved_tokens, &response.usage, judge_cost_micros)
                         .await;
                     response
                 }

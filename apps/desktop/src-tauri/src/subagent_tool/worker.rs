@@ -5,13 +5,11 @@ pub(super) async fn await_subagent_worker_completion<T, F>(
     cancel_token: &CancellationToken,
     fatal_error_rx: &mut mpsc::UnboundedReceiver<String>,
     run_future: F,
-    run_deadline_ms: u64,
+    run_deadline_ms: Option<u64>,
 ) -> Result<T, CoreError>
 where
     F: std::future::Future<Output = Result<T, CoreError>>,
 {
-    let run_deadline = tokio::time::Instant::now() + Duration::from_millis(run_deadline_ms);
-    tokio::pin!(run_future);
     tokio::select! {
         biased;
         error = fatal_error_rx.recv() => Err(CoreError::Agent(format!(
@@ -21,12 +19,15 @@ where
         _ = cancel_token.cancelled() => Err(CoreError::Agent(format!(
             "Delegated execution '{call_label}' was cancelled by the parent turn."
         ))),
-        result = &mut run_future => result,
-        _ = tokio::time::sleep_until(run_deadline) => {
-            cancel_token.cancel();
-            Err(CoreError::Agent(format!(
-                "Delegated execution '{call_label}' timed out after {run_deadline_ms}ms."
-            )))
+        result = with_optional_timeout(run_deadline_ms, run_future) => match result {
+            Ok(result) => result,
+            Err(_) => {
+                cancel_token.cancel();
+                Err(CoreError::Agent(format!(
+                    "Delegated execution '{call_label}' timed out after {}ms.",
+                    run_deadline_ms.unwrap_or_default()
+                )))
+            }
         }
     }
 }

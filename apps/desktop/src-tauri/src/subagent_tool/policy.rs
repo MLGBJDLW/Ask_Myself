@@ -83,159 +83,24 @@ pub(super) fn apply_delegated_model_policy(
         true
     }
 }
-pub(super) fn apply_nexus_worker_reasoning_policy(
-    config: &mut AgentConfig,
-    role_profile: Option<&SubagentRoleProfile>,
-) {
-    if !config.power_mode.is_nexus() {
-        return;
-    }
-    let (Some(provider), Some(model)) = (config.provider_type, config.model.as_deref()) else {
-        return;
-    };
-    let desired = if matches!(
-        role_profile.map(|profile| profile.id),
-        Some("verifier" | "critic")
-    ) {
-        ReasoningEffort::Medium
-    } else {
-        ReasoningEffort::Low
-    };
-    let desired_budget: u32 = if matches!(
-        role_profile.map(|profile| profile.id),
-        Some("verifier" | "critic")
-    ) {
-        16_384
-    } else {
-        4_096
-    };
-    let Some(reasoning) = (config.catalog_limits_authoritative != Some(false))
-        .then(|| model_capabilities_from_catalog(provider, model))
-        .flatten()
-        .and_then(|capabilities| capabilities.reasoning)
-    else {
-        // Unknown/local/custom endpoints must not inherit an unbounded parent
-        // reasoning contract. Preserve an explicit off setting; otherwise
-        // clamp only the control family already in use. Provider adapters still
-        // decide whether that family is valid on the wire.
-        if config.reasoning_enabled == Some(false)
-            || config.reasoning_effort == Some(ReasoningEffort::None)
-        {
-            config.reasoning_enabled = Some(false);
-            config.reasoning_effort = Some(ReasoningEffort::None);
-            config.thinking_budget = None;
-        } else if let Some(current_budget) = config.thinking_budget {
-            let bounded = current_budget.min(desired_budget);
-            config.reasoning_enabled = Some(bounded > 0);
-            config.reasoning_effort = None;
-            config.thinking_budget = Some(bounded);
-        } else if config.reasoning_effort.is_some() || config.reasoning_enabled == Some(true) {
-            config.reasoning_enabled = Some(true);
-            config.reasoning_effort = Some(desired);
-            config.thinking_budget = None;
-        }
-        return;
-    };
-    let effort_rank = |effort: &ReasoningEffort| match effort {
-        ReasoningEffort::None => 0,
-        ReasoningEffort::Minimal => 1,
-        ReasoningEffort::Low => 2,
-        ReasoningEffort::Medium => 3,
-        ReasoningEffort::High => 4,
-        ReasoningEffort::XHigh => 5,
-        ReasoningEffort::Ultra => 6,
-        ReasoningEffort::Max => 6,
-    };
-    let supported = reasoning
-        .effort_levels
-        .iter()
-        .filter_map(|level| ReasoningEffort::from_wire(level))
-        .filter(|effort| *effort != ReasoningEffort::None)
-        .collect::<Vec<_>>();
-    let selected = supported
-        .iter()
-        .filter(|effort| effort_rank(effort) >= effort_rank(&desired))
-        .min_by_key(|effort| effort_rank(effort))
-        .cloned()
-        .or_else(|| {
-            supported
-                .iter()
-                .max_by_key(|effort| effort_rank(effort))
-                .cloned()
-        });
-    if let Some(selected) = selected {
-        config.reasoning_enabled = Some(true);
-        config.reasoning_effort = Some(selected);
-        config.thinking_budget = None;
-    } else if let Some(budget) = reasoning.thinking_budget.filter(|budget| budget.enabled) {
-        let bounded = desired_budget
-            .max(budget.min_tokens.unwrap_or_default())
-            .min(budget.max_tokens.unwrap_or(desired_budget));
-        config.reasoning_enabled = Some(bounded > 0 || reasoning.mode.as_deref() == Some("always"));
-        config.reasoning_effort = None;
-        config.thinking_budget = Some(bounded);
-    }
-}
-pub(super) fn apply_judge_recovery_controls(request: &mut CompletionRequest) {
-    let Some(provider) = request.provider_type else {
-        request.reasoning_enabled = Some(false);
-        request.reasoning_effort = None;
-        request.thinking_budget = None;
-        return;
-    };
-    let reasoning = model_capabilities_from_catalog(provider, &request.model)
-        .and_then(|capabilities| capabilities.reasoning);
-    if reasoning
-        .as_ref()
-        .and_then(|reasoning| reasoning.mode.as_deref())
-        != Some("always")
-    {
-        request.reasoning_enabled = Some(false);
-        request.reasoning_effort = (provider == ProviderType::OpenRouter
-            && reasoning.as_ref().is_some_and(|reasoning| {
-                reasoning.effort_levels.iter().any(|level| level == "none")
-            }))
-        .then_some(ReasoningEffort::None);
-        request.thinking_budget = None;
-        return;
-    }
-    request.reasoning_enabled = Some(true);
-    request.reasoning_effort = reasoning
-        .into_iter()
-        .flat_map(|reasoning| reasoning.effort_levels)
-        .filter_map(|level| ReasoningEffort::from_wire(&level))
-        .find(|effort| *effort != ReasoningEffort::None);
-    request.thinking_budget = None;
-}
-pub(super) fn resolve_delegation_timeout_secs(config: &AgentConfig, requested: Option<u32>) -> u64 {
-    requested.unwrap_or_else(|| {
-        let tool_timeout = config
-            .tool_timeout_secs
-            .filter(|timeout| *timeout > 0)
-            .unwrap_or(60);
-        let turn_timeout = config
-            .agent_timeout_secs
-            .filter(|timeout| *timeout > 0)
-            .unwrap_or(180);
-        tool_timeout
-            .saturating_mul(2)
-            .min(turn_timeout)
-            .clamp(15, 180)
-    }) as u64
-}
+/// Only explicit task budgets constrain delegated execution. Tool timeouts
+/// describe individual tool operations, not the lifetime of a worker.
 pub(super) fn resolve_delegation_run_deadline_ms(
     config: &AgentConfig,
     requested_timeout_secs: Option<u32>,
-    legacy_timeout_secs: u64,
-    configured_run_deadline_ms: u64,
-) -> u64 {
-    if config.delegation_limits_v2.is_some() {
-        requested_timeout_secs
-            .map(|requested| configured_run_deadline_ms.min(u64::from(requested) * 1_000))
-            .unwrap_or(configured_run_deadline_ms)
-    } else {
-        configured_run_deadline_ms.min(legacy_timeout_secs.saturating_mul(1_000))
-    }
+    configured_run_deadline_ms: Option<u64>,
+) -> Option<u64> {
+    [
+        config
+            .agent_timeout_secs
+            .filter(|value| *value > 0)
+            .map(|secs| u64::from(secs) * 1_000),
+        requested_timeout_secs.map(|secs| u64::from(secs) * 1_000),
+        configured_run_deadline_ms,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 pub(super) fn delegated_failure_status(error_text: &str) -> &'static str {
     if error_text.contains("timed out")
@@ -248,21 +113,6 @@ pub(super) fn delegated_failure_status(error_text: &str) -> &'static str {
         "cancelled"
     } else {
         "failed"
-    }
-}
-pub(super) fn estimate_subagent_timeout_secs(
-    runtime: &DelegationRuntime,
-    args: &SpawnSubagentArgs,
-    role_profile: Option<&SubagentRoleProfile>,
-) -> u64 {
-    match args.timeout_secs {
-        Some(requested) => resolve_delegation_timeout_secs(&runtime.base_config, Some(requested)),
-        None => {
-            let base = resolve_delegation_timeout_secs(&runtime.base_config, None);
-            role_profile
-                .map(|profile| base.min(profile.default_timeout_secs as u64).max(15))
-                .unwrap_or(base)
-        }
     }
 }
 pub(super) fn estimate_reserved_tokens(
@@ -285,7 +135,7 @@ pub(super) fn resolve_delegated_max_output(
     config: &AgentConfig,
     catalog_limit: Option<u64>,
 ) -> Option<u32> {
-    let requested = config.max_tokens.map(u64::from).or(catalog_limit)?;
+    let requested = u64::from(config.max_tokens?);
     Some(
         requested
             .min(catalog_limit.unwrap_or(u64::MAX))
@@ -321,10 +171,13 @@ pub(super) fn apply_delegated_model_limits(
         DelegationLimitPolicy::Explicit(limit) => {
             config.max_tokens = u32::try_from(limit).ok();
         }
-        DelegationLimitPolicy::Auto if independent_v2_limits => {
+        DelegationLimitPolicy::Auto => {
+            // Preserve automatic provenance. The executor resolves model
+            // capability and prompt headroom together; copying a catalog cap
+            // into this field would masquerade as an explicit override and
+            // could reserve the entire context window for output.
             config.max_tokens = None;
         }
-        DelegationLimitPolicy::Auto => {}
     }
     let mut resolved_output = resolve_delegated_max_output(config, catalog_output_limit);
     if let Some(context_window) = config.context_window {
