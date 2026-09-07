@@ -35,7 +35,7 @@ export function SubscriptionAgentConfigForm({ preset, config, onSave, onCancel, 
   const preservesSavedSelection = config?.provider === preset.provider
     && config?.model === model && !!model.trim();
   const canSave = !!name.trim() && !isSaving
-    && (preservesSavedSelection || (!!current && !loading));
+    && (preservesSavedSelection || (!!current && !loading && !error));
   const save = async () => {
     if (!canSave) return;
     setError(null);

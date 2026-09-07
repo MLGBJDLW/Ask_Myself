@@ -612,7 +612,7 @@ export function AgentModelPicker({
                   />
                 </div>
                 <span className="shrink-0 rounded-md border border-border/50 bg-surface-1 px-1.5 py-0.5 text-[10px] tabular-nums text-text-tertiary">
-                  {visibleCount}
+                  {activeCatalog?.loading && !activeCatalog.models ? '…' : visibleCount}
                 </span>
                   </div>
 
@@ -785,9 +785,11 @@ export function AgentModelPicker({
                         );
                       })
                     ) : (
-                      <div className="px-3 py-8 text-center text-xs text-text-tertiary">
-                        {activeCatalog?.loading ? t('settings.modelCatalogLoading') : t('settings.modelSearchNoResults')}
-                      </div>
+                      activeCatalog?.loading ? (
+                        <div aria-hidden="true" className="space-y-3 px-3 py-4">
+                          {[0, 1, 2, 3].map(index => <div key={index} className="h-7 animate-pulse rounded bg-surface-2" />)}
+                        </div>
+                      ) : <div className="px-3 py-8 text-center text-xs text-text-tertiary">{t('settings.modelSearchNoResults')}</div>
                     )}
                   </div>
                 )}
