@@ -2813,6 +2813,16 @@ Every answer that uses knowledge base search results.
              WHERE canonical_name IS NOT NULL AND canonical_name != '';",
     ),
     ("v127_remove_unsafe_answer_cache", "DROP TABLE IF EXISTS answer_cache;"),
+    (
+        "v128_retire_saved_agent_output_caps",
+        "UPDATE agent_configs SET max_tokens = NULL WHERE max_tokens IS NOT NULL;
+         CREATE TRIGGER IF NOT EXISTS agent_configs_clear_retired_output_cap_insert
+         AFTER INSERT ON agent_configs WHEN NEW.max_tokens IS NOT NULL
+         BEGIN UPDATE agent_configs SET max_tokens = NULL WHERE id = NEW.id; END;
+         CREATE TRIGGER IF NOT EXISTS agent_configs_clear_retired_output_cap_update
+         AFTER UPDATE OF max_tokens ON agent_configs WHEN NEW.max_tokens IS NOT NULL
+         BEGIN UPDATE agent_configs SET max_tokens = NULL WHERE id = NEW.id; END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.
@@ -4925,5 +4935,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(max_tokens, None);
+    }
+
+    #[test]
+    fn saved_agent_output_caps_are_retired_for_existing_and_old_clients() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("DROP TRIGGER agent_configs_clear_retired_output_cap_insert;
+            DROP TRIGGER agent_configs_clear_retired_output_cap_update;
+            DELETE FROM _migrations WHERE name='v128_retire_saved_agent_output_caps';
+            INSERT INTO agent_configs(id,name,provider,model,max_tokens) VALUES ('legacy','Legacy','deep_seek','deepseek-v4-pro',4097);").unwrap();
+        run_migrations(&conn).unwrap();
+        let read = || {
+            conn.query_row(
+                "SELECT max_tokens FROM agent_configs WHERE id='legacy'",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(read(), None);
+        conn.execute(
+            "UPDATE agent_configs SET max_tokens=4096 WHERE id='legacy'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read(), None);
+        conn.execute("INSERT INTO agent_configs(id,name,provider,model,max_tokens) VALUES ('old-client','Old','open_ai','gpt-6-astra',8192)", []).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_configs WHERE max_tokens IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

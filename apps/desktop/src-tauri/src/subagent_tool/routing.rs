@@ -65,9 +65,7 @@ pub(super) fn resolve_subagent_route(
         config.provider_type = Some(provider_config.provider_type);
         config.model = Some(selected.model);
         config.temperature = selected.temperature.map(|value| value as f32);
-        config.max_tokens = selected
-            .max_tokens
-            .and_then(|value| u32::try_from(value).ok());
+        config.max_tokens = None;
         config.context_window = selected
             .context_window
             .and_then(|value| u32::try_from(value).ok());

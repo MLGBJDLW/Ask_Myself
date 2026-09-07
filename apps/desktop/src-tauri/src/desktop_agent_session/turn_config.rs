@@ -516,9 +516,7 @@ pub fn build_desktop_agent_turn_config(
         volatile_system_sections,
         model: Some(db_config.model.clone()),
         temperature: db_config.temperature.map(|t| t as f32),
-        max_tokens: db_config
-            .max_tokens
-            .and_then(|value| u32::try_from(value).ok()),
+        max_tokens: None,
         max_actual_tokens_per_run: None,
         context_window: db_config
             .context_window

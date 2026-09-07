@@ -952,8 +952,11 @@ fn delegated_output_helper_honors_explicit_value_and_catalog_ceiling() {
         ..Default::default()
     };
 
-    assert_eq!(resolve_delegated_max_output(&config, None), 50_000);
-    assert_eq!(resolve_delegated_max_output(&config, Some(40_000)), 40_000);
+    assert_eq!(resolve_delegated_max_output(&config, None), Some(50_000));
+    assert_eq!(
+        resolve_delegated_max_output(&config, Some(40_000)),
+        Some(40_000)
+    );
 }
 
 #[tokio::test]
@@ -1383,7 +1386,7 @@ fn nexus_unknown_model_reasoning_is_bounded_for_every_provider_type() {
 }
 
 #[test]
-fn independent_auto_output_uses_safe_8k_fallback_without_catalog_data() {
+fn independent_auto_output_leaves_unknown_provider_output_unbounded() {
     let mut config = AgentConfig {
         max_tokens: Some(8_192),
         ..Default::default()
@@ -1401,11 +1404,11 @@ fn independent_auto_output_uses_safe_8k_fallback_without_catalog_data() {
         true,
     );
 
-    assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
+    assert_eq!(config.max_tokens, None);
 }
 
 #[test]
-fn independent_auto_output_uses_catalog_as_ceiling_not_kimi_allocation() {
+fn independent_auto_output_uses_model_capacity_without_an_artificial_ceiling() {
     let mut config = AgentConfig {
         context_window: Some(128_000),
         max_tokens: Some(8_192),
@@ -1425,8 +1428,7 @@ fn independent_auto_output_uses_catalog_as_ceiling_not_kimi_allocation() {
     );
 
     assert_eq!(config.context_window, Some(1_048_576));
-    assert_eq!(config.max_tokens, Some(CONSERVATIVE_SUBAGENT_MAX_TOKENS));
-    assert!(config.max_tokens.unwrap() < config.context_window.unwrap());
+    assert_eq!(config.max_tokens, Some(1_048_576));
     assert_eq!(model_context_window("moonshotai/kimi-k3:free"), 1_048_576);
     assert_eq!(model_context_window("qwen3.8-max-latest"), 1_000_000);
 }
@@ -1469,7 +1471,7 @@ fn delegated_fallback_contract_covers_local_compatible_and_unknown_providers() {
             config.context_window, expected_context,
             "fallback context mismatch for {provider:?}:{model}"
         );
-        assert_eq!(config.max_tokens, Some(DEFAULT_SUBAGENT_MAX_TOKENS));
+        assert_eq!(config.max_tokens, None);
     }
 }
 

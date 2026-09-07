@@ -9,8 +9,8 @@ pub(super) const SPAWN_SUBAGENT_BATCH_JSON: &str =
 pub(super) const JUDGE_SUBAGENT_RESULTS_JSON: &str =
     include_str!("../../../../../crates/core/prompts/tools/judge_subagent_results.json");
 pub(super) const MAX_SUBAGENT_DELEGATION_DEPTH: u8 = 1;
-pub(super) const DEFAULT_SUBAGENT_MAX_TOKENS: u32 = 8_192;
-pub(super) const CONSERVATIVE_SUBAGENT_MAX_TOKENS: u32 = 65_536;
+// Initial scheduler credit; this is not sent as a per-request output ceiling.
+pub(super) const INITIAL_SUBAGENT_OUTPUT_CREDIT: u32 = 8_192;
 pub(super) const SUBAGENT_INTERACTIVE_SURFACE_TOOLS: &[&str] = &[
     "browser_session",
     "computer_observe",

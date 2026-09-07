@@ -4857,7 +4857,7 @@ impl Database {
                 &normalized_base_url,
                 &model_id,
                 input.temperature,
-                input.max_tokens,
+                None::<i64>, // Retired saved cap; model capabilities own output space.
                 input.context_window,
                 input.is_default as i32,
                 input.reasoning_enabled,

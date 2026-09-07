@@ -284,16 +284,13 @@ pub(super) fn estimate_reserved_tokens(
 pub(super) fn resolve_delegated_max_output(
     config: &AgentConfig,
     catalog_limit: Option<u64>,
-) -> u32 {
-    let fallback_limit = u64::from(CONSERVATIVE_SUBAGENT_MAX_TOKENS);
-    let effective_limit = catalog_limit
-        .unwrap_or(fallback_limit)
-        .min(u64::from(u32::MAX)) as u32;
-    let requested_limit = config
-        .max_tokens
-        .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS)
-        .max(256);
-    requested_limit.min(effective_limit.max(1))
+) -> Option<u32> {
+    let requested = config.max_tokens.map(u64::from).or(catalog_limit)?;
+    Some(
+        requested
+            .min(catalog_limit.unwrap_or(u64::MAX))
+            .min(u64::from(u32::MAX)) as u32,
+    )
 }
 pub(super) fn apply_delegated_model_limits(
     config: &mut AgentConfig,
@@ -325,25 +322,15 @@ pub(super) fn apply_delegated_model_limits(
             config.max_tokens = u32::try_from(limit).ok();
         }
         DelegationLimitPolicy::Auto if independent_v2_limits => {
-            config.max_tokens = Some(
-                catalog_output_limit
-                    .map(|limit| {
-                        limit
-                            .min(u64::from(CONSERVATIVE_SUBAGENT_MAX_TOKENS))
-                            .min(u64::from(u32::MAX)) as u32
-                    })
-                    .unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS),
-            );
+            config.max_tokens = None;
         }
         DelegationLimitPolicy::Auto => {}
     }
     let mut resolved_output = resolve_delegated_max_output(config, catalog_output_limit);
     if let Some(context_window) = config.context_window {
-        let prompt_reserve = (context_window / 10).max(1_024).min(context_window);
-        resolved_output =
-            resolved_output.min(context_window.saturating_sub(prompt_reserve).max(256));
+        resolved_output = resolved_output.map(|output| output.min(context_window));
     }
-    config.max_tokens = Some(resolved_output);
+    config.max_tokens = resolved_output;
     context_authority
 }
 pub(super) fn initial_output_credit(
@@ -354,8 +341,8 @@ pub(super) fn initial_output_credit(
     let role_credit = match role_profile.map(|profile| profile.id) {
         Some("critic" | "verifier") => 4_096,
         Some("writer") => 16_384,
-        Some("researcher" | "planner") => 8_192,
-        _ => 8_192,
+        Some("researcher" | "planner") => INITIAL_SUBAGENT_OUTPUT_CREDIT,
+        _ => INITIAL_SUBAGENT_OUTPUT_CREDIT,
     };
     let explicit_long_form = args.deliverable_style.as_deref().is_some_and(|style| {
         let style = style.to_ascii_lowercase();
@@ -366,7 +353,7 @@ pub(super) fn initial_output_credit(
     } else {
         role_credit
     };
-    requested_credit.min(config.max_tokens.unwrap_or(DEFAULT_SUBAGENT_MAX_TOKENS))
+    requested_credit.min(config.max_tokens.unwrap_or(requested_credit))
 }
 pub(super) fn build_subagent_executor_tools(
     runtime: &DelegationRuntime,
