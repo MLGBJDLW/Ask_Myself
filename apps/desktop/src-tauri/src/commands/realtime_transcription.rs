@@ -1157,6 +1157,15 @@ mod tests {
                         .unwrap();
                 }
                 if event_type == "input_audio_buffer.append" {
+                    let audio = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        event["audio"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                    assert!(
+                        audio.len() <= 3_200,
+                        "replay packets must stay within 100 ms of 16 kHz PCM"
+                    );
                     // A complete VAD utterance arrives while audio is still
                     // uploading, before the user ends the microphone session.
                     socket
@@ -1215,6 +1224,13 @@ mod tests {
             assert!(event_types
                 .iter()
                 .any(|value| value == "input_audio_buffer.append"));
+            assert_eq!(
+                event_types
+                    .iter()
+                    .filter(|value| *value == "input_audio_buffer.append")
+                    .count(),
+                3
+            );
             assert!(!event_types
                 .iter()
                 .any(|value| value == "input_audio_buffer.commit"));
@@ -1226,7 +1242,11 @@ mod tests {
 
         let wav_path =
             std::env::temp_dir().join(format!("nexa-qwen-realtime-{}.wav", uuid::Uuid::new_v4()));
-        std::fs::write(&wav_path, canonical_pcm_wav(16_000)).expect("write mock wav");
+        let mut wav = canonical_pcm_wav(16_000);
+        wav.resize(44 + 9_600, 0);
+        wav[4..8].copy_from_slice(&9_636_u32.to_le_bytes());
+        wav[40..44].copy_from_slice(&9_600_u32.to_le_bytes());
+        std::fs::write(&wav_path, wav).expect("write mock wav");
         let config = nexa_core::app_settings::SpeechToTextConfig {
             provider: "alibaba_model_studio".to_string(),
             api_style: "dashscope_realtime_asr".to_string(),
@@ -1244,5 +1264,67 @@ mod tests {
         server.await.expect("mock server join");
 
         assert_eq!(transcript, "第一句。 实时转写完成");
+    }
+
+    #[tokio::test]
+    async fn realtime_spool_retries_a_closed_connection_without_duplicate_transcripts() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(Message::Text(text))) = socket.next().await {
+                    let event: Value = serde_json::from_str(&text).unwrap();
+                    match event["type"].as_str().unwrap() {
+                        "session.update" => socket
+                            .send(Message::Text(
+                                serde_json::json!({"type":"session.updated"})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap(),
+                        "input_audio_buffer.append" if attempt == 0 => {
+                            socket.send(Message::Text(serde_json::json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"old","transcript":"interrupted prefix"}).to_string().into())).await.unwrap();
+                            socket.close(None).await.unwrap();
+                            break;
+                        }
+                        "session.finish" => {
+                            socket.send(Message::Text(serde_json::json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"new","transcript":"recovered audio"}).to_string().into())).await.unwrap();
+                            socket
+                                .send(Message::Text(
+                                    serde_json::json!({"type":"session.finished"})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .unwrap();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        let wav_path =
+            std::env::temp_dir().join(format!("nexa-replay-retry-{}.wav", uuid::Uuid::new_v4()));
+        std::fs::write(&wav_path, canonical_pcm_wav(16_000)).unwrap();
+        let config = nexa_core::app_settings::SpeechToTextConfig {
+            provider: "alibaba_model_studio".into(),
+            api_style: "dashscope_realtime_asr".into(),
+            api_key: "test".into(),
+            base_url: Some(format!("http://{address}/api-ws/v1")),
+            model: "qwen3-asr-flash-realtime".into(),
+            ..Default::default()
+        };
+        let result = transcribe_realtime_spool(&wav_path, &config).await;
+        assert!(
+            wav_path.exists(),
+            "the transport must not delete the retained recording"
+        );
+        std::fs::remove_file(wav_path).unwrap();
+        assert_eq!(result.unwrap(), "recovered audio");
+        server.await.unwrap();
     }
 }
