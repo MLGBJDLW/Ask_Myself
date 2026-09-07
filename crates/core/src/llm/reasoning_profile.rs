@@ -389,6 +389,29 @@ pub fn resolve_reasoning_profile(
     if (provider == ProviderType::OpenAi && is_openai_public_endpoint(provider, base_url))
         || (provider == ProviderType::AzureOpenAi && is_azure_openai_endpoint(provider, base_url))
     {
+        if model == "gpt-6-astra" {
+            let mut value = profile(
+                key,
+                "openai-gpt-6-astra-v1",
+                ThinkingModeControl::AlwaysOn,
+                ReasoningEffortField::TopLevel,
+                ReasoningEffortMapping::Exact,
+                (
+                    &[
+                        ReasoningEffort::Low,
+                        ReasoningEffort::Medium,
+                        ReasoningEffort::High,
+                        ReasoningEffort::XHigh,
+                        ReasoningEffort::Max,
+                    ],
+                    Some(ReasoningEffort::Medium),
+                ),
+                ReasoningBudgetField::None,
+            );
+            value.omit_temperature_when_reasoning = true;
+            value.use_max_completion_tokens = true;
+            return value;
+        }
         let mut value = profile(
             key,
             "openai-reasoning-v1",

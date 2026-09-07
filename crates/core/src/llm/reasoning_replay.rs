@@ -408,6 +408,24 @@ mod tests {
     }
 
     #[test]
+    fn recovery_keeps_verified_tool_history_when_reasoning_is_disabled() {
+        let route = deepseek_route("deepseek-v4-pro");
+        let history = vec![
+            typed_tool_call_message(route.clone()),
+            Message::text_with_name(Role::Tool, "already read the requested file", "call-1"),
+        ];
+        let mut recovery_route = route;
+        recovery_route.replay_policy = ReasoningReplayPolicy::NotRequired;
+        let projection = prepare_provider_replay_history(&history, &recovery_route);
+        assert_eq!(projection.omitted_units, 0);
+        assert_eq!(projection.messages.len(), 2);
+        assert_eq!(
+            projection.messages[1].text_content(),
+            "already read the requested file"
+        );
+    }
+
+    #[test]
     fn route_mismatch_omits_the_entire_typed_tool_unit() {
         let captured_route = deepseek_route("deepseek-reasoner");
         let requested_route = deepseek_route("deepseek-chat");

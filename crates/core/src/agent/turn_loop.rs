@@ -1813,7 +1813,13 @@ impl AgentExecutor {
                         &mut persisted_trace_items,
                         &iteration_thinking,
                     );
-                    if committed_visible_delta || cause == OutputRecoveryCause::ProviderPause {
+                    if committed_visible_delta
+                        || cause == OutputRecoveryCause::ProviderPause
+                        || (cause == OutputRecoveryCause::OutputLimit
+                            && provider_replay
+                                .as_ref()
+                                .is_some_and(|replay| replay.is_present()))
+                    {
                         let recovery_reasoning =
                             self.reasoning_content_for_iteration(&iteration_thinking, false);
                         recovery_answer_projection.track_transient_sample(&sample_id);

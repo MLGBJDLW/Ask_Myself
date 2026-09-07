@@ -1837,21 +1837,42 @@ fn parse_responses_completion(
     }
 
     replay_sequence_valid &= !saw_unknown_output_item;
-    let provider_replay = (replay_sequence_valid && has_replay_reasoning).then(|| {
-        let payload = super::provider_turn::ResponsesReplayPayload {
-            response_status: response_status.clone(),
-            items: reasoning_replay,
-        };
-        if let Some(first_tool_call) = tool_calls.first_mut() {
-            first_tool_call.thought_signature =
-                super::provider_turn::encode_responses_reasoning_items(&payload);
-        }
-        if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
-            super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload)
-        } else {
-            super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(payload)
-        }
-    });
+    let provider_replay = (replay_sequence_valid && has_replay_reasoning)
+        .then(|| {
+            let payload = super::provider_turn::ResponsesReplayPayload {
+                response_status: response_status.clone(),
+                items: reasoning_replay,
+            };
+            if let Some(first_tool_call) = tool_calls.first_mut() {
+                first_tool_call.thought_signature =
+                    super::provider_turn::encode_responses_reasoning_items(&payload);
+            }
+            if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses {
+                super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload)
+            } else {
+                super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(payload)
+            }
+        })
+        .or_else(|| {
+            if value
+                .pointer("/incomplete_details/reason")
+                .and_then(serde_json::Value::as_str)
+                != Some("max_output_tokens")
+            {
+                return None;
+            }
+            let payload = super::provider_turn::ResponsesReplayPayload {
+                response_status: response_status.clone(),
+                items: output.clone(),
+            };
+            let replay = if dialect == super::native_search::NativeSearchDialect::DeepSeekResponses
+            {
+                super::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload)
+            } else {
+                super::provider_turn::ProviderReplayPayload::OpenAiResponseItems(payload)
+            };
+            replay.is_present().then_some(replay)
+        });
 
     if capability.supports_citations && !citations.is_empty() {
         content.push_str(&super::native_search::render_citation_appendix(
@@ -3461,6 +3482,71 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn gpt_6_astra_sends_supported_reasoning_without_sampling_parameters() {
+        let mut request = endpoint_reasoning_request("gpt-6-astra");
+        request.provider_type = Some(ProviderType::OpenAi);
+        request.reasoning_enabled = Some(true);
+        request.reasoning_effort = Some(ReasoningEffort::Max);
+        request.max_tokens = Some(128_000);
+        let body = serde_json::to_value(build_request_body(&request, true)).unwrap();
+        assert_eq!(body["reasoning_effort"], "max");
+        assert_eq!(body["max_completion_tokens"], 128_000);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn responses_output_limit_preserves_native_state_but_never_authorizes_tools() {
+        use super::super::native_search::NativeSearchDialect;
+        use super::super::provider_turn::ProviderTurnEnvelope;
+        for dialect in [
+            NativeSearchDialect::DeepSeekResponses,
+            NativeSearchDialect::OpenAiResponses,
+        ] {
+            let reasoning = serde_json::json!({"id":"rs-limited","type":"reasoning","status":"incomplete",
+                "content":[{"type":"reasoning_text","text":"ready to summarize"}],"encrypted_content":"opaque-native-state","summary":[]});
+            let response = parse_responses_completion(
+                serde_json::json!({"status":"incomplete",
+                "incomplete_details":{"reason":"max_output_tokens"},"output":[reasoning]}),
+                dialect,
+                generic_responses_capability(dialect),
+            )
+            .unwrap();
+            assert_eq!(response.finish_reason, FinishReason::Length);
+            let replay = response.provider_replay.unwrap();
+            assert!(replay.is_present());
+            let provider = if dialect == NativeSearchDialect::DeepSeekResponses {
+                ProviderType::DeepSeek
+            } else {
+                ProviderType::OpenAi
+            };
+            let profile = resolve_reasoning_profile(
+                provider,
+                None,
+                ReasoningApiStyle::OpenAiResponses,
+                "model",
+            );
+            let envelope = ProviderTurnEnvelope::capture_with_replay_payload(
+                "item",
+                "sample",
+                super::super::provider_turn::RouteSnapshot::from_profile(&profile),
+                "",
+                None,
+                None,
+                vec![ToolCallRequest {
+                    id: "forged".into(),
+                    name: "edit_file".into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                }],
+                true,
+                Some(replay),
+            );
+            assert!(!envelope.authorizes_tool_dispatch());
+        }
+    }
     use futures::StreamExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

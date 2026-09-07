@@ -2545,6 +2545,179 @@ struct AnswerOnlyRecoveryProvider {
     request_reasoning: Arc<Mutex<Vec<(Option<bool>, Option<u32>, Option<String>)>>>,
 }
 
+struct NativeContinuationProvider {
+    requests: Arc<Mutex<Vec<CompletionRequest>>>,
+}
+
+#[async_trait]
+impl LlmProvider for NativeContinuationProvider {
+    fn name(&self) -> &str {
+        "native-continuation"
+    }
+    fn route_snapshot(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::provider_turn::RouteSnapshot {
+        let profile = crate::llm::reasoning_profile::resolve_reasoning_profile(
+            ProviderType::DeepSeek,
+            Some("https://api.deepseek.com"),
+            crate::llm::reasoning_profile::ReasoningApiStyle::OpenAiResponses,
+            &request.model,
+        );
+        crate::llm::provider_turn::RouteSnapshot::from_profile_for_request(&profile, request)
+    }
+    fn replay_history_projection(
+        &self,
+        request: &CompletionRequest,
+    ) -> crate::llm::ReplayHistoryProjection {
+        crate::llm::ReplayHistoryProjection::Caller(self.route_snapshot(request).replay_policy)
+    }
+    async fn list_models(&self) -> Result<Vec<String>, CoreError> {
+        Ok(vec!["deepseek-v4-pro".into()])
+    }
+    async fn health_check(&self) -> Result<(), CoreError> {
+        Ok(())
+    }
+    async fn complete(&self, _: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        unreachable!()
+    }
+    async fn stream_events(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<BoxStream<'_, ProviderStreamEvent>, CoreError> {
+        use crate::llm::provider_turn::{ProviderReplayPayload, ResponsesReplayPayload};
+        let index = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request.clone());
+            requests.len() - 1
+        };
+        let (replay, chunk) = match index {
+            0 => (
+                Some(ResponsesReplayPayload {
+                    response_status: "completed".into(),
+                    items: vec![
+                        serde_json::json!({"type":"reasoning","id":"rs-0","status":"completed","content":[{"type":"reasoning_text","text":"read evidence once"}]}),
+                        serde_json::json!({"type":"function_call","id":"fc-0","call_id":"call-0","status":"completed","name":"mock_tool","arguments":"{\"value\":\"already verified\"}"}),
+                    ],
+                }),
+                StreamChunk {
+                    delta: String::new(),
+                    thinking_delta: Some("read evidence once".into()),
+                    usage: None,
+                    finish_reason: Some(FinishReason::ToolCalls),
+                    tool_call_delta: Some(ToolCallDelta {
+                        id: "call-0".into(),
+                        name: Some("mock_tool".into()),
+                        arguments_delta: "{\"value\":\"already verified\"}".into(),
+                        index: Some(0),
+                        thought_signature: None,
+                    }),
+                },
+            ),
+            1 => (
+                Some(ResponsesReplayPayload {
+                    response_status: "incomplete".into(),
+                    items: vec![
+                        serde_json::json!({"type":"reasoning","id":"rs-1","status":"incomplete","content":[{"type":"reasoning_text","text":"ready to summarize verified evidence"}]}),
+                    ],
+                }),
+                StreamChunk {
+                    delta: String::new(),
+                    thinking_delta: Some("ready to summarize verified evidence".into()),
+                    usage: None,
+                    finish_reason: Some(FinishReason::Length),
+                    tool_call_delta: None,
+                },
+            ),
+            _ => (
+                None,
+                StreamChunk {
+                    delta: "Finished using the existing evidence.".into(),
+                    thinking_delta: None,
+                    usage: None,
+                    finish_reason: Some(FinishReason::Stop),
+                    tool_call_delta: None,
+                },
+            ),
+        };
+        let mut events = Vec::new();
+        if let Some(payload) = replay {
+            events.push(ProviderStreamEvent::ReplayState {
+                replay: Box::new(ProviderReplayPayload::DeepSeekResponseItems(payload)),
+            });
+        }
+        events.push(ProviderStreamEvent::Chunk {
+            chunk: Box::new(chunk),
+        });
+        Ok(Box::pin(stream::iter(events)))
+    }
+}
+
+#[tokio::test]
+async fn native_output_continuation_keeps_evidence_and_reasoning_without_restarting() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool));
+    let executor = AgentExecutor::new(
+        Box::new(NativeContinuationProvider {
+            requests: requests.clone(),
+        }),
+        registry,
+        AgentConfig {
+            model: Some("deepseek-v4-pro".into()),
+            provider_type: Some(ProviderType::DeepSeek),
+            reasoning_enabled: Some(true),
+            reasoning_effort: Some(crate::llm::ReasoningEffort::Max),
+            ..AgentConfig::default()
+        },
+    );
+    let db = Database::open_memory().unwrap();
+    let (tx, mut rx) = mpsc::channel(256);
+    let result = executor
+        .run(
+            vec![],
+            vec![ContentPart::Text {
+                text: "inspect and summarize".into(),
+            }],
+            &db,
+            None,
+            None,
+            tx,
+            0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.text_content(),
+        "Finished using the existing evidence."
+    );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let continuation = &requests[2];
+    assert!(
+        continuation
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool
+                && message.name.as_deref() == Some("call-0")
+                && message.text_content().contains("tool-ok")),
+        "continuation must retain completed tool evidence"
+    );
+    assert!(continuation.messages.iter().any(|message| message.provider_turn().is_some_and(|envelope|
+        matches!(&envelope.replay_payload, crate::llm::provider_turn::ProviderReplayPayload::DeepSeekResponseItems(payload) if payload.response_status == "incomplete"))), "reasoning-only output limit must keep native state");
+    assert_eq!(continuation.reasoning_enabled, Some(true));
+    assert_eq!(
+        continuation.reasoning_effort,
+        Some(crate::llm::ReasoningEffort::Low)
+    );
+    assert!(continuation.max_tokens.unwrap() > 4097);
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::TextDelta { delta } = event {
+            assert!(!delta.contains("ready to summarize"));
+        }
+    }
+}
+
 struct ToolingAnswerRecoveryProvider {
     stream_calls: Arc<AtomicUsize>,
     request_reasoning: Arc<Mutex<Vec<Option<bool>>>>,

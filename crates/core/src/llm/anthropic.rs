@@ -39,6 +39,8 @@ struct AnthropicThinking {
     r#type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_binding: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -706,8 +708,30 @@ fn enforce_cache_breakpoint_limit(
 fn uses_adaptive_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
-        "claude-fable-5" | "claude-mythos-5" | "claude-opus-4-8" | "claude-opus-4-7"
+        "claude-fable-5"
+            | "claude-fable-5-1"
+            | "claude-mythos-5"
+            | "claude-mythos-5-1"
+            | "claude-opus-5"
+            | "claude-sonnet-5"
+            | "claude-opus-4-8"
+            | "claude-opus-4-7"
     )
+}
+
+fn requires_thinking_binding_controls(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "claude-fable-5-1" | "claude-mythos-5-1"
+    )
+}
+
+fn anthropic_beta_headers(model: &str) -> &'static str {
+    if requires_thinking_binding_controls(model) {
+        "prompt-caching-2024-07-31,thinking-binding-controls-2026-08-01"
+    } else {
+        "prompt-caching-2024-07-31"
+    }
 }
 
 fn anthropic_reasoning_effort(effort: Option<&ReasoningEffort>) -> Option<String> {
@@ -730,8 +754,12 @@ fn build_request_body(
     stream: bool,
 ) -> AnthropicRequest {
     let supports_adaptive_thinking = uses_adaptive_thinking(&request.model);
-    let uses_adaptive = supports_adaptive_thinking
-        && (request.reasoning_effort.is_some() || request.thinking_budget.is_some());
+    let binding_controls = requires_thinking_binding_controls(&request.model);
+    let always_thinking =
+        binding_controls || matches!(request.model.as_str(), "claude-fable-5" | "claude-mythos-5");
+    let uses_adaptive = always_thinking
+        || (supports_adaptive_thinking
+            && (request.reasoning_effort.is_some() || request.thinking_budget.is_some()));
     let temperature = if supports_adaptive_thinking {
         None
     } else {
@@ -740,12 +768,18 @@ fn build_request_body(
     // NOTE: Anthropic's API returns a clear error for models that don't support
     // thinking, so budget-based thinking is not model-gated (unlike Gemini).
     let (thinking, output_config, temperature, effective_max_tokens) = if uses_adaptive {
-        let effort = anthropic_reasoning_effort(request.reasoning_effort.as_ref());
+        let effort = anthropic_reasoning_effort(request.reasoning_effort.as_ref())
+            .or_else(|| always_thinking.then(|| "low".to_string()));
         if let Some(effort) = effort {
             (
                 Some(AnthropicThinking {
                     r#type: "adaptive".to_string(),
                     budget_tokens: None,
+                    // Nexa may compact history or update the tool surface. Let
+                    // Anthropic discard only invalidated thinking blocks while
+                    // retaining the messages and completed tool results.
+                    block_binding: binding_controls
+                        .then(|| serde_json::json!({"prefix_mismatch_behavior":"drop_block"})),
                 }),
                 Some(AnthropicOutputConfig { effort }),
                 None,
@@ -768,6 +802,7 @@ fn build_request_body(
             Some(AnthropicThinking {
                 r#type: "enabled".to_string(),
                 budget_tokens: Some(budget),
+                block_binding: None,
             }),
             None,
             None, // Anthropic requires temperature unset when thinking is enabled
@@ -1925,6 +1960,30 @@ mod tests {
     }
 
     #[test]
+    fn fable_51_uses_always_on_adaptive_thinking_and_handles_changed_history() {
+        let messages = vec![Message::text(Role::User, "solve it")];
+        let (_, api_messages) = convert_messages(&messages);
+        let mut request = request_with_messages(messages, None);
+        request.thinking_budget = Some(2048);
+        request.model = "claude-fable-5-1".to_string();
+        request.reasoning_enabled = Some(false);
+        request.reasoning_effort = Some(ReasoningEffort::None);
+        let body =
+            serde_json::to_value(build_request_body(&request, None, api_messages, true)).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert!(body["thinking"].get("budget_tokens").is_none());
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert!(
+            anthropic_beta_headers(&request.model).contains("thinking-binding-controls-2026-08-01")
+        );
+    }
+
+    #[test]
     fn opus_48_prefers_adaptive_thinking_over_budget() {
         let messages = vec![Message::text(Role::User, "solve it")];
         let (_, api_messages) = convert_messages(&messages);
@@ -2122,7 +2181,7 @@ impl LlmProvider for AnthropicProvider {
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("anthropic-beta", anthropic_beta_headers(&request.model))
                 .header("Content-Type", "application/json")
                 .body(body_bytes),
             self.request_timeout,
@@ -2337,7 +2396,7 @@ impl LlmProvider for AnthropicProvider {
                 .post(&url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION)
-                .header("anthropic-beta", "prompt-caching-2024-07-31")
+                .header("anthropic-beta", anthropic_beta_headers(&request.model))
                 .header("Content-Type", "application/json")
                 .body(body_bytes),
             self.request_timeout,

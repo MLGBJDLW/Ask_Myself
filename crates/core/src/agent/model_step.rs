@@ -349,7 +349,16 @@ impl AgentExecutor {
         let forced_progress_controls = (force_answer_only
             || *reasoning_disabled_for_tool_loop
             || cumulative_budget_requires_low_reasoning)
-            .then(|| model_progress_watchdog::recovery_controls(self.config.provider_type, model));
+            .then(|| {
+                if force_answer_only
+                    && !*reasoning_disabled_for_tool_loop
+                    && self.config.catalog_limits_authoritative.unwrap_or(true)
+                {
+                    model_progress_watchdog::continuation_controls(self.config.provider_type, model)
+                } else {
+                    model_progress_watchdog::recovery_controls(self.config.provider_type, model)
+                }
+            });
         let mut configured_thinking_budget = self
             .config
             .reasoning_enabled
