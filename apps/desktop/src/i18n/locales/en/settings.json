@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "Select an available model"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "Choose the model and reasoning level in Chat after saving this provider."
+  ,"modelCatalogLoading": "Loading models…"
+  ,"modelCatalogRefreshing": "Refreshing models…"
+  ,"modelCatalogLoadFailed": "Could not load models."
+  ,"modelCatalogCached": "Using the previous model list."
+  ,"modelCatalogReady": "Models up to date"
+  ,"modelCatalogEmpty": "No models are available for this account."
 }

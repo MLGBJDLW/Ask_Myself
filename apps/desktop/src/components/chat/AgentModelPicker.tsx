@@ -4,15 +4,17 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ChevronDown, ChevronLeft, Search, SlidersHorizontal } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, Loader2, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
 import { useTranslation, type TranslationKey } from '../../i18n';
 import {
   PROVIDER_PRESETS,
   findProviderPreset,
+  isRemovedProviderModel,
   type ProviderModelPreset,
   type ProviderPreset,
   type ReasoningCapability,
@@ -32,8 +34,8 @@ import {
 } from '../../lib/modelCatalog';
 import type { AgentConfig } from '../../types/conversation';
 import { useOverlayRoot } from '../ui/overlay';
-import { listSubscriptionModels } from '../../lib/api';
-import { toast } from 'sonner';
+import { getSubscriptionCatalogs, loadSubscriptionModels, subscribeSubscriptionCatalogs } from '../../lib/subscriptionModelCatalog';
+import { catalogModelsForSnapshot, loadProviderModelCatalog } from '../../lib/providerModelCatalog';
 
 export interface AgentModelSelection {
   config: AgentConfig;
@@ -142,7 +144,8 @@ function makeModelRows(
   for (const model of models) {
     modelMap.set(model.id, model);
   }
-  if (!providerRow.preset?.runtime && providerRow.config.model && !modelMap.has(providerRow.config.model)) {
+  if (!providerRow.preset?.runtime && providerRow.config.model && !modelMap.has(providerRow.config.model)
+      && !(providerRow.preset && isRemovedProviderModel(providerRow.preset.id, providerRow.config.model))) {
     const presetId = providerRow.preset?.id ?? providerRow.config.provider;
     const fallbackModel = {
       id: providerRow.config.model,
@@ -213,16 +216,18 @@ export function AgentModelPicker({
   const [pickerStep, setPickerStep] = useState<PickerStep>('providers');
   const [query, setQuery] = useState('');
   const [budgetDraft, setBudgetDraft] = useState('');
-  const [subscriptionModels, setSubscriptionModels] = useState<Record<string, ProviderModelPreset[]>>({});
+  const subscriptionCatalogs = useSyncExternalStore(subscribeSubscriptionCatalogs, getSubscriptionCatalogs);
+  const subscriptionProviderKey = [...new Set(agentConfigs.filter(config => findPresetForConfig(config)?.runtime).map(config => config.provider))].sort().join(',');
   useEffect(() => {
-    if (!open) return;
-    let disposed = false;
-    setSubscriptionModels({});
-    const providers = [...new Set(agentConfigs.filter(config => findPresetForConfig(config)?.runtime).map(config => config.provider))];
-    for (const provider of providers) {
-      void listSubscriptionModels(provider).then(models => {
-        if (disposed) return;
-        const projected = models.map(model => {
+    // Warm configured runtimes before opening either picker. Reopening only
+    // revalidates expired data; subscribers share the same in-flight request.
+    for (const provider of subscriptionProviderKey.split(',').filter(Boolean)) {
+      void loadSubscriptionModels(provider).catch(() => {});
+    }
+  }, [open, subscriptionProviderKey]);
+  const subscriptionModels = useMemo(() => Object.fromEntries(Object.entries(subscriptionCatalogs)
+    .filter(([, state]) => state.models !== null)
+    .map(([provider, state]) => [provider, state.models!.map(model => {
           const effortLevels = model.reasoningEfforts.filter((effort): effort is ReasoningEffortLevel => effort in REASONING_EFFORT_LABEL_KEYS);
           const nativeModel = {
             id: model.id, name: model.name, source: 'discovered' as const, status: 'active' as const, productReadiness: 'known' as const,
@@ -231,12 +236,7 @@ export function AgentModelPicker({
           return { ...nativeModel, descriptor: projectModelDescriptor(nativeModel, {
             surface: 'text', providerId: provider, endpointId: modelEndpointId('text', provider), region: 'global', apiStyle: 'subscription_runtime',
           }) };
-        });
-        setSubscriptionModels(previous => ({ ...previous, [provider]: projected }));
-      }).catch(error => { if (!disposed) toast.error(String(error)); });
-    }
-    return () => { disposed = true; };
-  }, [open, agentConfigs]);
+        })])), [subscriptionCatalogs]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const reasoningTriggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -246,9 +246,14 @@ export function AgentModelPicker({
     () =>
       agentConfigs.map((config) => {
         const originalPreset = findPresetForConfig(config);
-        const preset = originalPreset?.runtime && subscriptionModels[config.provider]
+        let preset = originalPreset?.runtime && subscriptionModels[config.provider]
           ? { ...originalPreset, models: subscriptionModels[config.provider] }
           : originalPreset;
+        if (!originalPreset?.runtime) {
+          const cached = loadProviderModelCatalog(config.provider, config.baseUrl, config.apiKey ?? '');
+          if (cached && preset) preset = { ...preset, models: catalogModelsForSnapshot(cached)
+            .filter(model => !isRemovedProviderModel(preset!.id, model.id)) };
+        }
         return {
           config,
           preset,
@@ -302,9 +307,9 @@ export function AgentModelPicker({
     allModelRows.find(
       (row) => row.providerRow.config.id === activeConfigId && row.model.id === activeModelId,
     ) ??
-      activeProviderModelRows[0] ??
-      searchModelRows[0] ??
+      (pickerStep === 'reasoning' ? null : activeProviderModelRows[0] ?? searchModelRows[0]) ??
       null;
+  const activeCatalog = activeProviderRow?.preset?.runtime ? subscriptionCatalogs[activeProviderRow.config.provider] : null;
 
   const selectedModelRow = selectedConfig
     ? allModelRows.find(
@@ -665,7 +670,23 @@ export function AgentModelPicker({
                 </>
               )}
 
-              <div className="h-[19rem] min-w-0 overflow-hidden">
+              {activeProviderRow?.preset?.runtime && pickerStep !== 'providers' && (
+                <div data-testid="agent-model-catalog-status" role={activeCatalog?.error ? 'alert' : 'status'}
+                  className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-xs text-text-tertiary">
+                  {activeCatalog?.loading && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+                  <span className="min-w-0 flex-1">{activeCatalog?.loading
+                    ? t(activeCatalog.models ? 'settings.modelCatalogRefreshing' : 'settings.modelCatalogLoading')
+                    : activeCatalog?.error ? `${t('settings.modelCatalogLoadFailed')}${activeCatalog.models ? ` ${t('settings.modelCatalogCached')}` : ''}`
+                      : activeCatalog?.models?.length ? t('settings.modelCatalogReady') : t('settings.modelCatalogEmpty')}</span>
+                  <button type="button" data-testid="agent-model-catalog-refresh" disabled={activeCatalog?.loading}
+                    title={t('settings.refreshModelCatalog')} aria-label={t('settings.refreshModelCatalog')}
+                    className="rounded p-1 hover:bg-surface-2 disabled:opacity-40"
+                    onClick={() => void loadSubscriptionModels(activeProviderRow.config.provider, true).catch(() => {})}>
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              <div className={`${pickerStep === 'reasoning' ? 'max-h-[19rem]' : 'h-[19rem]'} min-w-0 overflow-hidden`}>
                 {!isSearching && pickerStep === 'providers' && (
                   <div className="h-full overflow-y-auto p-1.5">
                     {providerRows.map((row) => {
@@ -765,7 +786,7 @@ export function AgentModelPicker({
                       })
                     ) : (
                       <div className="px-3 py-8 text-center text-xs text-text-tertiary">
-                        {t('settings.modelSearchNoResults')}
+                        {activeCatalog?.loading ? t('settings.modelCatalogLoading') : t('settings.modelSearchNoResults')}
                       </div>
                     )}
                   </div>

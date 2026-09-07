@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "選擇可用模型"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "儲存此供應商後，在 Chat 中選擇模型與推理強度。"
+  ,"modelCatalogLoading": "正在載入模型…"
+  ,"modelCatalogRefreshing": "正在重新整理模型…"
+  ,"modelCatalogLoadFailed": "模型載入失敗。"
+  ,"modelCatalogCached": "正在使用上次的模型清單。"
+  ,"modelCatalogReady": "模型清單已更新"
+  ,"modelCatalogEmpty": "此帳戶暫無可用模型。"
 }

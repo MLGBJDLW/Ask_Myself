@@ -1019,12 +1019,28 @@ pub async fn list_subscription_models_cmd(
 ) -> Result<Vec<CopilotModelSummary>, String> {
     match provider.as_str() {
         "github_copilot" => {
-            let snapshot =
-                read_copilot_account_snapshot(state.copilot_account_runtime.clone()).await;
-            if !snapshot.entitlement_verified {
-                return Err("Sign in to GitHub Copilot, then refresh the model list.".into());
+            if state.copilot_account_runtime.login_status().pending {
+                return Err("Finish signing in to GitHub Copilot, then refresh models.".into());
             }
-            Ok(snapshot.models)
+            // Chat needs only the entitled model list, not status, quotas or
+            // runtime-version probes. The UI shares and caches this request.
+            tokio::time::timeout(COPILOT_REQUEST_TIMEOUT, async {
+                let binary = tokio::task::spawn_blocking(resolve_copilot_binary).await
+                    .map_err(|_| "copilot_runtime_task_failed".to_string())??;
+                let client = Client::start(ClientOptions::default().with_program(CliProgram::Path(binary))).await
+                    .map_err(|_| "Unable to start Copilot. Check its installation and retry.".to_string())?;
+                let result = async {
+                    let auth = client.get_auth_status().await.map_err(|_| "Unable to verify the Copilot account.".to_string())?;
+                    if !auth.is_authenticated { return Err("Sign in to GitHub Copilot, then refresh models.".to_string()); }
+                    client.list_models().await.map_err(|_| "Unable to load Copilot models. Check the connection and account, then retry.".to_string())
+                }.await;
+                let _ = client.stop().await;
+                result.map(|models| models.into_iter().take(100).map(|model| CopilotModelSummary {
+                    id: bounded_field(&model.id, 120), name: bounded_field(&model.name, 160),
+                    reasoning_efforts: model.supported_reasoning_efforts.unwrap_or_default().into_iter().take(12)
+                        .map(|effort| bounded_field(&effort, 32)).collect(),
+                }).collect())
+            }).await.map_err(|_| "Copilot model loading timed out. Please retry.".to_string())?
         }
         "openai_codex" => tokio::task::spawn_blocking(|| {
             let mut client = CodexAppServerClient::start()?;

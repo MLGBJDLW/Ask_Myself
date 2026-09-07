@@ -976,4 +976,10 @@
 ,"subscriptionSelectModel": "사용 가능한 모델 선택"
 ,"reasoningUltra": "Ultra"
 ,"subscriptionModelsInChat": "공급자를 저장한 후 채팅에서 모델과 추론 수준을 선택하세요."
+  ,"modelCatalogLoading": "모델 로딩 중…"
+  ,"modelCatalogRefreshing": "모델 새로 고침 중…"
+  ,"modelCatalogLoadFailed": "모델을 불러오지 못했습니다."
+  ,"modelCatalogCached": "이전 모델 목록을 사용합니다."
+  ,"modelCatalogReady": "모델 목록이 최신입니다"
+  ,"modelCatalogEmpty": "이 계정에서 사용 가능한 모델이 없습니다."
 }
