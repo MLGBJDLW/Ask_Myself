@@ -21,7 +21,7 @@
   "realtimeDeferred": "A transcrição ao vivo está indisponível. A gravação continua com segurança no spool local e será tentada novamente após parar.",
   "cleanupPending": "A exclusão do áudio de voz privado está pendente; use o botão de exclusão para tentar novamente.",
   "discardPending": "Excluir áudio pendente",
-  "transcriptionFailed": "A transcrição falhou. Verifique as configurações do provedor de voz e tente novamente.",
+  "transcriptionFailed": "A transcrição não terminou. A gravação foi mantida para uma nova tentativa.",
   "recordingDock": "Controles de gravação de voz",
   "cancelRecording": "Cancelar e excluir a gravação",
   "cancel": "Cancelar",
@@ -42,5 +42,6 @@
   "statusDegraded": "Ao vivo indisponível · fallback local",
   "statusOffline": "Microfone desconectado",
   "statusProcessing": "Processando",
-  "statusPaused": "Pausado"
+  "statusPaused": "Pausado",
+  "retryTranscription": "Tentar transcrição novamente"
 }

@@ -21,7 +21,7 @@
   "realtimeDeferred": "即時轉寫暫時無法使用。錄音會繼續安全儲存在本機暫存，並在停止後重試。",
   "cleanupPending": "私密錄音仍在等待刪除；可使用刪除按鈕重試清理。",
   "discardPending": "刪除待處理錄音",
-  "transcriptionFailed": "轉寫失敗。請檢查語音服務設定後再試。",
+  "transcriptionFailed": "轉寫未完成，錄音已保留。點選「重試轉寫」繼續。",
   "recordingDock": "錄音控制台",
   "cancelRecording": "取消並刪除錄音",
   "cancel": "取消",
@@ -42,5 +42,6 @@
   "statusDegraded": "即時不可用 · 已降級至本機",
   "statusOffline": "麥克風已中斷",
   "statusProcessing": "正在處理",
-  "statusPaused": "已暫停"
+  "statusPaused": "已暫停",
+  "retryTranscription": "重試轉寫"
 }

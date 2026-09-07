@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Mic, Loader2, Trash2 } from 'lucide-react';
+import { Mic, Loader2, RotateCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from '../../i18n';
 import { useVoiceInputRuntime, type VoiceRuntimeErrorCode } from '../../features/voice';
@@ -35,6 +35,7 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
     runtimeNotice,
     automaticResult,
     hasPendingVoiceSpool,
+    hasRetryableVoiceSpool,
     clearRuntimeNotice,
     clearAutomaticResult,
     recordingDuration,
@@ -48,14 +49,19 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
   const lastPublishedPartialRef = useRef('');
   const captureGenerationRef = useRef(0);
   const discardAutomaticResultRef = useRef(false);
+  const acceptingInterimRef = useRef(false);
 
   useEffect(() => {
+    // A retained preview after stop is for retry, not a new dictation event.
+    // In particular, changing drafts must not publish it after finalization.
+    if (!isRecording || !acceptingInterimRef.current) return;
     if (partialTranscript === lastPublishedPartialRef.current) return;
     lastPublishedPartialRef.current = partialTranscript;
     onDictationEvent({ kind: 'interim', text: partialTranscript });
-  }, [onDictationEvent, partialTranscript]);
+  }, [isRecording, onDictationEvent, partialTranscript]);
 
   const cancelCapture = useCallback(() => {
+    acceptingInterimRef.current = false;
     captureGenerationRef.current += 1;
     discardAutomaticResultRef.current = true;
     cancelRecording();
@@ -95,7 +101,8 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
     } else if (code === 'voice_cleanup_pending') {
       toast.warning(t('voice.cleanupPending'), message ? { description: message } : undefined);
     } else if (code === 'transcription_failed') {
-      toast.error(t('voice.transcriptionFailed'), message ? { description: message } : undefined);
+      const detail = message?.replace(/\. Managed audio .*? is retained for retry until expiry or cancellation\s*$/u, '');
+      toast.error(t('voice.transcriptionFailed'), detail ? { description: detail } : undefined);
     } else if (code !== 'busy') {
       toast.error(t('voice.error'));
     }
@@ -109,6 +116,7 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
 
   useEffect(() => {
     if (!automaticResult) return;
+    acceptingInterimRef.current = false;
     if (discardAutomaticResultRef.current) {
       clearAutomaticResult();
       return;
@@ -116,7 +124,7 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
     if (automaticResult.status === 'transcribed') {
       onDictationEvent({ kind: 'final', text: automaticResult.text });
     } else if (automaticResult.status === 'error') {
-      onDictationEvent({ kind: 'end' });
+      if (automaticResult.code !== 'transcription_failed') onDictationEvent({ kind: 'end' });
       showRuntimeError(automaticResult.code, automaticResult.message);
     } else if (automaticResult.status === 'empty') {
       onDictationEvent({ kind: 'cancel' });
@@ -129,11 +137,13 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
     if (busy) return;
 
     const wasRecording = isRecording;
-    if (!wasRecording) {
+    if (wasRecording) acceptingInterimRef.current = false;
+    if (!wasRecording && !hasRetryableVoiceSpool) {
       // Establish composer ownership before microphone startup can race a fast
       // provider interim event back to React.
       lastPublishedPartialRef.current = '';
       discardAutomaticResultRef.current = false;
+      acceptingInterimRef.current = true;
       onDictationEvent({ kind: 'start' });
     }
     const captureGeneration = captureGenerationRef.current;
@@ -146,17 +156,21 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
       lastPublishedPartialRef.current = '';
       onDictationEvent({ kind: 'cancel' });
     } else if (result.status === 'error') {
-      if (wasRecording) onDictationEvent({ kind: 'end' });
-      else onDictationEvent({ kind: 'cancel' });
+      acceptingInterimRef.current = false;
+      if (result.code !== 'transcription_failed') {
+        if (wasRecording) onDictationEvent({ kind: 'end' });
+        else onDictationEvent({ kind: 'cancel' });
+      }
       showRuntimeError(result.code, result.message);
     }
-  }, [busy, isRecording, onDictationEvent, showRuntimeError, toggleRecording]);
+  }, [busy, hasRetryableVoiceSpool, isRecording, onDictationEvent, showRuntimeError, toggleRecording]);
 
   const handleDiscard = useCallback(async () => {
     if (busy) return;
     const result = await discardPendingVoiceSpool();
     if (result.status === 'error') showRuntimeError(result.code, result.message);
-  }, [busy, discardPendingVoiceSpool, showRuntimeError]);
+    else { onDictationEvent({ kind: 'cancel' }); lastPublishedPartialRef.current = ''; }
+  }, [busy, discardPendingVoiceSpool, onDictationEvent, showRuntimeError]);
 
   const handlePauseResume = useCallback(async () => {
     const result = await toggleRecordingPause();
@@ -167,7 +181,7 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
     ? t('voice.processing')
     : isRecording
       ? t('voice.stopRecording')
-      : t('voice.startRecording');
+      : hasRetryableVoiceSpool ? t('voice.retryTranscription') : t('voice.startRecording');
 
   return (
     <div className="contents">
@@ -226,6 +240,8 @@ function VoiceInputButton({ onDictationEvent, disabled }, ref) {
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : isRecording ? (
           <span className="recording-indicator" />
+        ) : hasRetryableVoiceSpool ? (
+          <RotateCw className="h-3.5 w-3.5" />
         ) : (
           <Mic className="h-3.5 w-3.5" />
         )}

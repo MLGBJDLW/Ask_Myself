@@ -24,7 +24,8 @@ const MAX_AUDIO_CHUNK_BYTES: usize = 256 * 1024;
 const SESSION_ID_HEADER: &str = "x-nexa-session-id";
 const FINAL_TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REPLAY_FINAL_TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(180);
-const REPLAY_PCM_CHUNK_BYTES: usize = 64 * 1024;
+const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(15);
+const REPLAY_CHUNK_MILLIS: u64 = 100;
 
 type RealtimeSessions = Arc<Mutex<HashMap<String, mpsc::Sender<RealtimeCommand>>>>;
 
@@ -359,10 +360,70 @@ fn replay_wav_data_bytes(header: &[u8; 44], expected_sample_rate: u32) -> Result
     ))
 }
 
+async fn wait_for_session_ready<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    tokio::time::timeout(SESSION_READY_TIMEOUT, async {
+        while let Some(incoming) = socket.next().await {
+            match incoming.map_err(|error| format!("Realtime configuration connection failed: {error}"))? {
+                Message::Text(text) => {
+                    let Ok(event) = serde_json::from_str::<Value>(&text) else { continue; };
+                    match event.get("type").and_then(Value::as_str) {
+                        Some("session.updated" | "transcription_session.updated") => return Ok(()),
+                        Some("error") => return Err(event.pointer("/error/message").and_then(Value::as_str).unwrap_or("Realtime session configuration was rejected").to_string()),
+                        _ => {}
+                    }
+                }
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).await
+                    .map_err(|error| format!("Realtime configuration heartbeat failed: {error}"))?,
+                Message::Close(frame) => return Err(format!("Realtime connection closed before session configuration was accepted: {frame:?}")),
+                _ => {}
+            }
+        }
+        Err("Realtime connection ended before session configuration was accepted".to_string())
+    }).await.map_err(|_| "Timed out waiting for realtime session configuration".to_string())?
+}
+
+fn replay_failure_is_transient(error: &str) -> bool {
+    [
+        "Unable to reconnect",
+        "Unable to replay audio",
+        "Realtime replay closed",
+        "Realtime transcription replay failed",
+        "Realtime replay heartbeat failed",
+        "Realtime connection closed",
+        "Realtime connection ended",
+        "Realtime configuration connection failed",
+        "Timed out waiting for",
+        "Timed out connecting",
+    ]
+    .iter()
+    .any(|prefix| error.starts_with(prefix))
+}
+
+/// Retry a transport interruption once using the same private audio source.
+/// Each attempt has a fresh transcript accumulator, so prefixes are not joined
+/// across sessions. Provider/configuration rejections remain immediate errors.
+pub(super) async fn transcribe_realtime_spool(
+    wav_path: &Path,
+    config: &nexa_core::app_settings::SpeechToTextConfig,
+) -> Result<String, String> {
+    match transcribe_realtime_spool_attempt(wav_path, config).await {
+        Err(error) if replay_failure_is_transient(&error) => {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            transcribe_realtime_spool_attempt(wav_path, config).await
+        }
+        result => result,
+    }
+}
+
 /// Replay a finalized native spool through a fresh Realtime transcription
 /// session. The file path never crosses IPC and only one bounded PCM chunk is
 /// base64-encoded at a time.
-pub(super) async fn transcribe_realtime_spool(
+async fn transcribe_realtime_spool_attempt(
     wav_path: &Path,
     config: &nexa_core::app_settings::SpeechToTextConfig,
 ) -> Result<String, String> {
@@ -387,9 +448,13 @@ pub(super) async fn transcribe_realtime_spool(
             .map_err(|error| format!("Invalid User-Agent header: {error}"))?,
     );
 
-    let (mut socket, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|error| format!("Unable to reconnect to realtime transcription: {error}"))?;
+    let (mut socket, _) = tokio::time::timeout(
+        SESSION_READY_TIMEOUT,
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .map_err(|_| "Timed out connecting to realtime transcription replay".to_string())?
+    .map_err(|error| format!("Unable to reconnect to realtime transcription: {error}"))?;
     socket
         .send(Message::Text(
             build_session_update(dialect, &config.model, config.language.as_deref())
@@ -398,6 +463,7 @@ pub(super) async fn transcribe_realtime_spool(
         ))
         .await
         .map_err(|error| format!("Unable to configure realtime transcription replay: {error}"))?;
+    wait_for_session_ready(&mut socket).await?;
 
     let mut file = tokio::fs::File::open(wav_path)
         .await
@@ -410,7 +476,11 @@ pub(super) async fn transcribe_realtime_spool(
     file.seek(SeekFrom::Start(44))
         .await
         .map_err(|error| format!("Unable to seek managed Realtime audio: {error}"))?;
-    let mut buffer = vec![0_u8; REPLAY_PCM_CHUNK_BYTES];
+    // Realtime VAD consumes audio in time order, not as an unbounded file
+    // upload. Bound each packet to 100 ms and drain server events throughout
+    // pacing, including errors and pings queued during a slow send.
+    let mut buffer =
+        vec![0_u8; (u64::from(dialect.sample_rate()) * 2 * REPLAY_CHUNK_MILLIS / 1000) as usize];
     let mut transcript = RealtimeTranscript::default();
     while remaining > 0 {
         let chunk_len = remaining.min(buffer.len());
@@ -426,9 +496,14 @@ pub(super) async fn transcribe_realtime_spool(
             })?;
         remaining -= chunk_len;
 
-        if let Ok(Some(incoming)) =
-            tokio::time::timeout(Duration::from_millis(1), socket.next()).await
-        {
+        let next_chunk_at = tokio::time::Instant::now()
+            + Duration::from_secs_f64(chunk_len as f64 / (f64::from(dialect.sample_rate()) * 2.0));
+        loop {
+            let incoming = tokio::select! {
+                biased;
+                incoming = socket.next() => incoming.ok_or_else(|| "Realtime replay closed while uploading audio".to_string())?,
+                _ = tokio::time::sleep_until(next_chunk_at) => break,
+            };
             match incoming {
                 Ok(Message::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<Value>(&text) {
@@ -455,8 +530,10 @@ pub(super) async fn transcribe_realtime_spool(
                     .send(Message::Pong(payload))
                     .await
                     .map_err(|error| format!("Realtime replay heartbeat failed: {error}"))?,
-                Ok(Message::Close(_)) => {
-                    return Err("Realtime replay closed while uploading audio".to_string())
+                Ok(Message::Close(frame)) => {
+                    return Err(format!(
+                        "Realtime replay closed while uploading audio: {frame:?}"
+                    ))
                 }
                 Err(error) => return Err(format!("Realtime transcription replay failed: {error}")),
                 Ok(_) => {}
@@ -550,11 +627,14 @@ pub async fn start_realtime_transcription_cmd(
             .map_err(|error| format!("Invalid User-Agent header: {error}"))?,
     );
 
-    let (socket, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|error| format!("Unable to connect to realtime transcription: {error}"))?;
-    let (mut socket_sink, mut socket_stream) = socket.split();
-    socket_sink
+    let (mut socket, _) = tokio::time::timeout(
+        SESSION_READY_TIMEOUT,
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .map_err(|_| "Timed out connecting to realtime transcription".to_string())?
+    .map_err(|error| format!("Unable to connect to realtime transcription: {error}"))?;
+    socket
         .send(Message::Text(
             build_session_update(dialect, &config.model, config.language.as_deref())
                 .to_string()
@@ -562,6 +642,8 @@ pub async fn start_realtime_transcription_cmd(
         ))
         .await
         .map_err(|error| format!("Unable to configure realtime transcription: {error}"))?;
+    wait_for_session_ready(&mut socket).await?;
+    let (mut socket_sink, mut socket_stream) = socket.split();
 
     let session_id = Uuid::new_v4().to_string();
     let (command_tx, mut command_rx) = mpsc::channel(REALTIME_COMMAND_BUFFER);
@@ -1059,6 +1141,20 @@ mod tests {
                     assert_eq!(event["session"]["sample_rate"], 16_000);
                     assert_eq!(event["session"]["input_audio_format"], "pcm");
                     assert_eq!(event["session"]["turn_detection"]["type"], "server_vad");
+                    assert!(
+                        tokio::time::timeout(std::time::Duration::from_millis(25), socket.next())
+                            .await
+                            .is_err(),
+                        "audio must wait for the provider's session.updated acknowledgement"
+                    );
+                    socket
+                        .send(Message::Text(
+                            serde_json::json!({"type":"session.updated"})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
                 }
                 if event_type == "input_audio_buffer.append" {
                     // A complete VAD utterance arrives while audio is still

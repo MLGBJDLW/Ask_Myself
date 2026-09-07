@@ -21,7 +21,7 @@
   "realtimeDeferred": "La transcripción en directo no está disponible. La grabación continúa de forma segura en el spool local y se reintentará al detenerla.",
   "cleanupPending": "La eliminación del audio privado está pendiente; usa el botón de eliminar para reintentarlo.",
   "discardPending": "Eliminar audio pendiente",
-  "transcriptionFailed": "La transcripción falló. Revisa la configuración del proveedor de voz e inténtalo de nuevo.",
+  "transcriptionFailed": "La transcripción no terminó. La grabación se conserva para volver a intentarlo.",
   "recordingDock": "Controles de grabación de voz",
   "cancelRecording": "Cancelar y eliminar la grabación",
   "cancel": "Cancelar",
@@ -42,5 +42,6 @@
   "statusDegraded": "Directo no disponible · respaldo local",
   "statusOffline": "Micrófono desconectado",
   "statusProcessing": "Procesando",
-  "statusPaused": "Pausado"
+  "statusPaused": "Pausado",
+  "retryTranscription": "Reintentar transcripción"
 }

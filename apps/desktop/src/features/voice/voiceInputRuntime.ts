@@ -413,7 +413,8 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
         }
         realtimeUploadErrorRef.current = null;
       }
-      setPartialTranscript('');
+      // Keep the last readable draft until replay succeeds. Detaching the
+      // transport is not a provider correction to an empty transcript.
     };
     const finishPromise = (async (): Promise<VoiceRuntimeActionResult> => {
       try {
@@ -538,7 +539,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
     realtimeUploadQueueRef.current?.cancel('Realtime provider degraded to native spool');
     realtimeUploadQueueRef.current = null;
     realtimeUploadErrorRef.current = 'Realtime provider degraded to native spool';
-    setPartialTranscript('');
+    // Preserve the latest words while the retained audio awaits transcription.
     setTransportState('degraded');
     if (showNotice) setRuntimeNotice('realtime_deferred');
     if (sessionId) void api.cancelRealtimeTranscription(sessionId);
@@ -934,6 +935,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
 
   const recordingDockVisible = recordingContext !== null
     && (recorder.isRecording || safeStopping || transcribing);
+  const hasRetryableVoiceSpool = pendingVoiceSpoolIdsRef.current.length > 0;
 
   return useMemo(
     () => ({
@@ -962,6 +964,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       runtimeNotice,
       automaticResult,
       hasPendingVoiceSpool,
+      hasRetryableVoiceSpool,
       clearRuntimeNotice,
       clearAutomaticResult,
       analyser: recorder.analyser,
@@ -980,6 +983,7 @@ export function useVoiceInputRuntime(options: UseVoiceInputRuntimeOptions = {}) 
       downloadWhisperModel,
       microphones,
       hasPendingVoiceSpool,
+      hasRetryableVoiceSpool,
       partialTranscript,
       runtimeNotice,
       automaticResult,

@@ -21,7 +21,7 @@
   "realtimeDeferred": "实时转写暂不可用。录音会继续安全保存到本地暂存，并在停止后重试。",
   "cleanupPending": "私密录音仍在等待删除；可使用删除按钮重试清理。",
   "discardPending": "删除待处理录音",
-  "transcriptionFailed": "转写失败。请检查语音服务设置后重试。",
+  "transcriptionFailed": "转写未完成，录音已保留。点击“重试转写”继续。",
   "recordingDock": "录音控制台",
   "cancelRecording": "取消并删除录音",
   "cancel": "取消",
@@ -42,5 +42,6 @@
   "statusDegraded": "实时不可用 · 已降级到本地",
   "statusOffline": "麦克风已断开",
   "statusProcessing": "正在处理",
-  "statusPaused": "已暂停"
+  "statusPaused": "已暂停",
+  "retryTranscription": "重试转写"
 }
