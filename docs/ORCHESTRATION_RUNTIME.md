@@ -261,14 +261,13 @@ Prompt IR roles are compiled at the provider boundary. For OpenAI-compatible
 Chat Completions routes, every system-plane block is moved into the leading
 control prefix while transcript roles retain their order; controller/runtime
 tails must never be relabelled as a newer `user` request. Per-request output
-budget planning records requested/effective tokens, saved-explicit, verified
-catalog, or unknown-model fallback authority, catalog cap, and context cap. A
-missing per-step output limit uses the verified model-catalog output capability;
-only an unknown model falls back to 16K generally or 32K for the DeepSeek model
-family, including compatible routes. Automatic values are bounded by half of an
-explicitly smaller context window. An explicit user cap remains authoritative up to the real
-catalog output limit and total context capacity; the automatic half-window
-heuristic must not silently reduce it.
+budget planning records requested/effective tokens, explicit, verified catalog,
+or unknown-model reserve authority, catalog capacity, and context capacity.
+Legacy saved per-request caps are retired. Automatic wire limits use the exact
+endpoint/model capability and actual prompt headroom. The local context reserve
+(including half-window allocation and unknown-model estimates) never becomes a
+provider output ceiling. Unknown routes leave output provider-managed. Explicit
+worker budgets remain authoritative within the real model capacity.
 
 This follows DeepSeek's documented exact-prefix cache semantics and the
 immutable-prefix/append-only-log split in
@@ -333,6 +332,14 @@ number:
 - worker output limit;
 - aggregate delegated token or cost budget;
 - call, concurrency, iteration, and wall-time limits.
+
+Unconfigured call counts, aggregate tokens, per-worker cumulative tokens, queue
+deadlines, and worker run deadlines are unlimited. Nexus and named quality
+profiles never create those limits or overwrite saved budgets. A shared soft
+token target does not become an automatic per-worker hard cap. Worker roles
+preserve the selected reasoning controls. Generic tool timers do not time out
+delegated workers or adjudication; explicit task deadlines, parent cancellation,
+transport liveness, concurrency, and repeated-tool protection remain active.
 
 Runtime artifacts record the requested and effective model policy, capacity,
 capacity authority, handoff budget, output limit, and preflight result. The UI

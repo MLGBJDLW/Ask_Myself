@@ -156,9 +156,14 @@ replay, usage, and terminal capability profiles.
 
 Context planning always keeps a concrete response reserve, but that estimate
 is not automatically a provider limit. `max_tokens` / `max_output_tokens` is
-sent only for a saved explicit override, a verified endpoint/model catalog
+sent only for an explicit worker override, a verified endpoint/model catalog
 capability, or a caller-authorized cumulative worker budget. Unknown and custom
 routes remain provider-managed instead of inheriting Nexa's fallback reserve.
+Legacy saved agent caps are retired for Chat and Plan. Auxiliary completion
+requests also avoid fixed output caps, since provider output allowances include
+reasoning as well as the requested short artifact. Anthropic's required native
+output value is resolved from the exact endpoint/model catalog. Explicit manual
+thinking and output budgets must be mutually valid; they are not silently enlarged.
 
 Attempt resets are control-plane events. They may clear an abandoned answer,
 thinking block, or preparing tool card, but their retry reason is developer

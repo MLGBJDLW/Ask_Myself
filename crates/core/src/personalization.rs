@@ -629,8 +629,6 @@ fn is_cjk_char(ch: char) -> bool {
 // Auto memory extraction
 // ---------------------------------------------------------------------------
 
-/// Maximum tokens the memory extraction LLM call may produce.
-
 /// Maximum input characters sent to the extraction prompt.
 const EXTRACT_MAX_INPUT: usize = 6_000;
 

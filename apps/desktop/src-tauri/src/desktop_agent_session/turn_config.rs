@@ -269,14 +269,33 @@ pub fn build_desktop_agent_turn_config(
             .and_then(|value| u32::try_from(value).ok()),
         reasoning_effort: configured_reasoning_effort,
         subagent_max_parallel: db_config
-            .subagent_max_parallel
-            .and_then(|value| u32::try_from(value).ok()),
+            .delegation_limits_v2
+            .as_ref()
+            .and_then(|limits| limits.max_parallel)
+            .or_else(|| {
+                db_config
+                    .subagent_max_parallel
+                    .and_then(|value| u32::try_from(value).ok())
+            }),
         subagent_max_calls_per_turn: db_config
-            .subagent_max_calls_per_turn
-            .and_then(|value| u32::try_from(value).ok()),
+            .delegation_limits_v2
+            .as_ref()
+            .and_then(|limits| limits.max_calls_per_turn)
+            .or_else(|| {
+                db_config
+                    .subagent_max_calls_per_turn
+                    .and_then(|value| u32::try_from(value).ok())
+            }),
         subagent_token_budget: db_config
-            .subagent_token_budget
-            .and_then(|value| u32::try_from(value).ok()),
+            .delegation_limits_v2
+            .as_ref()
+            .and_then(|limits| limits.total_actual_tokens_soft_limit)
+            .and_then(|value| u32::try_from(value).ok())
+            .or_else(|| {
+                db_config
+                    .subagent_token_budget
+                    .and_then(|value| u32::try_from(value).ok())
+            }),
     });
     let power_mode_section = power_policy.prompt_section().to_string();
     let orchestration_policy = resolve_orchestration_profile(OrchestrationProfileInput {
@@ -289,7 +308,7 @@ pub fn build_desktop_agent_turn_config(
         verification_reserve_percent: power_policy.verification_reserve_percent,
     });
     let profile_overrides_persisted_delegation =
-        orchestration_profile != OrchestrationProfile::Balanced || power_mode.is_nexus();
+        orchestration_profile != OrchestrationProfile::Balanced;
     let subagent_max_parallel = if orchestration_profile == OrchestrationProfile::Balanced {
         power_policy.subagent_max_parallel
     } else {
@@ -298,12 +317,12 @@ pub fn build_desktop_agent_turn_config(
     let subagent_max_calls_per_turn = if orchestration_profile == OrchestrationProfile::Balanced {
         power_policy.subagent_max_calls_per_turn
     } else {
-        Some(orchestration_policy.max_calls_per_turn)
+        orchestration_policy.max_calls_per_turn
     };
     let subagent_token_budget = if orchestration_profile == OrchestrationProfile::Balanced {
         power_policy.subagent_token_budget
     } else {
-        Some(orchestration_policy.delegated_token_budget)
+        orchestration_policy.delegated_token_budget
     };
     let had_saved_v2_limits = db_config.delegation_limits_v2.is_some();
     let delegation_limits_v2 = {
@@ -313,18 +332,9 @@ pub fn build_desktop_agent_turn_config(
             limits.max_calls_per_turn = subagent_max_calls_per_turn;
             limits.total_actual_tokens_soft_limit = subagent_token_budget.map(u64::from);
         }
-        let automatic_worker_cap = limits
-            .total_actual_tokens_soft_limit
-            .and_then(|total| u32::try_from(total).ok())
-            .zip(limits.max_parallel)
-            .map(|(total, parallel)| automatic_delegated_worker_cap(total, parallel));
-        if limits.max_actual_tokens_per_worker.is_none() {
-            limits.max_actual_tokens_per_worker = automatic_worker_cap;
-        }
         // Every runtime uses the independent V2 contract. Auto context resolves
-        // the selected model's real catalog capacity. Auto per-step output uses
-        // a verified catalog ceiling (or safe 8K fallback) and is then bounded
-        // by the cumulative worker allocation.
+        // the selected model's capacity; output uses actual prompt headroom.
+        // Aggregate budgets never synthesize a per-worker hard cap.
         Some(limits)
     };
     let orchestration_profile_section = orchestration_policy.prompt_section();
