@@ -303,7 +303,7 @@ test('renders persisted turn traces from conversation_turns data', async ({ page
   await expect(page.getByText('Route: Knowledge Retrieval')).toBeVisible();
   await expect(page.getByText('Loaded skills: Diagnose')).toBeVisible();
   await expect(page.getByText('Checking the retry path through the saved evidence first.')).toBeVisible();
-  await expect(page.getByRole('button', { name: /Search .*retry guard.*done/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /search_knowledge_base.*retry guard.*done/ })).toBeVisible();
   await expect(page.getByText('The retry guard was bypassed because the timeout branch did not return early.')).toBeVisible();
 });
 

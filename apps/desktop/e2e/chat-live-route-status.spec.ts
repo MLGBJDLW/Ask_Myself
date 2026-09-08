@@ -151,6 +151,9 @@ test.beforeEach(async ({ page }) => {
           ];
         }
         case "get_conversation_turns_cmd":
+        case "get_agent_task_runs_cmd":
+        case "get_agent_task_run_events_cmd":
+        case "get_agent_run_events_cmd":
           return [];
         case "list_sources":
           return [];
@@ -235,7 +238,8 @@ test.beforeEach(async ({ page }) => {
 
           messagesByConversation[conversationId] = [userMessage];
 
-          queueMicrotask(() => {
+          // Emit only after the launch receipt has bound the run identity.
+          setTimeout(() => {
             emitEvent("agent://run-event", {
               conversationId,
               type: "status",
@@ -279,7 +283,7 @@ test.beforeEach(async ({ page }) => {
                 },
               });
             }
-          });
+          }, 0);
 
           if (!skipThinking) {
             setTimeout(() => {
@@ -378,7 +382,12 @@ test.beforeEach(async ({ page }) => {
             });
           }, textDelayMs + 30);
 
-          return null;
+          return {
+            sessionId: "session-live-route",
+            runId: "run-conv-live-route",
+            turnId: "turn-conv-live-route",
+            state: "running",
+          };
         }
         default:
           return null;
@@ -433,7 +442,7 @@ test("hides internal context manifest details from trace tool chips", async ({
 
   await page.goto("/chat");
 
-  await expect(page.getByRole("button", { name: /Fetch URL/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /fetch_url/ })).toBeVisible();
   const chatLog = page.getByLabel("Chat messages");
   await expect(chatLog.getByText("Context used", { exact: true })).toHaveCount(0);
   await expect(chatLog.getByText("Preparing context manifest")).toHaveCount(0);
@@ -474,16 +483,19 @@ test("hides low-value file-operation route status", async ({ page }) => {
   await expect(page.getByText("Route selected: FileOperation")).toHaveCount(0);
 });
 
-test("renders structured reconnect state outside assistant reasoning", async ({ page }) => {
+test("keeps transient provider reconnects silent while preserving the turn", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("e2e-connection-state", "1");
-    localStorage.setItem("e2e-route-text-delay", "800");
+    localStorage.setItem("e2e-route-skip-thinking", "1");
+    localStorage.setItem("e2e-route-text-delay", "2000");
   });
 
   await page.goto("/chat");
 
-  await expect(page.getByText("Reconnecting to the provider", { exact: true })).toBeVisible();
-  await expect(page.getByText(/openai · gpt-4\.1 · 1\/3/)).toBeVisible();
+  await expect(page.getByText("Why did the retry guard fail?", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reconnecting to the provider", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/openai · gpt-4\.1 · 1\/3/)).toHaveCount(0);
   const chatLog = page.getByLabel("Chat messages");
   await expect(chatLog.getByText("Reconnecting to the provider", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("The timeout branch did not return early.").first()).toBeVisible();
 });
