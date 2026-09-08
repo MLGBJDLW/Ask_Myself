@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "Não foi possível carregar os modelos."
   ,"modelCatalogCached": "Usando a lista anterior."
   ,"modelCatalogReady": "Modelos atualizados"
-  ,"modelCatalogEmpty": "Nenhum modelo disponível para esta conta."
+  ,"modelCatalogEmpty": "Nenhum modelo disponível para esta conta.",
+  "displayFonts": "Fontes",
+  "displayFontsDesc": "Escolha fontes separadas para texto e código. As predefinições funcionam offline e são aplicadas imediatamente.",
+  "displayUiFont": "Interface e texto",
+  "displayCodeFont": "Código e monoespaçado",
+  "displayThemeFont": "Seguir o tema",
+  "displayFontGroup.cjk": "Chinês e multilíngue",
+  "displayFontGroup.text": "Fontes de texto",
+  "displayFontGroup.mono": "Fontes monoespaçadas",
+  "displayImportedFonts": "Fontes importadas",
+  "displayFontUnavailable": "Indisponível · usando o tema",
+  "displayFontSample": "Novas ideias a cada brisa. Olá, Nexa.",
+  "displayImportFonts": "Importar fontes",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 ou ZIP. Até 32 fontes por pacote, 64 MiB por fonte e 256 MiB por pacote. As cópias ficam neste dispositivo.",
+  "displayFontsImported": "{count} fontes importadas. Escolha uma acima.",
+  "displayRemoveFont": "Remover {name}",
+  "displayFontError": "Não foi possível carregar a fonte. A fonte do tema será usada.",
+  "displayStreaming": "Exibição em streaming",
+  "displayStreaming.chunked": "Em blocos",
+  "displayStreaming.chunkedDesc": "Menos atualizações para poupar recursos.",
+  "displayStreaming.balanced": "Equilibrada",
+  "displayStreaming.balancedDesc": "Texto ágil com consumo moderado.",
+  "displayStreaming.smooth": "Fluida",
+  "displayStreaming.smoothDesc": "Revela gradualmente o texto recebido.",
+  "displayStreamingCost": "Uma exibição mais fluida pode aumentar o uso de CPU/GPU e bateria, sobretudo em respostas longas. Não altera a velocidade do modelo nem o texto salvo. Reduzir movimento desativa a revelação gradual."
 }

@@ -1,4 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
+export interface FontAsset {
+  id: string;
+  name: string;
+  family: string;
+  format: string;
+  path: string;
+  bytes: number;
+}
+export const listFontAssets = () => invoke<FontAsset[]>('list_font_assets_cmd');
+export const importFontAssets = (sourcePath: string) => invoke<FontAsset[]>('import_font_assets_cmd', { sourcePath });
+export const removeFontAsset = (assetId: string) => invoke<void>('remove_font_asset_cmd', { assetId });
 import { invalidateSubscriptionModels, loadSubscriptionModels, reconcileSubscriptionAccount } from './subscriptionModelCatalog';
 import type {
   Source,

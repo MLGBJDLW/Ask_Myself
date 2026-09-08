@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "No se pudieron cargar los modelos."
   ,"modelCatalogCached": "Se usa la lista anterior."
   ,"modelCatalogReady": "Modelos actualizados"
-  ,"modelCatalogEmpty": "No hay modelos disponibles para esta cuenta."
+  ,"modelCatalogEmpty": "No hay modelos disponibles para esta cuenta.",
+  "displayFonts": "Fuentes",
+  "displayFontsDesc": "Elige fuentes independientes para el texto y el código. Los ajustes funcionan sin conexión y se aplican al instante.",
+  "displayUiFont": "Interfaz y texto",
+  "displayCodeFont": "Código y monoespaciado",
+  "displayThemeFont": "Seguir el tema",
+  "displayFontGroup.cjk": "Chino y multilingüe",
+  "displayFontGroup.text": "Fuentes de texto",
+  "displayFontGroup.mono": "Fuentes monoespaciadas",
+  "displayImportedFonts": "Fuentes importadas",
+  "displayFontUnavailable": "No disponible · usando el tema",
+  "displayFontSample": "Nuevas ideas con cada brisa. Hola, Nexa.",
+  "displayImportFonts": "Importar fuentes",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 o ZIP. Hasta 32 fuentes por paquete, 64 MiB por fuente y 256 MiB por paquete. Las copias permanecen en este dispositivo.",
+  "displayFontsImported": "Se importaron {count} fuentes. Elige una arriba.",
+  "displayRemoveFont": "Eliminar {name}",
+  "displayFontError": "No se pudo cargar la fuente. Se usa la del tema.",
+  "displayStreaming": "Visualización en streaming",
+  "displayStreaming.chunked": "Por bloques",
+  "displayStreaming.chunkedDesc": "Menos actualizaciones para ahorrar recursos.",
+  "displayStreaming.balanced": "Equilibrada",
+  "displayStreaming.balancedDesc": "Texto ágil con consumo moderado.",
+  "displayStreaming.smooth": "Fluida",
+  "displayStreaming.smoothDesc": "Muestra gradualmente el texto recibido.",
+  "displayStreamingCost": "Una visualización más fluida puede aumentar el uso de CPU/GPU y batería, especialmente con respuestas largas. No cambia la velocidad del modelo ni el texto guardado. La reducción de movimiento desactiva la aparición gradual."
 }

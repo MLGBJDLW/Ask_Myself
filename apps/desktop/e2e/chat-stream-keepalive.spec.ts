@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript({ content: RUN_EVENT_FIXTURE_INIT_SCRIPT });
   await page.addInitScript(() => {
     localStorage.setItem('nexa-locale', 'en');
-    (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: number }).__ASK_STREAM_TIMEOUT_MS__ = 150;
+    (window as Window & { __ASK_STREAM_TIMEOUT_MS__?: number }).__ASK_STREAM_TIMEOUT_MS__ = new URL(location.href).searchParams.has('display') ? 60000 : 150;
     history.replaceState(
       { usr: { initialMessage: 'Why does the stream die during long thinking?' }, key: 'e2e-keepalive', idx: 0 },
       '',
@@ -223,6 +223,9 @@ test.beforeEach(async ({ page }) => {
           messagesByConversation[conversationId] = [userMessage];
           conversations[conversationId].updatedAt = new Date().toISOString();
 
+          (window as Window & { __emitPresentationBurst?: () => void }).__emitPresentationBurst = () => emitEvent('agent://run-event', {
+            conversationId, type: 'textDelta', delta: 'Fluid example '.repeat(120),
+          });
           const finishStream = () => {
             messagesByConversation[conversationId] = [userMessage, assistantMessage];
             conversations[conversationId].updatedAt = new Date().toISOString();
@@ -346,6 +349,40 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('keeps timing above the composer, animates the brain and smoothly reveals provider bursts', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('nexa-display-preferences', JSON.stringify({ streamingMode: 'smooth' })));
+  await page.goto('/chat?display=1');
+  const toggle = page.getByTestId('thinking-trace-toggle').first();
+  await expect(toggle).toBeVisible();
+  await expect(page.getByTestId('chat-turn-elapsed')).toBeVisible({ timeout: 8000 });
+  await expect(toggle).not.toContainText(/\d+\s*(s|ms|m)\b/);
+  const ink = page.getByTestId('thinking-brain').locator('.thinking-brain-ink path').first();
+  await expect.poll(() => ink.evaluate(node => getComputedStyle(node).animationName)).toBe('thinking-brain-draw');
+  await toggle.screenshot({ path: testInfo.outputPath('thinking-brain.png') });
+  const lengths = await page.evaluate(async () => {
+    const values: number[] = [];
+    const observe = () => document.querySelectorAll('[data-markdown-source-chars]').forEach(node => values.push(Number(node.getAttribute('data-markdown-source-chars'))));
+    const observer = new MutationObserver(observe);
+    observer.observe(document.body, { subtree: true, attributes: true, childList: true, attributeFilter: ['data-markdown-source-chars'] });
+    (window as Window & { __emitPresentationBurst?: () => void }).__emitPresentationBurst?.();
+    await new Promise(resolve => setTimeout(resolve, 550));
+    observer.disconnect();
+    return [...new Set(values)];
+  });
+  expect(lengths.filter(value => value > 0 && value < 'Fluid example '.repeat(120).length).length).toBeGreaterThanOrEqual(2);
+  expect(lengths).toContain('Fluid example '.repeat(120).length);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  // Reasoning can finish as output starts; the global rule remains static for any active icon.
+  const animation = await page.evaluate(() => {
+    const node = document.querySelector('.thinking-brain-ink path');
+    return node ? getComputedStyle(node).animationName : 'none';
+  });
+  expect(animation).toBe('none');
+  await page.evaluate(() => (window as Window & { __finishSilentStream__?: () => void }).__finishSilentStream__?.());
+  await expect(page.getByText('Final answer: keep the stream alive until the real result arrives.')).toBeVisible();
+  await expect(page.getByText(/Fluid example/)).toHaveCount(0);
+});
+
 test('keeps a live stream active when keepalive events arrive during a long silent phase', async ({ page }) => {
   await page.goto('/chat');
 
@@ -366,7 +403,8 @@ test('queries durable state and preserves an active backend turn after live sile
     (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })
       .__E2E_WATCHDOG_QUERY_COUNT__ ?? 0
   ))).toBeGreaterThan(0);
-  await expect(page.getByText('Durable backend state is active; live recovery remains armed.')).toBeVisible();
+  await expect(page.getByText('Durable backend state is active; live recovery remains armed.')).toHaveCount(0);
+  await expect(page.getByText('No live events received; checking durable backend state.')).toHaveCount(0);
   await page.waitForTimeout(650);
   await expect.poll(() => page.evaluate(() => (
     (window as Window & { __E2E_WATCHDOG_QUERY_COUNT__?: number })

@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "Modelle konnten nicht geladen werden."
   ,"modelCatalogCached": "Die vorherige Modellliste wird verwendet."
   ,"modelCatalogReady": "Modellliste ist aktuell"
-  ,"modelCatalogEmpty": "Für dieses Konto sind keine Modelle verfügbar."
+  ,"modelCatalogEmpty": "Für dieses Konto sind keine Modelle verfügbar.",
+  "displayFonts": "Schriftarten",
+  "displayFontsDesc": "Schriften für Oberfläche und Code getrennt wählen. Vorgaben funktionieren offline und gelten sofort.",
+  "displayUiFont": "Oberfläche und Text",
+  "displayCodeFont": "Code und Festbreite",
+  "displayThemeFont": "Design verwenden",
+  "displayFontGroup.cjk": "Chinesisch und mehrsprachig",
+  "displayFontGroup.text": "Textschriften",
+  "displayFontGroup.mono": "Festbreitenschriften",
+  "displayImportedFonts": "Importierte Schriften",
+  "displayFontUnavailable": "Nicht verfügbar · Design verwenden",
+  "displayFontSample": "Frische Ideen beginnen hier. Hallo, Nexa.",
+  "displayImportFonts": "Schriften importieren",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 oder ZIP. Maximal 32 Schriften pro Paket, 64 MiB je Schrift und 256 MiB je Paket. Kopien bleiben auf diesem Gerät.",
+  "displayFontsImported": "{count} Schriften importiert. Oben auswählen.",
+  "displayRemoveFont": "{name} entfernen",
+  "displayFontError": "Schrift konnte nicht geladen werden. Designschrift wird verwendet.",
+  "displayStreaming": "Streaming-Anzeige",
+  "displayStreaming.chunked": "Abschnittsweise",
+  "displayStreaming.chunkedDesc": "Weniger Aktualisierungen sparen Ressourcen.",
+  "displayStreaming.balanced": "Ausgewogen",
+  "displayStreaming.balancedDesc": "Reaktionsschnell bei moderatem Verbrauch.",
+  "displayStreaming.smooth": "Flüssig",
+  "displayStreaming.smoothDesc": "Eingehenden Text schrittweise anzeigen.",
+  "displayStreamingCost": "Flüssigere Anzeige kann CPU/GPU und Akku stärker beanspruchen, besonders bei langen Antworten. Modellgeschwindigkeit und gespeicherter Text bleiben gleich. Reduzierte Bewegung deaktiviert die schrittweise Anzeige."
 }

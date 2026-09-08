@@ -36,7 +36,6 @@ import type {
   TraceEvent,
   TurnTiming,
 } from "../../lib/streaming/protocol";
-import { formatThinkingDuration, useElapsedTime } from "../../lib/useElapsedTime";
 import {
   extractPersistedTraceItems,
   extractTurnTrace,
@@ -705,12 +704,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     return responses;
   }, [props.messages]);
   const { t } = useTranslation();
-  const thinkingElapsedLabel = useElapsedTime(
-    props.turnTiming,
-    isStreaming,
-    0,
-    formatThinkingDuration,
-  );
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -886,7 +879,6 @@ export function ChatMessages(props: ChatMessagesProps) {
       sections: ThinkingSection[],
       isStreaming = false,
       forceExpanded = false,
-      durationLabel: string | null = null,
     ) => (
       <div key={key} className="flex justify-start mb-1">
         <div className="w-full min-w-0">
@@ -896,7 +888,6 @@ export function ChatMessages(props: ChatMessagesProps) {
             isStreaming={isStreaming}
             defaultExpanded={isStreaming || forceExpanded}
             collapseOnFinish={!forceExpanded}
-            elapsedLabel={durationLabel}
           />
         </div>
       </div>
@@ -984,7 +975,6 @@ export function ChatMessages(props: ChatMessagesProps) {
       key: string,
       sections: TimelineSection[],
       isStreaming = false,
-      durationLabel: string | null = null,
     ) => {
       if (sections.length === 0) return <Fragment key={key} />;
       const ordered: Array<
@@ -1060,7 +1050,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                 renderTimelineSections(item.sections),
                 isStreaming && index === lastTraceIndex,
                 false,
-                index === lastTraceIndex ? durationLabel : null,
               )
             : item.kind === 'answeredQuestion' ? (
                 <div key={item.id} className="mb-1 flex justify-start">
@@ -2278,7 +2267,6 @@ export function ChatMessages(props: ChatMessagesProps) {
             "current-turn-working-trace",
             collapsedLiveTrace.historySections,
             false,
-            !isStreaming ? thinkingElapsedLabel : null,
           )}
           {renderTraceReplyNode(
             collapsedLiveTrace.finalItem.id,
@@ -2304,7 +2292,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                   item.id,
                   item.sections,
                   item.isStreaming,
-                  item.isStreaming ? thinkingElapsedLabel : null,
                 )
               : renderTraceReplyNode(
                   item.id,
@@ -2357,7 +2344,6 @@ export function ChatMessages(props: ChatMessagesProps) {
               isStreaming={currentTraceActive}
               defaultExpanded={currentTraceActive}
               collapseOnFinish
-              elapsedLabel={thinkingElapsedLabel}
             />
           </div>
         </motion.div>

@@ -14,6 +14,7 @@ import { CollapsiblePanel, Section } from './SettingsSection';
 import { ToolApprovalControl, type ToolApprovalMode } from './ToolApprovalControl';
 import { UpdateSettingsPanel } from './UpdateSettingsPanel';
 import { CompanionSettingsCard } from '../../features/companion/CompanionSettingsCard';
+import { DisplaySettings } from './DisplaySettings';
 
 type UpdaterState = ReturnType<typeof useUpdater>;
 
@@ -150,6 +151,8 @@ export function AppearanceSettingsTab({
             </Button>
           </div>
         </div>
+
+        <DisplaySettings />
 
         {/* Separator */}
         <div className="border-t border-border" />

@@ -47,6 +47,7 @@ pub mod evolution;
 pub mod execution_environment;
 pub mod feedback;
 pub mod file_checkpoint;
+pub mod font_assets;
 pub mod graph_retrieval;
 pub mod image_provider_catalog;
 pub mod index;

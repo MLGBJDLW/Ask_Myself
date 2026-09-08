@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "モデルを読み込めませんでした。"
   ,"modelCatalogCached": "前回のモデル一覧を使用しています。"
   ,"modelCatalogReady": "モデル一覧は最新です"
-  ,"modelCatalogEmpty": "このアカウントで利用できるモデルはありません。"
+  ,"modelCatalogEmpty": "このアカウントで利用できるモデルはありません。",
+  "displayFonts": "フォント",
+  "displayFontsDesc": "画面とコードのフォントを個別に選択できます。プリセットはオフラインで使え、すぐ反映されます。",
+  "displayUiFont": "画面と本文",
+  "displayCodeFont": "コードと等幅文字",
+  "displayThemeFont": "テーマに従う",
+  "displayFontGroup.cjk": "中国語・多言語",
+  "displayFontGroup.text": "本文フォント",
+  "displayFontGroup.mono": "等幅フォント",
+  "displayImportedFonts": "読み込んだフォント",
+  "displayFontUnavailable": "利用不可 · テーマを使用",
+  "displayFontSample": "心地よい風と新しいひらめき。こんにちは、Nexa。",
+  "displayImportFonts": "フォントを読み込む",
+  "displayImportFontsDesc": "TTF、OTF、WOFF、WOFF2、ZIP に対応。1 パック最大 32 フォント、各 64 MiB、合計 256 MiB。コピーはこの端末に保存されます。",
+  "displayFontsImported": "{count} 個読み込みました。上から選択してください。",
+  "displayRemoveFont": "{name} を削除",
+  "displayFontError": "読み込みに失敗しました。テーマのフォントを使用します。",
+  "displayStreaming": "ストリーミング表示",
+  "displayStreaming.chunked": "分割",
+  "displayStreaming.chunkedDesc": "更新を減らし、リソースを節約。",
+  "displayStreaming.balanced": "バランス",
+  "displayStreaming.balancedDesc": "応答性とリソース使用量を両立。",
+  "displayStreaming.smooth": "なめらか",
+  "displayStreaming.smoothDesc": "受信した文字を徐々に表示。",
+  "displayStreamingCost": "なめらかな表示は CPU/GPU と電力の使用量を増やす場合があります。長文では特に影響します。生成速度や保存内容は変わりません。視差効果の低減時は段階表示を無効にします。"
 }

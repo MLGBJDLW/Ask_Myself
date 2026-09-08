@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "模型加载失败。"
   ,"modelCatalogCached": "正在使用上次的模型列表。"
   ,"modelCatalogReady": "模型列表已更新"
-  ,"modelCatalogEmpty": "此账户暂无可用模型。"
+  ,"modelCatalogEmpty": "此账户暂无可用模型。",
+  "displayFonts": "字体",
+  "displayFontsDesc": "界面正文与代码可分别选择字体。预设离线可用，选择后立即生效。",
+  "displayUiFont": "界面与正文",
+  "displayCodeFont": "代码与等宽文本",
+  "displayThemeFont": "跟随主题",
+  "displayFontGroup.cjk": "中文与多语言",
+  "displayFontGroup.text": "正文字体",
+  "displayFontGroup.mono": "等宽字体",
+  "displayImportedFonts": "已导入字体",
+  "displayFontUnavailable": "字体不可用 · 暂用主题字体",
+  "displayFontSample": "清风徐来，灵感自生。你好，Nexa。",
+  "displayImportFonts": "导入字体",
+  "displayImportFontsDesc": "支持 TTF、OTF、WOFF、WOFF2 和 ZIP。每包最多 32 个字体，单字体不超过 64 MiB，整包不超过 256 MiB。导入副本保存在本机。",
+  "displayFontsImported": "已导入 {count} 个字体，请在上方选择使用。",
+  "displayRemoveFont": "移除 {name}",
+  "displayFontError": "字体加载失败，暂用主题字体。",
+  "displayStreaming": "流式显示",
+  "displayStreaming.chunked": "分段",
+  "displayStreaming.chunkedDesc": "减少刷新，降低资源消耗。",
+  "displayStreaming.balanced": "均衡",
+  "displayStreaming.balancedDesc": "兼顾文字响应和资源消耗。",
+  "displayStreaming.smooth": "流畅",
+  "displayStreaming.smoothDesc": "逐步呈现收到的文字，阅读更连贯。",
+  "displayStreamingCost": "更流畅的显示可能增加 CPU/GPU 占用和耗电，长回答尤其明显。不会改变模型生成速度或保存的内容；系统启用减少动态效果时，将关闭逐步呈现。"
 }
