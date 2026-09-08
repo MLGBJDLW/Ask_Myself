@@ -66,6 +66,113 @@ test('Agent browser interaction shows cursor motion and commits verified pointer
   ).actionEvents.filter(event => event.type === 'dblclick').length)).toBe(1);
 });
 
+test('screenshot confirmation preserves the element references advertised to the agent', async ({ page }) => {
+  await page.setContent('<!doctype html><button onclick="this.textContent=\'Verified\'">Open details</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  const advertised = await observe(page);
+  const ref = advertised.elements.find(element => element.name === 'Open details')!.ref;
+  await page.screenshot();
+  // This is the native observation path: DOM snapshot, screenshot, then a
+  // second snapshot that verifies the captured page before returning refs.
+  await observe(page);
+  await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(advertised, 'click', ref));
+  expect((await observe(page)).elements.some(element => element.name === 'Verified')).toBe(true);
+});
+
+test('an unrelated live counter does not invalidate an unchanged action target', async ({ page }) => {
+  await page.setContent('<!doctype html><p id="fps">FPS 60</p><button onclick="this.textContent=\'Paused\'">Pause</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  const advertised = await observe(page);
+  const ref = advertised.elements.find(element => element.name === 'Pause')!.ref;
+  await page.locator('#fps').evaluate(el => { el.textContent = 'FPS 59'; });
+  await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(advertised, 'click', ref));
+  expect((await observe(page)).elements.some(element => element.name === 'Paused')).toBe(true);
+});
+
+for (const owner of ['row', 'card', 'inline']) {
+test(`a reused action control cannot act on changed ${owner} context`, async ({ page }) => {
+  const contents = '<span id="account" style="display:inline-block;width:120px">Account A</span><span><button aria-label="Delete" onclick="window.deleted=document.getElementById(\'account\').textContent">×</button></span>';
+  await page.setContent(`<!doctype html><p id="fps">FPS 60</p>${owner === 'inline' ? contents : `<div ${owner === 'row' ? 'role="row"' : 'class="card"'}>${contents}</div>`}`);
+  await page.addScriptTag({ content: runtimeSource });
+  const advertised = await observe(page);
+  const ref = advertised.elements.find(element => element.name === 'Delete')!.ref;
+  await page.locator('#account').evaluate(el => { el.textContent = 'Account B'; });
+  // The element, accessible button name and geometry are all unchanged.
+  const refreshed = await observe(page);
+  expect(refreshed.elements.find(element => element.ref === ref)?.bounds)
+    .toEqual(advertised.elements.find(element => element.ref === ref)?.bounds);
+  await expect(page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(advertised, 'click', ref))).rejects.toThrow(/stale observation/);
+  expect(await page.evaluate(() => (window as Window & { deleted?: string }).deleted)).toBeUndefined();
+  await page.locator('#fps').evaluate(el => { el.textContent = 'FPS 58'; });
+  await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(refreshed, 'click', ref));
+  expect(await page.evaluate(() => (window as Window & { deleted?: string }).deleted)).toBe('Account B');
+});
+}
+
+test('trusted clicks reject a row recycled between preparation, arming and commit', async ({ page }) => {
+  await page.setContent('<!doctype html><p id="fps">FPS 60</p><div role="row"><a href="#account-a" id="account" style="display:inline-block;width:120px">Account A</a><button id="delete" aria-label="Delete" onclick="window.deleted=true">×</button></div>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  const binding = await targetBinding(page, '#delete');
+  const bounds = (await page.locator('#delete').boundingBox())!;
+  const expected = { kind: 'pointer' as const, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, button: 'left' as const, ...binding };
+  const arm = (operationId: string) => page.evaluate(({ expected, operationId }) => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm('playwright-takeover-token', operationId, { pointerDown: 1, keyDown: 0, input: 0 }, expected), { expected, operationId });
+  await page.locator('#account').evaluate(el => { el.textContent = 'Account B'; });
+  expect(await arm('stale-preparation')).toBe(false);
+  await page.locator('#account').evaluate(el => { el.textContent = 'Account A'; });
+  expect(await arm('changed-after-arm')).toBe(true);
+  await page.locator('#fps').evaluate(el => { el.textContent = 'FPS 59'; });
+  await page.mouse.move(expected.x, expected.y);
+  await page.mouse.down();
+  await page.locator('#account').evaluate(el => { el.textContent = 'Account B'; });
+  await page.mouse.up();
+  expect(await page.evaluate(() => (window as Window & { deleted?: boolean }).deleted)).toBeUndefined();
+  expect(await page.evaluate(() => (window as unknown as {
+    __NEXA_TRUSTED_INPUT_GUARD__: { disarm(token: string, id: string): boolean }
+  }).__NEXA_TRUSTED_INPUT_GUARD__.disarm('playwright-takeover-token', 'changed-after-arm'))).toBe(false);
+});
+
+for (const key of ['Space', 'Enter']) {
+test(`trusted ${key} activation cannot commit against recycled row context`, async ({ page }) => {
+  await page.setContent('<!doctype html><div role="row"><a href="#account-a" id="account">Account A</a><button id="delete" onclick="window.deleted=true" onkeydown="document.getElementById(\'account\').textContent=\'Account B\'">Delete</button></div>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  await page.locator('#delete').focus();
+  const binding = await targetBinding(page, '#delete');
+  expect(await page.evaluate(({ binding, key }) => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm('playwright-takeover-token', 'key-recycle', { pointerDown: 0, keyDown: 1, input: 0 }, { kind: 'key', key: key === 'Space' ? ' ' : key, ...binding }), { binding, key })).toBe(true);
+  await page.keyboard.press(key);
+  expect(await page.evaluate(() => (window as Window & { deleted?: boolean }).deleted)).toBeUndefined();
+});
+}
+
+test('trusted Enter input keeps the target editor value outside its context fence', async ({ page }) => {
+  await page.setContent('<!doctype html><div role="row"><span>Account A</span><textarea id="editor">Text</textarea></div>');
+  await page.addScriptTag({ content: runtimeSource });
+  await page.addScriptTag({ content: takeoverSource });
+  await page.locator('#editor').focus();
+  const binding = await targetBinding(page, '#editor');
+  expect(await page.evaluate(binding => (
+    window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
+  ).__NEXA_TRUSTED_INPUT_GUARD__.arm('playwright-takeover-token', 'editor-enter', { pointerDown: 0, keyDown: 1, input: 1 }, { kind: 'key', key: 'Enter', ...binding }), binding)).toBe(true);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#editor')).toHaveValue('\nText');
+  expect(await page.evaluate(() => (window as unknown as {
+    __NEXA_TRUSTED_INPUT_GUARD__: { disarm(token: string, id: string): boolean }
+  }).__NEXA_TRUSTED_INPUT_GUARD__.disarm('playwright-takeover-token', 'editor-enter'))).toBe(true);
+});
+
 test('Agent drag uses observation-scoped endpoints and takeover removes its visual cursor', async ({ page }) => {
   await page.setContent(`
     <!doctype html>
@@ -176,7 +283,7 @@ test('same-length interactive attribute changes invalidate an observation', asyn
   await expect(page.evaluate(value => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
   ).__NEXA_BROWSER_RUNTIME__.previewAction(value), actionInput(observation, 'click', targetRef)))
-    .rejects.toThrow(/page content changed/);
+    .rejects.toThrow(/interactive page state changed/);
 });
 
 test('trusted input preparation validates, focuses, and selects editable targets', async ({ page }) => {
@@ -235,6 +342,7 @@ test('authenticated trusted input does not masquerade as user takeover state', a
   const targetBounds = await page.locator('#target').boundingBox();
   if (!targetBounds) throw new Error('Expected trusted input target bounds');
   const expectedPointer = {
+    ...await targetBinding(page, '#target'),
     kind: 'pointer' as const,
     x: targetBounds.x + targetBounds.width / 2,
     y: targetBounds.y + targetBounds.height / 2,
@@ -274,6 +382,7 @@ test('trusted pointer guard rejects a replacement element at the approved coordi
   const targetBounds = await page.locator('#target').boundingBox();
   if (!targetBounds) throw new Error('Expected trusted input target bounds');
   const expected = {
+    ...await targetBinding(page, '#target'),
     kind: 'pointer' as const,
     x: targetBounds.x + targetBounds.width / 2,
     y: targetBounds.y + targetBounds.height / 2,
@@ -307,38 +416,38 @@ test('trusted text and key guards require the exact dispatched event signature',
   await page.locator('#target').focus();
   const beforeText = await observe(page);
 
-  expect(await page.evaluate(() => (
+  expect(await page.evaluate((binding) => (
     window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
   ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
     'playwright-takeover-token',
     'text-operation',
     { pointerDown: 0, keyDown: 0, input: 1 },
-    { kind: 'text', data: 'agent text' },
-  ))).toBe(true);
+    { kind: 'text', data: 'agent text', ...binding },
+  ), await targetBinding(page, '#target'))).toBe(true);
   await page.keyboard.insertText('agent text');
   expect((await observe(page)).userEpoch).toBe(beforeText.userEpoch);
 
   await page.locator('#button').focus();
   const beforeKey = await observe(page);
-  expect(await page.evaluate(() => (
+  expect(await page.evaluate((binding) => (
     window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
   ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
     'playwright-takeover-token',
     'key-operation',
     { pointerDown: 0, keyDown: 1, input: 0 },
-    { kind: 'key', key: 'Escape' },
-  ))).toBe(true);
+    { kind: 'key', key: 'Escape', ...binding },
+  ), await targetBinding(page, '#button'))).toBe(true);
   await page.keyboard.press('Escape');
   expect((await observe(page)).userEpoch).toBe(beforeKey.userEpoch);
 
-  expect(await page.evaluate(() => (
+  expect(await page.evaluate((binding) => (
     window as unknown as { __NEXA_TRUSTED_INPUT_GUARD__: TrustedInputGuard }
   ).__NEXA_TRUSTED_INPUT_GUARD__.arm(
     'playwright-takeover-token',
     'mismatched-text-operation',
     { pointerDown: 0, keyDown: 0, input: 1 },
-    { kind: 'text', data: 'agent text' },
-  ))).toBe(true);
+    { kind: 'text', data: 'agent text', ...binding },
+  ), await targetBinding(page, '#button'))).toBe(true);
   await page.locator('#target').focus();
   await page.keyboard.insertText('user text');
   expect((await observe(page)).userEpoch).toBe(beforeKey.userEpoch + 1);
@@ -348,6 +457,18 @@ async function observe(page: import('@playwright/test').Page): Promise<BrowserOb
   return page.evaluate(() => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
   ).__NEXA_BROWSER_RUNTIME__.observe());
+}
+
+async function targetBinding(page: import('@playwright/test').Page, selector: string) {
+  return page.evaluate(selector => {
+    const bridge = (window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }).__NEXA_BROWSER_RUNTIME__;
+    const element = document.querySelector(selector)!;
+    const observation = bridge.observe();
+    return {
+      targetRef: observation.elements.find(item => bridge.resolveTargetRef(item.ref) === element)!.ref,
+      targetContext: bridge.targetContextFingerprint(element),
+    };
+  }, selector);
 }
 
 function actionInput(
@@ -364,6 +485,7 @@ function actionInput(
     modifiers: [],
     userEpoch: observation.userEpoch,
     domFingerprint: observation.domFingerprint,
+    interactionFingerprint: observation.interactionFingerprint,
     expected: observation.elements.find(element => element.ref === targetRef),
     expectedEnd: observation.elements.find(element => element.ref === endRef),
   };
@@ -372,12 +494,14 @@ function actionInput(
 interface BrowserElement {
   ref: string;
   name: string;
+  bounds: { x: number; y: number; width: number; height: number };
 }
 
 interface BrowserObservation {
   url: string;
   userEpoch: number;
   domFingerprint: string;
+  interactionFingerprint: string;
   elements: BrowserElement[];
 }
 
@@ -395,11 +519,14 @@ interface BrowserActionInput {
   modifiers: string[];
   userEpoch: number;
   domFingerprint: string;
+  interactionFingerprint: string;
   expected?: BrowserElement;
   expectedEnd?: BrowserElement;
 }
 
 interface BrowserBridge {
+  targetContextFingerprint(element: Element): string;
+  resolveTargetRef(ref: string): Element | null;
   observe(): BrowserObservation;
   previewAction(input: BrowserActionInput): { durationMs: number };
   prepareNativePointer(input: BrowserActionInput): {
@@ -432,11 +559,11 @@ interface TrustedInputGuard {
     token: string,
     operationId: string,
     budget: { pointerDown: number; keyDown: number; input: number },
-    expected: {
+    expected: ({
       kind: 'pointer';
       x: number;
       y: number;
       button: 'left' | 'middle' | 'right';
-    } | { kind: 'text'; data: string } | { kind: 'key'; key: string },
+    } | { kind: 'text'; data: string } | { kind: 'key'; key: string }) & { targetRef: string; targetContext: string },
   ): boolean;
 }

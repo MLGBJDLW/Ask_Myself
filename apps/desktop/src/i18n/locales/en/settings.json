@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "Could not load models."
   ,"modelCatalogCached": "Using the previous model list."
   ,"modelCatalogReady": "Models up to date"
-  ,"modelCatalogEmpty": "No models are available for this account."
+  ,"modelCatalogEmpty": "No models are available for this account.",
+  "displayFonts": "Fonts",
+  "displayFontsDesc": "Choose separate fonts for interface text and code. Presets work offline and apply immediately.",
+  "displayUiFont": "Interface and text",
+  "displayCodeFont": "Code and monospace",
+  "displayThemeFont": "Follow theme",
+  "displayFontGroup.cjk": "Chinese and multilingual",
+  "displayFontGroup.text": "Text fonts",
+  "displayFontGroup.mono": "Monospace fonts",
+  "displayImportedFonts": "Imported fonts",
+  "displayFontUnavailable": "Font unavailable · using theme",
+  "displayFontSample": "清风徐来，灵感自生。你好，Nexa。",
+  "displayImportFonts": "Import fonts",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 or ZIP. Up to 32 fonts per package, 64 MiB per font and 256 MiB per package. Imported copies stay on this device.",
+  "displayFontsImported": "Imported {count} fonts. Choose one above to apply it.",
+  "displayRemoveFont": "Remove {name}",
+  "displayFontError": "Could not load font. Using the theme font.",
+  "displayStreaming": "Streaming display",
+  "displayStreaming.chunked": "Chunked",
+  "displayStreaming.chunkedDesc": "Fewer updates for lower resource use.",
+  "displayStreaming.balanced": "Balanced",
+  "displayStreaming.balancedDesc": "Responsive text with moderate resource use.",
+  "displayStreaming.smooth": "Smooth",
+  "displayStreaming.smoothDesc": "Gradually reveals incoming text for smoother reading.",
+  "displayStreamingCost": "Smoother display can increase CPU/GPU use and battery consumption, especially for long answers. It does not change model speed or the saved answer. Reduced motion disables gradual reveal."
 }

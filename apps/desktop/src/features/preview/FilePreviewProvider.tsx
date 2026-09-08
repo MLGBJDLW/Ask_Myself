@@ -261,6 +261,7 @@ function createPreviewLabels(t: TranslateFn) {
     copyRequest: t('preview.copyRequest'),
     requestCopied: t('preview.requestCopied'),
     agentRequestSent: t('preview.agentRequestSent'),
+    agentAccessRequired: t('preview.agentAccessRequired'),
     saveBeforeAgent: t('preview.saveBeforeAgent'),
     selectionTooLarge: t('preview.selectionTooLarge'),
     selectionMapFailed: t('preview.selectionMapFailed'),
@@ -1067,7 +1068,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       setPreview(result.preview);
       setDraft(result.preview.content ?? '');
       toast.success(labels.saved);
-      if (result.reindexStatus !== 'ok') {
+      if (result.reindexStatus === 'error') {
         toast.warning(`${labels.reindexFailed}: ${result.reindexDetail ?? ''}`);
       }
     } catch (err) {
@@ -1170,13 +1171,13 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
   }, [buildCurrentAgentPrompt, labels.requestCopied]);
 
   const sendSelectionToAgent = useCallback(() => {
-    if (!preview || !selectedText || dirty) return;
+    if (!preview || !selectedText || dirty || !(preview.agentEditAllowed ?? Boolean(preview.sourceId))) return;
     const prompt = buildCurrentAgentPrompt();
     if (!prompt) return;
     navigate('/chat', {
       state: {
         initialMessage: prompt,
-        sourceIds: [preview.sourceId],
+        sourceIds: preview.sourceId ? [preview.sourceId] : [],
       },
     });
     setOpen(false);
@@ -1580,6 +1581,9 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                           {dirty ? labels.saveBeforeAgent : labels.selectionTooLarge}
                         </p>
                       )}
+                      {!(preview.agentEditAllowed ?? Boolean(preview.sourceId)) && (
+                        <p className="mt-1 text-[11px] text-warning">{labels.agentAccessRequired}</p>
+                      )}
 
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {quickActions.map((action) => (
@@ -1640,7 +1644,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
                           </button>
                           <button
                             type="button"
-                            disabled={dirty}
+                            disabled={dirty || !(preview.agentEditAllowed ?? Boolean(preview.sourceId))}
                             onClick={sendSelectionToAgent}
                             data-testid="file-preview-agent-send"
                             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40"

@@ -137,7 +137,6 @@ function makeProviderLabel(config: AgentConfig, preset: ProviderPreset | null): 
 
 function makeModelRows(
   providerRow: ProviderRow,
-  t: (key: TranslationKey, params?: Record<string, string>) => string,
 ): ModelRow[] {
   const models = providerRow.preset?.models ?? [];
   const modelMap = new Map<string, ProviderModelPreset>();
@@ -164,15 +163,11 @@ function makeModelRows(
   }
 
   return Array.from(modelMap.values()).map((model) => {
-    const tagLabel = model.tagKey ? t(model.tagKey as TranslationKey) : '';
+    // Provider names, endpoints and descriptive tags are context, not model
+    // identity. A provider named GLM must not match every model it offers.
     const searchText = normalizeSearch([
-      providerRow.label,
-      providerRow.detail,
-      providerRow.config.provider,
-      providerRow.config.baseUrl,
       model.id,
       model.name,
-      tagLabel,
     ].filter(Boolean).join(' '));
     return {
       key: `${providerRow.config.id}:${model.id}`,
@@ -267,8 +262,8 @@ export function AgentModelPicker({
   );
 
   const allModelRows = useMemo(
-    () => providerRows.flatMap((row) => makeModelRows(row, t)),
-    [providerRows, t],
+    () => providerRows.flatMap((row) => makeModelRows(row)),
+    [providerRows],
   );
 
   const normalizedQuery = normalizeSearch(query);

@@ -361,7 +361,12 @@ fn action_reconciliation_blocks(tool_name: &str, args: &serde_json::Value) -> bo
             .is_some_and(|action| {
                 matches!(
                     action.trim().to_ascii_lowercase().as_str(),
-                    "list_sessions" | "list_tabs" | "observe" | "wait_for"
+                    "list_sessions"
+                        | "list_tabs"
+                        | "observe"
+                        | "wait_for"
+                        | "close_session"
+                        | "close_tab"
                 )
             }),
         _ => false,
@@ -425,6 +430,19 @@ mod action_reconciliation_tests {
             "browser_session",
             &serde_json::json!({"action": "go_back"}),
         ));
+    }
+
+    #[test]
+    fn action_fence_allows_terminal_browser_cleanup_without_an_observation() {
+        for action in ["close_session", "close_tab"] {
+            assert!(
+                !action_reconciliation_blocks(
+                    "browser_session",
+                    &serde_json::json!({"action": action, "sessionId": "session", "tabId": "tab"}),
+                ),
+                "{action} must let the agent abandon an uncertain browser operation"
+            );
+        }
     }
 
     #[test]
@@ -1133,6 +1151,7 @@ impl ToolDispatchRuntime<'_> {
                             let exec_fut = self.tools.execute(
                                 &tc.name,
                                 crate::tools::ToolExecutionContext {
+                                    file_change_owner: None,
                                     call_id: &tc.id,
                                     arguments: &tc.arguments,
                                     db,

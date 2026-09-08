@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, type ComponentPropsWithoutRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ChevronRight, Brain } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
+import { ThinkingIcon } from './ThinkingIcon';
+import { useStreamingPresentation } from '../../lib/useStreamingPresentation';
 import ReactMarkdown from 'react-markdown';
 import { useTranslation } from '../../i18n';
 import { getSoftCollapseMotion } from '../../lib/uiMotion';
@@ -23,7 +25,6 @@ interface ThinkingBlockProps {
   defaultExpanded?: boolean;
   collapseOnFinish?: boolean;
   children?: React.ReactNode;
-  elapsedLabel?: string | null;
 }
 
 const THINKING_MOODS = [
@@ -110,6 +111,11 @@ const thinkingMarkdownComponents: Record<string, React.ComponentType<ComponentPr
   },
 };
 
+function ThinkingText({ text, reduceMotion }: { text: string; reduceMotion: boolean }) {
+  const presented = useStreamingPresentation(text, true, reduceMotion);
+  return <div data-testid="thinking-stream-content" className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere]">{presented}</div>;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -121,7 +127,6 @@ export function ThinkingBlock({
   defaultExpanded,
   collapseOnFinish = true,
   children,
-  elapsedLabel,
 }: ThinkingBlockProps) {
   const { t } = useTranslation();
   const shouldReduceMotion = useReducedMotion();
@@ -185,13 +190,7 @@ export function ThinkingBlock({
     }
   }, [isStreaming]);
 
-  const summaryText = isStreaming
-    ? elapsedLabel
-      ? `${t('chat.thinking')} · ${elapsedLabel}`
-      : t('chat.thinking')
-    : elapsedLabel
-      ? `${t('chat.thinkingCompleted')} · ${elapsedLabel}`
-      : t('chat.thinkingCompleted');
+  const summaryText = isStreaming ? t('chat.thinking') : t('chat.thinkingCompleted');
   const traceActive = isStreaming && !shouldReduceMotion;
   const thinkingMood = moodOrder[0] ?? THINKING_MOODS[0];
 
@@ -214,7 +213,7 @@ export function ThinkingBlock({
           className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
         />
         <span className="flex min-w-0 items-center gap-1.5">
-          <Brain size={12} className={isStreaming ? 'text-accent/80' : ''} />
+          <ThinkingIcon active={Boolean(isStreaming)} />
           <span
             className={`thinking-status-text min-w-0 truncate ${isStreaming && !shouldReduceMotion ? 'thinking-status-text-active' : ''}`}
           >
@@ -254,12 +253,7 @@ export function ThinkingBlock({
                       <div className="thinking-trace-section min-w-0 max-w-full" key={secIdx}>
                         {secIdx > 0 && <div className="my-1.5 border-t border-border/20" />}
                         {sec.text && isStreaming ? (
-                          <div
-                            data-testid="thinking-stream-content"
-                            className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere]"
-                          >
-                            {sec.text}
-                          </div>
+                          <ThinkingText text={sec.text} reduceMotion={!!shouldReduceMotion} />
                         ) : sec.text ? (
                           <ReactMarkdown
                             remarkPlugins={markdownRemarkPlugins}
@@ -274,12 +268,7 @@ export function ThinkingBlock({
                       </div>
                     ))
                   ) : isStreaming ? (
-                    <div
-                      data-testid="thinking-stream-content"
-                      className="min-w-0 max-w-full whitespace-pre-wrap [overflow-wrap:anywhere]"
-                    >
-                      {content}
-                    </div>
+                    <ThinkingText text={content} reduceMotion={!!shouldReduceMotion} />
                   ) : (
                     <ReactMarkdown
                       remarkPlugins={markdownRemarkPlugins}

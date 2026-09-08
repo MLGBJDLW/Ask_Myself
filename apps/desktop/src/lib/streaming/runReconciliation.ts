@@ -157,6 +157,8 @@ function errorMessage(error: unknown): string {
 export class DurableRunReconciler {
   private readonly queryTimeoutMs: number;
   private readonly delay: (delayMs: number) => Promise<void>;
+  private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly settledQueries = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly port: DurableRunReconciliationPort,
@@ -174,9 +176,10 @@ export class DurableRunReconciler {
 
     let taskRuns: AgentTaskRun[];
     try {
-      taskRuns = request.taskRuns ?? await this.withTimeout(
-        this.port.listTaskRuns(request.conversationId),
+      taskRuns = request.taskRuns ?? await this.query(
+        ['taskRuns', request.conversationId],
         'Task-run recovery query',
+        () => this.port.listTaskRuns(request.conversationId),
       );
     } catch (error) {
       return isCurrent()
@@ -204,19 +207,19 @@ export class DurableRunReconciler {
     const runEventsQuery = this.listRunEventSuffix(
       taskRun.id, request.reason === 'watchdog' ? request.afterEventSeq ?? 0 : 0, isCurrent,
     );
-    const taskEventsQuery = this.port.listTaskEvents(taskRun.id);
+    const taskEventsQuery = this.query(
+      ['taskEvents', taskRun.id], 'Task timeline recovery query',
+      () => this.port.listTaskEvents(taskRun.id),
+    );
     let runEvents: AgentRunEvent[];
     let taskEvents: AgentTaskRunEvent[];
     try {
-      [runEvents, taskEvents] = await this.withTimeout(
-        Promise.all(request.reason === 'hydration'
-          ? [
-            runEventsQuery,
-            taskEventsQuery.catch((): AgentTaskRunEvent[] => []),
-          ]
-          : [runEventsQuery, taskEventsQuery]),
-        'Durable-event recovery query',
-      );
+      // The Run Event ledger is authoritative. The auxiliary task timeline
+      // must not prevent completed output from reaching a live conversation.
+      [runEvents, taskEvents] = await Promise.all([
+        runEventsQuery,
+        taskEventsQuery.catch((): AgentTaskRunEvent[] => []),
+      ]);
     } catch (error) {
       return isCurrent()
         ? { kind: 'unavailable', error: errorMessage(error) }
@@ -237,13 +240,12 @@ export class DurableRunReconciler {
       let messages: ConversationMessage[];
       let turns: ConversationTurn[];
       try {
-        [[, messages], turns] = await this.withTimeout(
-          Promise.all([
-            this.port.loadConversation(request.conversationId),
-            this.port.listTurns(request.conversationId),
-          ]),
-          'Final-answer recovery query',
-        );
+        [[, messages], turns] = await Promise.all([
+          this.query(['conversation', request.conversationId], 'Final-answer recovery query',
+            () => this.port.loadConversation(request.conversationId)),
+          this.query(['turns', request.conversationId], 'Turn recovery query',
+            () => this.port.listTurns(request.conversationId)),
+        ]);
       } catch (error) {
         return isCurrent()
           ? { kind: 'unavailable', error: errorMessage(error) }
@@ -271,9 +273,10 @@ export class DurableRunReconciler {
         let durableHighWater: number | undefined;
         let gapRemains = true;
         for (;;) {
-          const page = await this.withTimeout(
-            this.port.listRunEventPage(request.runId, cursor, durableHighWater),
+          const page = await this.query(
+            ['runEventPage', request.runId, cursor, durableHighWater],
             'Settled run-event gap recovery query',
+            () => this.port.listRunEventPage(request.runId, cursor, durableHighWater),
           );
           if (!request.isCurrent()) return { kind: 'stale' };
           durableHighWater = this.validateRecoveryPage(page, durableHighWater, cursor);
@@ -321,7 +324,11 @@ export class DurableRunReconciler {
     let durableHighWater: number | undefined;
     for (;;) {
       if (!isCurrent()) return [];
-      const page = await this.port.listRunEventPage(runId, cursor, durableHighWater);
+      const page = await this.query(
+        ['runEventPage', runId, cursor, durableHighWater],
+        'Durable-event recovery page',
+        () => this.port.listRunEventPage(runId, cursor, durableHighWater),
+      );
       if (!isCurrent()) return [];
       durableHighWater = this.validateRecoveryPage(page, durableHighWater, cursor);
       events.push(...page.events);
@@ -378,10 +385,38 @@ export class DurableRunReconciler {
     return candidates.find(taskRunIsActive) ?? candidates[0];
   }
 
-  private async withTimeout<T>(query: Promise<T>, label: string): Promise<T> {
+  private async query<T>(
+    identity: Array<string | number | undefined>,
+    label: string,
+    load: () => Promise<T>,
+  ): Promise<T> {
+    // Tauri IPC cannot be cancelled when a frontend deadline expires. Keep the
+    // actual request until its result is consumed so a late successful native
+    // read survives the watchdog's backoff instead of starting over forever.
+    const key = JSON.stringify(identity);
+    let query = this.inFlight.get(key) as Promise<T> | undefined;
+    if (!query) {
+      query = Promise.resolve().then(load);
+      this.inFlight.set(key, query);
+      const retire = () => {
+        if (this.inFlight.get(key) === query) this.inFlight.delete(key);
+        if (this.settledQueries.get(key) === query) this.settledQueries.delete(key);
+      };
+      void query.then(() => {
+        this.settledQueries.set(key, query!);
+        // Abandoned conversations must not retain unlimited completed pages.
+        // Only settled reads are evicted; unresolved IPC is still single-flight.
+        while (this.settledQueries.size > 32) {
+          const oldest = this.settledQueries.entries().next().value;
+          if (!oldest) break;
+          this.settledQueries.delete(oldest[0]);
+          if (this.inFlight.get(oldest[0]) === oldest[1]) this.inFlight.delete(oldest[0]);
+        }
+      }, retire);
+    }
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
-      return await Promise.race([
+      const value = await Promise.race([
         query,
         new Promise<T>((_resolve, reject) => {
           timeoutId = globalThis.setTimeout(() => {
@@ -389,6 +424,9 @@ export class DurableRunReconciler {
           }, this.queryTimeoutMs);
         }),
       ]);
+      if (this.inFlight.get(key) === query) this.inFlight.delete(key);
+      if (this.settledQueries.get(key) === query) this.settledQueries.delete(key);
+      return value;
     } finally {
       if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
     }

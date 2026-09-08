@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "모델을 불러오지 못했습니다."
   ,"modelCatalogCached": "이전 모델 목록을 사용합니다."
   ,"modelCatalogReady": "모델 목록이 최신입니다"
-  ,"modelCatalogEmpty": "이 계정에서 사용 가능한 모델이 없습니다."
+  ,"modelCatalogEmpty": "이 계정에서 사용 가능한 모델이 없습니다.",
+  "displayFonts": "글꼴",
+  "displayFontsDesc": "화면 본문과 코드 글꼴을 따로 선택하세요. 기본 글꼴은 오프라인에서 사용할 수 있고 즉시 적용됩니다.",
+  "displayUiFont": "화면 및 본문",
+  "displayCodeFont": "코드 및 고정폭",
+  "displayThemeFont": "테마 따르기",
+  "displayFontGroup.cjk": "중국어 및 다국어",
+  "displayFontGroup.text": "본문 글꼴",
+  "displayFontGroup.mono": "고정폭 글꼴",
+  "displayImportedFonts": "가져온 글꼴",
+  "displayFontUnavailable": "사용 불가 · 테마 글꼴 사용",
+  "displayFontSample": "산뜻한 바람, 새로운 영감. 안녕하세요, Nexa.",
+  "displayImportFonts": "글꼴 가져오기",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2, ZIP 지원. 패키지당 최대 32개, 글꼴당 64 MiB, 패키지당 256 MiB. 복사본은 이 기기에 저장됩니다.",
+  "displayFontsImported": "글꼴 {count}개를 가져왔습니다. 위에서 선택하세요.",
+  "displayRemoveFont": "{name} 제거",
+  "displayFontError": "글꼴을 불러오지 못했습니다. 테마 글꼴을 사용합니다.",
+  "displayStreaming": "스트리밍 표시",
+  "displayStreaming.chunked": "분할",
+  "displayStreaming.chunkedDesc": "업데이트를 줄여 리소스를 절약합니다.",
+  "displayStreaming.balanced": "균형",
+  "displayStreaming.balancedDesc": "응답성과 리소스 사용량의 균형.",
+  "displayStreaming.smooth": "부드럽게",
+  "displayStreaming.smoothDesc": "수신한 텍스트를 점진적으로 표시합니다.",
+  "displayStreamingCost": "부드러운 표시는 특히 긴 답변에서 CPU/GPU 사용량과 배터리 소모를 늘릴 수 있습니다. 생성 속도나 저장 내용은 바뀌지 않습니다. 동작 줄이기를 켜면 점진적 표시가 꺼집니다."
 }

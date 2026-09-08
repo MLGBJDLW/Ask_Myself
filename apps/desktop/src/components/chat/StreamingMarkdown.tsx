@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useStreamingPresentation } from '../../lib/useStreamingPresentation';
 
 import { useTranslation } from '../../i18n';
 import {
@@ -8,7 +9,7 @@ import {
 } from '../../lib/citationParser';
 import type { CitationCardData } from '../../lib/citationParser';
 import { buildEvidenceItemsFromContent } from '../../lib/evidenceItems';
-import { markdownPresentationInterval, MAX_HIGHLIGHT_DOCUMENT_CHARS } from '../../lib/streaming/markdownPresentation';
+import { MAX_HIGHLIGHT_DOCUMENT_CHARS } from '../../lib/streaming/markdownPresentation';
 import { CitationChip } from './EvidenceCard';
 import {
   CitationContext,
@@ -22,40 +23,6 @@ import {
 
 export interface MarkdownCitationLookup {
   getCard: (id: string) => CitationCardData | undefined;
-}
-
-function useThrottledMarkdownSource(content: string, isStreaming: boolean): string {
-  const [presented, setPresented] = useState(content);
-  const latestRef = useRef(content);
-  const presentedRef = useRef(content);
-  const lastFlushRef = useRef(performance.now());
-
-  useEffect(() => {
-    latestRef.current = content;
-
-    const flush = () => {
-      const latest = latestRef.current;
-      presentedRef.current = latest;
-      lastFlushRef.current = performance.now();
-      setPresented((current) => current === latest ? current : latest);
-    };
-
-    if (!isStreaming || !content.startsWith(presentedRef.current)) {
-      flush();
-      return;
-    }
-
-    if (content === presentedRef.current) return;
-    const interval = markdownPresentationInterval(content.length);
-    const elapsed = performance.now() - lastFlushRef.current;
-    const remaining = Math.max(0, interval - elapsed);
-    const timer = window.setTimeout(flush, remaining);
-    return () => window.clearTimeout(timer);
-  }, [content, isStreaming]);
-
-  // The terminal event must paint the exact durable answer immediately. The
-  // effect above only synchronizes the retained state for a later stream.
-  return isStreaming ? presented : content;
 }
 
 const EMPTY_CITATION_LOOKUP: MarkdownCitationLookup = {
@@ -146,7 +113,7 @@ export const StreamingMarkdown = memo(function StreamingMarkdown({
   citationLookup?: MarkdownCitationLookup;
   reduceMotion: boolean;
 }) {
-  const presented = useThrottledMarkdownSource(content, isStreaming);
+  const presented = useStreamingPresentation(content, isStreaming, reduceMotion);
   const effectiveCitationLookup = citationLookup ?? EMPTY_CITATION_LOOKUP;
 
   return (

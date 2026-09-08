@@ -2823,6 +2823,57 @@ Every answer that uses knowledge base search results.
          AFTER UPDATE OF max_tokens ON agent_configs WHEN NEW.max_tokens IS NOT NULL
          BEGIN UPDATE agent_configs SET max_tokens = NULL WHERE id = NEW.id; END;",
     ),
+    (
+        "v129_turn_file_changes",
+        "CREATE TABLE turn_file_changes (
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            absolute_path TEXT NOT NULL,
+            display_path TEXT NOT NULL,
+            before_content BLOB,
+            after_content BLOB,
+            before_hash TEXT,
+            after_hash TEXT,
+            existed_before INTEGER NOT NULL,
+            exists_after INTEGER NOT NULL,
+            additions INTEGER,
+            deletions INTEGER,
+            content_kind TEXT NOT NULL,
+            partial INTEGER NOT NULL DEFAULT 0,
+            revision INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(conversation_id, turn_id, absolute_path)
+        );
+        CREATE TABLE turn_file_change_events (
+            id INTEGER PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            mutation_id TEXT NOT NULL,
+            partial INTEGER NOT NULL DEFAULT 0,
+            pending INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(conversation_id, turn_id, mutation_id)
+        );
+        CREATE INDEX idx_turn_file_change_events ON turn_file_change_events(conversation_id, turn_id);",
+    ),
+    (
+        "v130_retire_deleted_turn_file_changes",
+        "DELETE FROM turn_file_changes WHERE NOT EXISTS (
+            SELECT 1 FROM conversation_turns t WHERE t.id=turn_file_changes.turn_id AND t.conversation_id=turn_file_changes.conversation_id
+         );
+         DELETE FROM turn_file_change_events WHERE NOT EXISTS (
+            SELECT 1 FROM conversation_turns t WHERE t.id=turn_file_change_events.turn_id AND t.conversation_id=turn_file_change_events.conversation_id
+         );
+         CREATE TRIGGER delete_turn_file_changes AFTER DELETE ON conversation_turns BEGIN
+            DELETE FROM turn_file_changes WHERE conversation_id=OLD.conversation_id AND turn_id=OLD.id;
+            DELETE FROM turn_file_change_events WHERE conversation_id=OLD.conversation_id AND turn_id=OLD.id;
+         END;
+         CREATE TRIGGER admit_turn_file_changes BEFORE INSERT ON turn_file_changes
+         WHEN NOT EXISTS (SELECT 1 FROM conversation_turns t WHERE t.id=NEW.turn_id AND t.conversation_id=NEW.conversation_id)
+         BEGIN SELECT RAISE(IGNORE); END;
+         CREATE TRIGGER admit_turn_file_change_events BEFORE INSERT ON turn_file_change_events
+         WHEN NOT EXISTS (SELECT 1 FROM conversation_turns t WHERE t.id=NEW.turn_id AND t.conversation_id=NEW.conversation_id)
+         BEGIN SELECT RAISE(IGNORE);
+         END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

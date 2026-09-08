@@ -238,6 +238,7 @@ mod tests {
         let args = serde_json::json!({ "query": "browser snapshot" });
         let result = ToolSearchTool
             .execute(ToolExecutionContext {
+                file_change_owner: None,
                 call_id: "tool-search",
                 arguments: &args.to_string(),
                 db: &db,

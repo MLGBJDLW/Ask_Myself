@@ -307,6 +307,16 @@ fn collect_string_or_array_resource(
 
 pub fn capability_resource_keys(name: &str, args: &serde_json::Value) -> Vec<String> {
     let mut keys = Vec::new();
+    match name {
+        // Implicit targets can reuse the current session, so every browser
+        // invocation shares this key. It serializes browser state while
+        // allowing independent file and network tools to keep working.
+        "browser_session" => keys.push("browser:workspace".to_string()),
+        "computer_observe" | "computer_control" | "desktop_automation" => {
+            keys.push("desktop:input".to_string());
+        }
+        _ => {}
+    }
     for field in [
         "path",
         "paths",

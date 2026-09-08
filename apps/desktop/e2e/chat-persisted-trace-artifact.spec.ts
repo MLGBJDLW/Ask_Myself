@@ -262,8 +262,8 @@ test('renders persisted trace artifacts as a single unified timeline', async ({ 
   await thinkingToggle.click();
 
   await expect(page.getByText('Investigating retry behaviour from persisted artifacts.')).toBeVisible();
-  await expect(page.getByRole('button', { name: /Search.*retry.*done/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Create File.*chapter-1\.md.*\+140.*-0/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /search_knowledge_base.*retry.*done/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /create_file.*chapter-1\.md.*\+140.*-0/ })).toBeVisible();
   await expect(page.getByText('Recovered from persisted trace data.')).toBeVisible();
   await expect(page.getByText('Final answer from persisted trace artifacts.')).toBeVisible();
   await expect(page.getByTestId('task-board-collapsed').getByText('Draft fix', { exact: true })).toBeVisible();
@@ -279,7 +279,7 @@ test('renders persisted trace artifacts as a single unified timeline', async ({ 
   const text = chatLogText ?? '';
   const thinkingIndex = text.indexOf('Investigating retry behaviour from persisted artifacts.');
   const searchIndex = text.indexOf('"retry"');
-  const createFileIndex = text.indexOf('Create File');
+  const createFileIndex = text.indexOf('create_file');
   expect(thinkingIndex).toBeGreaterThanOrEqual(0);
   expect(searchIndex).toBeGreaterThan(thinkingIndex);
   expect(createFileIndex).toBeGreaterThan(searchIndex);

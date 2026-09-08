@@ -506,6 +506,9 @@ fn main() {
 
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
+            if let Err(error) = db.recover_pending_file_changes() {
+                log::warn!("Could not settle file changes interrupted by the previous process: {error}");
+            }
             let mcp_config_path = user_extensions.mcp_config_path();
             let canonical_mcp_ready = match nexa_core::mcp::config_file::reload_user_mcp_config(
                 &db,
@@ -905,6 +908,8 @@ fn main() {
             commands::branch_checkpoint_cmd,
             commands::delete_checkpoint_cmd,
             commands::list_file_checkpoints_cmd,
+            commands::get_conversation_file_changes_cmd,
+            commands::get_turn_file_diff_cmd,
             commands::restore_file_checkpoint_cmd,
             commands::delete_file_checkpoint_cmd,
             // Conversation sources
@@ -1022,6 +1027,9 @@ fn main() {
             commands::generate_theme_resource_plugin_cmd,
             commands::generate_theme_background_cmd,
             commands::import_theme_background_cmd,
+            commands::list_font_assets_cmd,
+            commands::import_font_assets_cmd,
+            commands::remove_font_asset_cmd,
             commands::resolve_theme_background_cmd,
             commands::garbage_collect_theme_assets_cmd,
             commands::get_web_search_status_cmd,

@@ -308,7 +308,7 @@ pub struct RenderedPreview {
 pub struct FilePreview {
     pub path: String,
     pub display_name: String,
-    pub source_id: String,
+    pub source_id: Option<String>,
     pub source_name: String,
     pub extension: String,
     pub mime_type: String,
@@ -317,6 +317,7 @@ pub struct FilePreview {
     pub content: Option<String>,
     pub encoding: Option<String>,
     pub editable: bool,
+    pub agent_edit_allowed: bool,
     pub size_bytes: u64,
     pub modified_at: Option<String>,
     pub hash: String,
@@ -338,9 +339,9 @@ pub struct FileSaveResult {
     pub reindex_detail: Option<String>,
 }
 
-pub(crate) struct ResolvedSourceFile {
+pub(crate) struct ResolvedLocalFile {
     pub(crate) canonical: PathBuf,
-    pub(crate) source: Source,
+    pub(crate) source: Option<Source>,
 }
 
 fn source_display_name(source: &Source) -> String {
@@ -425,10 +426,14 @@ fn find_relative_preview_matches(root: &Path, requested: &Path) -> Vec<PathBuf> 
     matches
 }
 
-pub(crate) fn resolve_source_file(
+/// Resolve a file explicitly opened by the trusted desktop UI. Resource
+/// registration supplies indexing metadata and relative-path discovery; it is
+/// not an access grant for an absolute file chosen by the user. Agent tools
+/// continue to enforce their own execution policy.
+pub(crate) fn resolve_local_file(
     db: &Database,
     raw_path: &str,
-) -> Result<ResolvedSourceFile, String> {
+) -> Result<ResolvedLocalFile, String> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
         return Err("Path must not be empty.".to_string());
@@ -447,10 +452,6 @@ pub(crate) fn resolve_source_file(
     }
 
     let sources = db.list_sources().map_err(|e| e.to_string())?;
-    if sources.is_empty() {
-        return Err("No source directories are registered.".to_string());
-    }
-
     if requested.is_absolute() {
         let canonical = std::fs::canonicalize(&requested)
             .map_err(|e| format!("Cannot resolve path '{}': {e}", requested.display()))?;
@@ -462,16 +463,19 @@ pub(crate) fn resolve_source_file(
                 continue;
             };
             if canonical.starts_with(&root) {
-                return Ok(ResolvedSourceFile { canonical, source });
+                return Ok(ResolvedLocalFile {
+                    canonical,
+                    source: Some(source),
+                });
             }
         }
-        return Err(format!(
-            "Access denied: '{}' is not within any registered source directory.",
-            requested.display()
-        ));
+        return Ok(ResolvedLocalFile {
+            canonical,
+            source: None,
+        });
     }
 
-    let mut matches: Vec<ResolvedSourceFile> = Vec::new();
+    let mut matches: Vec<ResolvedLocalFile> = Vec::new();
     let mut source_roots: Vec<(Source, PathBuf)> = Vec::new();
     for source in &sources {
         let Ok(root) = std::fs::canonicalize(Path::new(&source.root_path)) else {
@@ -486,9 +490,9 @@ pub(crate) fn resolve_source_file(
             && canonical.starts_with(&root)
             && !matches.iter().any(|entry| entry.canonical == canonical)
         {
-            matches.push(ResolvedSourceFile {
+            matches.push(ResolvedLocalFile {
                 canonical,
-                source: source.clone(),
+                source: Some(source.clone()),
             });
         }
     }
@@ -500,9 +504,9 @@ pub(crate) fn resolve_source_file(
                     && canonical.starts_with(root)
                     && !matches.iter().any(|entry| entry.canonical == canonical)
                 {
-                    matches.push(ResolvedSourceFile {
+                    matches.push(ResolvedLocalFile {
                         canonical,
-                        source: source.clone(),
+                        source: Some(source.clone()),
                     });
                 }
             }
@@ -739,7 +743,7 @@ pub(crate) fn build_file_preview(
     raw_path: &str,
     app_data_dir: Option<&Path>,
 ) -> Result<FilePreview, String> {
-    let resolved = resolve_source_file(db, raw_path)?;
+    let resolved = resolve_local_file(db, raw_path)?;
     let metadata = std::fs::metadata(&resolved.canonical).map_err(|e| e.to_string())?;
     let size_bytes = metadata.len();
     let ext = extension_lower(&resolved.canonical);
@@ -860,8 +864,19 @@ pub(crate) fn build_file_preview(
     Ok(FilePreview {
         path: resolved.canonical.to_string_lossy().to_string(),
         display_name,
-        source_id: resolved.source.id.clone(),
-        source_name: source_display_name(&resolved.source),
+        source_id: resolved.source.as_ref().map(|source| source.id.clone()),
+        source_name: resolved
+            .source
+            .as_ref()
+            .map(source_display_name)
+            .unwrap_or_else(|| {
+                resolved
+                    .canonical
+                    .parent()
+                    .unwrap_or(&resolved.canonical)
+                    .display()
+                    .to_string()
+            }),
         extension: ext.clone(),
         mime_type,
         kind,
@@ -869,6 +884,7 @@ pub(crate) fn build_file_preview(
         content,
         encoding,
         editable,
+        agent_edit_allowed: nexa_core::tools::agent_can_access_local_file(db, &resolved.canonical),
         size_bytes,
         modified_at: modified_at_iso(&resolved.canonical),
         hash,
@@ -911,76 +927,85 @@ pub async fn save_text_file_cmd(
     input: SaveTextFileInput,
 ) -> Result<FileSaveResult, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || {
-        let resolved = resolve_source_file(&db, &input.path)?;
-        let ext = extension_lower(&resolved.canonical);
-        if !is_editable_extension(&ext) {
-            return Err(format!(
-                "Inline editing is not enabled for '{}' files.",
-                ext.trim_start_matches('.')
-            ));
-        }
+    tokio::task::spawn_blocking(move || save_text_file(&db, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
 
-        let current_bytes = std::fs::read(&resolved.canonical).map_err(|e| e.to_string())?;
-        if current_bytes[..current_bytes.len().min(8192)].contains(&0) {
-            return Err("This file appears to be binary and cannot be edited inline.".to_string());
-        }
-        let current_hash = blake3::hash(&current_bytes).to_hex().to_string();
-        if let Some(expected) = input.expected_hash.as_deref() {
-            if expected != current_hash {
-                return Err(
-                    "File changed on disk after preview opened. Reload it before saving."
-                        .to_string(),
-                );
-            }
-        }
+pub(super) fn save_text_file(
+    db: &Database,
+    input: SaveTextFileInput,
+) -> Result<FileSaveResult, String> {
+    let resolved = resolve_local_file(db, &input.path)?;
+    let _mutation = nexa_core::file_mutation::lock_file_mutation(&resolved.canonical, None)
+        .map_err(|error| error.to_string())?;
+    let ext = extension_lower(&resolved.canonical);
+    if !is_editable_extension(&ext) {
+        return Err(format!(
+            "Inline editing is not enabled for '{}' files.",
+            ext.trim_start_matches('.')
+        ));
+    }
 
-        let has_utf8_bom = current_bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
-        let current_text_bytes = if has_utf8_bom {
-            &current_bytes[3..]
-        } else {
-            &current_bytes[..]
-        };
-        if std::str::from_utf8(current_text_bytes).is_err() {
+    let current_bytes = std::fs::read(&resolved.canonical).map_err(|e| e.to_string())?;
+    if current_bytes[..current_bytes.len().min(8192)].contains(&0) {
+        return Err("This file appears to be binary and cannot be edited inline.".to_string());
+    }
+    let current_hash = blake3::hash(&current_bytes).to_hex().to_string();
+    if let Some(expected) = input.expected_hash.as_deref() {
+        if expected != current_hash {
             return Err(
-                "Inline editing only supports UTF-8 text files to avoid corrupting file encoding."
-                    .to_string(),
+                "File changed on disk after preview opened. Reload it before saving.".to_string(),
             );
         }
+    }
 
-        let checkpoint = db
-            .create_file_checkpoint(nexa_core::file_checkpoint::CreateFileCheckpointInput {
-                conversation_id: None,
-                tool_call_id: &format!("ui-file-preview-{}", Uuid::new_v4()),
-                tool_name: "ui_file_editor",
-                operation: "manual_save",
-                path: &input.path,
-                absolute_path: &resolved.canonical,
-            })
-            .map_err(|e| e.to_string())?;
+    let has_utf8_bom = current_bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let current_text_bytes = if has_utf8_bom {
+        &current_bytes[3..]
+    } else {
+        &current_bytes[..]
+    };
+    if std::str::from_utf8(current_text_bytes).is_err() {
+        return Err(
+            "Inline editing only supports UTF-8 text files to avoid corrupting file encoding."
+                .to_string(),
+        );
+    }
 
-        let mut next_bytes = Vec::new();
-        if has_utf8_bom {
-            next_bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
-        }
-        next_bytes.extend_from_slice(input.content.as_bytes());
-        std::fs::write(&resolved.canonical, &next_bytes).map_err(|e| e.to_string())?;
-
-        let (reindex_status, reindex_detail) =
-            match ingest::ingest_single_file(&db, &resolved.source.id, &resolved.canonical) {
-                Ok(result) => ("ok".to_string(), Some(format!("{result:?}"))),
-                Err(err) => ("error".to_string(), Some(err.to_string())),
-            };
-
-        let preview = build_file_preview(&db, &resolved.canonical.to_string_lossy(), None)?;
-        Ok(FileSaveResult {
-            preview,
-            checkpoint_id: checkpoint.id,
-            bytes_written: next_bytes.len() as u64,
-            reindex_status,
-            reindex_detail,
+    let checkpoint = db
+        .create_file_checkpoint(nexa_core::file_checkpoint::CreateFileCheckpointInput {
+            conversation_id: None,
+            tool_call_id: &format!("ui-file-preview-{}", Uuid::new_v4()),
+            tool_name: "ui_file_editor",
+            operation: "manual_save",
+            path: &input.path,
+            absolute_path: &resolved.canonical,
         })
+        .map_err(|e| e.to_string())?;
+
+    let mut next_bytes = Vec::new();
+    if has_utf8_bom {
+        next_bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    next_bytes.extend_from_slice(input.content.as_bytes());
+    std::fs::write(&resolved.canonical, &next_bytes).map_err(|e| e.to_string())?;
+    db.record_active_file_change(&resolved.canonical, Some(&current_bytes), Some(&next_bytes));
+
+    let (reindex_status, reindex_detail) = match resolved.source.as_ref() {
+        Some(source) => match ingest::ingest_single_file(db, &source.id, &resolved.canonical) {
+            Ok(result) => ("ok".to_string(), Some(format!("{result:?}"))),
+            Err(err) => ("error".to_string(), Some(err.to_string())),
+        },
+        None => ("not_indexed".to_string(), None),
+    };
+
+    let preview = build_file_preview(db, &resolved.canonical.to_string_lossy(), None)?;
+    Ok(FileSaveResult {
+        preview,
+        checkpoint_id: checkpoint.id,
+        bytes_written: next_bytes.len() as u64,
+        reindex_status,
+        reindex_detail,
     })
-    .await
-    .map_err(|e| e.to_string())?
 }

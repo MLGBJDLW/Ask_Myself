@@ -821,7 +821,7 @@ body {
   overflow: hidden;
   background: var(--color-surface-0);
   color: var(--color-text-primary);
-  font-family: var(--theme-font-sans, var(--font-sans));
+  font-family: var(--user-font-sans, var(--theme-font-sans, var(--font-sans)));
   font-size: 1rem;
   line-height: var(--theme-line-height, normal);
   letter-spacing: var(--theme-letter-spacing, normal);
@@ -834,8 +834,9 @@ html {
 code,
 pre,
 kbd,
-samp {
-  font-family: var(--theme-font-mono, var(--font-mono));
+samp,
+.font-mono {
+  font-family: var(--user-font-mono, var(--theme-font-mono, var(--font-mono)));
 }
 
 #root {

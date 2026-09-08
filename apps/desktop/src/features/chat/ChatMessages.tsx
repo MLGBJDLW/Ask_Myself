@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import { useTranslation } from "../../i18n";
 import { useDeveloperMode } from "../../lib/developerMode";
+import { useConversationFileChanges } from '../../lib/useConversationFileChanges';
+import { TurnFileChanges } from '../../components/chat/TurnFileChanges';
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
   buildCitationMap,
@@ -36,7 +38,6 @@ import type {
   TraceEvent,
   TurnTiming,
 } from "../../lib/streaming/protocol";
-import { formatThinkingDuration, useElapsedTime } from "../../lib/useElapsedTime";
 import {
   extractPersistedTraceItems,
   extractTurnTrace,
@@ -674,6 +675,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     compactionTerminalText,
     onCancelCompaction,
   } = props;
+  const completedFileTools = toolCalls.filter(call => call.status === 'done' || call.status === 'error').map(call => `${call.callId}:${call.status}`).join('|');
+  const recordedFileChanges = useConversationFileChanges(props.conversationId, isStreaming, `${completedFileTools}:${props.messages.length}:${turns.length}`);
   const [developerMode] = useDeveloperMode();
   const streamingVisibility = useMemo(
     () => projectChatStreamingVisibility({
@@ -705,12 +708,6 @@ export function ChatMessages(props: ChatMessagesProps) {
     return responses;
   }, [props.messages]);
   const { t } = useTranslation();
-  const thinkingElapsedLabel = useElapsedTime(
-    props.turnTiming,
-    isStreaming,
-    0,
-    formatThinkingDuration,
-  );
   const shouldReduceMotion = useReducedMotion();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -886,7 +883,6 @@ export function ChatMessages(props: ChatMessagesProps) {
       sections: ThinkingSection[],
       isStreaming = false,
       forceExpanded = false,
-      durationLabel: string | null = null,
     ) => (
       <div key={key} className="flex justify-start mb-1">
         <div className="w-full min-w-0">
@@ -896,7 +892,6 @@ export function ChatMessages(props: ChatMessagesProps) {
             isStreaming={isStreaming}
             defaultExpanded={isStreaming || forceExpanded}
             collapseOnFinish={!forceExpanded}
-            elapsedLabel={durationLabel}
           />
         </div>
       </div>
@@ -984,7 +979,6 @@ export function ChatMessages(props: ChatMessagesProps) {
       key: string,
       sections: TimelineSection[],
       isStreaming = false,
-      durationLabel: string | null = null,
     ) => {
       if (sections.length === 0) return <Fragment key={key} />;
       const ordered: Array<
@@ -1060,7 +1054,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                 renderTimelineSections(item.sections),
                 isStreaming && index === lastTraceIndex,
                 false,
-                index === lastTraceIndex ? durationLabel : null,
               )
             : item.kind === 'answeredQuestion' ? (
                 <div key={item.id} className="mb-1 flex justify-start">
@@ -2136,7 +2129,9 @@ export function ChatMessages(props: ChatMessagesProps) {
                     />
                   )}
 
-                {renderFileDiffPreviews(
+                {props.conversationId && recordedFileChanges.has(turnRender.turn.id) ? (
+                  !(isStreaming && idx === latestUserIdx) && <TurnFileChanges conversationId={props.conversationId} summary={recordedFileChanges.get(turnRender.turn.id)!} />
+                ) : renderFileDiffPreviews(
                   turnDiffs,
                   `turn-diff-${turnRender.turn.id}`,
                 )}
@@ -2278,7 +2273,6 @@ export function ChatMessages(props: ChatMessagesProps) {
             "current-turn-working-trace",
             collapsedLiveTrace.historySections,
             false,
-            !isStreaming ? thinkingElapsedLabel : null,
           )}
           {renderTraceReplyNode(
             collapsedLiveTrace.finalItem.id,
@@ -2304,7 +2298,6 @@ export function ChatMessages(props: ChatMessagesProps) {
                   item.id,
                   item.sections,
                   item.isStreaming,
-                  item.isStreaming ? thinkingElapsedLabel : null,
                 )
               : renderTraceReplyNode(
                   item.id,
@@ -2357,7 +2350,6 @@ export function ChatMessages(props: ChatMessagesProps) {
               isStreaming={currentTraceActive}
               defaultExpanded={currentTraceActive}
               collapseOnFinish
-              elapsedLabel={thinkingElapsedLabel}
             />
           </div>
         </motion.div>
@@ -2401,6 +2393,10 @@ export function ChatMessages(props: ChatMessagesProps) {
             </div>
           </motion.div>
         )}
+
+      {props.conversationId && taskRun?.turnId && recordedFileChanges.has(taskRun.turnId) &&
+        (isStreaming || !turns.some(turn => turn.id === taskRun.turnId)) &&
+        <TurnFileChanges key={taskRun.turnId} conversationId={props.conversationId} summary={recordedFileChanges.get(taskRun.turnId)!} />}
 
       {taskRun?.status === 'paused' && onResumePaused && (
         <div

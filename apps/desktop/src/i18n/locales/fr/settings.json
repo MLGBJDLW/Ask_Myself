@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "Impossible de charger les modèles."
   ,"modelCatalogCached": "La liste précédente est utilisée."
   ,"modelCatalogReady": "Les modèles sont à jour"
-  ,"modelCatalogEmpty": "Aucun modèle disponible pour ce compte."
+  ,"modelCatalogEmpty": "Aucun modèle disponible pour ce compte.",
+  "displayFonts": "Polices",
+  "displayFontsDesc": "Choisissez séparément les polices du texte et du code. Les préréglages fonctionnent hors ligne et sont appliqués immédiatement.",
+  "displayUiFont": "Interface et texte",
+  "displayCodeFont": "Code et chasse fixe",
+  "displayThemeFont": "Suivre le thème",
+  "displayFontGroup.cjk": "Chinois et multilingue",
+  "displayFontGroup.text": "Polices de texte",
+  "displayFontGroup.mono": "Polices à chasse fixe",
+  "displayImportedFonts": "Polices importées",
+  "displayFontUnavailable": "Indisponible · police du thème",
+  "displayFontSample": "Un souffle nouveau, une idée nouvelle. Bonjour, Nexa.",
+  "displayImportFonts": "Importer des polices",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 ou ZIP. Jusqu’à 32 polices par paquet, 64 MiB par police et 256 MiB par paquet. Les copies restent sur cet appareil.",
+  "displayFontsImported": "{count} polices importées. Choisissez-en une ci-dessus.",
+  "displayRemoveFont": "Supprimer {name}",
+  "displayFontError": "Échec du chargement. La police du thème est utilisée.",
+  "displayStreaming": "Affichage en streaming",
+  "displayStreaming.chunked": "Par blocs",
+  "displayStreaming.chunkedDesc": "Moins de mises à jour pour économiser les ressources.",
+  "displayStreaming.balanced": "Équilibré",
+  "displayStreaming.balancedDesc": "Texte réactif et consommation modérée.",
+  "displayStreaming.smooth": "Fluide",
+  "displayStreaming.smoothDesc": "Révélation progressive du texte reçu.",
+  "displayStreamingCost": "Un affichage plus fluide peut augmenter la charge CPU/GPU et la consommation de batterie, surtout pour les longues réponses. La vitesse du modèle et le texte enregistré restent identiques. La réduction des animations désactive la révélation progressive."
 }

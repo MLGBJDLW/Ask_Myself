@@ -270,14 +270,16 @@ impl BrowserTrustedInputGuard {
         &self,
         budget: TrustedInputEventBudget,
         expected: TrustedInputMatch,
+        target_ref: &str,
+        target_context: &str,
     ) -> Result<ArmedTrustedInputGuard, String> {
-        let baseline_physical_input_epoch = physical_input_epoch()?;
+        let baseline_physical_input_epoch = physical_input_epoch(&self.webview)?;
         let operation_id = uuid::Uuid::new_v4().simple().to_string();
         let expression = trusted_input_guard_expression(
             "arm",
             &self.token,
             &operation_id,
-            Some((budget, &expected)),
+            Some((budget, &expected, target_ref, target_context)),
         );
         let armed = eval_json(&self.webview, &expression)
             .await?
@@ -289,7 +291,7 @@ impl BrowserTrustedInputGuard {
                     .to_string(),
             );
         }
-        if physical_input_epoch()? != baseline_physical_input_epoch {
+        if physical_input_epoch(&self.webview)? != baseline_physical_input_epoch {
             let disarm = trusted_input_guard_expression("disarm", &self.token, &operation_id, None);
             let _ = eval_json(&self.webview, &disarm).await;
             return Err(
@@ -312,7 +314,7 @@ pub struct ArmedTrustedInputGuard {
     guard: BrowserTrustedInputGuard,
     operation_id: String,
     budget: TrustedInputEventBudget,
-    physical_input_epoch: u32,
+    physical_input_epoch: Option<u32>,
     armed: bool,
 }
 
@@ -346,7 +348,7 @@ impl ArmedTrustedInputGuard {
     }
 
     fn physical_input_changed(&self) -> Result<bool, String> {
-        Ok(physical_input_epoch()? != self.physical_input_epoch)
+        Ok(physical_input_epoch(&self.guard.webview)? != self.physical_input_epoch)
     }
 }
 
@@ -368,17 +370,21 @@ fn trusted_input_guard_expression(
     action: &str,
     token: &str,
     operation_id: &str,
-    guarded: Option<(TrustedInputEventBudget, &TrustedInputMatch)>,
+    guarded: Option<(TrustedInputEventBudget, &TrustedInputMatch, &str, &str)>,
 ) -> String {
     let token = serde_json::to_string(token).expect("trusted input token is serializable");
     let operation_id =
         serde_json::to_string(operation_id).expect("trusted input operation id is serializable");
     match guarded {
-        Some((budget, expected)) => format!(
+        Some((budget, expected, target_ref, target_context)) => {
+            let mut expected = expected.as_json();
+            expected["targetRef"] = serde_json::json!(target_ref);
+            expected["targetContext"] = serde_json::json!(target_context);
+            format!(
             "(() => {{ const guard = window.__NEXA_TRUSTED_INPUT_GUARD__; return Boolean(guard && guard.{action}({token}, {operation_id}, {}, {})); }})()",
             budget.as_json(),
-            expected.as_json(),
-        ),
+            expected,
+        )},
         None => format!(
             "(() => {{ const guard = window.__NEXA_TRUSTED_INPUT_GUARD__; return Boolean(guard && guard.{action}({token}, {operation_id})); }})()"
         ),
@@ -386,9 +392,19 @@ fn trusted_input_guard_expression(
 }
 
 #[cfg(windows)]
-fn physical_input_epoch() -> Result<u32, String> {
+fn physical_input_epoch(webview: &Webview) -> Result<Option<u32>, String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
+    // CDP targets this WebView without taking system focus. Physical input in
+    // another foreground application must not cancel it. A focus transition
+    // into or out of Nexa during an armed sequence still cancels that sequence.
+    if !webview
+        .window()
+        .is_focused()
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(None);
+    }
     let mut info = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
@@ -399,12 +415,33 @@ fn physical_input_epoch() -> Result<u32, String> {
             std::io::Error::last_os_error()
         ));
     }
-    Ok(info.dwTime)
+    Ok(Some(info.dwTime))
 }
 
 #[cfg(not(windows))]
-fn physical_input_epoch() -> Result<u32, String> {
-    Ok(0)
+fn physical_input_epoch(_webview: &Webview) -> Result<Option<u32>, String> {
+    Ok(None)
+}
+
+/// A hover is scoped to the page viewport and never moves the system cursor.
+/// Mouse movement does not consume the trusted down/key/input takeover budget.
+#[cfg(windows)]
+pub async fn dispatch_webview_pointer_move(
+    webview: &Webview,
+    x: f64,
+    y: f64,
+    modifiers: &[String],
+) -> Result<(), String> {
+    let payload = trusted_pointer_payloads(x, y, "left", modifiers, 1)?.remove(0);
+    call_devtools_protocol_method(
+        webview,
+        "Input.dispatchMouseEvent",
+        payload,
+        TRUSTED_INPUT_TIMEOUT,
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Dispatch a trusted WebView pointer click through the DevTools input domain.
@@ -1470,7 +1507,7 @@ mod tests {
             "arm",
             "secret-token",
             "operation-1",
-            Some((budget, &expected)),
+            Some((budget, &expected, "e_1", "context-hash")),
         );
         assert!(expression.contains("guard.arm(\"secret-token\", \"operation-1\""));
         assert!(expression.contains(r#""pointerDown":2"#));
@@ -1478,6 +1515,8 @@ mod tests {
         assert!(expression.contains(r#""input":2"#));
         assert!(expression.contains(r#""kind":"pointer""#));
         assert!(expression.contains(r#""x":123.5"#));
+        assert!(expression.contains(r#""targetRef":"e_1""#));
+        assert!(expression.contains(r#""targetContext":"context-hash""#));
         assert!(TrustedInputEventBudget::new(0, 0, 0).is_err());
         assert!(TrustedInputEventBudget::new(3, 0, 0).is_err());
         assert!(TrustedInputEventBudget::new(0, 2, 0).is_err());

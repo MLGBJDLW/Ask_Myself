@@ -175,6 +175,12 @@ impl Tool for CreateFileTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
+        let mutation_cancel = context
+            .cancel_token
+            .map(tokio_util::sync::CancellationToken::child_token)
+            .unwrap_or_default();
+        let _cancel_mutation_on_drop = mutation_cancel.clone().drop_guard();
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -238,6 +244,7 @@ impl Tool for CreateFileTool {
                 ));
             }
 
+            let _mutation = crate::file_mutation::lock_file_mutation(&canonical, Some(&mutation_cancel))?;
             let existed_before = canonical.exists();
             match mode {
                 FileWriteMode::Create if existed_before => {
@@ -310,6 +317,7 @@ impl Tool for CreateFileTool {
                 absolute_path: &canonical,
             })?;
 
+            if mutation_cancel.is_cancelled() { return Err(CoreError::InvalidInput("File mutation cancelled before writing".into())); }
             let bytes_written = args.content.len() as u64;
             let write_result = match mode {
                 FileWriteMode::Create | FileWriteMode::Overwrite => {
@@ -347,6 +355,10 @@ impl Tool for CreateFileTool {
                 ));
             }
 
+            if let Some(scope) = &file_changes {
+                if mode == FileWriteMode::Append { scope.record_append(&checkpoint, args.content.as_bytes()); }
+                else { scope.record_checkpoint(&checkpoint, args.content.as_bytes()); }
+            }
             let bytes_after = std::fs::metadata(&canonical).map_err(CoreError::Io)?.len();
             let diff = match mode {
                 FileWriteMode::Create => create_file_diff_artifact(&args.path, &args.content),

@@ -693,5 +693,13 @@
   "companionFailed": "任務失敗",
   "companionCancelled": "任務已取消",
   "companionSleeping": "Companion 正在睡覺"
-,"compactUnavailable": "此對話暫不支援手動壓縮上下文。"
+,"compactUnavailable": "此對話暫不支援手動壓縮上下文。",
+  "turnChangesTitle": "已變更 {count} 個檔案",
+  "turnChangesPartial": "檔案變化未完整追蹤",
+  "turnChangesCoverage": "統計涵蓋已記錄的原生檔案修改。Shell 指令、其他來源的修改或無法使用的內容可能造成遺漏；未知行數未計入總數。",
+  "turnChangesBaseline": "依本輪首次修改前與最後修改後的內容計算淨變化。詳細資料顯示儲存的版本，檔案捷徑開啟目前檔案。",
+  "turnChangesShowMore": "顯示更多（剩餘 {count} 個）",
+  "turnChangesNoStats": "行數未知",
+  "turnChangesContentUnavailable": "此檔案為二進位、過大，或儲存的差異無法使用。",
+  "turnChangesLoadError": "無法載入已儲存的變更。"
 }

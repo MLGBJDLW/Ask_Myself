@@ -1635,7 +1635,7 @@ export function AgentConfigForm({
                             />
                             <span className="min-w-0">
                               <span className="block text-xs font-medium text-text-primary">
-                                {tool.label}
+                                {tool.name}
                               </span>
                               <span className="mt-0.5 block line-clamp-2 text-[11px] text-text-tertiary">
                                 {tool.description}

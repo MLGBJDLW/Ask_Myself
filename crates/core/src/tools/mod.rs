@@ -90,6 +90,7 @@ pub mod agent_memory_tool;
 pub mod appearance_tool;
 pub mod archive_output_tool;
 pub mod browser_evidence_tool;
+mod browser_navigation;
 pub mod browser_session_tool;
 pub mod chunk_context_tool;
 pub mod code_intelligence_tool;
@@ -315,6 +316,7 @@ pub struct ToolInvocation {
 }
 
 pub struct ToolExecutionContext<'a> {
+    pub file_change_owner: Option<crate::turn_file_changes::FileChangeOwner>,
     pub call_id: &'a str,
     pub arguments: &'a str,
     pub db: &'a Database,
@@ -343,6 +345,7 @@ impl<'a> ToolExecutionContext<'a> {
             db,
             source_scope,
             conversation_id: None,
+            file_change_owner: None,
             turn_id: None,
             tool_registry: None,
             cancel_token: None,
@@ -596,6 +599,19 @@ pub(crate) fn file_access_policy(
     })
 }
 
+/// Preview actions use the same path policy as native agent file tools.
+pub fn agent_can_access_local_file(db: &Database, path: &std::path::Path) -> bool {
+    let Ok(policy) = file_access_policy(db, &[]) else {
+        return false;
+    };
+    path_utils::resolve_existing_file_for_file_access(
+        path,
+        &policy.sources,
+        policy.allow_unregistered_absolute_paths,
+    )
+    .is_ok()
+}
+
 pub(crate) fn ensure_source_in_scope(
     source_id: &str,
     source_scope: &[String],
@@ -761,6 +777,7 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
+    file_change_owner: Option<crate::turn_file_changes::FileChangeOwner>,
 }
 
 fn stable_tool_definitions(mut definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
@@ -773,7 +790,15 @@ const RESIDENT_DISCOVERY_TOOL_NAMES: &[&str] = &["tool_search"];
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self::default()
+    }
+
+    pub fn with_file_change_owner(
+        mut self,
+        owner: crate::turn_file_changes::FileChangeOwner,
+    ) -> Self {
+        self.file_change_owner = Some(owner);
+        self
     }
 
     /// Register a tool.
@@ -815,7 +840,10 @@ impl ToolRegistry {
     /// Build a filtered registry preserving the original tool order.
     pub fn filtered(&self, allowed_names: &[String]) -> ToolRegistry {
         let allowed: HashSet<&str> = allowed_names.iter().map(String::as_str).collect();
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry {
+            file_change_owner: self.file_change_owner.clone(),
+            ..ToolRegistry::new()
+        };
         for tool in &self.tools {
             if allowed.contains(tool.name()) {
                 registry.register_shared(Arc::clone(tool));
@@ -827,7 +855,10 @@ impl ToolRegistry {
     /// Build a filtered registry excluding the provided tool names.
     pub fn without_names(&self, blocked_names: &[&str]) -> ToolRegistry {
         let blocked: HashSet<&str> = blocked_names.iter().copied().collect();
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry {
+            file_change_owner: self.file_change_owner.clone(),
+            ..ToolRegistry::new()
+        };
         for tool in &self.tools {
             if !blocked.contains(tool.name()) {
                 registry.register_shared(Arc::clone(tool));
@@ -842,7 +873,10 @@ impl ToolRegistry {
     /// state, execute commands, delegate to other agents, or expose tools whose
     /// schema mixes read-only and write actions.
     pub fn plan_mode_filtered(&self) -> ToolRegistry {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry {
+            file_change_owner: self.file_change_owner.clone(),
+            ..ToolRegistry::new()
+        };
         let empty_args = serde_json::json!({});
 
         for tool in &self.tools {
@@ -1036,8 +1070,21 @@ impl ToolRegistry {
             Err(result) => return Ok(result),
         };
         let call_id = ctx.call_id;
+        let mut scope_context =
+            ToolExecutionContext::new(call_id, &arguments, ctx.db, ctx.source_scope)
+                .with_conversation_id(ctx.conversation_id)
+                .with_turn_id(ctx.turn_id);
+        scope_context.file_change_owner = ctx
+            .file_change_owner
+            .clone()
+            .or_else(|| self.file_change_owner.clone());
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&scope_context);
         let result = tool
             .execute(ToolExecutionContext {
+                file_change_owner: ctx
+                    .file_change_owner
+                    .clone()
+                    .or_else(|| self.file_change_owner.clone()),
                 call_id: ctx.call_id,
                 arguments: &arguments,
                 db: ctx.db,
@@ -1050,12 +1097,37 @@ impl ToolRegistry {
                 event_tx: ctx.event_tx,
             })
             .await;
-        Ok(normalize_tool_execution_result(
-            call_id,
+        let result =
+            normalize_tool_execution_result(call_id, name, || tool.parameters_schema(), result);
+        if result
+            .artifacts
+            .as_ref()
+            .and_then(|value| value.get("fileChangeTracking"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|tracking| matches!(tracking, "untracked" | "unavailable"))
+        {
+            if let Some(scope) = &file_changes {
+                scope.mark_partial(call_id);
+            }
+        }
+        // Until another native writer records exact committed bytes, do not
+        // present a mixed turn as fully covered merely because one tool did.
+        let records_native_changes = matches!(
             name,
-            || tool.parameters_schema(),
-            result,
-        ))
+            "create_file" | "edit_file" | "multi_edit" | "write_note" | "run_shell"
+        );
+        if !records_native_changes
+            && (tool.categories().contains(&ToolCategory::FileSystem)
+                || matches!(name, "download_asset" | "generate_image"))
+        {
+            let args = serde_json::from_str(&arguments).unwrap_or_default();
+            if tool.access_profile(&args).can_write {
+                if let Some(scope) = &file_changes {
+                    scope.mark_partial(call_id);
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub(crate) fn normalized_arguments_for_scheduling(

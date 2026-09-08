@@ -554,7 +554,7 @@ class StreamStoreImpl {
       state,
       message,
       'muted',
-      state._watchdogRecoveryAttempt === 1 ? 'user' : 'internal',
+      'internal',
       'recovery',
     );
     this.touch(conversationId);
@@ -625,7 +625,7 @@ class StreamStoreImpl {
       state,
       'No live events received; checking durable backend state.',
       'muted',
-      state._watchdogRecoveryAttempt === 1 ? 'user' : 'internal',
+      'internal',
       'recovery',
     );
     this.notifyImmediately(conversationId);
@@ -688,7 +688,7 @@ class StreamStoreImpl {
       state._watchdogMissingRunConfirmations = 0;
 
       state.taskRun = outcome.snapshot.taskRun;
-      state.taskEvents = outcome.snapshot.taskEvents;
+      if (outcome.snapshot.taskEvents.length > 0) state.taskEvents = outcome.snapshot.taskEvents;
       this.applyAuthoritativeRunEventSuffix(
         conversationId,
         outcome.snapshot.taskRun.id,
@@ -712,7 +712,7 @@ class StreamStoreImpl {
             state,
             'Durable backend state is active; live recovery remains armed.',
             'success',
-            'user',
+            'internal',
             'recovery',
           );
         }

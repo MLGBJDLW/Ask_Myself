@@ -981,5 +981,29 @@
   ,"modelCatalogLoadFailed": "Не удалось загрузить модели."
   ,"modelCatalogCached": "Используется предыдущий список моделей."
   ,"modelCatalogReady": "Список моделей обновлён"
-  ,"modelCatalogEmpty": "Для этой учётной записи нет доступных моделей."
+  ,"modelCatalogEmpty": "Для этой учётной записи нет доступных моделей.",
+  "displayFonts": "Шрифты",
+  "displayFontsDesc": "Выберите отдельные шрифты для текста и кода. Встроенные шрифты доступны без сети и применяются сразу.",
+  "displayUiFont": "Интерфейс и текст",
+  "displayCodeFont": "Код и моноширинный текст",
+  "displayThemeFont": "Как в теме",
+  "displayFontGroup.cjk": "Китайский и многоязычные",
+  "displayFontGroup.text": "Текстовые шрифты",
+  "displayFontGroup.mono": "Моноширинные шрифты",
+  "displayImportedFonts": "Импортированные шрифты",
+  "displayFontUnavailable": "Недоступен · используется тема",
+  "displayFontSample": "Свежий ветер, новые идеи. Привет, Nexa.",
+  "displayImportFonts": "Импортировать шрифты",
+  "displayImportFontsDesc": "TTF, OTF, WOFF, WOFF2 или ZIP. До 32 шрифтов в пакете, 64 MiB на шрифт и 256 MiB на пакет. Копии хранятся на этом устройстве.",
+  "displayFontsImported": "Импортировано шрифтов: {count}. Выберите один выше.",
+  "displayRemoveFont": "Удалить {name}",
+  "displayFontError": "Не удалось загрузить шрифт. Используется шрифт темы.",
+  "displayStreaming": "Потоковое отображение",
+  "displayStreaming.chunked": "Блоками",
+  "displayStreaming.chunkedDesc": "Меньше обновлений для экономии ресурсов.",
+  "displayStreaming.balanced": "Баланс",
+  "displayStreaming.balancedDesc": "Быстрый отклик при умеренной нагрузке.",
+  "displayStreaming.smooth": "Плавно",
+  "displayStreaming.smoothDesc": "Постепенное появление полученного текста.",
+  "displayStreamingCost": "Плавное отображение может увеличить нагрузку на CPU/GPU и расход батареи, особенно при длинных ответах. Скорость модели и сохранённый текст не меняются. Уменьшение движения отключает постепенное появление."
 }

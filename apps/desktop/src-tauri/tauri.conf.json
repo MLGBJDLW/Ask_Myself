@@ -26,12 +26,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://*.huggingface.co; frame-src https: http:",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; font-src 'self' data: asset: http://asset.localhost https://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://*.huggingface.co; frame-src https: http:",
       "assetProtocol": {
         "enable": true,
         "scope": [
           "$APPCACHE/generated-audio/**/*",
-          "$APPDATA/theme-assets/**/*"
+          "$APPDATA/theme-assets/**/*",
+          "$APPDATA/fonts/**/*"
         ]
       }
     }
