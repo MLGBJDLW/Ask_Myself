@@ -6,6 +6,15 @@ use std::collections::BTreeMap;
 
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
+struct StoredFileVersions {
+    before: Option<Vec<u8>>,
+    after: Option<Vec<u8>>,
+    existed: bool,
+    exists: bool,
+    path: String,
+    kind: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileChangeOwner {
     pub conversation_id: String,
@@ -791,9 +800,9 @@ impl Database {
         turn_id: &str,
         absolute_path: &str,
     ) -> Result<serde_json::Value, CoreError> {
-        let (before, after, existed, exists, path, kind): (Option<Vec<u8>>, Option<Vec<u8>>, bool, bool, String, String) = self.conn().query_row(
+        let StoredFileVersions { before, after, existed, exists, path, kind } = self.conn().query_row(
             "SELECT before_content,after_content,existed_before,exists_after,display_path,content_kind FROM turn_file_changes WHERE conversation_id=?1 AND turn_id=?2 AND absolute_path=?3",
-            params![conversation_id,turn_id,absolute_path], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
+            params![conversation_id,turn_id,absolute_path], |row| Ok(StoredFileVersions { before: row.get(0)?, after: row.get(1)?, existed: row.get(2)?, exists: row.get(3)?, path: row.get(4)?, kind: row.get(5)? }))?;
         if kind != "text" {
             return Err(CoreError::InvalidInput(format!(
                 "Diff content unavailable: {kind}"
