@@ -21,7 +21,7 @@ use super::super::run_shell_contract::{
 };
 use super::super::{scoped_sources, tool_contract_error_result, Tool, ToolCategory, ToolResult};
 use super::environment::{apply_isolated_process_sandbox, LocalRunShellExecutionEnvironment};
-use super::file_tracking::{build_run_shell_file_changes, capture_file_snapshot};
+use super::file_tracking::execute_tracked_native;
 use super::native_fs::is_native_filesystem_program;
 use super::parser::parse_run_shell_args;
 use super::policy::{
@@ -1785,6 +1785,7 @@ impl Tool for RunShellTool {
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
         let file_change_scope = crate::turn_file_changes::FileChangeScope::from_context(&context);
+        let native_cancel = context.cancel_token.cloned().unwrap_or_default();
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -1983,12 +1984,6 @@ impl Tool for RunShellTool {
 
         let tracking_paths =
             super::native_fs::mutation_paths(&canonical_program, &normalized_args, &cwd_path);
-        let before_paths = tracking_paths.clone();
-        let before_snapshot =
-            tokio::task::spawn_blocking(move || capture_file_snapshot(&before_paths))
-                .await
-                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
-
         let environment = LocalRunShellExecutionEnvironment;
         let mut execution_request = ExecutionRequest::for_run_shell(
             canonical_program.clone(),
@@ -2006,10 +2001,30 @@ impl Tool for RunShellTool {
                 &cwd_path,
             )?;
         }
-        let execution_artifact = match environment.execute(execution_request).await {
-            Ok(artifact) => artifact,
-            Err(CoreError::InvalidInput(msg)) => return Ok(error_result(call_id, msg)),
-            Err(err) => return Err(err),
+        let execution = if tracking_paths.is_empty() {
+            environment
+                .execute(execution_request)
+                .await
+                .map(|artifact| (artifact, None))
+        } else {
+            execute_tracked_native(
+                tracking_paths,
+                cwd_path.clone(),
+                file_change_scope,
+                call_id.to_string(),
+                native_cancel,
+                async move {
+                    LocalRunShellExecutionEnvironment
+                        .execute(execution_request)
+                        .await
+                },
+            )
+            .await
+        };
+        let (execution_artifact, file_changes) = match execution {
+            Ok(value) => value,
+            Err(CoreError::InvalidInput(message)) => return Ok(error_result(call_id, message)),
+            Err(error) => return Err(error),
         };
         let output = RunShellOutput {
             exit_code: execution_artifact.exit_status,
@@ -2020,26 +2035,6 @@ impl Tool for RunShellTool {
             truncated_stderr: execution_artifact.stderr_truncated,
             killed_by_timeout: execution_artifact.timed_out,
         };
-
-        let after_snapshot =
-            tokio::task::spawn_blocking(move || capture_file_snapshot(&tracking_paths))
-                .await
-                .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
-        let changes_cwd = cwd_path.clone();
-        let changes_call_id = call_id.to_string();
-        let file_changes = tokio::task::spawn_blocking(move || {
-            if let Some(scope) = &file_change_scope {
-                super::file_tracking::persist_file_changes(
-                    scope,
-                    &changes_call_id,
-                    &before_snapshot,
-                    &after_snapshot,
-                );
-            }
-            build_run_shell_file_changes(&changes_cwd, &before_snapshot, &after_snapshot)
-        })
-        .await
-        .map_err(|error| CoreError::Internal(error.to_string()))?;
 
         tracing::info!(
             target: "tool.run_shell",

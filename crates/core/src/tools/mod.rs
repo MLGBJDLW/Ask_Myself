@@ -1093,8 +1093,25 @@ impl ToolRegistry {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|tracking| matches!(tracking, "untracked" | "unavailable"))
         {
-            if let Some(scope) = file_changes {
+            if let Some(scope) = &file_changes {
                 scope.mark_partial(call_id);
+            }
+        }
+        // Until another native writer records exact committed bytes, do not
+        // present a mixed turn as fully covered merely because one tool did.
+        let records_native_changes = matches!(
+            name,
+            "create_file" | "edit_file" | "multi_edit" | "write_note" | "run_shell"
+        );
+        if !records_native_changes
+            && (tool.categories().contains(&ToolCategory::FileSystem)
+                || matches!(name, "download_asset" | "generate_image"))
+        {
+            let args = serde_json::from_str(&arguments).unwrap_or_default();
+            if tool.access_profile(&args).can_write {
+                if let Some(scope) = &file_changes {
+                    scope.mark_partial(call_id);
+                }
             }
         }
         Ok(result)

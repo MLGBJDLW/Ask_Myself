@@ -44,11 +44,11 @@ export function TurnFileChanges({ conversationId, summary }: { conversationId: s
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [limit, setLimit] = useState(10);
-  if (summary.files.length === 0 && !summary.partial) return null;
+  if (summary.files.length === 0 && !summary.partial && !summary.pending) return null;
   return <div className="my-3 min-w-0" data-testid="turn-file-changes" data-turn-id={summary.turnId}>
     <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="inline-flex max-w-full items-center gap-2 rounded-full border border-border/70 bg-surface-1/70 px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-border-hover hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
-      <FileDiff size={13} className="shrink-0 text-text-tertiary" />
-      <span>{summary.files.length ? t('chat.turnChangesTitle', { count: String(summary.files.length) }) : t('chat.turnChangesPartial')}</span>
+      {summary.pending ? <Loader2 size={13} className="shrink-0 animate-spin text-text-tertiary" /> : <FileDiff size={13} className="shrink-0 text-text-tertiary" />}
+      <span>{summary.files.length ? t('chat.turnChangesTitle', { count: String(summary.files.length) }) : summary.pending ? t('common.loading') : t('chat.turnChangesPartial')}</span>
       {summary.files.length > 0 && <>
         <span className="font-mono tabular-nums text-emerald-500">+{summary.additions}</span>
         <span className="font-mono tabular-nums text-rose-400">−{summary.deletions}</span>

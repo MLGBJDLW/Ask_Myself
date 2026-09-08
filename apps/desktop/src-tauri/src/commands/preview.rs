@@ -935,6 +935,8 @@ pub(super) fn save_text_file(
     input: SaveTextFileInput,
 ) -> Result<FileSaveResult, String> {
     let resolved = resolve_local_file(db, &input.path)?;
+    let _mutation = nexa_core::file_mutation::lock_file_mutation(&resolved.canonical, None)
+        .map_err(|error| error.to_string())?;
     let ext = extension_lower(&resolved.canonical);
     if !is_editable_extension(&ext) {
         return Err(format!(
@@ -986,6 +988,7 @@ pub(super) fn save_text_file(
     }
     next_bytes.extend_from_slice(input.content.as_bytes());
     std::fs::write(&resolved.canonical, &next_bytes).map_err(|e| e.to_string())?;
+    db.record_active_file_change(&resolved.canonical, Some(&current_bytes), Some(&next_bytes));
 
     let (reindex_status, reindex_detail) = match resolved.source.as_ref() {
         Some(source) => match ingest::ingest_single_file(db, &source.id, &resolved.canonical) {

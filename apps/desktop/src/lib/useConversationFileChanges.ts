@@ -14,6 +14,7 @@ function query(conversationId: string) {
 
 export function useConversationFileChanges(conversationId: string | null | undefined, active: boolean, completedTools: string) {
   const [state, setState] = useState<{ conversationId: string; summaries: Map<string, TurnFileChangeSummary> } | null>(null);
+  const pendingChanges = state?.conversationId === conversationId && [...(state?.summaries.values() ?? [])].some(summary => summary.pending);
   useEffect(() => {
     if (!conversationId) return;
     let disposed = false;
@@ -22,6 +23,13 @@ export function useConversationFileChanges(conversationId: string | null | undef
       if (pending) return;
       pending = true;
       try {
+        // A completion-triggered refresh must start after a preceding read;
+        // that read may have captured its snapshot before the final mutation.
+        const preceding = inFlight.get(conversationId);
+        if (preceding) {
+          await preceding.catch(() => {});
+          if (disposed) return;
+        }
         const values = await query(conversationId);
         if (!disposed && Array.isArray(values)) setState(previous => {
           const old = previous?.conversationId === conversationId ? previous.summaries : new Map<string, TurnFileChangeSummary>();
@@ -35,8 +43,8 @@ export function useConversationFileChanges(conversationId: string | null | undef
     void refresh();
     // Child workers can commit files while their parent tool is still running.
     // Only small summaries are queried; details stay in the native database.
-    const timer = active ? window.setInterval(() => void refresh(), 2000) : null;
+    const timer = active || pendingChanges ? window.setInterval(() => void refresh(), 2000) : null;
     return () => { disposed = true; if (timer !== null) window.clearInterval(timer); };
-  }, [conversationId, active, completedTools]);
+  }, [conversationId, active, completedTools, pendingChanges]);
   return state && state.conversationId === conversationId ? state.summaries : new Map<string, TurnFileChangeSummary>();
 }

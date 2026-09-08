@@ -28,6 +28,7 @@ export interface TurnFileChangeSummary {
   deletions: number;
   unknownFiles: number;
   partial: boolean;
+  pending?: boolean;
 }
 export const getConversationFileChanges = (conversationId: string) => invoke<TurnFileChangeSummary[]>('get_conversation_file_changes_cmd', { conversationId });
 export const getTurnFileDiff = (conversationId: string, turnId: string, absolutePath: string) => invoke<import('../components/chat/FileDiffPreview').FileDiffArtifact>('get_turn_file_diff_cmd', { conversationId, turnId, absolutePath });

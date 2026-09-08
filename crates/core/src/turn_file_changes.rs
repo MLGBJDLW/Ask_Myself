@@ -48,9 +48,61 @@ pub struct TurnFileChangeSummary {
     pub deletions: u64,
     pub unknown_files: u64,
     pub partial: bool,
+    pub pending: bool,
+}
+
+pub struct PendingFileChange {
+    scope: FileChangeScope,
+    mutation_id: String,
+    finished: bool,
+}
+
+impl PendingFileChange {
+    pub fn finish(mut self, partial: bool) {
+        self.scope.finish_pending(&self.mutation_id, partial);
+        self.finished = true;
+    }
+}
+
+impl Drop for PendingFileChange {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.scope.finish_pending(&self.mutation_id, true);
+        }
+    }
 }
 
 impl FileChangeScope {
+    pub fn begin_pending(&self, call_id: &str) -> PendingFileChange {
+        let mutation_id = format!("pending-native:{call_id}");
+        let scoped = self.scoped_mutation_id(&mutation_id);
+        if let Err(error) = self.db.conn().execute("INSERT INTO turn_file_change_events(conversation_id,turn_id,mutation_id,pending) VALUES (?1,?2,?3,1)
+            ON CONFLICT(conversation_id,turn_id,mutation_id) DO UPDATE SET pending=1",
+            params![self.owner.conversation_id,self.owner.turn_id,scoped]) {
+            tracing::warn!(%error, "Could not record a pending native file mutation");
+        }
+        PendingFileChange {
+            scope: self.clone(),
+            mutation_id,
+            finished: false,
+        }
+    }
+
+    fn finish_pending(&self, mutation_id: &str, partial: bool) {
+        let result = (|| -> Result<(), CoreError> {
+            let mut conn = self.db.conn();
+            let tx = conn.transaction()?;
+            tx.execute("UPDATE turn_file_change_events SET pending=0,partial=MAX(partial,?4) WHERE conversation_id=?1 AND turn_id=?2 AND mutation_id=?3",
+                params![self.owner.conversation_id,self.owner.turn_id,self.scoped_mutation_id(mutation_id),partial])?;
+            tx.execute("INSERT OR IGNORE INTO turn_file_change_events(conversation_id,turn_id,mutation_id,partial) VALUES (?1,?2,?3,?4)",
+                params![self.owner.conversation_id,self.owner.turn_id,self.scoped_mutation_id(&format!("finished:{mutation_id}")),partial])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(%error, "Could not settle native file mutation tracking");
+        }
+    }
     pub fn from_context(context: &crate::tools::ToolExecutionContext<'_>) -> Option<Self> {
         let owner = context.file_change_owner.clone().or_else(|| {
             Some(FileChangeOwner {
@@ -71,9 +123,12 @@ impl FileChangeScope {
                 "SELECT CASE WHEN length(content_before) <= ?2 THEN content_before ELSE NULL END FROM file_checkpoints WHERE id=?1",
                 params![checkpoint.id, MAX_CONTENT_BYTES], |row| row.get(0))?;
             let after_hash = blake3::hash(after).to_hex().to_string();
+            let identity = crate::file_mutation::canonical_file_identity(std::path::Path::new(
+                &checkpoint.absolute_path,
+            ))?;
             self.record(
                 &checkpoint.id,
-                &checkpoint.absolute_path,
+                &identity.to_string_lossy(),
                 &checkpoint.path,
                 FileChangeContent {
                     hash: checkpoint.hash_before.as_deref(),
@@ -112,7 +167,10 @@ impl FileChangeScope {
     }
 
     fn scoped_mutation_id(&self, mutation_id: &str) -> String {
-        self.owner.mutation_namespace.as_ref().map(|namespace| format!("{namespace}:{mutation_id}"))
+        self.owner
+            .mutation_namespace
+            .as_ref()
+            .map(|namespace| format!("{namespace}:{mutation_id}"))
             .unwrap_or_else(|| mutation_id.to_string())
     }
 
@@ -392,10 +450,12 @@ mod tests {
         registry.register(Box::new(crate::tools::create_file_tool::CreateFileTool));
         registry.register(Box::new(crate::tools::edit_file_tool::EditFileTool));
         registry.register(Box::new(crate::tools::multi_edit_tool::MultiEditTool));
+        registry.register(Box::new(crate::tools::write_note_tool::WriteNoteTool));
         let registry = registry.filtered(&[
             "create_file".into(),
             "edit_file".into(),
             "multi_edit".into(),
+            "write_note".into(),
         ]);
         for (index, (tool, args)) in [
             (
@@ -414,6 +474,10 @@ mod tests {
                 "multi_edit",
                 json!({ "path": path, "edits": [{ "old_str": "two", "new_str": "second" }] }),
             ),
+            (
+                "write_note",
+                json!({ "filename": "extra.md", "content": "note\n", "mode": "create" }),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -429,7 +493,7 @@ mod tests {
         let result = summary(&db, &scope);
         assert_eq!(
             (result.files.len(), result.additions, result.deletions),
-            (1, 2, 0)
+            (2, 3, 0)
         );
         assert_eq!(result.files[0].operation, "create");
         assert!(!result.partial);
@@ -443,31 +507,241 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(diff.contains("first") && diff.contains("second") && !diff.contains("external"));
+        let storage = directory.path().join("persisted.db");
+        db.conn()
+            .execute("VACUUM INTO ?1", [storage.to_string_lossy().as_ref()])
+            .unwrap();
+        let reopened = Database::new(&storage).unwrap();
+        assert_eq!(summary(&reopened, &scope).files.len(), 2);
+        assert!(reopened
+            .turn_file_diff(
+                &scope.owner.conversation_id,
+                "turn-1",
+                &result.files[0].absolute_path
+            )
+            .unwrap()
+            .to_string()
+            .contains("second"));
+    }
+
+    #[tokio::test]
+    async fn native_copy_and_text_edit_share_one_canonical_baseline() {
+        use crate::tools::{ToolExecutionContext, ToolRegistry};
+        let (db, scope) = setup();
+        let directory = tempfile::tempdir().unwrap();
+        db.add_source(crate::sources::CreateSourceInput {
+            root_path: directory.path().to_string_lossy().into(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .unwrap();
+        let path = directory.path().join("file.txt");
+        let backup = directory.path().join("backup.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        std::fs::write(&backup, "original\n").unwrap();
+        std::fs::create_dir(directory.path().join("sub")).unwrap();
+        let mut registry = ToolRegistry::new().with_file_change_owner(scope.owner.clone());
+        registry.register(Box::new(crate::tools::edit_file_tool::EditFileTool));
+        registry.register(Box::new(crate::tools::run_shell_tool::RunShellTool));
+        let edit = json!({ "path": path, "old_str": "original", "new_str": "changed" }).to_string();
+        let result = registry
+            .execute(
+                "edit_file",
+                ToolExecutionContext::new("edit", &edit, &db, &[]),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(summary(&db, &scope).files.len(), 1);
+        let copy = json!({ "program": "cp", "args": [backup, directory.path().join("sub/../file.txt")], "cwd": directory.path() }).to_string();
+        let result = registry
+            .execute(
+                "run_shell",
+                ToolExecutionContext::new("copy", &copy, &db, &[]),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.content);
+        let result = summary(&db, &scope);
+        assert!(result.files.is_empty(), "{result:?}");
+        assert!(!result.partial);
+    }
+
+    #[test]
+    fn user_restore_clears_active_changes_and_keeps_completed_history() {
+        let (db, scope) = setup();
+        let directory = tempfile::tempdir().unwrap();
+        db.add_source(crate::sources::CreateSourceInput {
+            root_path: directory.path().to_string_lossy().into(),
+            include_globs: vec![],
+            exclude_globs: vec![],
+            watch_enabled: false,
+        })
+        .unwrap();
+        db.conn().execute("INSERT INTO messages(id,conversation_id,role,content,sort_order) VALUES ('restore-user',?1,'user','Edit',0)", [&scope.owner.conversation_id]).unwrap();
+        db.conn().execute("INSERT INTO conversation_turns(id,conversation_id,user_message_id,status) VALUES ('turn-1',?1,'restore-user','running')", [&scope.owner.conversation_id]).unwrap();
+        db.conn().execute("INSERT INTO agent_task_runs(id,conversation_id,turn_id,user_message_id,status) VALUES ('restore-run',?1,'turn-1','restore-user','running')", [&scope.owner.conversation_id]).unwrap();
+        let path = directory.path().join("file.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        let checkpoint = db
+            .create_file_checkpoint(crate::file_checkpoint::CreateFileCheckpointInput {
+                conversation_id: Some(&scope.owner.conversation_id),
+                tool_call_id: "edit",
+                tool_name: "edit_file",
+                operation: "edit",
+                path: "file.txt",
+                absolute_path: &path,
+            })
+            .unwrap();
+        std::fs::write(&path, "changed\n").unwrap();
+        scope.record_checkpoint(&checkpoint, b"changed\n");
+        db.conn()
+            .execute(
+                "UPDATE agent_task_runs SET status='waiting_approval' WHERE id='restore-run'",
+                [],
+            )
+            .unwrap();
+        db.restore_file_checkpoint(&checkpoint.id).unwrap();
+        assert!(summary(&db, &scope).files.is_empty());
+        db.conn()
+            .execute(
+                "UPDATE agent_task_runs SET status='cancelling' WHERE id='restore-run'",
+                [],
+            )
+            .unwrap();
+        std::fs::write(&path, "another change\n").unwrap();
+        db.record_active_file_change(&path, Some(b"original\n"), Some(b"another change\n"));
+        db.restore_file_checkpoint(&checkpoint.id).unwrap();
+        assert!(summary(&db, &scope).files.is_empty());
+        std::fs::write(&path, "saved\n").unwrap();
+        db.record_active_file_change(&path, Some(b"original\n"), Some(b"saved\n"));
+        db.conn()
+            .execute(
+                "UPDATE agent_task_runs SET status='completed' WHERE id='restore-run'",
+                [],
+            )
+            .unwrap();
+        db.restore_file_checkpoint(&checkpoint.id).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "original\n");
+        let result = summary(&db, &scope);
+        assert_eq!(result.files.len(), 1);
+        assert!(db
+            .turn_file_diff(
+                &scope.owner.conversation_id,
+                "turn-1",
+                &result.files[0].absolute_path
+            )
+            .unwrap()
+            .to_string()
+            .contains("saved"));
+    }
+
+    #[test]
+    fn interrupted_pending_changes_settle_without_polling_forever_after_restart() {
+        let (db, scope) = setup();
+        let pending = scope.begin_pending("copy");
+        assert!(summary(&db, &scope).pending);
+        drop(pending);
+        let result = summary(&db, &scope);
+        assert!(!result.pending && result.partial);
+        let pending = scope.begin_pending("next-copy");
+        assert!(summary(&db, &scope).pending);
+        assert_eq!(db.recover_pending_file_changes().unwrap(), 1);
+        let result = summary(&db, &scope);
+        assert!(!result.pending && result.partial);
+        pending.finish(true);
     }
 }
 
 impl Database {
+    /// Only desktop startup clears owners lost with the preceding process.
+    pub fn recover_pending_file_changes(&self) -> Result<usize, CoreError> {
+        Ok(self.conn().execute(
+            "UPDATE turn_file_change_events SET pending=0,partial=1 WHERE pending=1",
+            [],
+        )?)
+    }
+
+    pub fn record_active_file_change(
+        &self,
+        path: &std::path::Path,
+        before: Option<&[u8]>,
+        after: Option<&[u8]>,
+    ) {
+        let result = (|| -> Result<(), CoreError> {
+            let identity = crate::file_mutation::canonical_file_identity(path)?
+                .to_string_lossy()
+                .into_owned();
+            let owners: Vec<FileChangeOwner> = {
+                let conn = self.conn();
+                let mut statement = conn.prepare("SELECT DISTINCT changes.conversation_id,changes.turn_id FROM turn_file_changes changes
+                    JOIN agent_task_runs run ON run.conversation_id=changes.conversation_id AND run.turn_id=changes.turn_id
+                    WHERE changes.absolute_path=?1 AND run.status IN ('queued','running','waiting_approval','paused','awaiting_user_input','cancelling')")?;
+                let owners = statement
+                    .query_map([&identity], |row| {
+                        Ok(FileChangeOwner {
+                            conversation_id: row.get(0)?,
+                            turn_id: row.get(1)?,
+                            mutation_namespace: None,
+                        })
+                    })?
+                    .collect::<Result<_, _>>()?;
+                owners
+            };
+            let before_hash = before.map(|bytes| blake3::hash(bytes).to_hex().to_string());
+            let after_hash = after.map(|bytes| blake3::hash(bytes).to_hex().to_string());
+            let mutation = format!("user-file-change:{}", uuid::Uuid::new_v4());
+            for owner in owners {
+                let scope = FileChangeScope {
+                    db: self.clone(),
+                    owner,
+                };
+                let result = scope.record(
+                    &mutation,
+                    &identity,
+                    &identity,
+                    FileChangeContent {
+                        hash: before_hash.as_deref(),
+                        bytes: before,
+                    },
+                    FileChangeContent {
+                        hash: after_hash.as_deref(),
+                        bytes: after,
+                    },
+                );
+                scope.settle_recording(&mutation, result);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(%error, "Could not update an active turn after a user file change");
+        }
+    }
+
     pub fn conversation_file_changes(
         &self,
         conversation_id: &str,
     ) -> Result<Vec<TurnFileChangeSummary>, CoreError> {
         let conn = self.conn();
         let mut summaries = BTreeMap::new();
-        let mut events = conn.prepare("SELECT turn_id,MAX(id),MAX(partial) FROM turn_file_change_events WHERE conversation_id=?1 GROUP BY turn_id")?;
+        let mut events = conn.prepare("SELECT turn_id,MAX(id),MAX(partial),MAX(pending) FROM turn_file_change_events WHERE conversation_id=?1 GROUP BY turn_id")?;
         for row in events.query_map([conversation_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, u64>(1)?,
                 row.get::<_, bool>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })? {
-            let (turn_id, revision, partial) = row?;
+            let (turn_id, revision, partial, pending) = row?;
             summaries.insert(
                 turn_id.clone(),
                 TurnFileChangeSummary {
                     turn_id,
                     revision,
                     partial,
+                    pending,
                     ..Default::default()
                 },
             );

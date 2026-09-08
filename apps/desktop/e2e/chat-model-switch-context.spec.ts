@@ -93,8 +93,12 @@ test.beforeEach(async ({ page }) => {
         case 'get_conversation_file_changes_cmd': {
           if (!localStorage.getItem('e2e-change-fixture')) return [];
           const revision = Number(localStorage.getItem('e2e-change-revision') ?? 1);
-          return [{ turnId: 'turn-changes', revision, partial: true, additions: revision === 1 ? 11 : 2, deletions: revision === 1 ? 11 : 1, unknownFiles: 1,
+          const snapshot = [{ turnId: 'turn-changes', revision, partial: true, additions: revision === 1 ? 11 : 2, deletions: revision === 1 ? 11 : 1, unknownFiles: 1,
             files: Array.from({ length: revision === 1 ? 12 : 2 }, (_, index) => ({ path: `src/file-${index}.txt`, absolutePath: `C:/workspace/src/file-${index}.txt`, operation: 'edit', additions: index === 11 ? null : 1, deletions: index === 11 ? null : 1, contentKind: index === 11 ? 'binary' : 'text', partial: false, revision })) }];
+          const fixture = window as unknown as { __changeQueries?: number; __releaseChangeQuery?: () => void };
+          fixture.__changeQueries = (fixture.__changeQueries ?? 0) + 1;
+          if (localStorage.getItem('e2e-hold-change-query') && fixture.__changeQueries === 1) await new Promise<void>(resolve => { fixture.__releaseChangeQuery = resolve; });
+          return snapshot;
         }
         case 'get_turn_file_diff_cmd': {
           const calls = window as unknown as { __diffRequests?: string[] };
@@ -246,6 +250,23 @@ test.beforeEach(async ({ page }) => {
       },
     };
   });
+});
+
+test('a remounted completed turn fetches fresh changes after an older query settles', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-change-fixture', '1');
+    localStorage.setItem('e2e-hold-change-query', '1');
+  });
+  await page.goto('/chat/conv-model-switch');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __changeQueries?: number }).__changeQueries ?? 0)).toBe(1);
+  await page.locator('a[href="/settings"]').first().click();
+  await expect(page.getByTestId('settings-page')).toBeVisible();
+  await page.evaluate(() => localStorage.setItem('e2e-change-revision', '2'));
+  await page.goBack();
+  await expect(page.getByTestId('chat-input-textarea')).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __releaseChangeQuery?: () => void }).__releaseChangeQuery?.());
+  await expect(page.getByTestId('turn-file-changes').getByRole('button', { name: /Changed 2 files/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __changeQueries?: number }).__changeQueries ?? 0)).toBeGreaterThanOrEqual(2);
 });
 
 test('turn file changes stay collapsed, load saved details on demand and survive reload', async ({ page }, testInfo) => {

@@ -213,6 +213,12 @@ impl Database {
         let checkpoint = self.get_file_checkpoint(checkpoint_id)?;
         let target = PathBuf::from(&checkpoint.absolute_path);
         validate_restore_target_in_sources(self, &target)?;
+        let _mutation = crate::file_mutation::lock_file_mutation(&target, None)?;
+        let previous_bytes = if target.exists() {
+            Some(std::fs::read(&target)?)
+        } else {
+            None
+        };
 
         let conn = self.conn();
         let content_before: Option<Vec<u8>> = conn
@@ -235,6 +241,7 @@ impl Database {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&target, &bytes)?;
+            self.record_active_file_change(&target, previous_bytes.as_deref(), Some(&bytes));
             Ok(FileCheckpointRestore {
                 checkpoint,
                 action: "restored".to_string(),
@@ -250,6 +257,7 @@ impl Database {
                 }
                 std::fs::remove_file(&target)?;
             }
+            self.record_active_file_change(&target, previous_bytes.as_deref(), None);
             Ok(FileCheckpointRestore {
                 checkpoint,
                 action: "deleted_created_file".to_string(),

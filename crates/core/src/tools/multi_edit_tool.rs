@@ -96,6 +96,11 @@ impl Tool for MultiEditTool {
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
         let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
+        let mutation_cancel = context
+            .cancel_token
+            .map(tokio_util::sync::CancellationToken::child_token)
+            .unwrap_or_default();
+        let _cancel_mutation_on_drop = mutation_cancel.clone().drop_guard();
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -145,6 +150,8 @@ impl Tool for MultiEditTool {
             )
             .map_err(CoreError::InvalidInput)?;
 
+            let _mutation =
+                crate::file_mutation::lock_file_mutation(&canonical, Some(&mutation_cancel))?;
             let original = match read_text_utf8(&canonical) {
                 Ok(content) => content,
                 Err(message) => {
@@ -205,6 +212,11 @@ impl Tool for MultiEditTool {
                 absolute_path: &canonical,
             })?;
 
+            if mutation_cancel.is_cancelled() {
+                return Err(CoreError::InvalidInput(
+                    "File mutation cancelled before writing".into(),
+                ));
+            }
             if let Err(e) = std::fs::write(&canonical, &content) {
                 return Ok(ToolResult {
                     call_id,
@@ -449,7 +461,7 @@ mod tests {
             result.artifacts.as_ref().unwrap()["diffStats"]["deletions"],
             2
         );
-        assert_eq!(result.artifacts.as_ref().unwrap()["diffStats"]["hunks"], 2);
+        assert_eq!(result.artifacts.as_ref().unwrap()["diffStats"]["hunks"], 1);
         assert_eq!(
             result.artifacts.as_ref().unwrap()["diffStats"]["replacements"],
             2

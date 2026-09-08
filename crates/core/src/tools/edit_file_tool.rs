@@ -402,6 +402,11 @@ impl Tool for EditFileTool {
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
         let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
+        let mutation_cancel = context
+            .cancel_token
+            .map(tokio_util::sync::CancellationToken::child_token)
+            .unwrap_or_default();
+        let _cancel_mutation_on_drop = mutation_cancel.clone().drop_guard();
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -485,6 +490,7 @@ impl Tool for EditFileTool {
                         });
                     }
 
+                    let _mutation = crate::file_mutation::lock_file_mutation(&canonical, Some(&mutation_cancel))?;
                     let content = match read_text_utf8(&canonical) {
                         Ok(c) => c,
                         Err(msg) => {
@@ -579,6 +585,7 @@ impl Tool for EditFileTool {
                         absolute_path: &canonical,
                     })?;
 
+                    if mutation_cancel.is_cancelled() { return Err(CoreError::InvalidInput("File mutation cancelled before writing".into())); }
                     if let Err(e) = std::fs::write(&canonical, &new_content) {
                         return Ok(ToolResult {
                             call_id,
@@ -659,6 +666,7 @@ impl Tool for EditFileTool {
                         });
                     }
 
+                    let _mutation = crate::file_mutation::lock_file_mutation(&canonical, Some(&mutation_cancel))?;
                     // Create parent directories if needed.
                     if let Some(parent) = canonical.parent() {
                         if !parent.exists() {
@@ -675,6 +683,7 @@ impl Tool for EditFileTool {
                         absolute_path: &canonical,
                     })?;
 
+                    if mutation_cancel.is_cancelled() { return Err(CoreError::InvalidInput("File mutation cancelled before writing".into())); }
                     if let Err(e) = std::fs::write(&canonical, file_content) {
                         return Ok(ToolResult {
                             call_id,

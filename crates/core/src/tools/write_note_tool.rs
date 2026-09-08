@@ -108,6 +108,12 @@ impl Tool for WriteNoteTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
+        let mutation_cancel = context
+            .cancel_token
+            .map(tokio_util::sync::CancellationToken::child_token)
+            .unwrap_or_default();
+        let _cancel_mutation_on_drop = mutation_cancel.clone().drop_guard();
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -189,6 +195,7 @@ impl Tool for WriteNoteTool {
                 }
             }
 
+            let _mutation = crate::file_mutation::lock_file_mutation(&file_path, Some(&mutation_cancel))?;
             if mode == "create" && file_path.exists() {
                 return Ok(ToolResult {
                     call_id: call_id.clone(),
@@ -217,6 +224,7 @@ impl Tool for WriteNoteTool {
                 absolute_path: &file_path,
             })?;
 
+            if mutation_cancel.is_cancelled() { return Err(CoreError::InvalidInput("File mutation cancelled before writing".into())); }
             // Execute the write based on mode.
             match mode.as_str() {
                 "create" => {
@@ -238,6 +246,10 @@ impl Tool for WriteNoteTool {
                 _ => unreachable!(),
             }
 
+            if let Some(scope) = &file_changes {
+                if mode == "append" && existed_before { scope.record_append(&checkpoint, args.content.as_bytes()); }
+                else { scope.record_checkpoint(&checkpoint, args.content.as_bytes()); }
+            }
             let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
             let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
             let diff = if !existed_before && mode == "create" {

@@ -2849,6 +2849,7 @@ Every answer that uses knowledge base search results.
             turn_id TEXT NOT NULL,
             mutation_id TEXT NOT NULL,
             partial INTEGER NOT NULL DEFAULT 0,
+            pending INTEGER NOT NULL DEFAULT 0,
             UNIQUE(conversation_id, turn_id, mutation_id)
         );
         CREATE INDEX idx_turn_file_change_events ON turn_file_change_events(conversation_id, turn_id);",
