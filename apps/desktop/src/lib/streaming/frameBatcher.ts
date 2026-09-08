@@ -10,7 +10,7 @@ function requestBrowserFrame(callback: () => void): unknown {
 /** Coalesce ordinary stream mutations into one subscriber notification per frame. */
 export class ConversationFrameBatcher {
   private readonly pending = new Set<string>();
-  private framePending = false;
+  private scheduled: object | null = null;
 
   constructor(
     private readonly flush: (conversationId: string) => void,
@@ -19,15 +19,24 @@ export class ConversationFrameBatcher {
 
   schedule(conversationId: string): void {
     this.pending.add(conversationId);
-    if (this.framePending) return;
+    if (this.scheduled) return;
 
-    this.framePending = true;
-    this.requestFrame(() => {
-      this.framePending = false;
+    const batch = {};
+    this.scheduled = batch;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const deliver = () => {
+      if (this.scheduled !== batch) return;
+      this.scheduled = null;
+      if (deadline !== undefined) clearTimeout(deadline);
       const conversations = [...this.pending];
       this.pending.clear();
       conversations.forEach(this.flush);
-    });
+    };
+    // Occluded native WebViews can suspend requestAnimationFrame. A bounded
+    // timer keeps task state responsive, and the batch token rejects a late
+    // callback when the WebView starts painting again.
+    deadline = setTimeout(deliver, 100);
+    this.requestFrame(deliver);
   }
 
   /** Urgent state must be visible immediately and must not be replayed next frame. */

@@ -402,6 +402,62 @@ test('stale generations are rejected between durable queries', async () => {
   assertEqual(calls.runEventPages, 0, 'no later query runs after staleness is observed');
 });
 
+test('recovery deadline applies to each progressing page instead of the whole backlog', async () => {
+  const { port } = createPort({
+    async listRunEventPage(_runId, afterEventSeq) {
+      await new Promise(resolve => setTimeout(resolve, 12));
+      const next = afterEventSeq + 1;
+      return {
+        events: [runEvent(next)], durableHighWater: 5,
+        nextAfterEventSeq: next, hasMore: next < 5,
+      };
+    },
+  });
+  const outcome = await new DurableRunReconciler(port, { queryTimeoutMs: 40 }).reconcile({
+    reason: 'watchdog', conversationId: 'conversation-1', expectedRunId: 'run-1',
+    missingRunConfirmations: 0,
+  });
+  assert(outcome.kind === 'active', 'a progressing backlog must not repeatedly fail the 10-second recovery window');
+  assertEqual(outcome.snapshot.runEvents.length, 5, 'every bounded page reaches the projection');
+});
+
+test('a stalled auxiliary task timeline cannot hide a completed canonical answer', async () => {
+  const { port } = createPort({
+    async listTaskRuns() { return [taskRun('completed')]; },
+    async listTaskEvents() { return new Promise(() => {}); },
+    async loadConversation() {
+      return [{ id: 'conversation-1' } as Conversation, [
+        message('user-1', 'user', 'Question', 1), message('answer-1', 'assistant', 'Completed result', 2),
+      ]];
+    },
+  });
+  const outcome = await new DurableRunReconciler(port, { queryTimeoutMs: 5 }).reconcile({
+    reason: 'watchdog', conversationId: 'conversation-1', expectedRunId: 'run-1',
+    missingRunConfirmations: 0,
+  });
+  assert(outcome.kind === 'completed', 'canonical completion must survive an unavailable auxiliary timeline');
+  assertEqual(outcome.finalMessage.content, 'Completed result', 'the completed answer becomes visible without restarting');
+});
+
+test('repeated recovery deadlines reuse one unresolved native query', async () => {
+  let requests = 0;
+  let finish: (runs: AgentTaskRun[]) => void = () => {};
+  const pending = new Promise<AgentTaskRun[]>(resolve => { finish = resolve; });
+  const { port } = createPort({
+    listTaskRuns() { requests += 1; return pending; },
+  });
+  const reconciler = new DurableRunReconciler(port, { queryTimeoutMs: 5 });
+  const request = {
+    reason: 'watchdog' as const, conversationId: 'conversation-1',
+    expectedRunId: 'run-1', missingRunConfirmations: 0,
+  };
+  assertEqual((await reconciler.reconcile(request)).kind, 'unavailable', 'first deadline is bounded');
+  assertEqual((await reconciler.reconcile(request)).kind, 'unavailable', 'retry remains bounded');
+  assertEqual(requests, 1, 'a native IPC request that cannot be cancelled must not accumulate duplicates');
+  finish([taskRun('running')]);
+  assertEqual((await reconciler.reconcile(request)).kind, 'active', 'the original request can still recover');
+});
+
 test('backend query failures return a typed unavailable outcome', async () => {
   const { port, calls } = createPort({
     async listTaskRuns() { throw new Error('database busy'); },
