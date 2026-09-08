@@ -584,7 +584,7 @@ export const closeBrowserSession = (sessionId: string) =>
 export interface FilePreview {
   path: string;
   displayName: string;
-  sourceId: string;
+  sourceId: string | null;
   sourceName: string;
   extension: string;
   mimeType: string;

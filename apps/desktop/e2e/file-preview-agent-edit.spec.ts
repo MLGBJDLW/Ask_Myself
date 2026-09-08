@@ -486,7 +486,7 @@ test.beforeEach(async ({ page }) => {
           return {
             path: 'D:\\Vault\\notes\\agent-edit.md',
             displayName: 'agent-edit.md',
-            sourceId: 'src-agent-edit',
+            sourceId: localStorage.getItem('e2e-unindexed-file') ? null : 'src-agent-edit',
             sourceName: 'Notes',
             extension: '.md',
             mimeType: 'text/markdown',
@@ -582,7 +582,9 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('sends an exact selected file range to the agent edit flow', async ({ page }) => {
+for (const unindexed of [false, true]) {
+test(`sends an exact selected file range to the agent edit flow${unindexed ? ' outside indexed sources' : ''}`, async ({ page }) => {
+  if (unindexed) await page.addInitScript(() => localStorage.setItem('e2e-unindexed-file', '1'));
   await page.goto('/chat/conv-agent-edit');
 
   await page.getByRole('button', { name: /agent-edit\.md/i }).click();
@@ -625,8 +627,9 @@ test('sends an exact selected file range to the agent edit flow', async ({ page 
 
   await expect
     .poll(() => page.evaluate(() => window.__lastSourceIds ?? []))
-    .toEqual(['src-agent-edit']);
+    .toEqual(unindexed ? [] : ['src-agent-edit']);
 });
+}
 
 test('renders dedicated SVG icons for code and document file badges', async ({ page }) => {
   await page.goto('/chat/conv-agent-edit');

@@ -724,7 +724,7 @@ mod tests {
     };
     use super::preview::{
         append_preview_warning, build_file_preview, default_app_launch_command,
-        file_explorer_launch_command, resolve_source_file,
+        file_explorer_launch_command, resolve_local_file, save_text_file,
     };
     use super::skills_mcp::filter_desktop_builtin_skills_by_package_host;
     use super::workflows::{
@@ -1860,6 +1860,51 @@ mod tests {
     }
 
     #[test]
+    fn preview_opens_absolute_file_without_registered_sources() {
+        let root = unique_temp_dir("preview-unindexed");
+        let file = root.join("blackhole.html");
+        std::fs::write(&file, "<html><body>Black hole</body></html>").unwrap();
+        let db = Database::open_memory().unwrap();
+        let preview = build_file_preview(&db, &file.to_string_lossy(), None)
+            .expect("an explicit local file must open without resource registration");
+        assert!(preview.content.as_deref().unwrap().contains("Black hole"));
+        assert!(preview.editable);
+        assert!(preview.source_id.is_none());
+        assert!(db.list_sources().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_saves_unindexed_file_with_checkpoint_and_without_reindexing() {
+        let root = unique_temp_dir("preview-unindexed-save");
+        let source_root = unique_temp_dir("preview-other-source");
+        let file = root.join("blackhole.html");
+        std::fs::write(&file, "<h1>Before</h1>").unwrap();
+        let db = db_with_source(&source_root);
+        let preview = build_file_preview(&db, &file.to_string_lossy(), None).unwrap();
+        let input = serde_json::from_value(serde_json::json!({
+            "path": file, "content": "<h1>After</h1>", "expectedHash": preview.hash,
+        }))
+        .unwrap();
+        let saved = save_text_file(&db, input).unwrap();
+        assert_eq!(saved.reindex_status, "not_indexed");
+        assert!(saved.reindex_detail.is_none());
+        assert!(!saved.checkpoint_id.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "<h1>After</h1>");
+        assert_eq!(db.list_sources().unwrap().len(), 1);
+        let stale = serde_json::from_value(serde_json::json!({
+            "path": file, "content": "stale", "expectedHash": preview.hash,
+        }))
+        .unwrap();
+        assert!(save_text_file(&db, stale)
+            .unwrap_err()
+            .contains("changed on disk"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "<h1>After</h1>");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[test]
     fn preview_resolves_unique_bare_filename_below_source_root() {
         let root = unique_temp_dir("preview-source");
         let nested = root.join("scripts").join("generated");
@@ -1868,7 +1913,7 @@ mod tests {
         std::fs::write(&file, "print('ok')\n").expect("write file");
         let db = db_with_source(&root);
 
-        let resolved = resolve_source_file(&db, "part2.py").expect("resolve bare filename");
+        let resolved = resolve_local_file(&db, "part2.py").expect("resolve bare filename");
 
         assert_eq!(resolved.canonical, std::fs::canonicalize(&file).unwrap());
         let _ = std::fs::remove_dir_all(root);

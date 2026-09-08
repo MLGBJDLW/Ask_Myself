@@ -1067,7 +1067,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
       setPreview(result.preview);
       setDraft(result.preview.content ?? '');
       toast.success(labels.saved);
-      if (result.reindexStatus !== 'ok') {
+      if (result.reindexStatus === 'error') {
         toast.warning(`${labels.reindexFailed}: ${result.reindexDetail ?? ''}`);
       }
     } catch (err) {
@@ -1176,7 +1176,7 @@ export function FilePreviewProvider({ children }: { children: ReactNode }) {
     navigate('/chat', {
       state: {
         initialMessage: prompt,
-        sourceIds: [preview.sourceId],
+        sourceIds: preview.sourceId ? [preview.sourceId] : [],
       },
     });
     setOpen(false);
