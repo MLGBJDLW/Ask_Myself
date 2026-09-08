@@ -622,6 +622,11 @@ impl Tool for BrowserSessionTool {
             })
     }
 
+    fn is_concurrency_safe(&self, _args: &serde_json::Value) -> bool {
+        // Observations also replace the session's action references.
+        false
+    }
+
     fn is_read_only(&self, args: &serde_json::Value) -> bool {
         !self.requires_confirmation(args)
     }
@@ -741,11 +746,11 @@ impl Tool for BrowserSessionTool {
                     browser_tab
                         .allow_loopback
                         .store(is_loopback_url(&url), Ordering::Relaxed);
-                    browser_tab
-                        .tab
-                        .navigate_to(url.as_str())
-                        .and_then(|tab| tab.wait_until_navigated())
-                        .map_err(|error| format!("browser navigation failed: {error}"))?;
+                    super::browser_navigation::navigate_to_document(
+                        &browser_tab.tab,
+                        url.as_str(),
+                        Duration::from_secs(10),
+                    )?;
                 }
                 session.tabs.insert(tab_id_for_worker.clone(), browser_tab);
                 session.active_tab_id = tab_id_for_worker;
@@ -817,10 +822,11 @@ impl Tool for BrowserSessionTool {
                     .ok_or_else(|| format!("Unknown browser tab '{tab_id_for_worker}'"))?;
                 tab.allow_loopback
                     .store(is_loopback_url(&url), Ordering::Relaxed);
-                tab.tab
-                    .navigate_to(url.as_str())
-                    .and_then(|tab| tab.wait_until_navigated())
-                    .map_err(|error| format!("browser navigation failed: {error}"))?;
+                super::browser_navigation::navigate_to_document(
+                    &tab.tab,
+                    url.as_str(),
+                    Duration::from_secs(10),
+                )?;
                 Ok(())
             })
             .await?;

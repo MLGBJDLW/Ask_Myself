@@ -88,6 +88,7 @@ test.beforeEach(async ({ page }) => {
       picks: [] as string[],
       popups: [] as Array<Record<string, unknown>>,
       controls: [] as string[],
+      closedSessions: [] as string[],
     };
     const callbackMap = new Map<number, (event: unknown) => void>();
     const listeners = new Map<number, { event: string; handlerId: number }>();
@@ -345,6 +346,7 @@ test.beforeEach(async ({ page }) => {
           return clone(session);
         }
         case 'browser_close_session_cmd':
+          browserDiagnostics.closedSessions.push(String(args.sessionId));
           sessions.delete(String(args.sessionId ?? ''));
           return null;
         case 'browser_go_back_cmd':
@@ -439,6 +441,7 @@ test.beforeEach(async ({ page }) => {
 
 test('expanded browser controls stay below the app titlebar and close only the browser', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByTestId('app-workspace')).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('nexa:open-browser-workspace', {
     detail: { url: 'https://example.com' }, cancelable: true,
   })));
@@ -451,6 +454,9 @@ test('expanded browser controls stay below the app titlebar and close only the b
   await dock.getByRole('button', { name: 'Close Browser Workspace', exact: true }).click();
   await expect(dock).toHaveCount(0);
   await expect(page.getByTestId('app-titlebar')).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as {
+    __browserDiagnostics__: { closedSessions: string[] };
+  }).__browserDiagnostics__.closedSessions)).toHaveLength(1);
 });
 
 test('opens a shared Browser Workspace and attaches pointed page context', async ({ page }) => {

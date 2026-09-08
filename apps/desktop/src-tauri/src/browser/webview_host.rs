@@ -271,7 +271,7 @@ impl BrowserTrustedInputGuard {
         budget: TrustedInputEventBudget,
         expected: TrustedInputMatch,
     ) -> Result<ArmedTrustedInputGuard, String> {
-        let baseline_physical_input_epoch = physical_input_epoch()?;
+        let baseline_physical_input_epoch = physical_input_epoch(&self.webview)?;
         let operation_id = uuid::Uuid::new_v4().simple().to_string();
         let expression = trusted_input_guard_expression(
             "arm",
@@ -289,7 +289,7 @@ impl BrowserTrustedInputGuard {
                     .to_string(),
             );
         }
-        if physical_input_epoch()? != baseline_physical_input_epoch {
+        if physical_input_epoch(&self.webview)? != baseline_physical_input_epoch {
             let disarm = trusted_input_guard_expression("disarm", &self.token, &operation_id, None);
             let _ = eval_json(&self.webview, &disarm).await;
             return Err(
@@ -312,7 +312,7 @@ pub struct ArmedTrustedInputGuard {
     guard: BrowserTrustedInputGuard,
     operation_id: String,
     budget: TrustedInputEventBudget,
-    physical_input_epoch: u32,
+    physical_input_epoch: Option<u32>,
     armed: bool,
 }
 
@@ -346,7 +346,7 @@ impl ArmedTrustedInputGuard {
     }
 
     fn physical_input_changed(&self) -> Result<bool, String> {
-        Ok(physical_input_epoch()? != self.physical_input_epoch)
+        Ok(physical_input_epoch(&self.guard.webview)? != self.physical_input_epoch)
     }
 }
 
@@ -386,9 +386,19 @@ fn trusted_input_guard_expression(
 }
 
 #[cfg(windows)]
-fn physical_input_epoch() -> Result<u32, String> {
+fn physical_input_epoch(webview: &Webview) -> Result<Option<u32>, String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
+    // CDP targets this WebView without taking system focus. Physical input in
+    // another foreground application must not cancel it. A focus transition
+    // into or out of Nexa during an armed sequence still cancels that sequence.
+    if !webview
+        .window()
+        .is_focused()
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(None);
+    }
     let mut info = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
@@ -399,12 +409,33 @@ fn physical_input_epoch() -> Result<u32, String> {
             std::io::Error::last_os_error()
         ));
     }
-    Ok(info.dwTime)
+    Ok(Some(info.dwTime))
 }
 
 #[cfg(not(windows))]
-fn physical_input_epoch() -> Result<u32, String> {
-    Ok(0)
+fn physical_input_epoch(_webview: &Webview) -> Result<Option<u32>, String> {
+    Ok(None)
+}
+
+/// A hover is scoped to the page viewport and never moves the system cursor.
+/// Mouse movement does not consume the trusted down/key/input takeover budget.
+#[cfg(windows)]
+pub async fn dispatch_webview_pointer_move(
+    webview: &Webview,
+    x: f64,
+    y: f64,
+    modifiers: &[String],
+) -> Result<(), String> {
+    let payload = trusted_pointer_payloads(x, y, "left", modifiers, 1)?.remove(0);
+    call_devtools_protocol_method(
+        webview,
+        "Input.dispatchMouseEvent",
+        payload,
+        TRUSTED_INPUT_TIMEOUT,
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Dispatch a trusted WebView pointer click through the DevTools input domain.

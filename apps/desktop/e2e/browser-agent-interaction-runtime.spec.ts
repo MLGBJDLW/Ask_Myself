@@ -66,6 +66,33 @@ test('Agent browser interaction shows cursor motion and commits verified pointer
   ).actionEvents.filter(event => event.type === 'dblclick').length)).toBe(1);
 });
 
+test('screenshot confirmation preserves the element references advertised to the agent', async ({ page }) => {
+  await page.setContent('<!doctype html><button onclick="this.textContent=\'Verified\'">Open details</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  const advertised = await observe(page);
+  const ref = advertised.elements.find(element => element.name === 'Open details')!.ref;
+  await page.screenshot();
+  // This is the native observation path: DOM snapshot, screenshot, then a
+  // second snapshot that verifies the captured page before returning refs.
+  await observe(page);
+  await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(advertised, 'click', ref));
+  expect((await observe(page)).elements.some(element => element.name === 'Verified')).toBe(true);
+});
+
+test('an unrelated live counter does not invalidate an unchanged action target', async ({ page }) => {
+  await page.setContent('<!doctype html><p id="fps">FPS 60</p><button onclick="this.textContent=\'Paused\'">Pause</button>');
+  await page.addScriptTag({ content: runtimeSource });
+  const advertised = await observe(page);
+  const ref = advertised.elements.find(element => element.name === 'Pause')!.ref;
+  await page.locator('#fps').evaluate(el => { el.textContent = 'FPS 59'; });
+  await page.evaluate(value => (
+    window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
+  ).__NEXA_BROWSER_RUNTIME__.act(value), actionInput(advertised, 'click', ref));
+  expect((await observe(page)).elements.some(element => element.name === 'Paused')).toBe(true);
+});
+
 test('Agent drag uses observation-scoped endpoints and takeover removes its visual cursor', async ({ page }) => {
   await page.setContent(`
     <!doctype html>
@@ -176,7 +203,7 @@ test('same-length interactive attribute changes invalidate an observation', asyn
   await expect(page.evaluate(value => (
     window as unknown as { __NEXA_BROWSER_RUNTIME__: BrowserBridge }
   ).__NEXA_BROWSER_RUNTIME__.previewAction(value), actionInput(observation, 'click', targetRef)))
-    .rejects.toThrow(/page content changed/);
+    .rejects.toThrow(/interactive page state changed/);
 });
 
 test('trusted input preparation validates, focuses, and selects editable targets', async ({ page }) => {
@@ -364,6 +391,7 @@ function actionInput(
     modifiers: [],
     userEpoch: observation.userEpoch,
     domFingerprint: observation.domFingerprint,
+    interactionFingerprint: observation.interactionFingerprint,
     expected: observation.elements.find(element => element.ref === targetRef),
     expectedEnd: observation.elements.find(element => element.ref === endRef),
   };
@@ -378,6 +406,7 @@ interface BrowserObservation {
   url: string;
   userEpoch: number;
   domFingerprint: string;
+  interactionFingerprint: string;
   elements: BrowserElement[];
 }
 
@@ -395,6 +424,7 @@ interface BrowserActionInput {
   modifiers: string[];
   userEpoch: number;
   domFingerprint: string;
+  interactionFingerprint: string;
   expected?: BrowserElement;
   expectedEnd?: BrowserElement;
 }

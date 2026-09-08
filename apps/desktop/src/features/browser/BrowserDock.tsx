@@ -782,8 +782,11 @@ export function BrowserDock({
     t,
   ]);
 
-  const retryCloseSession = useCallback(async () => {
-    if (!conversationId || !session || session.tabs.length !== 0 || busy) return;
+  const closeSession = useCallback(async (hideWorkspace: boolean) => {
+    if (!conversationId || !session) {
+      if (hideWorkspace) onOpenChange(false);
+      return;
+    }
     const scope = beginSessionRequest(conversationId, session.id);
     if (!scope) return;
     const busyGeneration = busyGenerationRef.current + 1;
@@ -792,27 +795,36 @@ export function BrowserDock({
     setLastError(null);
     try {
       await api.closeBrowserSession(session.id);
-      if (commitSession(scope, null)) {
-        toast.success(t('browser.cleanupCompleted'));
+      // sessionClosed may already have triggered a refresh. Finish the exact
+      // closed session without letting an older snapshot revive it, and never
+      // hide a different conversation or a replacement session.
+      if (conversationIdRef.current === conversationId
+        && conversationLifecycleRef.current.generation === scope.conversationGeneration
+        && (!sessionIdRef.current || sessionIdRef.current === session.id)) {
+        const closedScope = beginSessionRequest(conversationId);
+        if (closedScope && commitSession(closedScope, null)) {
+          if (hideWorkspace) onOpenChange(false);
+          else toast.success(t('browser.cleanupCompleted'));
+        }
       }
     } catch (error) {
       reportScopeError(scope, t('browser.actionFailed'), error);
+      void refresh();
     } finally {
-      if (
-        busyGenerationRef.current === busyGeneration
-        && sessionScopeOwnsCurrent(scope)
-      ) setBusy(false);
+      if (busyGenerationRef.current === busyGeneration) setBusy(false);
     }
   }, [
     beginSessionRequest,
-    busy,
     commitSession,
     conversationId,
+    onOpenChange,
+    refresh,
     reportScopeError,
     session,
-    sessionScopeOwnsCurrent,
     t,
   ]);
+
+  const retryCloseSession = useCallback(() => closeSession(false), [closeSession]);
 
   const startPick = useCallback(async (mode: 'element' | 'region') => {
     if (!conversationId || !session || !currentTab || !onSendArtifactToAgent) return;
@@ -1001,7 +1013,7 @@ export function BrowserDock({
               {fullScreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
           )}
-          <button type="button" onClick={() => onOpenChange(false)} className="grid h-8 w-8 place-items-center rounded-md text-text-tertiary hover:bg-surface-3 hover:text-text-primary" aria-label={t('browser.close')}>
+          <button type="button" onClick={() => void closeSession(true)} className="grid h-8 w-8 place-items-center rounded-md text-text-tertiary hover:bg-surface-3 hover:text-text-primary" aria-label={t('browser.close')}>
             <X size={15} />
           </button>
         </div>

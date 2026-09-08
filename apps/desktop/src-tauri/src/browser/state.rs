@@ -45,6 +45,7 @@ struct BrowserPageSnapshot {
     history_length: usize,
     user_epoch: u64,
     dom_fingerprint: String,
+    interaction_fingerprint: String,
     elements: Vec<BrowserElement>,
 }
 
@@ -146,6 +147,7 @@ struct StoredObservation {
     tab_id: String,
     url: String,
     dom_fingerprint: String,
+    interaction_fingerprint: String,
     user_epoch: u64,
     lease_generation: u64,
     elements: Vec<BrowserElement>,
@@ -333,19 +335,22 @@ impl BrowserState {
     /// synchronously rendezvous with this thread, so a worker must never call
     /// them while holding `inner`: navigation callbacks also need that mutex.
     /// Wry executes this closure inline when already on the UI thread.
-    fn on_ui_commit<T: Send + 'static>(
+    async fn on_ui_commit<T: Send + 'static>(
         &self,
         action: impl FnOnce(&Self) -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
         let state = self.clone();
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
         self.app
             .run_on_main_thread(move || {
-                let _ = sender.send(action(&state));
+                if !sender.is_closed() {
+                    let _ = sender.send(action(&state));
+                }
             })
             .map_err(|error| format!("Could not dispatch browser UI operation: {error}"))?;
-        receiver
-            .recv()
+        tokio::time::timeout(Duration::from_secs(10), receiver)
+            .await
+            .map_err(|_| "Browser UI operation did not respond within 10 seconds".to_string())?
             .map_err(|_| "Browser UI operation was interrupted".to_string())?
     }
 
@@ -364,10 +369,12 @@ impl BrowserState {
             .is_focused()
             .map_err(|error| format!("Could not read main window focus: {error}"))?;
         if !browser_host_window_allows_agent_action(visible, minimized, focused) {
-            return Err(
+            return Err(if cfg!(windows) {
+                "Browser action requires the Nexa window to be visible and restored"
+            } else {
                 "Browser action requires the Nexa window to be visible, restored, and focused"
-                    .to_string(),
-            );
+            }
+            .to_string());
         }
         Ok(())
     }
@@ -1077,7 +1084,9 @@ impl BrowserState {
         for (id, tab) in &session.tabs {
             if id == tab_id && session.workspace_visible {
                 tab.webview.show().map_err(|error| error.to_string())?;
-                let _ = tab.webview.set_focus();
+                if agent_call_id.is_none() {
+                    let _ = tab.webview.set_focus();
+                }
             } else {
                 let _ = tab.webview.hide();
                 tab.network_proxy.revoke_agent_network_access();
@@ -1643,7 +1652,7 @@ impl BrowserState {
             )?)
             .map_err(|error| format!("Could not decode browser visual confirmation: {error}"))?;
         if confirmation.url != snapshot.url
-            || confirmation.dom_fingerprint != snapshot.dom_fingerprint
+            || confirmation.interaction_fingerprint != snapshot.interaction_fingerprint
             || confirmation.user_epoch != snapshot.user_epoch
         {
             return Err(
@@ -1651,6 +1660,7 @@ impl BrowserState {
                     .to_string(),
             );
         }
+        let snapshot = confirmation;
         self.require_visible_focused_host_window()?;
         self.revalidate_agent_lease(session_id, tab_id, call_id, lease_generation)?;
         let content_hash = blake3::hash(snapshot.dom_fingerprint.as_bytes())
@@ -1692,6 +1702,7 @@ impl BrowserState {
                 tab_id: tab_id.to_string(),
                 url: snapshot.url.clone(),
                 dom_fingerprint: snapshot.dom_fingerprint.clone(),
+                interaction_fingerprint: snapshot.interaction_fingerprint.clone(),
                 user_epoch: snapshot.user_epoch,
                 lease_generation,
                 elements: snapshot.elements.clone(),
@@ -1856,6 +1867,7 @@ impl BrowserState {
             "scrollY": request.scroll_y,
             "userEpoch": observation.user_epoch,
             "domFingerprint": observation.dom_fingerprint,
+            "interactionFingerprint": observation.interaction_fingerprint,
             "expected": expected,
             "expectedEnd": expected_end,
         }))
@@ -1894,9 +1906,11 @@ impl BrowserState {
             // Acquire before the native preparation so a queued computer
             // action cannot make the returned element bounds stale while this
             // pointer commit waits for desktop ownership.
+            #[cfg(not(windows))]
             let _desktop_input_guard = nexa_core::browser_runtime::acquire_desktop_input_permit()
                 .await
                 .map_err(|error| error.to_string())?;
+            #[cfg(not(windows))]
             let _cross_process_guard =
                 nexa_core::browser_runtime::try_acquire_cross_process_input()
                     .map_err(|error| error.to_string())?;
@@ -1931,6 +1945,24 @@ impl BrowserState {
             let verification_baseline =
                 action_verification_baseline_from_preparation(&prepared, "pointer")?;
             self.require_visible_focused_host_window()?;
+            #[cfg(windows)]
+            {
+                self.revalidate_agent_lease(
+                    request.session_id,
+                    request.tab_id,
+                    request.call_id,
+                    observation.lease_generation,
+                )?;
+                request.commit_tracker.mark_committed();
+                super::webview_host::dispatch_webview_pointer_move(
+                    &self.webview(request.session_id, request.tab_id)?,
+                    target_bounds.x + target_bounds.width / 2.0,
+                    target_bounds.y + target_bounds.height / 2.0,
+                    request.modifiers,
+                )
+                .await?;
+            }
+            #[cfg(not(windows))]
             self.move_native_pointer_to_target(
                 request.session_id,
                 request.tab_id,
@@ -1939,7 +1971,9 @@ impl BrowserState {
                 observation.lease_generation,
                 &target_bounds,
                 &request.commit_tracker,
-            )?;
+            )
+            .await?;
+            #[cfg(not(windows))]
             drop(_desktop_input_guard);
             let effect_observed = self
                 .settle_after_agent_action(
@@ -2194,13 +2228,15 @@ impl BrowserState {
         // Validate the exact claimed observation, surface and lease immediately
         // before arming. The returned guard is cloned out of the runtime lock so
         // no synchronous mutex is held across a WebView await.
-        let trusted_guard = self.trusted_input_guard_for_action(
-            request.session_id,
-            request.tab_id,
-            request.observation_id,
-            request.call_id,
-            observation.lease_generation,
-        )?;
+        let trusted_guard = self
+            .trusted_input_guard_for_action(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                observation.lease_generation,
+            )
+            .await?;
         let armed_guard = trusted_guard
             .arm(budget, expected_input)
             .await
@@ -2215,13 +2251,16 @@ impl BrowserState {
         // Arming itself crosses the WebView boundary. Re-run the complete fence
         // before dispatch so a hide, resize, tab switch, takeover or navigation
         // that won that race cancels the action without a synthetic fallback.
-        if let Err(fence_error) = self.trusted_input_guard_for_action(
-            request.session_id,
-            request.tab_id,
-            request.observation_id,
-            request.call_id,
-            observation.lease_generation,
-        ) {
+        if let Err(fence_error) = self
+            .trusted_input_guard_for_action(
+                request.session_id,
+                request.tab_id,
+                request.observation_id,
+                request.call_id,
+                observation.lease_generation,
+            )
+            .await
+        {
             let disarm_result = armed_guard.disarm().await;
             return Err(match disarm_result {
                 Ok(()) => format!(
@@ -2492,9 +2531,6 @@ impl BrowserState {
         }) {
             return Err("Browser control changed before the Agent could close the tab".to_string());
         }
-        if agent_call_id.is_some() {
-            require_agent_tab_surface(session, tab_id)?;
-        }
         let tab = session
             .tabs
             .get(tab_id)
@@ -2632,7 +2668,10 @@ impl BrowserState {
                 let active_tab_id =
                     next_active_tab_for_terminal_close(session.active_tab_id.as_deref(), &tab_ids)?;
                 if let Some(active_tab_id) = active_tab_id.as_deref() {
-                    let tab = require_agent_tab_surface(session, active_tab_id)?;
+                    let tab = session
+                        .tabs
+                        .get(active_tab_id)
+                        .ok_or_else(|| format!("Unknown browser tab '{active_tab_id}'"))?;
                     if temporary_profile {
                         dispatch_terminal_browser_mutation(Some(commit_tracker), || {
                             tab.webview.clear_all_browsing_data().map_err(|error| {
@@ -2811,7 +2850,7 @@ impl BrowserState {
     }
 
     #[cfg(windows)]
-    fn trusted_input_guard_for_action(
+    async fn trusted_input_guard_for_action(
         &self,
         session_id: &str,
         tab_id: &str,
@@ -2834,6 +2873,7 @@ impl BrowserState {
                 lease_generation,
             )
         })
+        .await
     }
 
     fn trusted_input_guard_on_ui(
@@ -2996,7 +3036,8 @@ impl BrowserState {
         }
     }
 
-    fn move_native_pointer_to_target(
+    #[cfg(not(windows))]
+    async fn move_native_pointer_to_target(
         &self,
         session_id: &str,
         tab_id: &str,
@@ -3025,8 +3066,10 @@ impl BrowserState {
                 &commit_tracker,
             )
         })
+        .await
     }
 
+    #[cfg(not(windows))]
     fn move_native_pointer_on_ui(
         &self,
         session_id: &str,
@@ -3432,9 +3475,12 @@ pub(super) fn browser_host_window_allows_agent_action(
     minimized: bool,
     focused: bool,
 ) -> bool {
-    visible && !minimized && focused
+    // Windows input is addressed to the exact WebView through CDP. Desktop
+    // focus is relevant only to the OS pointer transport on other platforms.
+    visible && !minimized && (cfg!(windows) || focused)
 }
 
+#[cfg(not(windows))]
 pub(super) fn browser_target_screen_point(
     window_origin: (i32, i32),
     scale_factor: f64,

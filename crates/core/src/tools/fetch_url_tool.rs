@@ -1425,6 +1425,8 @@ pub(crate) fn launch_browser_for_capture() -> Result<headless_chrome::Browser, S
     for executable in browser_executable_candidates() {
         let options = LaunchOptionsBuilder::default()
             .headless(true)
+            .enable_gpu(true)
+            .window_size(Some((1280, 800)))
             .path(Some(executable.clone()))
             .build()
             .map_err(|error| format!("invalid browser launch options: {error}"))?;
@@ -1434,7 +1436,13 @@ pub(crate) fn launch_browser_for_capture() -> Result<headless_chrome::Browser, S
         }
     }
 
-    Browser::default().map_err(|error| {
+    let options = LaunchOptionsBuilder::default()
+        .headless(true)
+        .enable_gpu(true)
+        .window_size(Some((1280, 800)))
+        .build()
+        .map_err(|error| format!("invalid browser launch options: {error}"))?;
+    Browser::new(options).map_err(|error| {
         let attempted = if launch_errors.is_empty() {
             "no configured or installed Edge/Chrome/Chromium candidate was found".to_string()
         } else {
@@ -1566,9 +1574,11 @@ fn render_html_with_browser_blocking(url: reqwest::Url) -> Result<BrowserRendere
     ))
     .map_err(|e| format!("failed to install browser request validator: {e}"))?;
 
-    tab.navigate_to(url.as_str())
-        .and_then(|tab| tab.wait_until_navigated())
-        .map_err(|e| format!("browser navigation failed: {e}"))?;
+    super::browser_navigation::navigate_to_document(
+        &tab,
+        url.as_str(),
+        Duration::from_secs(JS_RENDER_TIMEOUT_SECS),
+    )?;
     wait_for_dom_stability(&tab);
 
     let final_url = validate_url_for_browser_capture_blocking(&tab.get_url(), allow_loopback)?;
@@ -2360,6 +2370,90 @@ mod tests {
             .http_errors
             .iter()
             .any(|entry| entry.contains("404")));
+    }
+
+    #[test]
+    #[ignore = "requires a locally installed Chrome or Chromium browser"]
+    fn browser_capture_repeated_live_page_does_not_require_network_idle() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        struct ServerGuard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for ServerGuard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Relaxed);
+            }
+        }
+        let _guard = ServerGuard(live.clone());
+        std::thread::spawn(move || {
+            while live.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let live = live.clone();
+                std::thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = [0; 2_048];
+                    let size = stream.read(&mut request).unwrap_or_default();
+                    if request[..size].starts_with(b"GET /stream") {
+                        if stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").is_err() { return; }
+                        while live.load(Ordering::Relaxed)
+                            && stream.write_all(b"data: tick\n\n").is_ok()
+                        {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    } else {
+                        let body = r#"<!doctype html><html><head><title>Live capture fixture</title></head><body><h1>Ready while network stays busy</h1><span id="counter">0</span><script>for(let i=0;i<4;i++)fetch('/stream?'+i);let n=0;setInterval(()=>document.querySelector('#counter').textContent=String(++n),50);</script></body></html>"#;
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                });
+            }
+        });
+        for attempt in 1..=3 {
+            let started = std::time::Instant::now();
+            let captured = render_html_with_browser_blocking(
+                reqwest::Url::parse(&format!("http://{address}/")).unwrap(),
+            )
+            .unwrap_or_else(|error| {
+                panic!("capture {attempt} failed while a visible document was ready: {error}")
+            });
+            assert!(captured
+                .rendered_text
+                .contains("Ready while network stays busy"));
+            assert!(!captured.screenshot_png.is_empty());
+            eprintln!(
+                "live capture {attempt}: {}ms, {} screenshot bytes",
+                started.elapsed().as_millis(),
+                captured.screenshot_png.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "opt-in repeated capture of NEXA_BROWSER_CAPTURE_REPRO_URL"]
+    async fn browser_capture_repeated_requested_page() {
+        let url = std::env::var("NEXA_BROWSER_CAPTURE_REPRO_URL").expect("set a capture URL");
+        for attempt in 1..=5 {
+            let started = std::time::Instant::now();
+            let captured = capture_browser_page(&url)
+                .await
+                .unwrap_or_else(|error| panic!("requested page capture {attempt} failed: {error}"));
+            assert!(!captured.screenshot_png.is_empty());
+            eprintln!(
+                "requested page capture {attempt}: {}ms, {} screenshot bytes",
+                started.elapsed().as_millis(),
+                captured.screenshot_png.len()
+            );
+        }
     }
 
     #[test]

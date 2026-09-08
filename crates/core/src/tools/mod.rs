@@ -90,6 +90,7 @@ pub mod agent_memory_tool;
 pub mod appearance_tool;
 pub mod archive_output_tool;
 pub mod browser_evidence_tool;
+mod browser_navigation;
 pub mod browser_session_tool;
 pub mod chunk_context_tool;
 pub mod code_intelligence_tool;

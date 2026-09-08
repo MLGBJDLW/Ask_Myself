@@ -222,7 +222,8 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   if (window.__NEXA_BROWSER_RUNTIME__) return;
   const runtime = {
     refs: new Map(),
-    observationSeq: 0,
+    refIds: new WeakMap(),
+    nextRefId: 0,
     userEpoch: 0,
     synthetic: false,
     pickMode: null,
@@ -369,10 +370,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     }
     return (hash >>> 0).toString(16).padStart(8, '0');
   };
-  const domFingerprintOf = () => {
-    const visualLength = Array.from(document.querySelectorAll('[data-nexa-agent-cursor],[data-nexa-agent-click]'))
-      .reduce((total, element) => total + element.outerHTML.length, 0);
-    const markupLength = Math.max(0, (document.documentElement?.outerHTML.length || 0) - visualLength);
+  const interactionFingerprintOf = () => {
     const interactiveState = observableElements().map((element) => {
       const rect = viewportBoundsOf(element);
       const style = getComputedStyle(element);
@@ -397,8 +395,11 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
         textOf(element),
       ].join('\u001f');
     }).join('\u001e');
+    return `v3|${location.href}|${scrollX}|${scrollY}|${innerWidth}|${innerHeight}|${hashText(interactiveState)}`;
+  };
+  const domFingerprintOf = () => {
     const bodyText = document.body?.innerText.slice(0, 30000) || '';
-    return `v2|${location.href}|${scrollX}|${scrollY}|${markupLength}|${hashText(bodyText)}|${hashText(interactiveState)}`;
+    return `${interactionFingerprintOf()}|${hashText(bodyText)}`;
   };
   const actionVerificationBaseline = () => ({
     url: location.href,
@@ -406,10 +407,15 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     domFingerprint: domFingerprintOf(),
   });
   runtime.observe = () => {
-    runtime.observationSeq += 1;
     runtime.refs = new Map();
-    const elements = observableElements().map((el, index) => {
-      const ref = `e_${runtime.observationSeq}_${index + 1}`;
+    const elements = observableElements().map((el) => {
+      // Screenshot confirmation and settling may take further snapshots. A
+      // reference belongs to the actual element, not the snapshot counter.
+      let ref = runtime.refIds.get(el);
+      if (!ref) {
+        ref = `e_${++runtime.nextRefId}`;
+        runtime.refIds.set(el, ref);
+      }
       runtime.refs.set(ref, el);
       return describe(el, ref);
     });
@@ -421,13 +427,15 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       historyLength: history.length,
       userEpoch: runtime.userEpoch,
       domFingerprint: domFingerprintOf(),
+      interactionFingerprint: interactionFingerprintOf(),
       elements,
     };
   };
   const validateAction = (input) => {
     if (input.userEpoch !== runtime.userEpoch) throw new Error('stale observation: user interacted with the page');
-    const domFingerprint = domFingerprintOf();
-    if (input.domFingerprint !== domFingerprint) throw new Error('stale observation: page content changed');
+    // Passive clocks and FPS counters do not revoke unchanged targets.
+    // Actionable state, exact element identity and user takeover still do.
+    if (input.interactionFingerprint !== interactionFingerprintOf()) throw new Error('stale observation: interactive page state changed');
     const el = input.targetRef ? runtime.refs.get(input.targetRef) : null;
     const end = input.endRef ? runtime.refs.get(input.endRef) : null;
     if (input.targetRef && (!el || !el.isConnected)) throw new Error('stale observation: target disappeared');

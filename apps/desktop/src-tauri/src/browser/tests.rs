@@ -8,15 +8,16 @@ use super::policy::{
     BrowserActionRisk, NavigationActor,
 };
 use super::scripts::{browser_init_script, browser_takeover_script, BROWSER_INIT_SCRIPT};
+#[cfg(not(windows))]
+use super::state::browser_target_screen_point;
 use super::state::{
     accept_visibility_revision, action_snapshot_changed, agent_tab_surface_is_valid,
     browser_history_target_expression, browser_host_window_allows_agent_action,
-    browser_tab_open_allowed, browser_target_screen_point, dispatch_browser_navigation,
-    dispatch_terminal_browser_mutation, next_active_tab_for_terminal_close,
-    next_visibility_request_revision, trusted_action_budget, validated_temporary_profile_dir,
-    visibility_request_is_satisfied, with_agent_navigation_approval, BrowserActCommitTracker,
-    BrowserActFailurePhase, BrowserControlOwner, BrowserHistoryDirection, BrowserSessionPhase,
-    ControlLease,
+    browser_tab_open_allowed, dispatch_browser_navigation, dispatch_terminal_browser_mutation,
+    next_active_tab_for_terminal_close, next_visibility_request_revision, trusted_action_budget,
+    validated_temporary_profile_dir, visibility_request_is_satisfied,
+    with_agent_navigation_approval, BrowserActCommitTracker, BrowserActFailurePhase,
+    BrowserControlOwner, BrowserHistoryDirection, BrowserSessionPhase, ControlLease,
 };
 use super::webview_host::TrustedInputEventBudget;
 use nexa_core::browser_runtime::{
@@ -25,7 +26,7 @@ use nexa_core::browser_runtime::{
 use nexa_core::tools::run_shell_tool::ManagedLoopbackPermitIssuer;
 
 #[test]
-fn every_browser_mutation_requires_a_visible_restored_focused_host() {
+fn targeted_webview_operations_allow_an_unfocused_visible_host() {
     for action in ["click", "type", "press", "drag", "select", "scroll"] {
         assert!(
             browser_host_window_allows_agent_action(true, false, true),
@@ -39,9 +40,10 @@ fn every_browser_mutation_requires_a_visible_restored_focused_host() {
             !browser_host_window_allows_agent_action(true, true, true),
             "{action} must reject a minimized host"
         );
-        assert!(
-            !browser_host_window_allows_agent_action(true, false, false),
-            "{action} must reject an unfocused host"
+        assert_eq!(
+            browser_host_window_allows_agent_action(true, false, false),
+            cfg!(windows),
+            "{action} requires desktop focus only for the OS pointer transport"
         );
     }
 }
@@ -371,7 +373,8 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(BROWSER_INIT_SCRIPT.contains("event.source === window.parent"));
     assert!(BROWSER_INIT_SCRIPT.contains("target === event.source"));
     assert!(BROWSER_INIT_SCRIPT.contains("event.isTrusted"));
-    assert!(BROWSER_INIT_SCRIPT.contains("`v2|${location.href}|${scrollX}|${scrollY}|"));
+    assert!(BROWSER_INIT_SCRIPT.contains("`v3|${location.href}|${scrollX}|${scrollY}|"));
+    assert!(BROWSER_INIT_SCRIPT.contains("interactionFingerprintOf"));
     assert!(BROWSER_INIT_SCRIPT.contains("hashText(interactiveState)"));
 }
 
@@ -392,6 +395,7 @@ fn agent_interactions_have_a_visible_two_phase_cursor_and_complete_pointer_seque
 }
 
 #[test]
+#[cfg(not(windows))]
 fn browser_target_coordinates_respect_window_origin_webview_offset_and_scale() {
     let point = browser_target_screen_point(
         (-1200, 80),

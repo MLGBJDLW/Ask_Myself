@@ -6071,6 +6071,39 @@ fn test_resource_keys_allow_independent_writes_to_share_batch() {
 }
 
 #[test]
+fn test_browser_and_file_tools_share_a_batch_without_overlapping_browser_actions() {
+    let registry = crate::tools::default_tool_registry();
+    let offered = HashSet::from(["browser_session".to_string(), "read_file".to_string()]);
+    let registered = registry.tool_names().into_iter().collect();
+    let policy = ToolSchedulerPolicy::new(None, false, offered, registered);
+    let calls = [
+        test_tool_call(
+            "observe-a",
+            "browser_session",
+            serde_json::json!({ "action": "observe", "sessionId": "browser-a", "tabId": "tab-a" }),
+        ),
+        test_tool_call(
+            "read",
+            "read_file",
+            serde_json::json!({ "path": "notes.md" }),
+        ),
+        test_tool_call(
+            "observe-b",
+            "browser_session",
+            serde_json::json!({ "action": "observe", "sessionId": "browser-a", "tabId": "tab-a" }),
+        ),
+    ];
+    let scheduled: Vec<_> = calls
+        .iter()
+        .map(|call| policy.decision_for(&registry, call))
+        .collect();
+    assert_eq!(
+        tool_call_execution_batches(scheduled.iter().map(|s| &s.invocation)),
+        vec![vec![0, 1], vec![2]]
+    );
+}
+
+#[test]
 fn test_unkeyed_exclusive_tool_remains_serial_barrier() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ResourceLockedTool));
