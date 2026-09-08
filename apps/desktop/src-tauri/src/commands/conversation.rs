@@ -1445,13 +1445,14 @@ pub fn list_file_checkpoints_cmd(
 }
 
 #[tauri::command]
-pub fn restore_file_checkpoint_cmd(
+pub async fn restore_file_checkpoint_cmd(
     state: tauri::State<'_, AppState>,
     checkpoint_id: String,
 ) -> Result<nexa_core::file_checkpoint::FileCheckpointRestore, String> {
-    state
-        .db
-        .restore_file_checkpoint(&checkpoint_id)
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || db.restore_file_checkpoint(&checkpoint_id))
+        .await
+        .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
 

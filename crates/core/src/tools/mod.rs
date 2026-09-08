@@ -599,6 +599,19 @@ pub(crate) fn file_access_policy(
     })
 }
 
+/// Preview actions use the same path policy as native agent file tools.
+pub fn agent_can_access_local_file(db: &Database, path: &std::path::Path) -> bool {
+    let Ok(policy) = file_access_policy(db, &[]) else {
+        return false;
+    };
+    path_utils::resolve_existing_file_for_file_access(
+        path,
+        &policy.sources,
+        policy.allow_unregistered_absolute_paths,
+    )
+    .is_ok()
+}
+
 pub(crate) fn ensure_source_in_scope(
     source_id: &str,
     source_scope: &[String],

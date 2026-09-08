@@ -212,8 +212,38 @@ impl Database {
     ) -> Result<FileCheckpointRestore, CoreError> {
         let checkpoint = self.get_file_checkpoint(checkpoint_id)?;
         let target = PathBuf::from(&checkpoint.absolute_path);
-        validate_restore_target_in_sources(self, &target)?;
         let _mutation = crate::file_mutation::lock_file_mutation(&target, None)?;
+        if checkpoint.tool_name == "ui_file_editor"
+            && checkpoint.operation == "manual_save"
+            && checkpoint.conversation_id.is_none()
+            && checkpoint.tool_call_id.starts_with("ui-file-preview-")
+        {
+            // A trusted manual save authorizes restoration of that exact
+            // canonical file, independently of indexing. A replaced symlink
+            // must never redirect its checkpoint to another destination.
+            let mut component = Some(target.as_path());
+            while let Some(path) = component {
+                match std::fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        return Err(CoreError::InvalidInput(
+                            "The saved preview path now points to another location.".into(),
+                        ));
+                    }
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error.into())
+                    }
+                    _ => {}
+                }
+                component = path.parent();
+            }
+            if crate::file_mutation::canonical_file_identity(&target)? != target {
+                return Err(CoreError::InvalidInput(
+                    "The saved preview path now points to another location.".into(),
+                ));
+            }
+        } else {
+            validate_restore_target_in_sources(self, &target)?;
+        }
         let previous_bytes = if target.exists() {
             Some(std::fs::read(&target)?)
         } else {
@@ -291,6 +321,55 @@ pub fn checkpoint_artifact(
 mod tests {
     use super::*;
     use crate::sources::CreateSourceInput;
+
+    #[test]
+    fn trusted_preview_checkpoint_restores_only_its_saved_unindexed_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manual.txt");
+        std::fs::write(&path, b"before").unwrap();
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let db = Database::open_memory().unwrap();
+        let input = CreateFileCheckpointInput {
+            conversation_id: None,
+            tool_call_id: "ui-file-preview-test",
+            tool_name: "ui_file_editor",
+            operation: "manual_save",
+            path: "manual.txt",
+            absolute_path: &canonical,
+        };
+        let preview = db.create_file_checkpoint(input.clone()).unwrap();
+        let agent = db
+            .create_file_checkpoint(CreateFileCheckpointInput {
+                tool_name: "edit_file",
+                ..input
+            })
+            .unwrap();
+        std::fs::write(&path, b"after").unwrap();
+        assert!(db.restore_file_checkpoint(&agent.id).is_err());
+        db.restore_file_checkpoint(&preview.id).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        assert!(db.list_sources().unwrap().is_empty());
+
+        #[cfg(unix)]
+        {
+            let other = directory.path().join("other.txt");
+            std::fs::write(&other, b"unrelated").unwrap();
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&other, &path).unwrap();
+            assert!(db
+                .restore_file_checkpoint(&preview.id)
+                .unwrap_err()
+                .to_string()
+                .contains("another location"));
+            assert_eq!(std::fs::read(&other).unwrap(), b"unrelated");
+            std::fs::remove_file(&other).unwrap();
+            assert!(db.restore_file_checkpoint(&preview.id).is_err());
+            assert!(
+                !other.exists(),
+                "a dangling symlink must not create another target"
+            );
+        }
+    }
 
     fn db_with_source(root: &Path) -> Database {
         let db = Database::open_memory().expect("open memory db");

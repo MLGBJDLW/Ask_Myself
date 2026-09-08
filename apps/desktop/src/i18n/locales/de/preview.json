@@ -49,6 +49,7 @@
   "copyRequest": "Copy Request",
   "requestCopied": "Request copied",
   "agentRequestSent": "Sent to agent",
+  "agentAccessRequired": "Diese Datei liegt außerhalb der erlaubten Agentenordner. Sie können sie hier bearbeiten. Fügen Sie den Ordner zu Quellen hinzu oder aktivieren Sie offenen Zugriff in den Einstellungen, um den Agenten zu beauftragen.",
   "saveBeforeAgent": "Save the current draft before asking the agent to edit the disk file.",
   "selectionTooLarge": "Large selection. The agent will re-read the file before locating it.",
   "selectionMapFailed": "That preview selection could not be mapped exactly. Select it in Edit or Split mode.",

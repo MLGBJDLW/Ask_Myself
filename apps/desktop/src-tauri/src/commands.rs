@@ -1874,6 +1874,15 @@ mod tests {
         assert!(preview.content.as_deref().unwrap().contains("Black hole"));
         assert!(preview.editable);
         assert!(preview.source_id.is_none());
+        assert!(!preview.agent_edit_allowed);
+        let mut config = db.load_app_config().unwrap_or_default();
+        config.shell_access_mode = ShellAccessMode::Open;
+        db.save_app_config(&config).unwrap();
+        assert!(
+            build_file_preview(&db, &file.to_string_lossy(), None)
+                .unwrap()
+                .agent_edit_allowed
+        );
         assert!(db.list_sources().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1904,6 +1913,9 @@ mod tests {
             .unwrap_err()
             .contains("changed on disk"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "<h1>After</h1>");
+        db.restore_file_checkpoint(&saved.checkpoint_id).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "<h1>Before</h1>");
+        assert_eq!(db.list_sources().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(source_root);
     }
@@ -1935,6 +1947,8 @@ mod tests {
             .expect("build preview");
 
         assert!(preview.capabilities.can_render_structured);
+        assert!(!preview.editable);
+        assert!(preview.agent_edit_allowed);
         assert!(preview.rendered_preview.is_none());
         assert!(matches!(
             preview.structured_preview,

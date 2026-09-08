@@ -455,6 +455,7 @@ test.beforeEach(async ({ page }) => {
               path: 'D:\\Vault\\docs\\office-proposal.docx',
               displayName: 'office-proposal.docx',
               sourceId: 'src-office-docs',
+              agentEditAllowed: true,
               sourceName: 'Office Docs',
               extension: '.docx',
               mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -487,6 +488,7 @@ test.beforeEach(async ({ page }) => {
             path: 'D:\\Vault\\notes\\agent-edit.md',
             displayName: 'agent-edit.md',
             sourceId: localStorage.getItem('e2e-unindexed-file') ? null : 'src-agent-edit',
+            agentEditAllowed: !localStorage.getItem('e2e-restricted-file'),
             sourceName: 'Notes',
             extension: '.md',
             mimeType: 'text/markdown',
@@ -582,9 +584,12 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-for (const unindexed of [false, true]) {
-test(`sends an exact selected file range to the agent edit flow${unindexed ? ' outside indexed sources' : ''}`, async ({ page }) => {
+for (const mode of ['indexed', 'unindexed-open', 'unindexed-restricted']) {
+const unindexed = mode !== 'indexed';
+const restricted = mode === 'unindexed-restricted';
+test(`${restricted ? 'explains existing agent access restrictions for' : 'sends an exact selected file range to the agent edit flow for'} ${mode} files`, async ({ page }) => {
   if (unindexed) await page.addInitScript(() => localStorage.setItem('e2e-unindexed-file', '1'));
+  if (restricted) await page.addInitScript(() => localStorage.setItem('e2e-restricted-file', '1'));
   await page.goto('/chat/conv-agent-edit');
 
   await page.getByRole('button', { name: /agent-edit\.md/i }).click();
@@ -606,6 +611,16 @@ test(`sends an exact selected file range to the agent edit flow${unindexed ? ' o
 
   await expect(page.getByTestId('file-preview-agent-panel')).toBeVisible();
   await expect(page.getByText(/Selected 47 chars/)).toBeVisible();
+  if (restricted) {
+    await expect(page.getByTestId('file-preview-agent-send')).toBeDisabled();
+    await expect(page.getByText(/This file is outside the agent’s allowed directories/)).toBeVisible();
+    await page.getByTestId('file-preview-agent-instruction').fill('Make this clearer.');
+    await page.getByTestId('file-preview-agent-instruction').press('Enter');
+    await expect(page.getByLabel('File Preview')).toBeVisible();
+    expect(await page.evaluate(() => window.__lastAgentPrompt ?? '')).toBe('');
+    await expect(editor).toBeEditable();
+    return;
+  }
 
   await page
     .getByTestId('file-preview-agent-instruction')

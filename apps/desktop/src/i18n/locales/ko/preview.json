@@ -49,6 +49,7 @@
   "copyRequest": "Copy Request",
   "requestCopied": "Request copied",
   "agentRequestSent": "Sent to agent",
+  "agentAccessRequired": "이 파일은 에이전트에게 허용된 폴더 밖에 있습니다. 여기서 직접 편집할 수 있습니다. 에이전트 편집을 요청하려면 폴더를 소스에 추가하거나 설정에서 개방형 접근을 활성화하세요.",
   "saveBeforeAgent": "Save the current draft before asking the agent to edit the disk file.",
   "selectionTooLarge": "Large selection. The agent will re-read the file before locating it.",
   "selectionMapFailed": "That preview selection could not be mapped exactly. Select it in Edit or Split mode.",

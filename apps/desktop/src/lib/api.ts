@@ -618,6 +618,7 @@ export interface FilePreview {
   path: string;
   displayName: string;
   sourceId: string | null;
+  agentEditAllowed?: boolean;
   sourceName: string;
   extension: string;
   mimeType: string;

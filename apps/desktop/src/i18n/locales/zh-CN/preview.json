@@ -49,6 +49,7 @@
   "copyRequest": "复制请求",
   "requestCopied": "请求已复制",
   "agentRequestSent": "已发送给 Agent",
+  "agentAccessRequired": "此文件不在代理允许访问的目录中。你仍可在此手动编辑；如需代理修改，请将目录加入资源库，或在设置中启用开放访问。",
   "saveBeforeAgent": "请先保存当前草稿，再让 Agent 按磁盘文件修改。",
   "selectionTooLarge": "选区较长，Agent 会先重新读取文件再定位。",
   "selectionMapFailed": "预览选区无法精确映射，请切到编辑或分屏后选择。",
