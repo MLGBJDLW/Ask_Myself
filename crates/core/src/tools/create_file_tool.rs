@@ -175,6 +175,7 @@ impl Tool for CreateFileTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -347,6 +348,10 @@ impl Tool for CreateFileTool {
                 ));
             }
 
+            if let Some(scope) = &file_changes {
+                if mode == FileWriteMode::Append { scope.record_append(&checkpoint, args.content.as_bytes()); }
+                else { scope.record_checkpoint(&checkpoint, args.content.as_bytes()); }
+            }
             let bytes_after = std::fs::metadata(&canonical).map_err(CoreError::Io)?.len();
             let diff = match mode {
                 FileWriteMode::Create => create_file_diff_artifact(&args.path, &args.content),

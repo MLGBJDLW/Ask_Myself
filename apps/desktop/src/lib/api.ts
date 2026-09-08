@@ -10,6 +10,27 @@ export interface FontAsset {
 export const listFontAssets = () => invoke<FontAsset[]>('list_font_assets_cmd');
 export const importFontAssets = (sourcePath: string) => invoke<FontAsset[]>('import_font_assets_cmd', { sourcePath });
 export const removeFontAsset = (assetId: string) => invoke<void>('remove_font_asset_cmd', { assetId });
+export interface TurnFileChange {
+  path: string;
+  absolutePath: string;
+  operation: string;
+  additions: number | null;
+  deletions: number | null;
+  contentKind: string;
+  partial: boolean;
+  revision: number;
+}
+export interface TurnFileChangeSummary {
+  turnId: string;
+  revision: number;
+  files: TurnFileChange[];
+  additions: number;
+  deletions: number;
+  unknownFiles: number;
+  partial: boolean;
+}
+export const getConversationFileChanges = (conversationId: string) => invoke<TurnFileChangeSummary[]>('get_conversation_file_changes_cmd', { conversationId });
+export const getTurnFileDiff = (conversationId: string, turnId: string, absolutePath: string) => invoke<import('../components/chat/FileDiffPreview').FileDiffArtifact>('get_turn_file_diff_cmd', { conversationId, turnId, absolutePath });
 import { invalidateSubscriptionModels, loadSubscriptionModels, reconcileSubscriptionAccount } from './subscriptionModelCatalog';
 import type {
   Source,

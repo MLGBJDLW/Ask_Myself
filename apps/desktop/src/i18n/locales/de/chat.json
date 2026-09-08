@@ -693,5 +693,13 @@
   "companionFailed": "Aufgabe fehlgeschlagen",
   "companionCancelled": "Aufgabe abgebrochen",
   "companionSleeping": "Begleiter schläft"
-,"compactUnavailable": "Manuelle Kontextkomprimierung ist für dieses Gespräch nicht verfügbar."
+,"compactUnavailable": "Manuelle Kontextkomprimierung ist für dieses Gespräch nicht verfügbar.",
+  "turnChangesTitle": "{count} Dateien geändert",
+  "turnChangesPartial": "Änderungen teilweise erfasst",
+  "turnChangesCoverage": "Erfasst werden protokollierte native Dateiänderungen. Shell-Befehle, zwischenzeitliche Änderungen oder fehlende Inhalte können Lücken verursachen. Unbekannte Zeilenzahlen fehlen in der Summe.",
+  "turnChangesBaseline": "Nettoänderung zwischen erster und letzter Bearbeitung dieser Runde. Details zeigen gespeicherte Inhalte; Dateilinks öffnen die aktuelle Datei.",
+  "turnChangesShowMore": "Mehr anzeigen ({count} verbleibend)",
+  "turnChangesNoStats": "Zeilen unbekannt",
+  "turnChangesContentUnavailable": "Binärdatei, zu groß oder gespeicherter Vergleich nicht verfügbar.",
+  "turnChangesLoadError": "Gespeicherte Änderungen konnten nicht geladen werden."
 }

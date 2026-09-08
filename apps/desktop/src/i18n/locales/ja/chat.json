@@ -693,5 +693,13 @@
   "companionFailed": "タスクに失敗しました",
   "companionCancelled": "タスクをキャンセルしました",
   "companionSleeping": "コンパニオンは眠っています"
-,"compactUnavailable": "この会話では手動のコンテキスト圧縮を利用できません。"
+,"compactUnavailable": "この会話では手動のコンテキスト圧縮を利用できません。",
+  "turnChangesTitle": "{count} ファイルを変更",
+  "turnChangesPartial": "変更の追跡は一部のみ",
+  "turnChangesCoverage": "記録された標準ファイル操作のみ集計します。Shell コマンド、外部の編集、利用できない内容は漏れる場合があります。不明な行数は合計に含みません。",
+  "turnChangesBaseline": "このターンの最初の編集前と最後の編集後の差分です。詳細は保存済みの内容、ファイルリンクは現在のファイルを開きます。",
+  "turnChangesShowMore": "さらに表示（残り {count}）",
+  "turnChangesNoStats": "行数不明",
+  "turnChangesContentUnavailable": "バイナリ、大きすぎるファイル、または保存済み差分が利用できません。",
+  "turnChangesLoadError": "保存済みの変更を読み込めません。"
 }

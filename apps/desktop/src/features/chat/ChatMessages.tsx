@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import { useTranslation } from "../../i18n";
 import { useDeveloperMode } from "../../lib/developerMode";
+import { useConversationFileChanges } from '../../lib/useConversationFileChanges';
+import { TurnFileChanges } from '../../components/chat/TurnFileChanges';
 import { hasTimeGap } from "../../lib/relativeTime";
 import {
   buildCitationMap,
@@ -673,6 +675,8 @@ export function ChatMessages(props: ChatMessagesProps) {
     compactionTerminalText,
     onCancelCompaction,
   } = props;
+  const completedFileTools = toolCalls.filter(call => call.status === 'done' || call.status === 'error').map(call => `${call.callId}:${call.status}`).join('|');
+  const recordedFileChanges = useConversationFileChanges(props.conversationId, isStreaming, `${completedFileTools}:${props.messages.length}:${turns.length}`);
   const [developerMode] = useDeveloperMode();
   const streamingVisibility = useMemo(
     () => projectChatStreamingVisibility({
@@ -2125,7 +2129,9 @@ export function ChatMessages(props: ChatMessagesProps) {
                     />
                   )}
 
-                {renderFileDiffPreviews(
+                {props.conversationId && recordedFileChanges.has(turnRender.turn.id) ? (
+                  !(isStreaming && idx === latestUserIdx) && <TurnFileChanges conversationId={props.conversationId} summary={recordedFileChanges.get(turnRender.turn.id)!} />
+                ) : renderFileDiffPreviews(
                   turnDiffs,
                   `turn-diff-${turnRender.turn.id}`,
                 )}
@@ -2387,6 +2393,10 @@ export function ChatMessages(props: ChatMessagesProps) {
             </div>
           </motion.div>
         )}
+
+      {props.conversationId && taskRun?.turnId && recordedFileChanges.has(taskRun.turnId) &&
+        (isStreaming || !turns.some(turn => turn.id === taskRun.turnId)) &&
+        <TurnFileChanges key={taskRun.turnId} conversationId={props.conversationId} summary={recordedFileChanges.get(taskRun.turnId)!} />}
 
       {taskRun?.status === 'paused' && onResumePaused && (
         <div

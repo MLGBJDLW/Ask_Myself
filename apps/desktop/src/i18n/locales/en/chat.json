@@ -693,5 +693,13 @@
   "companionFailed": "Task failed",
   "companionCancelled": "Task cancelled",
   "companionSleeping": "Companion is sleeping"
-,"compactUnavailable": "Manual compaction is unavailable for this conversation."
+,"compactUnavailable": "Manual compaction is unavailable for this conversation.",
+  "turnChangesTitle": "Changed {count} files",
+  "turnChangesPartial": "Changes partially tracked",
+  "turnChangesCoverage": "Counts cover recorded native file changes. Shell commands, intervening edits, or unavailable content may leave gaps. Unknown line counts are excluded.",
+  "turnChangesBaseline": "Net change from each file’s first recorded edit to its latest edit in this turn. Details use saved content; file shortcuts open the current file.",
+  "turnChangesShowMore": "Show more ({count} remaining)",
+  "turnChangesNoStats": "No line counts",
+  "turnChangesContentUnavailable": "This file is binary, too large, or its saved diff is unavailable.",
+  "turnChangesLoadError": "Could not load saved changes."
 }

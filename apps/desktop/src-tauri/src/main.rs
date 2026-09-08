@@ -905,6 +905,8 @@ fn main() {
             commands::branch_checkpoint_cmd,
             commands::delete_checkpoint_cmd,
             commands::list_file_checkpoints_cmd,
+            commands::get_conversation_file_changes_cmd,
+            commands::get_turn_file_diff_cmd,
             commands::restore_file_checkpoint_cmd,
             commands::delete_file_checkpoint_cmd,
             // Conversation sources

@@ -693,5 +693,13 @@
   "companionFailed": "任务失败",
   "companionCancelled": "任务已取消",
   "companionSleeping": "Companion 正在睡觉"
-,"compactUnavailable": "此会话暂不支持手动压缩上下文。"
+,"compactUnavailable": "此会话暂不支持手动压缩上下文。",
+  "turnChangesTitle": "已更改 {count} 个文件",
+  "turnChangesPartial": "文件变化未完整跟踪",
+  "turnChangesCoverage": "统计覆盖已记录的原生文件修改。Shell 命令、其他来源的修改或不可用内容可能造成遗漏；未知行数未计入总数。",
+  "turnChangesBaseline": "按本轮首次修改前与最后修改后的内容计算净变化。详情显示保存的版本，文件快捷入口打开当前文件。",
+  "turnChangesShowMore": "显示更多（剩余 {count} 个）",
+  "turnChangesNoStats": "行数未知",
+  "turnChangesContentUnavailable": "此文件为二进制、体积过大，或保存的差异不可用。",
+  "turnChangesLoadError": "无法加载已保存的变更。"
 }

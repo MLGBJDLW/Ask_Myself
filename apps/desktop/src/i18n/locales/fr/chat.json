@@ -693,5 +693,13 @@
   "companionFailed": "Échec de la tâche",
   "companionCancelled": "Tâche annulée",
   "companionSleeping": "Le compagnon dort"
-,"compactUnavailable": "La compression manuelle du contexte est indisponible pour cette conversation."
+,"compactUnavailable": "La compression manuelle du contexte est indisponible pour cette conversation.",
+  "turnChangesTitle": "{count} fichiers modifiés",
+  "turnChangesPartial": "Suivi partiel des modifications",
+  "turnChangesCoverage": "Seules les modifications natives enregistrées sont comptées. Les commandes Shell, les autres modifications ou les contenus indisponibles peuvent laisser des lacunes. Les lignes inconnues sont exclues du total.",
+  "turnChangesBaseline": "Différence nette entre la première et la dernière modification de ce tour. Les détails utilisent le contenu enregistré ; les raccourcis ouvrent le fichier actuel.",
+  "turnChangesShowMore": "Afficher plus ({count} restants)",
+  "turnChangesNoStats": "Lignes inconnues",
+  "turnChangesContentUnavailable": "Fichier binaire, trop volumineux ou différence enregistrée indisponible.",
+  "turnChangesLoadError": "Impossible de charger les modifications enregistrées."
 }

@@ -1784,6 +1784,7 @@ impl Tool for RunShellTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_change_scope = crate::turn_file_changes::FileChangeScope::from_context(&context);
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -2024,8 +2025,21 @@ impl Tool for RunShellTool {
             tokio::task::spawn_blocking(move || capture_file_snapshot(&tracking_paths))
                 .await
                 .map_err(|e| CoreError::Internal(format!("task join failed: {e}")))?;
-        let file_changes =
-            build_run_shell_file_changes(&cwd_path, &before_snapshot, &after_snapshot);
+        let changes_cwd = cwd_path.clone();
+        let changes_call_id = call_id.to_string();
+        let file_changes = tokio::task::spawn_blocking(move || {
+            if let Some(scope) = &file_change_scope {
+                super::file_tracking::persist_file_changes(
+                    scope,
+                    &changes_call_id,
+                    &before_snapshot,
+                    &after_snapshot,
+                );
+            }
+            build_run_shell_file_changes(&changes_cwd, &before_snapshot, &after_snapshot)
+        })
+        .await
+        .map_err(|error| CoreError::Internal(error.to_string()))?;
 
         tracing::info!(
             target: "tool.run_shell",

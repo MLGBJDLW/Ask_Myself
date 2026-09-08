@@ -112,6 +112,7 @@ pub mod tools;
 pub mod trace;
 pub mod trajectory;
 pub mod tts_provider_catalog;
+pub mod turn_file_changes;
 pub mod usage_analytics;
 pub mod usage_snapshot;
 pub mod user_extensions;

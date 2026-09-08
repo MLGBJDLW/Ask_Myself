@@ -109,120 +109,57 @@ pub(crate) fn text_diff_artifact(
     old_content: &str,
     new_content: &str,
 ) -> Value {
-    if old_content.is_empty() {
-        let mut diff = create_file_diff_artifact(path, new_content);
-        if let Some(object) = diff.as_object_mut() {
-            object.insert("operation".to_string(), json!(operation));
+    use similar::{Algorithm, ChangeTag, TextDiff};
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(80);
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Patience)
+        .timeout(budget)
+        .diff_lines(old_content, new_content);
+    let stats_exact = started.elapsed() < budget;
+    let mut additions = 0;
+    let mut deletions = 0;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => additions += 1,
+            ChangeTag::Delete => deletions += 1,
+            ChangeTag::Equal => {}
         }
-        return diff;
     }
-
-    let old_lines = text_lines(old_content);
-    let new_lines = text_lines(new_content);
-
-    let mut prefix = 0usize;
-    while prefix < old_lines.len()
-        && prefix < new_lines.len()
-        && old_lines[prefix] == new_lines[prefix]
-    {
-        prefix += 1;
+    let mut hunks = Vec::new();
+    let mut included = 0;
+    let mut omitted = 0;
+    let mut clipped = false;
+    for group in diff.grouped_ops(DIFF_CONTEXT_LINES) {
+        let mut lines = Vec::new();
+        let first = group.first().unwrap();
+        let last = group.last().unwrap();
+        for op in &group {
+            for change in diff.iter_changes(op) {
+                if included >= MAX_DIFF_LINES {
+                    omitted += 1;
+                    continue;
+                }
+                included += 1;
+                let raw = change.value().trim_end_matches(['\r', '\n']);
+                let content: String = raw.chars().take(2048).collect();
+                clipped |= content.len() < raw.len();
+                lines.push(json!({
+                    "type": match change.tag() { ChangeTag::Equal => "context", ChangeTag::Insert => "addition", ChangeTag::Delete => "deletion" },
+                    "oldLine": change.old_index().map(|index| index + 1),
+                    "newLine": change.new_index().map(|index| index + 1),
+                    "content": content,
+                }));
+            }
+        }
+        if !lines.is_empty() {
+            hunks.push(json!({ "oldStart": first.old_range().start + 1, "newStart": first.new_range().start + 1,
+                "oldLines": last.old_range().end - first.old_range().start,
+                "newLines": last.new_range().end - first.new_range().start, "lines": lines }));
+        }
     }
-
-    let mut suffix = 0usize;
-    while suffix < old_lines.len().saturating_sub(prefix)
-        && suffix < new_lines.len().saturating_sub(prefix)
-        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-
-    let old_changed_end = old_lines.len().saturating_sub(suffix);
-    let new_changed_end = new_lines.len().saturating_sub(suffix);
-    let old_changed_count = old_changed_end.saturating_sub(prefix);
-    let new_changed_count = new_changed_end.saturating_sub(prefix);
-
-    let context_start = prefix.saturating_sub(DIFF_CONTEXT_LINES);
-    let before_count = prefix.saturating_sub(context_start);
-    let after_count = old_lines
-        .len()
-        .saturating_sub(old_changed_end)
-        .min(new_lines.len().saturating_sub(new_changed_end))
-        .min(DIFF_CONTEXT_LINES);
-
-    let mut lines = Vec::new();
-    for (idx, content) in old_lines
-        .iter()
-        .enumerate()
-        .take(prefix)
-        .skip(context_start)
-    {
-        lines.push(json!({
-            "type": "context",
-            "oldLine": idx + 1,
-            "newLine": idx + 1,
-            "content": content,
-        }));
-    }
-
-    for (idx, content) in old_lines
-        .iter()
-        .enumerate()
-        .take(old_changed_end)
-        .skip(prefix)
-    {
-        lines.push(json!({
-            "type": "deletion",
-            "oldLine": idx + 1,
-            "newLine": null,
-            "content": content,
-        }));
-    }
-
-    for (idx, content) in new_lines
-        .iter()
-        .enumerate()
-        .take(new_changed_end)
-        .skip(prefix)
-    {
-        lines.push(json!({
-            "type": "addition",
-            "oldLine": null,
-            "newLine": idx + 1,
-            "content": content,
-        }));
-    }
-
-    for offset in 0..after_count {
-        let old_idx = old_changed_end + offset;
-        let new_idx = new_changed_end + offset;
-        lines.push(json!({
-            "type": "context",
-            "oldLine": old_idx + 1,
-            "newLine": new_idx + 1,
-            "content": new_lines[new_idx],
-        }));
-    }
-
-    let omitted_line_count = lines.len().saturating_sub(MAX_DIFF_LINES);
-    if omitted_line_count > 0 {
-        lines.truncate(MAX_DIFF_LINES);
-    }
-
-    json!({
-        "path": path,
-        "operation": operation,
-        "additions": new_changed_count,
-        "deletions": old_changed_count,
-        "truncated": omitted_line_count > 0,
-        "omittedLineCount": omitted_line_count,
-        "hunks": [{
-            "oldStart": if old_lines.is_empty() { 0 } else { context_start + 1 },
-            "newStart": if new_lines.is_empty() { 0 } else { context_start + 1 },
-            "oldLines": before_count + old_changed_count + after_count,
-            "newLines": before_count + new_changed_count + after_count,
-            "lines": lines,
-        }]
-    })
+    json!({ "path": path, "operation": operation, "additions": additions, "deletions": deletions,
+        "statsExact": stats_exact, "truncated": omitted > 0 || clipped, "omittedLineCount": omitted, "hunks": hunks })
 }
 
 pub(crate) fn diff_stats_from_diff(diff: &Value, replacements: Option<usize>) -> Value {

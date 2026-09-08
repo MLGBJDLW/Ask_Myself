@@ -401,6 +401,7 @@ impl Tool for EditFileTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -587,6 +588,7 @@ impl Tool for EditFileTool {
                         });
                     }
 
+                    if let Some(scope) = &file_changes { scope.record_checkpoint(&checkpoint, new_content.as_bytes()); }
                     let snippet = snippet_around(&new_content, byte_offset, replacement.len());
                     let diff = replacement_diff_artifact(
                         &args.path,
@@ -682,6 +684,7 @@ impl Tool for EditFileTool {
                         });
                     }
 
+                    if let Some(scope) = &file_changes { scope.record_checkpoint(&checkpoint, file_content.as_bytes()); }
                     let size = file_content.len();
                     let diff = create_diff_artifact(&args.path, file_content);
                     Ok(ToolResult {

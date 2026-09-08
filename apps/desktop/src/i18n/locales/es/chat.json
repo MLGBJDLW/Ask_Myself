@@ -693,5 +693,13 @@
   "companionFailed": "La tarea falló",
   "companionCancelled": "Tarea cancelada",
   "companionSleeping": "El compañero está durmiendo"
-,"compactUnavailable": "La compactación manual no está disponible para esta conversación."
+,"compactUnavailable": "La compactación manual no está disponible para esta conversación.",
+  "turnChangesTitle": "{count} archivos modificados",
+  "turnChangesPartial": "Seguimiento parcial de cambios",
+  "turnChangesCoverage": "Solo se cuentan cambios nativos registrados. Los comandos Shell, otras ediciones o el contenido no disponible pueden dejar huecos. Las líneas desconocidas se excluyen del total.",
+  "turnChangesBaseline": "Cambio neto entre la primera y última edición de este turno. Los detalles usan contenido guardado; los enlaces abren el archivo actual.",
+  "turnChangesShowMore": "Mostrar más ({count} restantes)",
+  "turnChangesNoStats": "Líneas desconocidas",
+  "turnChangesContentUnavailable": "Archivo binario, demasiado grande o diferencia guardada no disponible.",
+  "turnChangesLoadError": "No se pudieron cargar los cambios guardados."
 }

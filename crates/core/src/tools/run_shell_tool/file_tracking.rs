@@ -25,6 +25,48 @@ pub(super) struct FileSnapshot {
     unreadable_count: usize,
 }
 
+pub(super) fn persist_file_changes(
+    scope: &crate::turn_file_changes::FileChangeScope,
+    call_id: &str,
+    before: &FileSnapshot,
+    after: &FileSnapshot,
+) {
+    use crate::turn_file_changes::FileChangeContent;
+    if before.truncated
+        || after.truncated
+        || before.unreadable_count > 0
+        || after.unreadable_count > 0
+    {
+        scope.mark_partial(call_id);
+    }
+    let paths: BTreeSet<_> = before.files.keys().chain(after.files.keys()).collect();
+    for path in paths {
+        let old = before.files.get(path);
+        let new = after.files.get(path);
+        if old.map(|entry| &entry.hash) == new.map(|entry| &entry.hash) {
+            continue;
+        }
+        let path = path.to_string_lossy();
+        let result = scope.record(
+            &format!("{call_id}:{path}"),
+            &path,
+            &path,
+            FileChangeContent {
+                hash: old.map(|entry| entry.hash.as_str()),
+                bytes: old.and_then(|entry| entry.content.as_deref()),
+            },
+            FileChangeContent {
+                hash: new.map(|entry| entry.hash.as_str()),
+                bytes: new.and_then(|entry| entry.content.as_deref()),
+            },
+        );
+        if let Err(error) = result {
+            tracing::warn!(%error, "Native shell file change could not be recorded");
+            scope.mark_partial(call_id);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct FileChangeSet {
     pub(super) artifact: Value,

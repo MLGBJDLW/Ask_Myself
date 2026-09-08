@@ -1151,6 +1151,7 @@ impl ToolDispatchRuntime<'_> {
                             let exec_fut = self.tools.execute(
                                 &tc.name,
                                 crate::tools::ToolExecutionContext {
+                                    file_change_owner: None,
                                     call_id: &tc.id,
                                     arguments: &tc.arguments,
                                     db,

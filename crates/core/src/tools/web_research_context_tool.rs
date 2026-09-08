@@ -269,6 +269,7 @@ impl Tool for WebResearchContextTool {
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
         let crate::tools::ToolExecutionContext {
+            file_change_owner: _,
             call_id,
             arguments,
             db,
@@ -364,6 +365,7 @@ impl Tool for WebResearchContextTool {
                 let fetch_call_id = format!("{call_id}:fetch:{}", source_index + 1);
                 match fetch_tool
                     .execute(crate::tools::ToolExecutionContext {
+                        file_change_owner: None,
                         call_id: &fetch_call_id,
                         arguments: &fetch_args,
                         db,

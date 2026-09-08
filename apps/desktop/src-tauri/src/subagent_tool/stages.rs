@@ -663,6 +663,18 @@ pub(super) async fn execute_subagent_worker(
             effective_provider_type,
             effective_model.as_deref().unwrap_or_default(),
         );
+    // Mutation attribution uses the parent's durable run identity while the
+    // child still owns an isolated message stream and conversation context.
+    let tools = if let Some(run_id) = parent_task_run_id.as_deref() {
+        let parent = db.get_agent_task_run(run_id)?;
+        tools.with_file_change_owner(nexa_core::turn_file_changes::FileChangeOwner {
+            conversation_id: parent.conversation_id,
+            turn_id: parent.turn_id,
+            mutation_namespace: Some(subtask_run_id.as_deref().unwrap_or(&session_id).to_string()),
+        })
+    } else {
+        tools
+    };
     let mut executor = AgentExecutor::new(provider, tools, config)
         .with_usage_identity(
             format!(

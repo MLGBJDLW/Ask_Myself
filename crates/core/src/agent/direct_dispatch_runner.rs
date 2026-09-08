@@ -69,6 +69,7 @@ impl AgentExecutor {
             .execute(
                 &dispatch.tool_name,
                 crate::tools::ToolExecutionContext {
+                    file_change_owner: None,
                     call_id: &call_id,
                     arguments: &dispatch.arguments,
                     db,

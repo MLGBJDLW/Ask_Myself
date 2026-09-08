@@ -2823,6 +2823,36 @@ Every answer that uses knowledge base search results.
          AFTER UPDATE OF max_tokens ON agent_configs WHEN NEW.max_tokens IS NOT NULL
          BEGIN UPDATE agent_configs SET max_tokens = NULL WHERE id = NEW.id; END;",
     ),
+    (
+        "v129_turn_file_changes",
+        "CREATE TABLE turn_file_changes (
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            absolute_path TEXT NOT NULL,
+            display_path TEXT NOT NULL,
+            before_content BLOB,
+            after_content BLOB,
+            before_hash TEXT,
+            after_hash TEXT,
+            existed_before INTEGER NOT NULL,
+            exists_after INTEGER NOT NULL,
+            additions INTEGER,
+            deletions INTEGER,
+            content_kind TEXT NOT NULL,
+            partial INTEGER NOT NULL DEFAULT 0,
+            revision INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(conversation_id, turn_id, absolute_path)
+        );
+        CREATE TABLE turn_file_change_events (
+            id INTEGER PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            turn_id TEXT NOT NULL,
+            mutation_id TEXT NOT NULL,
+            partial INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(conversation_id, turn_id, mutation_id)
+        );
+        CREATE INDEX idx_turn_file_change_events ON turn_file_change_events(conversation_id, turn_id);",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

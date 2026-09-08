@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -75,6 +77,7 @@ test.beforeEach(async ({ page }) => {
     ];
     configs.push({ ...configs[0], id: 'cfg-subscription', name: 'My Copilot plan', provider: 'github_copilot', model: 'unavailable-old-model', isDefault: false });
     configs.push({ ...configs[0], id: 'cfg-codex', name: 'My Codex plan', provider: 'openai_codex', model: 'unavailable-old-model', isDefault: false });
+    configs.push({ ...configs[0], id: 'cfg-glm', name: 'GLM gateway', model: 'glm-4.7', isDefault: false });
     const savedAgentConfigInputs: Array<Record<string, unknown>> = [];
     (window as unknown as { __savedAgentConfigInputs?: Array<Record<string, unknown>> }).__savedAgentConfigInputs = savedAgentConfigInputs;
 
@@ -87,6 +90,29 @@ test.beforeEach(async ({ page }) => {
     const invoke = async (cmd: string, args: Record<string, unknown> = {}) => {
       if (cmd === 'agent_chat_cmd') args = (args.request as Record<string, unknown>) ?? {};
       switch (cmd) {
+        case 'get_conversation_file_changes_cmd': {
+          if (!localStorage.getItem('e2e-change-fixture')) return [];
+          const revision = Number(localStorage.getItem('e2e-change-revision') ?? 1);
+          return [{ turnId: 'turn-changes', revision, partial: true, additions: revision === 1 ? 11 : 2, deletions: revision === 1 ? 11 : 1, unknownFiles: 1,
+            files: Array.from({ length: revision === 1 ? 12 : 2 }, (_, index) => ({ path: `src/file-${index}.txt`, absolutePath: `C:/workspace/src/file-${index}.txt`, operation: 'edit', additions: index === 11 ? null : 1, deletions: index === 11 ? null : 1, contentKind: index === 11 ? 'binary' : 'text', partial: false, revision })) }];
+        }
+        case 'get_turn_file_diff_cmd': {
+          const calls = window as unknown as { __diffRequests?: string[] };
+          (calls.__diffRequests ??= []).push(String(args.absolutePath));
+          return { path: 'src/file-0.txt', absolutePath: 'C:/workspace/src/file-0.txt', operation: 'edit', additions: 1, deletions: 1, hunks: [{ oldStart: 1, newStart: 1, oldLines: 1, newLines: 1, lines: [{ type: 'deletion', oldLine: 1, newLine: null, content: 'before version' }, { type: 'addition', oldLine: null, newLine: 1, content: 'saved version' }] }] };
+        }
+        case 'list_font_assets_cmd':
+          return JSON.parse(localStorage.getItem('e2e-font-assets') ?? '[]');
+        case 'plugin:dialog|open':
+          return ['/selected/font.woff2'];
+        case 'import_font_assets_cmd': {
+          const fonts = [{ id: 'font-custom', name: 'My imported font', family: 'ImportedNexa', format: 'woff2', path: '/test-user-font.woff2', bytes: 12000 }];
+          localStorage.setItem('e2e-font-assets', JSON.stringify(fonts));
+          return fonts;
+        }
+        case 'remove_font_asset_cmd':
+          localStorage.setItem('e2e-font-assets', '[]');
+          return null;
         case 'get_wizard_state_cmd':
           return { completed: true };
         case 'plugin:event|listen': {
@@ -158,9 +184,13 @@ test.beforeEach(async ({ page }) => {
           return [];
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
+          if (localStorage.getItem('e2e-change-fixture')) return [clone(conversations[id]), ['user', 'assistant'].map((role, index) => ({
+            id: `changes-${role}`, conversationId: id, role, content: role === 'user' ? 'Update the workspace files.' : 'The file edits are complete.', toolCalls: [], toolCallId: null, artifacts: null, tokenCount: 0, createdAt: nowIso, sortOrder: index, thinking: null, imageAttachments: null,
+          }))];
           return [clone(conversations[id]), []];
         }
         case 'get_conversation_turns_cmd':
+          if (localStorage.getItem('e2e-change-fixture')) return [{ id: 'turn-changes', conversationId: args.conversationId, userMessageId: 'changes-user', assistantMessageId: 'changes-assistant', status: 'completed', createdAt: nowIso, updatedAt: nowIso, finishedAt: nowIso }];
           return [];
         case 'get_conversation_usage_snapshot_cmd':
           return {
@@ -216,6 +246,79 @@ test.beforeEach(async ({ page }) => {
       },
     };
   });
+});
+
+test('turn file changes stay collapsed, load saved details on demand and survive reload', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('e2e-change-fixture', '1'));
+  await page.goto('/chat/conv-model-switch');
+  const capsule = page.getByTestId('turn-file-changes');
+  await expect(capsule.getByRole('button', { name: /Changed 12 files/ })).toHaveAttribute('aria-expanded', 'false');
+  await expect(capsule.getByTestId('turn-file-change-detail')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { __diffRequests?: string[] }).__diffRequests ?? [])).toEqual([]);
+  await capsule.getByRole('button', { name: /Changed 12 files/ }).click();
+  await expect(capsule.locator('li')).toHaveCount(10);
+  await capsule.getByRole('button', { name: /Show more/ }).click();
+  await expect(capsule.locator('li')).toHaveCount(12);
+  await capsule.locator('li').first().getByRole('button', { name: /src\/file-0.txt/ }).click();
+  await expect(capsule.getByText('saved version', { exact: true })).toBeVisible();
+  await expect(capsule.getByText('before version', { exact: true })).toBeVisible();
+  await expect(capsule.getByText('No line counts', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __diffRequests?: string[] }).__diffRequests)).toEqual(['C:/workspace/src/file-0.txt']);
+  await capsule.screenshot({ path: testInfo.outputPath('turn-file-changes.png') });
+  await page.reload();
+  await expect(capsule.getByRole('button', { name: /Changed 12 files/ })).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => localStorage.setItem('e2e-change-revision', '2'));
+  await page.reload();
+  await expect(capsule.getByRole('button', { name: /Changed 2 files/ })).toBeVisible();
+  await expect(capsule.getByText('+2', { exact: true })).toBeVisible();
+  await expect(capsule.getByText('+11', { exact: true })).toHaveCount(0);
+});
+
+test('appearance fonts and streaming preferences apply, import, survive reload and remove', async ({ page }, testInfo) => {
+  const font = readFileSync(join(process.cwd(), 'node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2'));
+  await page.route('**/test-user-font.woff2', route => route.fulfill({ contentType: 'font/woff2', body: font }));
+  await page.goto('/settings');
+  const ui = page.getByTestId('ui-font-select');
+  const code = page.getByTestId('code-font-select');
+  await expect(ui.locator('option')).toHaveCount(17);
+  await ui.selectOption('noto-sans-sc');
+  await code.selectOption('jetbrains-mono');
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).fontFamily)).toContain('Noto Sans SC');
+  await expect.poll(() => page.getByTestId('font-preview').locator('code').evaluate(el => getComputedStyle(el).fontFamily)).toContain('JetBrains Mono');
+  await page.getByTestId('streaming-mode-smooth').click();
+  await expect(page.getByTestId('streaming-mode-smooth')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Import fonts', exact: true }).click();
+  await expect(ui.locator('option')).toHaveCount(18);
+  await ui.selectOption('font-custom');
+  await expect.poll(() => page.evaluate(() => document.fonts.check('16px ImportedNexa') && getComputedStyle(document.body).fontFamily)).toContain('ImportedNexa');
+  await page.reload();
+  await expect(ui).toHaveValue('font-custom');
+  await expect(code).toHaveValue('jetbrains-mono');
+  await expect(page.getByTestId('streaming-mode-smooth')).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).fontFamily)).toContain('ImportedNexa');
+  await page.getByTestId('display-settings').screenshot({ path: testInfo.outputPath('display-settings.png') });
+  await page.getByRole('button', { name: 'Remove My imported font' }).click();
+  await expect(ui).toHaveValue('theme');
+  await expect(ui.locator('option')).toHaveCount(17);
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).fontFamily)).not.toContain('ImportedNexa');
+  await page.getByTestId('streaming-mode-chunked').click();
+  await expect(page.getByTestId('streaming-mode-chunked')).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('model search excludes provider metadata in global and provider results', async ({ page }) => {
+  await page.goto('/chat/conv-model-switch');
+  await page.getByTestId('agent-model-picker-trigger').click();
+  const search = page.getByTestId('agent-model-picker-menu').getByRole('searchbox');
+  await search.fill('GLM');
+  await expect(page.getByTestId('agent-model-option-cfg-glm-glm-4.7')).toBeVisible();
+  await expect(page.getByTestId('agent-model-option-cfg-glm-gpt-5.5')).toHaveCount(0);
+  await search.press('Escape');
+  await page.getByTestId('agent-model-picker-trigger').click();
+  await search.fill('');
+  await page.getByTestId('agent-model-provider-cfg-glm').click();
+  await search.fill(' glm 4.7 ');
+  await expect(page.getByTestId('agent-model-option-cfg-glm-glm-4.7')).toBeVisible();
+  await expect(page.getByTestId('agent-model-option-cfg-glm-gpt-5.5')).toHaveCount(0);
 });
 
 test('model selector and context usage follow the active chat model', async ({ page }) => {

@@ -12,7 +12,7 @@ use crate::db::Database;
 use crate::error::CoreError;
 use crate::file_checkpoint::{checkpoint_artifact, CreateFileCheckpointInput};
 
-use super::diff_stats::{changed_line_count, diff_stats_artifact, text_diff_artifact};
+use super::diff_stats::text_diff_artifact;
 use super::document_utils::{edit_guidance_for_path, is_binary_file_error};
 use super::path_utils::resolve_existing_file_for_file_access;
 use super::text_match::{find_text_matches, TextMatch};
@@ -95,6 +95,7 @@ impl Tool for MultiEditTool {
         &self,
         context: crate::tools::ToolExecutionContext<'_>,
     ) -> Result<ToolResult, CoreError> {
+        let file_changes = crate::turn_file_changes::FileChangeScope::from_context(&context);
         let crate::tools::ToolExecutionContext {
             call_id,
             arguments,
@@ -159,8 +160,6 @@ impl Tool for MultiEditTool {
             let mut content = original.clone();
             let mut summaries = Vec::new();
             let mut total_replacements = 0usize;
-            let mut total_additions = 0usize;
-            let mut total_deletions = 0usize;
 
             for (idx, edit) in args.edits.iter().enumerate() {
                 let old_str = edit.old_str.as_deref().unwrap_or("");
@@ -182,8 +181,6 @@ impl Tool for MultiEditTool {
                 };
                 content = applied.content;
                 total_replacements += applied.replacements;
-                total_deletions += changed_line_count(old_str) * applied.replacements;
-                total_additions += changed_line_count(new_str) * applied.replacements;
                 summaries.push(AppliedEditSummary {
                     index: idx + 1,
                     replacements: applied.replacements,
@@ -217,23 +214,19 @@ impl Tool for MultiEditTool {
                 });
             }
 
+            if let Some(scope) = &file_changes {
+                scope.record_checkpoint(&checkpoint, content.as_bytes());
+            }
             let mut artifact = checkpoint_artifact(&checkpoint, Some(content.len() as u64));
             if let Some(object) = artifact.as_object_mut() {
                 let diff = text_diff_artifact(&args.path, "multi_edit", &original, &content);
                 object.insert("operation".to_string(), json!("multi_edit"));
                 object.insert("editCount".to_string(), json!(summaries.len()));
                 object.insert("replacementCount".to_string(), json!(total_replacements));
-                object.insert("diff".to_string(), diff);
+                object.insert("diff".to_string(), diff.clone());
                 object.insert(
                     "diffStats".to_string(),
-                    diff_stats_artifact(
-                        &args.path,
-                        "multi_edit",
-                        total_additions,
-                        total_deletions,
-                        summaries.len(),
-                        Some(total_replacements),
-                    ),
+                    super::diff_stats::diff_stats_from_diff(&diff, Some(total_replacements)),
                 );
                 object.insert("edits".to_string(), json!(summaries));
             }
