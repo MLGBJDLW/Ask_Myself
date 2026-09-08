@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -106,6 +108,17 @@ test.beforeEach(async ({ page }) => {
         },
       ],
     };
+
+    const toolNames = new URL(location.href).searchParams.get('toolNames');
+    if (toolNames) {
+      localStorage.setItem('nexa-developer-mode', 'true');
+      const names = JSON.parse(toolNames) as string[];
+      const messages = messagesByConversation['conv-persisted-round-replies'];
+      messages[1].toolCalls = names.map((name, index) => ({ id: `canonical-${index}`, name, arguments: '{}' }));
+      const template = messages[2];
+      messages.splice(2, 1, ...names.map((name, index) => ({ ...template, id: `tool-message-${index}`, toolCallId: `canonical-${index}`, content: 'Done.', sortOrder: index + 2 })));
+      messages[messages.length - 1].sortOrder = names.length + 2;
+    }
 
     let callbackSeq = 1;
     let listenerSeq = 1;
@@ -222,6 +235,22 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('every backend tool definition keeps its canonical name in the rendered trace', async ({ page }) => {
+  const root = resolve(process.cwd(), '../../crates/core/prompts/tools');
+  const names = readdirSync(root).filter(file => file.endsWith('.json')).flatMap(file => {
+    const definition = JSON.parse(readFileSync(resolve(root, file), 'utf8'));
+    return typeof definition.name === 'string' ? [definition.name] : [];
+  });
+  names.push('functions.read_file', 'mcp__workspace__grep', 'browser_session', 'computer_observe', 'computer_control');
+  const unique = [...new Set(names)];
+  expect(unique.length).toBeGreaterThan(30);
+  await page.goto(`/chat/conv-persisted-round-replies?toolNames=${encodeURIComponent(JSON.stringify(unique))}`);
+  const toggles = page.getByTestId('thinking-trace-toggle');
+  await expect(toggles.first()).toBeVisible();
+  for (const toggle of await toggles.all()) if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  for (const name of unique) await expect(page.getByText(name, { exact: true }).first()).toBeAttached();
+});
+
 test('keeps persisted tool-round replies interleaved with trace thinking', async ({ page }) => {
   await page.goto('/chat/conv-persisted-round-replies');
 
@@ -235,9 +264,9 @@ test('keeps persisted tool-round replies interleaved with trace thinking', async
 
   const text = chatLogText ?? '';
   expect(text.indexOf('phase one thinking')).toBeGreaterThanOrEqual(0);
-  expect(text.indexOf('Read file')).toBeGreaterThan(text.indexOf('phase one thinking'));
+  expect(text.indexOf('read_file')).toBeGreaterThan(text.indexOf('phase one thinking'));
   expect(text.indexOf('first-round-reply')).toBeGreaterThan(text.indexOf('phase one thinking'));
   expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('first-round-reply'));
-  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('Read file'));
+  expect(text.indexOf('phase two thinking')).toBeGreaterThan(text.indexOf('read_file'));
   expect(text.indexOf('final-round-reply')).toBeGreaterThan(text.indexOf('phase two thinking'));
 });

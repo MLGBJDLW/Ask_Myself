@@ -526,54 +526,6 @@ const TOOL_ICONS: Record<string, typeof Search> = {
   model: Sparkles,
 };
 
-const TOOL_LABELS: Record<string, string> = {
-  search_playbooks: 'Search playbooks',
-  search_sessions: 'Search sessions',
-  search_by_date: 'Search by date',
-  search: 'Search',
-  code_intelligence: 'Inspect code',
-  grep_files: 'Search files',
-  glob_files: 'Find files',
-  read_files: 'Read files',
-  read_file: 'Read file',
-  get_document_info: 'Inspect document',
-  compare_documents: 'Compare documents',
-  summarize_document: 'Summarize document',
-  retrieve_evidence: 'Retrieve evidence',
-  query_knowledge_graph: 'Query graph',
-  get_related_concepts: 'Find related concepts',
-  list_documents: 'List documents',
-  list_sources: 'List sources',
-  compile_document: 'Compile document',
-  desktop_automation: 'Use desktop',
-  computer_observe: 'Observe computer',
-  computer_control: 'Control computer',
-  project_tool: 'Project tool',
-  playbook: 'Run playbook',
-  multi_edit: 'Edit files',
-  edit_file: 'Edit file',
-  file: 'Open file',
-  summarize: 'Summarize',
-  list_dir: 'List folder',
-  web_search: 'Search web',
-  web_research_context: 'Build web context',
-  fetch_url: 'Fetch URL',
-  download_asset: 'Download asset',
-  chunk_context: 'Chunk context',
-  write_note: 'Write note',
-  update_plan: 'Update plan',
-  record_verification: 'Record verification',
-  run_shell: 'Run command',
-  shell_command: 'Run command',
-  apply_patch: 'Edit files',
-  generate_image: 'Generate image',
-  manage_skill: 'Use skill',
-  activate_skill: 'Activate skill',
-};
-
-const TOOL_LABEL_KEYS = Object.keys(TOOL_LABELS).sort((a, b) => b.length - a.length);
-const TOOL_LABEL_SUBSTRING_KEYS = TOOL_LABEL_KEYS.filter((key) => key !== 'file');
-
 type ToolTone =
   | 'search'
   | 'evidence'
@@ -622,44 +574,7 @@ function getToolTone(name?: string): ToolTone {
 
 function getToolIcon(name?: string) {
   const lower = (name || '').toLowerCase();
-  for (const [key, Icon] of Object.entries(TOOL_ICONS)) {
-    if (lower.includes(key)) return Icon;
-  }
-  return Wrench;
-}
-
-function toolLeafName(name: string): string {
-  const parts = name
-    .split(/[.:/]/)
-    .filter(Boolean)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : name.trim();
-}
-
-function humanizeToolName(name: string): string {
-  const leaf = toolLeafName(name).replace(/[_-]+/g, ' ').trim();
-  if (!leaf) return 'Tool';
-  return leaf.replace(/\b[a-z]/g, (char) => char.toUpperCase());
-}
-
-function getToolDisplayName(name: string): string {
-  const lower = name.toLowerCase();
-  const leaf = toolLeafName(lower);
-  if (TOOL_LABELS[lower]) return TOOL_LABELS[lower];
-  if (TOOL_LABELS[leaf]) return TOOL_LABELS[leaf];
-  const key = TOOL_LABEL_SUBSTRING_KEYS.find((candidate) => lower.includes(candidate));
-  return key ? TOOL_LABELS[key] : humanizeToolName(name);
-}
-
-function getFileChangeDisplayName(name: string, isFileChange: boolean, operation?: string): string | null {
-  if (!isFileChange) return null;
-  const lower = name.toLowerCase();
-  if (operation === 'create' || lower.includes('create_file')) return TOOL_LABELS.create_file;
-  if (lower.includes('multi_edit') || lower.includes('apply_patch')) return TOOL_LABELS.multi_edit;
-  if (lower.includes('write_note')) return TOOL_LABELS.write_note;
-  if (lower.includes('download_asset')) return TOOL_LABELS.download_asset;
-  return TOOL_LABELS.edit_file;
+  return TOOL_ICONS[lower] ?? Wrench;
 }
 
 function parseSearchResults(content: string): SearchResultItem[] | null {
@@ -695,18 +610,6 @@ function parseArgsRecord(raw?: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function getManagedServiceDisplayName(name: string, rawArgs?: string): string | null {
-  if (toolLeafName(name.toLowerCase()) !== 'run_shell') return null;
-  const args = parseArgsRecord(rawArgs);
-  if (!args) return null;
-  const action = typeof args.service_action === 'string'
-    ? args.service_action.trim().toLowerCase()
-    : 'run';
-  if (action === 'status') return 'Check service';
-  if (action === 'stop') return 'Stop service';
-  return args.background === true ? 'Start service' : null;
 }
 
 const FILE_TARGET_ARG_KEYS = [
@@ -878,14 +781,11 @@ function deriveFileChangeStatsFromArgs({
 function getToolBriefLabel(
   name: string,
   args?: string,
-  displayNameOverride?: string | null,
   targetOverride?: string | null,
   argsStatus?: ToolCallEvent['argsStatus'],
   renderKind?: ToolRenderKind,
 ): string {
-  const label = displayNameOverride
-    ?? getManagedServiceDisplayName(name, args)
-    ?? getToolDisplayName(name);
+  const label = name;
   const target = getToolTitleTarget({
     toolName: name,
     renderKind,
@@ -1750,29 +1650,17 @@ export const ToolCallCard = memo(function ToolCallCard({
     [args, isFileChangeRender, safeToolName],
   );
   const headerDiffStats = diffStats ?? argumentFileChangeStats?.stats ?? null;
-  const fileChangeDisplayName = getFileChangeDisplayName(
-    safeToolName,
-    isFileChangeRender,
-    headerDiffStats?.operation ?? fileDiff?.operation,
-  );
   const fileChangeTarget = isFileChangeRender
     ? getStableFileChangeTarget(fileDiff, headerDiffStats) ?? argumentFileChangeStats?.target ?? null
     : null;
   const briefTargetOverride = isFileChangeRender ? (fileChangeTarget ?? '') : fileChangeTarget;
-  const briefLabel = skillActivationName
-    ? (
-        skillActivation
-          ? t('chat.skillActivatedLabel', { name: skillActivationName })
-          : t('chat.skillActivatingLabel', { name: skillActivationName })
-      )
-    : getToolBriefLabel(
-        safeToolName,
-        args,
-        fileChangeDisplayName,
-        briefTargetOverride,
-        argsStatus,
-        renderKind,
-      );
+  const briefLabel = getToolBriefLabel(
+    safeToolName,
+    args,
+    skillActivationName ?? briefTargetOverride,
+    argsStatus,
+    renderKind,
+  );
   const briefResult = getToolBriefResult(status, t, content, safeToolName);
   const durationLabel = formatDurationMs(durationMs);
   const resourceKeyCount = Array.isArray(capabilities?.resourceKeys)
@@ -2418,6 +2306,7 @@ export const ToolCallCard = memo(function ToolCallCard({
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
         className="my-0.5"
       >
+        <div className="mb-1 text-[11px] font-medium text-text-secondary">{safeToolName}</div>
         <SubagentCard run={subagentRun} />
       </motion.div>
     );
@@ -2437,8 +2326,9 @@ export const ToolCallCard = memo(function ToolCallCard({
       >
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary">
           <span className="font-medium text-text-primary">
-            {subagentBatch.batchGoal || t('chat.subagentParallelRun')}
+            {safeToolName}
           </span>
+          {subagentBatch.batchGoal && <span className="text-text-tertiary">{subagentBatch.batchGoal}</span>}
           {typeof subagentBatch.effectiveMaxParallel === 'number' && (
             <span className="rounded-full border border-border/55 bg-surface-1/70 px-2 py-0.5">
               {t('chat.subagentParallelCount', { count: String(subagentBatch.effectiveMaxParallel) })}
@@ -2489,8 +2379,9 @@ export const ToolCallCard = memo(function ToolCallCard({
       >
         <div className="mb-1.5 flex flex-wrap items-center gap-1 text-[11px] text-text-secondary">
           <span className="font-medium text-text-primary">
-            {subagentJudgement.task || t('chat.subagentJudgementFallback')}
+            {safeToolName}
           </span>
+          {subagentJudgement.task && <span className="text-text-tertiary">{subagentJudgement.task}</span>}
           <span className="rounded-full border border-border/55 bg-surface-1/70 px-1.5 py-0.5">
             {subagentJudgement.decisionMode}
           </span>
