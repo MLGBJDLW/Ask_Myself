@@ -462,6 +462,7 @@ mod mutation_lifecycle_tests {
                 &serde_json::from_value(json!({"provider":"open_ai","model":"test"})).unwrap(),
             )
             .unwrap();
+        crate::turn_file_changes::seed_file_change_turn(&db, &conversation.id, "turn-copy");
         let scope = crate::turn_file_changes::FileChangeScope::from_context(
             &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
                 .with_conversation_id(Some(&conversation.id))
@@ -507,6 +508,7 @@ mod mutation_lifecycle_tests {
                 &serde_json::from_value(json!({"provider":"open_ai","model":"test"})).unwrap(),
             )
             .unwrap();
+        crate::turn_file_changes::seed_file_change_turn(&db, &conversation.id, "turn-copy");
         let scope = crate::turn_file_changes::FileChangeScope::from_context(
             &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
                 .with_conversation_id(Some(&conversation.id))
@@ -530,6 +532,7 @@ mod mutation_lifecycle_tests {
                 &serde_json::from_value(json!({ "provider": "open_ai", "model": "test" })).unwrap(),
             )
             .unwrap();
+        crate::turn_file_changes::seed_file_change_turn(&db, &conversation.id, "turn-copy");
         let scope = crate::turn_file_changes::FileChangeScope::from_context(
             &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
                 .with_conversation_id(Some(&conversation.id))

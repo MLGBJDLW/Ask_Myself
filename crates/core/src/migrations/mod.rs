@@ -2854,6 +2854,26 @@ Every answer that uses knowledge base search results.
         );
         CREATE INDEX idx_turn_file_change_events ON turn_file_change_events(conversation_id, turn_id);",
     ),
+    (
+        "v130_retire_deleted_turn_file_changes",
+        "DELETE FROM turn_file_changes WHERE NOT EXISTS (
+            SELECT 1 FROM conversation_turns t WHERE t.id=turn_file_changes.turn_id AND t.conversation_id=turn_file_changes.conversation_id
+         );
+         DELETE FROM turn_file_change_events WHERE NOT EXISTS (
+            SELECT 1 FROM conversation_turns t WHERE t.id=turn_file_change_events.turn_id AND t.conversation_id=turn_file_change_events.conversation_id
+         );
+         CREATE TRIGGER delete_turn_file_changes AFTER DELETE ON conversation_turns BEGIN
+            DELETE FROM turn_file_changes WHERE conversation_id=OLD.conversation_id AND turn_id=OLD.id;
+            DELETE FROM turn_file_change_events WHERE conversation_id=OLD.conversation_id AND turn_id=OLD.id;
+         END;
+         CREATE TRIGGER admit_turn_file_changes BEFORE INSERT ON turn_file_changes
+         WHEN NOT EXISTS (SELECT 1 FROM conversation_turns t WHERE t.id=NEW.turn_id AND t.conversation_id=NEW.conversation_id)
+         BEGIN SELECT RAISE(IGNORE); END;
+         CREATE TRIGGER admit_turn_file_change_events BEFORE INSERT ON turn_file_change_events
+         WHEN NOT EXISTS (SELECT 1 FROM conversation_turns t WHERE t.id=NEW.turn_id AND t.conversation_id=NEW.conversation_id)
+         BEGIN SELECT RAISE(IGNORE);
+         END;",
+    ),
 ];
 
 /// Ensures the internal `_migrations` tracking table exists.

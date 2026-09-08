@@ -2395,10 +2395,13 @@ impl Database {
              JOIN messages m ON m.id = t.user_message_id
              WHERE r.conversation_id = ?1
                AND m.sort_order >= ?2
-               AND r.status IN (
+               AND (r.status IN (
                    'queued', 'running', 'cancelling', 'waiting_approval',
                    'awaiting_user_input', 'paused'
-               )",
+               ) OR EXISTS (
+                   SELECT 1 FROM turn_file_change_events e
+                   WHERE e.conversation_id=r.conversation_id AND e.turn_id=r.turn_id AND e.pending=1
+               ))",
             rusqlite::params![&message.conversation_id, anchor_sort_order],
             |row| row.get(0),
         )?;
@@ -6324,6 +6327,46 @@ mod tests {
 
         let mut retry_payload = user_message.clone();
         retry_payload.id = "must-not-create-a-second-user-message".to_string();
+        let scope = crate::turn_file_changes::FileChangeScope::from_context(
+            &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
+                .with_conversation_id(Some(&conversation.id))
+                .with_turn_id(Some(&first.turn_id)),
+        )
+        .unwrap();
+        scope
+            .record(
+                "copy",
+                "/saved.txt",
+                "saved.txt",
+                crate::turn_file_changes::FileChangeContent {
+                    hash: None,
+                    bytes: None,
+                },
+                crate::turn_file_changes::FileChangeContent {
+                    hash: Some("saved"),
+                    bytes: Some(b"saved bytes"),
+                },
+            )
+            .unwrap();
+        let pending = scope.begin_pending("still-copying");
+        assert!(matches!(
+            db.retry_agent_turn_and_run(
+                &retry_payload,
+                &user_message.id,
+                "Explain the retry bug",
+                Some("openai"),
+                Some("gpt-5"),
+                "retry-second"
+            ),
+            Err(CoreError::Conflict(_))
+        ));
+        assert_eq!(
+            db.conversation_file_changes(&conversation.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        pending.finish(false);
         let retry = db
             .retry_agent_turn_and_run(
                 &retry_payload,
@@ -6337,6 +6380,22 @@ mod tests {
 
         assert_eq!(retry.user_message_id, user_message.id);
         assert_ne!(retry.run_id, first.run_id);
+        assert!(db
+            .conversation_file_changes(&conversation.id)
+            .unwrap()
+            .is_empty());
+        for table in ["turn_file_changes", "turn_file_change_events"] {
+            assert_eq!(
+                db.conn()
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE turn_id=?1"),
+                        [&first.turn_id],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+        }
         let messages = db.get_messages(&conversation.id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id, user_message.id);

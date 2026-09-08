@@ -330,6 +330,18 @@ fn text_content(bytes: &[u8]) -> Option<&str> {
 }
 
 #[cfg(test)]
+pub(crate) fn seed_file_change_turn(db: &Database, conversation_id: &str, turn_id: &str) {
+    let user_id = format!("{turn_id}-user");
+    db.conn().execute("INSERT INTO messages(id,conversation_id,role,content,sort_order) VALUES (?1,?2,'user','Edit',0)", params![user_id,conversation_id]).unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO conversation_turns(id,conversation_id,user_message_id) VALUES (?1,?2,?3)",
+            params![turn_id, conversation_id, user_id],
+        )
+        .unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -373,6 +385,7 @@ mod tests {
                 &serde_json::from_value(json!({ "provider": "open_ai", "model": "test" })).unwrap(),
             )
             .unwrap();
+        seed_file_change_turn(&db, &conversation.id, "turn-1");
         let scope = FileChangeScope {
             db: db.clone(),
             owner: FileChangeOwner {
@@ -476,6 +489,7 @@ mod tests {
     fn historical_diff_keeps_its_after_state_and_marks_intervening_edits() {
         let (db, scope) = setup();
         record(&scope, "first", "/a.txt", Some(b"old\n"), Some(b"saved\n"));
+        seed_file_change_turn(&db, &scope.owner.conversation_id, "turn-2");
         let next_turn = FileChangeScope {
             db: db.clone(),
             owner: FileChangeOwner {
@@ -662,7 +676,7 @@ mod tests {
         })
         .unwrap();
         db.conn().execute("INSERT INTO messages(id,conversation_id,role,content,sort_order) VALUES ('restore-user',?1,'user','Edit',0)", [&scope.owner.conversation_id]).unwrap();
-        db.conn().execute("INSERT INTO conversation_turns(id,conversation_id,user_message_id,status) VALUES ('turn-1',?1,'restore-user','running')", [&scope.owner.conversation_id]).unwrap();
+        db.conn().execute("UPDATE conversation_turns SET user_message_id='restore-user',status='running' WHERE id='turn-1'", []).unwrap();
         db.conn().execute("INSERT INTO agent_task_runs(id,conversation_id,turn_id,user_message_id,status) VALUES ('restore-run',?1,'turn-1','restore-user','running')", [&scope.owner.conversation_id]).unwrap();
         let path = directory.path().join("file.txt");
         std::fs::write(&path, "original\n").unwrap();
@@ -733,6 +747,38 @@ mod tests {
         let result = summary(&db, &scope);
         assert!(!result.pending && result.partial);
         pending.finish(true);
+    }
+
+    #[test]
+    fn deleted_turns_reject_late_file_receipts_and_pending_events() {
+        let (db, scope) = setup();
+        record(&scope, "before-delete", "/file.txt", None, Some(b"saved"));
+        let pending = scope.begin_pending("copy");
+        db.conn()
+            .execute(
+                "DELETE FROM conversation_turns WHERE id=?1",
+                [&scope.owner.turn_id],
+            )
+            .unwrap();
+        pending.finish(false);
+        record(
+            &scope,
+            "late-write",
+            "/file.txt",
+            Some(b"saved"),
+            Some(b"late"),
+        );
+        scope.mark_partial("late-error");
+        scope.begin_pending("late-start").finish(true);
+        for table in ["turn_file_changes", "turn_file_change_events"] {
+            assert_eq!(
+                db.conn()
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .get::<_, usize>(0))
+                    .unwrap(),
+                0
+            );
+        }
     }
 }
 
