@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.13.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.11...nexa-monorepo-v0.13.12) (2026-09-08)
+
+
+### Features
+
+* **appearance:** add offline fonts and adjustable streaming presentation ([024073f](https://github.com/MLGBJDLW/Nexa/commit/024073fa72e5f1461e360e2453b8f02d35d943d1))
+* **chat:** persist and review net file changes for each turn ([54af3d9](https://github.com/MLGBJDLW/Nexa/commit/54af3d9622bc463f7845aa52b8c98b34e138f077))
+* **workspace:** upgrade agent runtime, browser workflows and chat controls ([1ca4b14](https://github.com/MLGBJDLW/Nexa/commit/1ca4b145f4dd4344438ef3ef37b949702beb7ce8))
+
+
+### Bug Fixes
+
+* **appearance:** preserve font changes made during removal ([baac217](https://github.com/MLGBJDLW/Nexa/commit/baac217e7bf82b0313fb545af4f7b13b569aa96d))
+* **browser:** bind trusted input to observed target context ([6439b1b](https://github.com/MLGBJDLW/Nexa/commit/6439b1bfd2500cb74147606c35b5b612ff3a6147))
+* **browser:** stabilize navigation input concurrency and teardown ([0738026](https://github.com/MLGBJDLW/Nexa/commit/0738026e3eeaff363ffbe6341ed845298de9e4b8))
+* **chat:** preserve file mutation ownership through cancellation and restore ([5f49503](https://github.com/MLGBJDLW/Nexa/commit/5f4950350700b2f51dd38636ae8835f29cb8618f))
+* **chat:** retire file change history with deleted turns ([8fff245](https://github.com/MLGBJDLW/Nexa/commit/8fff24566f2a01b7c847012e263e2f5faecf06ce))
+* **desktop:** use the host logger for file-change startup recovery ([21c74ba](https://github.com/MLGBJDLW/Nexa/commit/21c74baf9304a5cc87bd3450f13ab8eea4e113c9))
+* **files:** bound native snapshot caches and batch persisted changes ([bf14454](https://github.com/MLGBJDLW/Nexa/commit/bf14454b81cc20e61e1fd5347e50cb5109635c0a))
+* **fonts:** use fixed-size chunks for font tables ([f08c549](https://github.com/MLGBJDLW/Nexa/commit/f08c549ceabba3315c3d06899fc227fb3f4a1138))
+* **models:** filter picker results by model identity ([069e6a5](https://github.com/MLGBJDLW/Nexa/commit/069e6a5efa36991646b2d5a8ba85bf141a5a60dc))
+* **preview:** align agent access and restore trusted manual saves ([7fe42b3](https://github.com/MLGBJDLW/Nexa/commit/7fe42b3f20cc534a122ea680230dc92e1780dd44))
+* **preview:** open and edit local files outside indexed sources ([ab2c19e](https://github.com/MLGBJDLW/Nexa/commit/ab2c19e18073892547cb7003d654b942c2fd3e9e))
+* **streaming:** consume late recovery results after watchdog backoff ([c94edc0](https://github.com/MLGBJDLW/Nexa/commit/c94edc04be8b5d06d8dcfe998a143ce9102fd771))
+* **streaming:** reconcile progressing runs and flush occluded frames ([f7ec4b5](https://github.com/MLGBJDLW/Nexa/commit/f7ec4b5c2f80f756f8422032424d685e937e1999))
+* **tools:** preserve canonical names across tool presentations ([3c5a3a4](https://github.com/MLGBJDLW/Nexa/commit/3c5a3a4f52c5f65b6a38130bb35c68f03e0d9fb4))
+
 ## [0.13.11](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.10...nexa-monorepo-v0.13.11) (2026-09-07)
 
 
