@@ -5,7 +5,7 @@ import { useTranslation } from '../../i18n';
 import * as api from '../../lib/api';
 import { FONT_PRESETS } from '../../lib/fontCatalog';
 import { useFonts } from '../../lib/FontProvider';
-import { updateDisplayPreferences, useDisplayPreferences, type StreamingMode } from '../../lib/displayPreferences';
+import { getDisplayPreferences, updateDisplayPreferences, useDisplayPreferences, type StreamingMode } from '../../lib/displayPreferences';
 import { Button } from '../ui/Button';
 
 export function DisplaySettings() {
@@ -35,9 +35,10 @@ export function DisplaySettings() {
     setError(null);
     try {
       await api.removeFontAsset(id);
+      const current = getDisplayPreferences();
       updateDisplayPreferences({
-        ...(preferences.uiFontId === id ? { uiFontId: 'theme' } : {}),
-        ...(preferences.codeFontId === id ? { codeFontId: 'theme' } : {}),
+        ...(current.uiFontId === id ? { uiFontId: 'theme' } : {}),
+        ...(current.codeFontId === id ? { codeFontId: 'theme' } : {}),
       });
       await reload();
     } catch (cause) { setError(String(cause)); }
