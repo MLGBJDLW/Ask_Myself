@@ -76,7 +76,7 @@ fn validate_container(bytes: &[u8], format: &str) -> Result<(), CoreError> {
         if tables == 0 || tables > 1024 || 12 + tables * 16 > bytes.len() {
             return Err(invalid("The font table directory is incomplete."));
         }
-        for table in bytes[12..12 + tables * 16].chunks_exact(16) {
+        for table in bytes[12..12 + tables * 16].as_chunks::<16>().0 {
             let offset = u32::from_be_bytes(table[8..12].try_into().unwrap()) as u64;
             let length = u32::from_be_bytes(table[12..16].try_into().unwrap()) as u64;
             if offset + length > bytes.len() as u64 {
