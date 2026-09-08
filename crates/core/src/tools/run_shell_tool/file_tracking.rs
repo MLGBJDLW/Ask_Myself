@@ -9,6 +9,7 @@ use super::super::diff_stats::text_diff_artifact;
 
 const MAX_FILE_TRACK_FILES: usize = 5_000;
 const MAX_FILE_TRACK_BYTES: u64 = 1024 * 1024;
+const MAX_SNAPSHOT_CONTENT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FILE_TRACK_DIFFS: usize = 30;
 
 #[derive(Debug, Clone)]
@@ -31,7 +32,7 @@ pub(super) fn persist_file_changes(
     before: &FileSnapshot,
     after: &FileSnapshot,
 ) {
-    use crate::turn_file_changes::FileChangeContent;
+    use crate::turn_file_changes::{FileChangeContent, FileChangeRecord};
     if before.truncated
         || after.truncated
         || before.unreadable_count > 0
@@ -40,30 +41,32 @@ pub(super) fn persist_file_changes(
         scope.mark_partial(call_id);
     }
     let paths: BTreeSet<_> = before.files.keys().chain(after.files.keys()).collect();
+    let mut changed = Vec::new();
     for path in paths {
         let old = before.files.get(path);
         let new = after.files.get(path);
         if old.map(|entry| &entry.hash) == new.map(|entry| &entry.hash) {
             continue;
         }
-        let path = path.to_string_lossy();
-        let result = scope.record(
-            &format!("{call_id}:{path}"),
-            &path,
-            &path,
-            FileChangeContent {
-                hash: old.map(|entry| entry.hash.as_str()),
-                bytes: old.and_then(|entry| entry.content.as_deref()),
-            },
-            FileChangeContent {
-                hash: new.map(|entry| entry.hash.as_str()),
-                bytes: new.and_then(|entry| entry.content.as_deref()),
-            },
-        );
-        if let Err(error) = result {
-            tracing::warn!(%error, "Native shell file change could not be recorded");
-            scope.mark_partial(call_id);
-        }
+        let path = path.to_string_lossy().into_owned();
+        changed.push((format!("{call_id}:{path}"), path, old, new));
+    }
+    let result = scope.record_batch(changed.iter().map(|(id, path, old, new)| FileChangeRecord {
+        mutation_id: id,
+        absolute_path: path,
+        display_path: path,
+        before: FileChangeContent {
+            hash: old.map(|entry| entry.hash.as_str()),
+            bytes: old.and_then(|entry| entry.content.as_deref()),
+        },
+        after: FileChangeContent {
+            hash: new.map(|entry| entry.hash.as_str()),
+            bytes: new.and_then(|entry| entry.content.as_deref()),
+        },
+    }));
+    if let Err(error) = result {
+        tracing::warn!(%error, "Native shell file changes could not be recorded");
+        scope.mark_partial(call_id);
     }
 }
 
@@ -115,7 +118,10 @@ pub(super) async fn execute_tracked_native<R: Send + 'static>(
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String> {
+fn read_snapshot_entry(
+    path: &Path,
+    content_budget: usize,
+) -> Result<Option<FileSnapshotEntry>, String> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -128,7 +134,8 @@ fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String>
     let mut file = std::fs::File::open(path)
         .map_err(|err| format!("cannot open '{}': {err}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
-    let mut content = if metadata.len() <= MAX_FILE_TRACK_BYTES {
+    let limit = content_budget.min(MAX_FILE_TRACK_BYTES as usize);
+    let mut content = if metadata.len() <= limit as u64 {
         Some(Vec::with_capacity(metadata.len() as usize))
     } else {
         None
@@ -143,6 +150,12 @@ fn read_snapshot_entry(path: &Path) -> Result<Option<FileSnapshotEntry>, String>
             break;
         }
         hasher.update(&buffer[..read]);
+        if content
+            .as_ref()
+            .is_some_and(|bytes| bytes.len() + read > limit)
+        {
+            content = None;
+        }
         if let Some(bytes) = content.as_mut() {
             bytes.extend_from_slice(&buffer[..read]);
         }
@@ -161,7 +174,14 @@ pub(super) fn capture_file_snapshot(roots: &[PathBuf]) -> FileSnapshot {
     let mut files = BTreeMap::new();
     let mut truncated = false;
     let mut unreadable_count = 0;
+    let mut content_budget = MAX_SNAPSHOT_CONTENT_BYTES;
     'roots: for root in roots {
+        // Native copy may follow destination links. Do not claim exhaustive
+        // coverage when walking without following links cannot capture it.
+        if std::fs::symlink_metadata(root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            unreadable_count += 1;
+            continue;
+        }
         if !root.exists() {
             continue;
         }
@@ -173,6 +193,10 @@ pub(super) fn capture_file_snapshot(roots: &[PathBuf]) -> FileSnapshot {
                     continue;
                 }
             };
+            if entry.file_type().is_symlink() {
+                unreadable_count += 1;
+                continue;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -190,8 +214,9 @@ pub(super) fn capture_file_snapshot(roots: &[PathBuf]) -> FileSnapshot {
                 truncated = true;
                 break 'roots;
             }
-            match read_snapshot_entry(entry.path()) {
+            match read_snapshot_entry(entry.path(), content_budget) {
                 Ok(Some(snapshot)) => {
+                    content_budget -= snapshot.content.as_ref().map_or(0, Vec::len);
                     files.insert(identity, snapshot);
                 }
                 Ok(None) => {}
@@ -337,6 +362,7 @@ pub(super) fn build_run_shell_file_changes(
             "scope": "nativeMutationPaths",
             "maxFiles": MAX_FILE_TRACK_FILES,
             "maxBytesPerFile": MAX_FILE_TRACK_BYTES,
+            "maxContentBytesPerSnapshot": MAX_SNAPSHOT_CONTENT_BYTES,
             "truncated": before.truncated || after.truncated,
             "unreadableCount": before.unreadable_count + after.unreadable_count,
         },
@@ -398,6 +424,104 @@ pub(super) fn build_run_shell_file_changes(
 #[cfg(test)]
 mod mutation_lifecycle_tests {
     use super::*;
+    #[test]
+    fn native_file_snapshots_bound_aggregate_content_but_keep_all_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let content = vec![0u8; MAX_FILE_TRACK_BYTES as usize];
+        for index in 0..20 {
+            std::fs::write(directory.path().join(format!("{index:02}.bin")), &content).unwrap();
+        }
+        let snapshot = capture_file_snapshot(&[directory.path().into()]);
+        assert_eq!(snapshot.files.len(), 20);
+        assert!(!snapshot.truncated && snapshot.unreadable_count == 0);
+        assert_eq!(
+            snapshot
+                .files
+                .values()
+                .filter_map(|entry| entry.content.as_ref())
+                .map(Vec::len)
+                .sum::<usize>(),
+            MAX_SNAPSHOT_CONTENT_BYTES
+        );
+        assert!(snapshot
+            .files
+            .values()
+            .all(|entry| entry.hash == blake3::hash(&content).to_hex().as_str()));
+        let after_content = vec![1u8; MAX_FILE_TRACK_BYTES as usize];
+        for index in 0..20 {
+            std::fs::write(
+                directory.path().join(format!("{index:02}.bin")),
+                &after_content,
+            )
+            .unwrap();
+        }
+        let after = capture_file_snapshot(&[directory.path().into()]);
+        let db = crate::db::Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(
+                &serde_json::from_value(json!({"provider":"open_ai","model":"test"})).unwrap(),
+            )
+            .unwrap();
+        let scope = crate::turn_file_changes::FileChangeScope::from_context(
+            &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
+                .with_conversation_id(Some(&conversation.id))
+                .with_turn_id(Some("turn-copy")),
+        )
+        .unwrap();
+        persist_file_changes(&scope, "copy", &snapshot, &after);
+        let bytes: usize = db.conn().query_row(
+            "SELECT SUM(COALESCE(length(before_content),0)+COALESCE(length(after_content),0)) FROM turn_file_changes",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(bytes, 2 * MAX_SNAPSHOT_CONTENT_BYTES);
+        let changes = db.conversation_file_changes(&conversation.id).unwrap();
+        assert_eq!(changes[0].files.len(), 20);
+        assert_eq!(
+            changes[0]
+                .files
+                .iter()
+                .filter(|file| file.content_kind == "too_large")
+                .count(),
+            12
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_file_copy_through_symlink_marks_turn_coverage_partial() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.txt");
+        let target = directory.path().join("target.txt");
+        let link = directory.path().join("link.txt");
+        std::fs::write(&source, "after\n").unwrap();
+        std::fs::write(&target, "before\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let before = capture_file_snapshot(std::slice::from_ref(&link));
+        std::fs::copy(&source, &link).unwrap();
+        let after = capture_file_snapshot(std::slice::from_ref(&link));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");
+        assert_eq!(before.unreadable_count, 1);
+        assert_eq!(after.unreadable_count, 1);
+        let db = crate::db::Database::open_memory().unwrap();
+        let conversation = db
+            .create_conversation(
+                &serde_json::from_value(json!({"provider":"open_ai","model":"test"})).unwrap(),
+            )
+            .unwrap();
+        let scope = crate::turn_file_changes::FileChangeScope::from_context(
+            &crate::tools::ToolExecutionContext::new("copy", "{}", &db, &[])
+                .with_conversation_id(Some(&conversation.id))
+                .with_turn_id(Some("turn-copy")),
+        )
+        .unwrap();
+        persist_file_changes(&scope, "copy", &before, &after);
+        assert!(db.conversation_file_changes(&conversation.id).unwrap()[0].partial);
+        // Nested links must also prevent an exhaustive-coverage claim.
+        assert_eq!(
+            capture_file_snapshot(&[directory.path().into()]).unreadable_count,
+            1
+        );
+    }
+
     #[tokio::test]
     async fn dropping_native_waiter_keeps_the_permit_until_recording_finishes() {
         let db = crate::db::Database::open_memory().unwrap();

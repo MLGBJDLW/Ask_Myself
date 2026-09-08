@@ -34,6 +34,14 @@ pub struct FileChangeContent<'a> {
     pub bytes: Option<&'a [u8]>,
 }
 
+pub struct FileChangeRecord<'a> {
+    pub mutation_id: &'a str,
+    pub absolute_path: &'a str,
+    pub display_path: &'a str,
+    pub before: FileChangeContent<'a>,
+    pub after: FileChangeContent<'a>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnFileChange {
@@ -201,11 +209,45 @@ impl FileChangeScope {
         before: FileChangeContent<'_>,
         after: FileChangeContent<'_>,
     ) -> Result<(), CoreError> {
+        self.record_batch([FileChangeRecord {
+            mutation_id,
+            absolute_path,
+            display_path,
+            before,
+            after,
+        }])
+    }
+
+    /// Commit a native operation together rather than opening a transaction
+    /// for every changed file. Callers bound their snapshot content cache.
+    pub fn record_batch<'a>(
+        &self,
+        records: impl IntoIterator<Item = FileChangeRecord<'a>>,
+    ) -> Result<(), CoreError> {
+        let mut conn = self.db.conn();
+        let transaction = conn.transaction()?;
+        for record in records {
+            self.record_in_transaction(&transaction, record)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn record_in_transaction(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        record: FileChangeRecord<'_>,
+    ) -> Result<(), CoreError> {
+        let FileChangeRecord {
+            mutation_id,
+            absolute_path,
+            display_path,
+            before,
+            after,
+        } = record;
         let mutation_id = self.scoped_mutation_id(mutation_id);
         // Callers supply backend-resolved absolute identities. Preserve case
         // for case-sensitive directories, including those on Windows.
-        let mut conn = self.db.conn();
-        let transaction = conn.transaction()?;
         let admitted = transaction.execute(
             "INSERT OR IGNORE INTO turn_file_change_events(conversation_id,turn_id,mutation_id) VALUES (?1,?2,?3)",
             params![self.owner.conversation_id, self.owner.turn_id, mutation_id])?;
@@ -275,7 +317,6 @@ impl FileChangeScope {
               partial=excluded.partial, revision=turn_file_changes.revision+1",
             params![self.owner.conversation_id,self.owner.turn_id,absolute_path,display_path,old_bytes,new_bytes,original_hash,after.hash,
                 original_hash.is_some(),after.hash.is_some(),additions,deletions,kind,partial])?;
-        transaction.commit()?;
         Ok(())
     }
 }
@@ -292,6 +333,38 @@ fn text_content(bytes: &[u8]) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn turn_file_batches_preserve_later_calls_without_a_turn_content_quota() {
+        let (db, scope) = setup();
+        let content = vec![0u8; MAX_CONTENT_BYTES];
+        for index in 0..12 {
+            record(
+                &scope,
+                &format!("write-{index}"),
+                &format!("file-{index}"),
+                None,
+                Some(&content),
+            );
+        }
+        let used: usize = db
+            .conn()
+            .query_row(
+                "SELECT SUM(COALESCE(length(after_content),0)) FROM turn_file_changes",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 12 * MAX_CONTENT_BYTES);
+        let summaries = db
+            .conversation_file_changes(&scope.owner.conversation_id)
+            .unwrap();
+        assert_eq!(summaries[0].files.len(), 12);
+        assert!(summaries[0]
+            .files
+            .iter()
+            .all(|file| file.content_kind != "too_large"));
+    }
 
     fn setup() -> (Database, FileChangeScope) {
         let db = Database::open_memory().unwrap();
