@@ -111,7 +111,6 @@ test.beforeEach(async ({ page }) => {
 
     const toolNames = new URL(location.href).searchParams.get('toolNames');
     if (toolNames) {
-      localStorage.setItem('nexa-developer-mode', 'true');
       const names = JSON.parse(toolNames) as string[];
       const messages = messagesByConversation['conv-persisted-round-replies'];
       messages[1].toolCalls = names.map((name, index) => ({ id: `canonical-${index}`, name, arguments: '{}' }));
@@ -235,14 +234,17 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('every backend tool definition keeps its canonical name in the rendered trace', async ({ page }) => {
+test('visible backend tool definitions keep their canonical names in the rendered trace', async ({ page }) => {
   const root = resolve(process.cwd(), '../../crates/core/prompts/tools');
   const names = readdirSync(root).filter(file => file.endsWith('.json')).flatMap(file => {
     const definition = JSON.parse(readFileSync(resolve(root, file), 'utf8'));
     return typeof definition.name === 'string' ? [definition.name] : [];
   });
   names.push('functions.read_file', 'mcp__workspace__grep', 'browser_session', 'computer_observe', 'computer_control');
-  const unique = [...new Set(names)];
+  // Preparation/discovery tools are intentionally hidden; update_plan is
+  // displayed in the task board. This test checks identity, not visibility policy.
+  const hidden = new Set(['prepare_document_tools', 'tool_search', 'update_plan']);
+  const unique = [...new Set(names)].filter(name => !hidden.has(name));
   expect(unique.length).toBeGreaterThan(30);
   await page.goto(`/chat/conv-persisted-round-replies?toolNames=${encodeURIComponent(JSON.stringify(unique))}`);
   const toggles = page.getByTestId('thinking-trace-toggle');
