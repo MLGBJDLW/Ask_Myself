@@ -30,37 +30,66 @@ pub fn browser_takeover_script(token: &str) -> String {
 
   const normalizedTrustedExpectation = (expected) => {
     if (!expected || typeof expected !== 'object') return null;
+    const targetRef = String(expected.targetRef || '');
+    const targetContext = String(expected.targetContext || '');
+    if (!targetRef || !targetContext) return null;
     if (expected.kind === 'pointer') {
       const x = Number(expected.x);
       const y = Number(expected.y);
       const button = String(expected.button || '');
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return null;
       if (!['left', 'middle', 'right'].includes(button)) return null;
-      return { kind: 'pointer', x, y, button };
+      return { kind: 'pointer', x, y, button, targetRef, targetContext };
     }
     if (expected.kind === 'key') {
       const key = String(expected.key || '');
-      return key && key.length <= 32 ? { kind: 'key', key } : null;
+      return key && key.length <= 32 ? { kind: 'key', key, targetRef, targetContext } : null;
     }
     if (expected.kind === 'text') {
       const data = String(expected.data ?? '');
-      return data.length <= 262144 ? { kind: 'text', data } : null;
+      return data.length <= 262144 ? { kind: 'text', data, targetRef, targetContext } : null;
     }
     return null;
+  };
+
+  const observationBridge = () => {
+    try { return window.top.__NEXA_BROWSER_RUNTIME__; } catch (_) { return null; }
+  };
+  const guardContextMatches = () => {
+    const bridge = observationBridge();
+    const guard = trustedInputGuard;
+    return Boolean(guard && guard.target.isConnected
+      && bridge?.resolveTargetRef(guard.expected.targetRef) === guard.target
+      && bridge.targetContextFingerprint(guard.target) === guard.expected.targetContext);
   };
 
   const armTrustedInputLocal = (operationId, budget, expected) => {
     const normalized = normalizedTrustedBudget(budget);
     const normalizedExpected = normalizedTrustedExpectation(expected);
+    if (trustedInputGuard && !trustedInputGuard.blocked && trustedInputGuard.pointerDown + trustedInputGuard.keyDown + trustedInputGuard.input === 0) trustedInputGuard = null;
     if (!normalized || !normalizedExpected || typeof operationId !== 'string' || !operationId || trustedInputGuard) return false;
-    const target = normalizedExpected.kind === 'pointer'
+    const hit = normalizedExpected.kind === 'pointer'
       ? document.elementFromPoint(normalizedExpected.x, normalizedExpected.y)
       : document.activeElement;
+    const bridge = observationBridge();
+    const target = bridge?.resolveTargetRef(normalizedExpected.targetRef);
     if (!target || target === document.body || target === document.documentElement) return false;
+    if (!target.isConnected || bridge.targetContextFingerprint(target) !== normalizedExpected.targetContext) return false;
+    let matches = hit === target || Boolean(target.contains?.(hit));
+    for (let ownerWindow = target.ownerDocument.defaultView; !matches && ownerWindow && ownerWindow !== window;) {
+      try {
+        const frame = ownerWindow.frameElement;
+        matches = frame === hit;
+        ownerWindow = frame?.ownerDocument.defaultView;
+      } catch (_) { break; }
+    }
+    if (!matches) return false;
     trustedInputGuard = {
       operationId,
       expected: normalizedExpected,
       target,
+      blocked: false,
+      pointerCommitted: false,
       ...normalized,
     };
     return true;
@@ -68,8 +97,9 @@ pub fn browser_takeover_script(token: &str) -> String {
 
   const disarmTrustedInputLocal = (operationId) => {
     if (trustedInputGuard && trustedInputGuard.operationId !== operationId) return false;
+    const blocked = trustedInputGuard?.blocked === true;
     trustedInputGuard = null;
-    return true;
+    return !blocked;
   };
 
   const expectationForFrame = (expected, frame) => {
@@ -119,6 +149,11 @@ pub fn browser_takeover_script(token: &str) -> String {
 
   addEventListener('message', (event) => {
     const message = event.data;
+    if (window === window.top && message?.marker === trustedInputMarker && message.token === trustedInputToken && message.kind === 'blocked') {
+      apply(nativeStopImmediatePropagation, event, []);
+      if (trustedInputGuard?.operationId === message.operationId) trustedInputGuard.blocked = true;
+      return;
+    }
     if (window === window.top || event.source !== window.parent) return;
     if (!message || message.marker !== trustedInputMarker || message.token !== trustedInputToken) return;
     apply(nativeStopImmediatePropagation, event, []);
@@ -175,11 +210,37 @@ pub fn browser_takeover_script(token: &str) -> String {
     }
     const budgetKey = ({ pointerdown: 'pointerDown', keydown: 'keyDown', input: 'input' })[type];
     trustedInputGuard[budgetKey] -= 1;
-    if (trustedInputGuard.pointerDown === 0 && trustedInputGuard.keyDown === 0 && trustedInputGuard.input === 0) {
-      trustedInputGuard = null;
-    }
     return true;
   };
+
+  // Keep the context fence through the actual event, including a row recycle
+  // between preparation, pointerdown and click. Unrelated user input still
+  // follows the takeover path rather than being swallowed by this allowance.
+  for (const type of ['pointerdown','pointerup','mousedown','mouseup','click','dblclick','keydown','keyup','keypress','beforeinput']) {
+    addEventListener(type, (event) => {
+      const guard = trustedInputGuard;
+      if (!guard || !event.isTrusted) return;
+      if (!guard.blocked && guard.pointerCommitted && type === 'pointerdown' && guard.pointerDown === 0) { trustedInputGuard = null; return; }
+      const expected = guard.expected;
+      const activationKey = expected.kind === 'key' && [' ', 'Enter'].includes(expected.key);
+      const activationControl = guard.target.matches('button,a[href],input[type="button"],input[type="submit"],input[type="checkbox"],input[type="radio"],[role="button"],[role="link"],[role="checkbox"],[role="switch"]');
+      const matches = expected.kind === 'pointer'
+        ? ['pointerdown','pointerup','mousedown','mouseup','click','dblclick'].includes(type)
+          && Math.abs(event.clientX - expected.x) <= 2 && Math.abs(event.clientY - expected.y) <= 2
+        : expected.kind === 'text' ? type === 'beforeinput' && event.data === expected.data
+        : (type === 'keydown' && event.key === expected.key)
+          || (activationKey && !guard.pointerCommitted && activationControl && ['keyup','keypress'].includes(type) && event.key === expected.key)
+          || (activationKey && type === 'click' && event.detail === 0)
+          || (type === 'beforeinput' && guard.keyDown === 0 && guard.input > 0 && eventTargetsArmedElement(event));
+      if (!matches) return;
+      if (guard.blocked || !guardContextMatches()) {
+        guard.blocked = true;
+        event.preventDefault();
+        apply(nativeStopImmediatePropagation, event, []);
+        if (window !== window.top) apply(nativePostMessage, window.top, [{ marker: trustedInputMarker, token: trustedInputToken, kind: 'blocked', operationId: guard.operationId }, '*']);
+      } else if (type === 'click') guard.pointerCommitted = true;
+    }, true);
+  }
 
   const navigateSignal = () => {
     if (pending) return;
@@ -370,7 +431,72 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     }
     return (hash >>> 0).toString(16).padStart(8, '0');
   };
+  const contextControlSelector = 'a[href],button,input,textarea,select,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="switch"]';
+  const contextDiscoveryControls = 'button,input,textarea,select,[contenteditable="true"],[role="button"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="switch"]';
+  const contextText = (container, cache) => {
+    if (cache.has(container)) return cache.get(container);
+    const parts = [];
+    const walker = container.ownerDocument.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const parent = walker.currentNode.parentElement;
+      const value = walker.currentNode.textContent.trim();
+      if (!value || !parent || parent.closest(`${contextDiscoveryControls},script,style,noscript,template`)) continue;
+      if (!isObservable(parent)) continue;
+      parts.push(value);
+    }
+    const value = parts.join(' ').replace(/\s+/g, ' ');
+    cache.set(container, value);
+    return value;
+  };
+  const targetContextFingerprint = (element, cache = new Map()) => {
+    if (!element) return '';
+    const parts = [String(element.tagName), roleOf(element), element.id || '', element.getAttribute?.('name') || '', navigationTargetOf(element) || ''];
+    if (!element.isContentEditable && !['INPUT','TEXTAREA','SELECT'].includes(element.tagName)) parts.push(textOf(element));
+    let owner = element.closest('tr,[role="row"],li,[role="listitem"],article,fieldset,[role="group"],[data-row-id],[data-item-id]');
+    let branch = element;
+    if (!owner) {
+      for (let parent = element.parentElement; parent && !parent.matches('body,html,main,[role="main"]'); parent = parent.parentElement) {
+        // Do not promote an unrelated toolbar to the entire collection.
+        if (parent.querySelector('tr,[role="row"],li,[role="listitem"],article,main')) break;
+        if (contextText(parent, cache)) { owner = parent; break; }
+        branch = parent;
+      }
+      if (!owner && branch !== element && branch.querySelectorAll(contextControlSelector).length > 1) owner = branch;
+    }
+    const appendContext = (context) => {
+      parts.push(context.tagName, context.id || '', context.getAttribute('role') || '', contextText(context, cache));
+      for (const attribute of ['aria-label','data-id','data-key','data-row-id','data-item-id']) parts.push(context.getAttribute(attribute) || '');
+      // A row label is often itself a link, button or readonly input. Retain
+      // those identities; only the action target's own editable value may
+      // change as part of the approved input sequence.
+      for (const control of [context, ...context.querySelectorAll(contextControlSelector)]) {
+        if (control === element || !control.matches(contextControlSelector) || !isObservable(control)) continue;
+        parts.push(control.tagName, control.id || '', roleOf(control), textOf(control), navigationTargetOf(control) || '', control.getAttribute('name') || '');
+        if ('value' in control) parts.push(String(control.value));
+        if ('checked' in control) parts.push(String(control.checked));
+      }
+    };
+    if (owner) appendContext(owner);
+    else {
+      // Bare inline controls can be associated with a sibling label without
+      // including a document-wide clock above or below their row.
+      const bounds = element.getBoundingClientRect();
+      for (const sibling of [branch.previousElementSibling, branch.nextElementSibling]) {
+        if (!sibling) continue;
+        const rect = sibling.getBoundingClientRect();
+        if (rect.bottom > bounds.top && rect.top < bounds.bottom && rect.height <= Math.max(80, bounds.height * 3)) appendContext(sibling);
+      }
+    }
+    for (const attribute of ['aria-labelledby','aria-describedby']) {
+      for (const id of (element.getAttribute(attribute) || '').split(/\s+/).filter(Boolean)) {
+        const label = element.getRootNode().getElementById?.(id) || element.ownerDocument.getElementById(id);
+        parts.push(id, label?.innerText || label?.textContent || '');
+      }
+    }
+    return hashText(parts.join('\u001f'));
+  };
   const interactionFingerprintOf = () => {
+    const contextCache = new Map();
     const interactiveState = observableElements().map((element) => {
       const rect = viewportBoundsOf(element);
       const style = getComputedStyle(element);
@@ -393,9 +519,10 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
         Math.round(rect.width),
         Math.round(rect.height),
         textOf(element),
+        targetContextFingerprint(element, contextCache),
       ].join('\u001f');
     }).join('\u001e');
-    return `v3|${location.href}|${scrollX}|${scrollY}|${innerWidth}|${innerHeight}|${hashText(interactiveState)}`;
+    return `v4|${location.href}|${scrollX}|${scrollY}|${innerWidth}|${innerHeight}|${hashText(interactiveState)}`;
   };
   const domFingerprintOf = () => {
     const bodyText = document.body?.innerText.slice(0, 30000) || '';
@@ -609,6 +736,7 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   runtime.prepareNativePointer = (input) => {
     const { el } = validateAction(input);
     if (!el) throw new Error('Browser pointer action requires a target');
+    const targetContext = targetContextFingerprint(el);
     const ownerDocument = el.ownerDocument || document;
     const ownerWindow = ownerDocument.defaultView || window;
     let rect = el.getBoundingClientRect();
@@ -624,14 +752,18 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     if (!hit || (hit !== el && !el.contains(hit))) {
       throw new Error('Browser pointer target is covered by another element');
     }
+    if (targetContext !== targetContextFingerprint(el)) throw new Error('stale observation: target context changed during preparation');
     return {
       bounds: viewportBoundsOf(el),
+      targetContext,
+      targetRef: input.targetRef,
       verificationBaseline: actionVerificationBaseline(),
     };
   };
   runtime.prepareTrustedText = (input) => {
     const { el } = validateAction(input);
     if (!el) throw new Error('Trusted browser text input requires a target');
+    const targetContext = targetContextFingerprint(el);
     const ownerDocument = el.ownerDocument || document;
     const ownerWindow = ownerDocument.defaultView || window;
     const editable = el.isContentEditable
@@ -648,8 +780,11 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
       selection?.removeAllRanges();
       selection?.addRange(range);
     }
+    if (targetContext !== targetContextFingerprint(el)) throw new Error('stale observation: target context changed during preparation');
     return {
       focused: ownerDocument.activeElement === el,
+      targetContext,
+      targetRef: input.targetRef,
       verificationBaseline: actionVerificationBaseline(),
     };
   };
@@ -657,9 +792,13 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
     const { el } = validateAction(input);
     const ownerDocument = el?.ownerDocument || document;
     const target = el || ownerDocument.activeElement || ownerDocument.body;
+    const targetContext = targetContextFingerprint(target);
     target?.focus?.();
+    if (targetContext !== targetContextFingerprint(target)) throw new Error('stale observation: target context changed during preparation');
     return {
       focused: ownerDocument.activeElement === target,
+      targetContext,
+      targetRef: input.targetRef || runtime.refIds.get(target),
       verificationBaseline: actionVerificationBaseline(),
     };
   };
@@ -891,6 +1030,8 @@ pub const BROWSER_INIT_SCRIPT: &str = r#"
   }, true);
   const bridge = Object.freeze({
     observe: () => runtime.observe(),
+    targetContextFingerprint: (element) => targetContextFingerprint(element),
+    resolveTargetRef: (ref) => runtime.refs.get(ref) || null,
     previewAction: (input) => runtime.previewAction(input),
     validateAction: (input) => runtime.validateAction(input),
     prepareNativePointer: (input) => runtime.prepareNativePointer(input),

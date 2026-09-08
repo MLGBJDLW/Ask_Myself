@@ -2238,7 +2238,22 @@ impl BrowserState {
             )
             .await?;
         let armed_guard = trusted_guard
-            .arm(budget, expected_input)
+            .arm(
+                budget,
+                expected_input,
+                prepared
+                    .get("targetRef")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Trusted input preparation omitted its target reference".to_string()
+                    })?,
+                prepared
+                    .get("targetContext")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Trusted input preparation omitted its target context".to_string()
+                    })?,
+            )
             .await
             .map_err(|error| {
                 format!(

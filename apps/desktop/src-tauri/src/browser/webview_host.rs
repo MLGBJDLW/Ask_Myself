@@ -270,6 +270,8 @@ impl BrowserTrustedInputGuard {
         &self,
         budget: TrustedInputEventBudget,
         expected: TrustedInputMatch,
+        target_ref: &str,
+        target_context: &str,
     ) -> Result<ArmedTrustedInputGuard, String> {
         let baseline_physical_input_epoch = physical_input_epoch(&self.webview)?;
         let operation_id = uuid::Uuid::new_v4().simple().to_string();
@@ -277,7 +279,7 @@ impl BrowserTrustedInputGuard {
             "arm",
             &self.token,
             &operation_id,
-            Some((budget, &expected)),
+            Some((budget, &expected, target_ref, target_context)),
         );
         let armed = eval_json(&self.webview, &expression)
             .await?
@@ -368,17 +370,21 @@ fn trusted_input_guard_expression(
     action: &str,
     token: &str,
     operation_id: &str,
-    guarded: Option<(TrustedInputEventBudget, &TrustedInputMatch)>,
+    guarded: Option<(TrustedInputEventBudget, &TrustedInputMatch, &str, &str)>,
 ) -> String {
     let token = serde_json::to_string(token).expect("trusted input token is serializable");
     let operation_id =
         serde_json::to_string(operation_id).expect("trusted input operation id is serializable");
     match guarded {
-        Some((budget, expected)) => format!(
+        Some((budget, expected, target_ref, target_context)) => {
+            let mut expected = expected.as_json();
+            expected["targetRef"] = serde_json::json!(target_ref);
+            expected["targetContext"] = serde_json::json!(target_context);
+            format!(
             "(() => {{ const guard = window.__NEXA_TRUSTED_INPUT_GUARD__; return Boolean(guard && guard.{action}({token}, {operation_id}, {}, {})); }})()",
             budget.as_json(),
-            expected.as_json(),
-        ),
+            expected,
+        )},
         None => format!(
             "(() => {{ const guard = window.__NEXA_TRUSTED_INPUT_GUARD__; return Boolean(guard && guard.{action}({token}, {operation_id})); }})()"
         ),
@@ -1501,7 +1507,7 @@ mod tests {
             "arm",
             "secret-token",
             "operation-1",
-            Some((budget, &expected)),
+            Some((budget, &expected, "e_1", "context-hash")),
         );
         assert!(expression.contains("guard.arm(\"secret-token\", \"operation-1\""));
         assert!(expression.contains(r#""pointerDown":2"#));
@@ -1509,6 +1515,8 @@ mod tests {
         assert!(expression.contains(r#""input":2"#));
         assert!(expression.contains(r#""kind":"pointer""#));
         assert!(expression.contains(r#""x":123.5"#));
+        assert!(expression.contains(r#""targetRef":"e_1""#));
+        assert!(expression.contains(r#""targetContext":"context-hash""#));
         assert!(TrustedInputEventBudget::new(0, 0, 0).is_err());
         assert!(TrustedInputEventBudget::new(3, 0, 0).is_err());
         assert!(TrustedInputEventBudget::new(0, 2, 0).is_err());

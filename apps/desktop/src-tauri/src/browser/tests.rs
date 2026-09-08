@@ -373,7 +373,8 @@ fn observation_script_never_serializes_form_values_or_hidden_inputs() {
     assert!(BROWSER_INIT_SCRIPT.contains("event.source === window.parent"));
     assert!(BROWSER_INIT_SCRIPT.contains("target === event.source"));
     assert!(BROWSER_INIT_SCRIPT.contains("event.isTrusted"));
-    assert!(BROWSER_INIT_SCRIPT.contains("`v3|${location.href}|${scrollX}|${scrollY}|"));
+    assert!(BROWSER_INIT_SCRIPT.contains("`v4|${location.href}|${scrollX}|${scrollY}|"));
+    assert!(BROWSER_INIT_SCRIPT.contains("targetContextFingerprint(element, contextCache)"));
     assert!(BROWSER_INIT_SCRIPT.contains("interactionFingerprintOf"));
     assert!(BROWSER_INIT_SCRIPT.contains("hashText(interactiveState)"));
 }
