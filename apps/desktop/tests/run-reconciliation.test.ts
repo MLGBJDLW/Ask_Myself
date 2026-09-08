@@ -455,7 +455,11 @@ test('repeated recovery deadlines reuse one unresolved native query', async () =
   assertEqual((await reconciler.reconcile(request)).kind, 'unavailable', 'retry remains bounded');
   assertEqual(requests, 1, 'a native IPC request that cannot be cancelled must not accumulate duplicates');
   finish([taskRun('running')]);
+  await new Promise(resolve => setTimeout(resolve, 20));
   assertEqual((await reconciler.reconcile(request)).kind, 'active', 'the original request can still recover');
+  assertEqual(requests, 1, 'late results survive the watchdog backoff and are consumed once');
+  await reconciler.reconcile(request);
+  assertEqual(requests, 2, 'a consumed result does not become a stale permanent cache');
 });
 
 test('backend query failures return a typed unavailable outcome', async () => {

@@ -158,6 +158,7 @@ export class DurableRunReconciler {
   private readonly queryTimeoutMs: number;
   private readonly delay: (delayMs: number) => Promise<void>;
   private readonly inFlight = new Map<string, Promise<unknown>>();
+  private readonly settledQueries = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly port: DurableRunReconciliationPort,
@@ -390,8 +391,8 @@ export class DurableRunReconciler {
     load: () => Promise<T>,
   ): Promise<T> {
     // Tauri IPC cannot be cancelled when a frontend deadline expires. Keep the
-    // actual request until it settles so retries cannot flood the native read
-    // lane with duplicates of the very query that is already stalled.
+    // actual request until its result is consumed so a late successful native
+    // read survives the watchdog's backoff instead of starting over forever.
     const key = JSON.stringify(identity);
     let query = this.inFlight.get(key) as Promise<T> | undefined;
     if (!query) {
@@ -399,12 +400,23 @@ export class DurableRunReconciler {
       this.inFlight.set(key, query);
       const retire = () => {
         if (this.inFlight.get(key) === query) this.inFlight.delete(key);
+        if (this.settledQueries.get(key) === query) this.settledQueries.delete(key);
       };
-      void query.then(retire, retire);
+      void query.then(() => {
+        this.settledQueries.set(key, query!);
+        // Abandoned conversations must not retain unlimited completed pages.
+        // Only settled reads are evicted; unresolved IPC is still single-flight.
+        while (this.settledQueries.size > 32) {
+          const oldest = this.settledQueries.entries().next().value;
+          if (!oldest) break;
+          this.settledQueries.delete(oldest[0]);
+          if (this.inFlight.get(oldest[0]) === oldest[1]) this.inFlight.delete(oldest[0]);
+        }
+      }, retire);
     }
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
-      return await Promise.race([
+      const value = await Promise.race([
         query,
         new Promise<T>((_resolve, reject) => {
           timeoutId = globalThis.setTimeout(() => {
@@ -412,6 +424,9 @@ export class DurableRunReconciler {
           }, this.queryTimeoutMs);
         }),
       ]);
+      if (this.inFlight.get(key) === query) this.inFlight.delete(key);
+      if (this.settledQueries.get(key) === query) this.settledQueries.delete(key);
+      return value;
     } finally {
       if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
     }
