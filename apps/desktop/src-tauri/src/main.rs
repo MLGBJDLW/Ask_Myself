@@ -507,7 +507,7 @@ fn main() {
             let db_path = data_dir.join("nexa.db");
             let db = Database::new(&db_path).expect("failed to initialize database");
             if let Err(error) = db.recover_pending_file_changes() {
-                tracing::warn!(%error, "Could not settle file changes interrupted by the previous process");
+                log::warn!("Could not settle file changes interrupted by the previous process: {error}");
             }
             let mcp_config_path = user_extensions.mcp_config_path();
             let canonical_mcp_ready = match nexa_core::mcp::config_file::reload_user_mcp_config(
