@@ -60,6 +60,25 @@ Stopping is idempotent at the product boundary. In particular, portable-pty
 `TerminateProcess` branch (commonly rendered as `os error 0`); the backend
 treats that branch as a successful stop instead of displaying a false failure.
 
+## Appearance and text rendering
+
+The dock reads Windows Terminal's settings without changing them. Profile
+overrides inherit `profiles.defaults`; built-in and user-defined schemes supply
+the ANSI palette, and the running shell selects the matching profile. Font size
+is converted from Windows Terminal points to CSS pixels. Native settings are
+refreshed on opening, shell changes and window focus. With no native settings,
+the dock uses Nexa's code font and surface colors while retaining ANSI colors.
+
+WebGL, Unicode 11 cell widths and font ligatures improve box drawing, Powerline
+prompts and Unicode output. The DOM renderer remains available when WebGL is
+unavailable. Nerd Font glyphs require an installed font that contains them.
+Terminal window decorations, wallpaper, acrylic and shader effects belong to
+the external terminal application and are not imported.
+
+PTY output is decoded incrementally so UTF-8 characters split across reads
+remain intact. Shell profiles continue to load, and `TERM=xterm-256color` plus
+`COLORTERM=truecolor` advertise the renderer's color support.
+
 ## Verification
 
 The critical browser contract lives in

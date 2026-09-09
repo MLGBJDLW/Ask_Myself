@@ -170,6 +170,12 @@ test.beforeEach(async ({ page }) => {
           };
         case 'terminal_list_sessions_cmd':
           return [];
+        case 'terminal_appearance_cmd':
+          return {
+            source: 'Windows Terminal', fontFamily: 'Consolas', fontSize: 18,
+            theme: { background: '#fdf6e3', foreground: '#657b83', magenta: '#d33682', cyan: '#2aa198' },
+            cursorStyle: 'bar', cursorBlink: false,
+          };
         default:
           return null;
       }
@@ -195,6 +201,36 @@ test.beforeEach(async ({ page }) => {
       },
     };
   });
+});
+
+test('terminal inherits the native profile font and palette', async ({ page }, testInfo) => {
+  await page.goto('/chat/conv-terminal-dock');
+  await page.getByRole('button', { name: 'Toggle terminal' }).click();
+  const terminal = page.locator('.xterm');
+  await expect(terminal).toBeVisible();
+  await expect(page.getByTestId('terminal-screen')).toHaveCSS('font-family', /Consolas/);
+  await expect(page.getByTestId('terminal-screen')).toHaveCSS('font-size', '18px');
+  await expect(page.getByTestId('terminal-screen')).toHaveCSS('background-color', 'rgb(253, 246, 227)');
+  await page.getByTestId('terminal-screen').screenshot({ path: testInfo.outputPath('terminal-native-theme.png') });
+});
+
+test('terminal remains interactive when WebGL is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: unknown[]) {
+      if (kind === 'webgl' || kind === 'webgl2' || kind === 'experimental-webgl') return null;
+      return Reflect.apply(original, this, [kind, ...args]);
+    } as typeof original;
+  });
+  await page.goto('/chat/conv-terminal-dock');
+  await page.getByRole('button', { name: 'Toggle terminal' }).click();
+  await expect(page.locator('.xterm-rows')).toBeVisible();
+  await expect(page.locator('.xterm-rows')).toHaveCSS('font-size', '18px');
+  await expect(page.locator('.xterm-rows')).toContainText('PS D:');
+  expect((await page.locator('.xterm-rows').innerText()).match(/PowerShell/g)).toHaveLength(1);
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('echo hello');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __terminalDiagnostics__: { writes: string[] } }).__terminalDiagnostics__.writes.join(''))).toContain('echo hello');
 });
 
 test('opens an interactive terminal dock from the chat screen', async ({ page, context }) => {
@@ -306,7 +342,7 @@ test('opens an interactive terminal dock from the chat screen', async ({ page, c
   expect(box).not.toBeNull();
   await page.mouse.move(box!.x + 4, box!.y + 38);
   await page.mouse.down();
-  await page.mouse.move(box!.x + 150, box!.y + 38, { steps: 8 });
+  await page.mouse.move(box!.x + Math.min(box!.width - 8, 420), box!.y + 38, { steps: 8 });
   await page.mouse.up();
 
   await expect(page.getByTestId('terminal-send-selection')).toBeVisible();

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NexaSelect } from '../ui/overlay';
 import { listen } from '@tauri-apps/api/event';
-import { Terminal as XTerm } from '@xterm/xterm';
+import { Terminal as XTerm, type FontWeight } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import {
   ChevronDown,
@@ -51,16 +52,16 @@ const FALLBACK_TERMINAL_THEME = {
   green: '#22c55e',
   yellow: '#f59e0b',
   blue: '#3b82f6',
-  magenta: '#14B8A6',
-  cyan: '#2DD4BF',
+  magenta: '#bc3fbc',
+  cyan: '#11a8cd',
   white: '#f0f0f5',
   brightBlack: '#606070',
   brightRed: '#f87171',
   brightGreen: '#22c55e',
   brightYellow: '#f59e0b',
   brightBlue: '#3b82f6',
-  brightMagenta: '#14B8A6',
-  brightCyan: '#2DD4BF',
+  brightMagenta: '#d670d6',
+  brightCyan: '#29b8db',
   brightWhite: '#ffffff',
 };
 
@@ -75,10 +76,7 @@ function readTerminalTheme() {
   }
   const styles = window.getComputedStyle(document.documentElement);
   const surface0 = cssColorVar(styles, '--color-surface-0', FALLBACK_TERMINAL_THEME.background);
-  const surface1 = cssColorVar(styles, '--color-surface-1', FALLBACK_TERMINAL_THEME.black);
   const textPrimary = cssColorVar(styles, '--color-text-primary', FALLBACK_TERMINAL_THEME.foreground);
-  const textTertiary = cssColorVar(styles, '--color-text-tertiary', FALLBACK_TERMINAL_THEME.brightBlack);
-  const accent = cssColorVar(styles, '--color-accent', FALLBACK_TERMINAL_THEME.magenta);
   const accentHover = cssColorVar(styles, '--color-accent-hover', FALLBACK_TERMINAL_THEME.cyan);
   const accentSubtle = cssColorVar(styles, '--color-accent-subtle', FALLBACK_TERMINAL_THEME.selectionBackground);
 
@@ -88,15 +86,16 @@ function readTerminalTheme() {
     foreground: textPrimary,
     cursor: accentHover,
     selectionBackground: accentSubtle,
-    black: surface1,
-    magenta: accent,
-    cyan: accentHover,
-    white: textPrimary,
-    brightBlack: textTertiary,
-    brightMagenta: accent,
-    brightCyan: accentHover,
-    brightWhite: textPrimary,
   };
+}
+
+const TERMINAL_FONT_FALLBACK = '"CaskaydiaMono Nerd Font", "Cascadia Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", "Symbols Nerd Font Mono", Consolas, monospace';
+
+function readTerminalFont() {
+  const styles = getComputedStyle(document.documentElement);
+  return styles.getPropertyValue('--user-font-mono').trim()
+    || styles.getPropertyValue('--theme-font-mono').trim()
+    || TERMINAL_FONT_FALLBACK;
 }
 
 function clampOutputBuffer(value: string): string {
@@ -368,19 +367,44 @@ export function TerminalDock({
     if (!isOpen || !hostRef.current || xtermRef.current) return;
 
     const term = new XTerm({
-      allowProposedApi: false,
+      allowProposedApi: true,
       cursorBlink: true,
       convertEol: false,
-      fontFamily: '"Cascadia Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace',
-      fontSize: 12,
-      lineHeight: 1.25,
+      fontFamily: readTerminalFont(),
+      fontSize: 14,
+      lineHeight: 1.1,
+      minimumContrastRatio: 1,
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
       scrollback: 5000,
       theme: readTerminalTheme(),
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = '11';
     term.open(hostRef.current);
+    // Replay the saved buffer before publishing the renderer. New output is
+    // written directly once xtermRef is set and must not be replayed next frame.
+    if (outputBufferRef.current) term.write(outputBufferRef.current);
+    let disposed = false;
+    // WebGL draws box/powerline glyphs consistently. DOM remains usable when
+    // the device has no working graphics context or loses it after opening.
+    void (async () => {
+      try {
+        const { LigaturesAddon } = await import('@xterm/addon-ligatures');
+        if (disposed) return;
+        term.loadAddon(new LigaturesAddon());
+      } catch { /* Font ligatures are optional. */ }
+      const { WebglAddon } = await import('@xterm/addon-webgl');
+      if (disposed) return;
+      const addon = new WebglAddon();
+      try {
+        addon.onContextLoss(() => { if (!disposed) addon.dispose(); });
+        term.loadAddon(addon);
+      } catch { addon.dispose(); }
+    })().catch(() => { /* Keep the DOM renderer if optional graphics loading fails. */ });
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
       const key = event.key.toLowerCase();
@@ -430,9 +454,6 @@ export function TerminalDock({
 
     requestAnimationFrame(() => {
       resizeActiveTerminal();
-      if (outputBufferRef.current) {
-        term.write(outputBufferRef.current);
-      }
     });
 
     const observer = new ResizeObserver(() => {
@@ -442,6 +463,7 @@ export function TerminalDock({
     observer.observe(hostRef.current);
 
     return () => {
+      disposed = true;
       observer.disconnect();
       if (resizeTimerRef.current) {
         clearTimeout(resizeTimerRef.current);
@@ -454,14 +476,38 @@ export function TerminalDock({
   }, [appendSystemLine, isOpen, resizeActiveTerminal, t]);
 
   useEffect(() => {
-    if (!xtermRef.current) return;
-    const frame = requestAnimationFrame(() => {
-      if (xtermRef.current) {
-        xtermRef.current.options.theme = readTerminalTheme();
+    if (!isOpen) return;
+    let disposed = false;
+    let revision = 0;
+    const update = async () => {
+      const requestedRevision = ++revision;
+      const light = document.documentElement.dataset.themeMode === 'light' || theme === 'light' || theme === 'bloom';
+      const appearance = await api.getTerminalAppearance(session?.shell ?? selectedShell, light).catch(() => null);
+      const term = xtermRef.current;
+      if (disposed || !term || requestedRevision !== revision) return;
+      const colors = { ...readTerminalTheme(), ...appearance?.theme };
+      const fontFamily = appearance?.fontFamily
+        ? `${JSON.stringify(appearance.fontFamily)}, ${TERMINAL_FONT_FALLBACK}` : readTerminalFont();
+      term.options.theme = colors;
+      term.options.fontFamily = fontFamily;
+      term.options.fontSize = appearance?.fontSize ?? 14;
+      term.options.fontWeight = Math.min(900, Math.max(100, Math.round((appearance?.fontWeight ?? 400) / 100) * 100)) as FontWeight;
+      term.options.cursorStyle = appearance?.cursorStyle ?? 'bar';
+      if (hostRef.current) {
+        hostRef.current.style.backgroundColor = colors.background;
+        hostRef.current.style.fontFamily = fontFamily;
+        hostRef.current.style.fontSize = `${term.options.fontSize}px`;
+        hostRef.current.dataset.appearanceSource = appearance?.source ?? 'Nexa';
       }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [theme]);
+      await document.fonts.load(`${term.options.fontSize}px ${fontFamily}`).catch(() => {});
+      if (!disposed) { resizeActiveTerminal(); term.refresh(0, term.rows - 1); }
+    };
+    void update();
+    window.addEventListener('focus', update);
+    const observer = new MutationObserver(() => void update());
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class', 'data-theme-mode'] });
+    return () => { disposed = true; observer.disconnect(); window.removeEventListener('focus', update); };
+  }, [isOpen, selectedShell, session?.shell, theme, resizeActiveTerminal]);
 
   useEffect(() => {
     let cancelled = false;

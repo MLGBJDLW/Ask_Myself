@@ -980,6 +980,7 @@ fn main() {
             commands::agent_stop_cmd,
             // Terminal
             commands::terminal_start_session_cmd,
+            commands::terminal_appearance_cmd,
             commands::terminal_write_session_cmd,
             commands::terminal_resize_session_cmd,
             commands::terminal_close_session_cmd,
