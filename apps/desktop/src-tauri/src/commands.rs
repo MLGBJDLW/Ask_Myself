@@ -127,6 +127,7 @@ mod skills_mcp;
 mod sources;
 pub(crate) mod subscription_accounts;
 mod terminal;
+mod terminal_presentation;
 mod update;
 mod watcher;
 mod workflows;

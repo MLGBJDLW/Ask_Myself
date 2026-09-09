@@ -11,6 +11,7 @@ import {
 
 export type ImageApiStyle =
   | "openai_images"
+  | "xai_images"
   | "gemini_generate_content"
   | "dashscope_multimodal";
 
@@ -18,6 +19,8 @@ export interface ImageModelPreset {
   id: string;
   name: string;
   recommended?: boolean;
+  qualityOptions?: string[];
+  sizeOptions?: ImageSizeOption[];
   descriptor: ModelDescriptor;
 }
 
@@ -60,7 +63,7 @@ export function findImageProviderPreset(input: {
     const exact = presets.find(
       (preset) =>
         preset.provider === provider &&
-        preset.apiStyle === apiStyle &&
+        (!apiStyle || preset.apiStyle === apiStyle) &&
         normalize(preset.baseUrl) === baseUrl,
     );
     if (exact) return exact;
@@ -76,4 +79,12 @@ export function findImageProviderPreset(input: {
 
 export function getDefaultImageModel(preset: ImageProviderPreset | null): string {
   return selectImplicitDefault(preset?.models ?? [])?.id ?? "";
+}
+
+export function getImageQualityOptions(preset: ImageProviderPreset, model: string): string[] {
+  return preset.models.find(candidate => candidate.id === model)?.qualityOptions ?? preset.qualityOptions;
+}
+
+export function getImageSizeOptions(preset: ImageProviderPreset, model: string): ImageSizeOption[] {
+  return preset.models.find(candidate => candidate.id === model)?.sizeOptions ?? preset.sizeOptions;
 }

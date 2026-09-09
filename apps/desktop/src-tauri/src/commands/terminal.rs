@@ -9,7 +9,16 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
+use super::terminal_presentation::{TerminalAppearance, TerminalTextDecoder};
 use crate::app_events::emit_app_event;
+
+#[tauri::command]
+pub fn terminal_appearance_cmd(shell: Option<String>, light: Option<bool>) -> TerminalAppearance {
+    super::terminal_presentation::read_appearance(
+        shell.as_deref().unwrap_or("default"),
+        light.unwrap_or(false),
+    )
+}
 
 const TERMINAL_EVENT: &str = "terminal:event";
 const MAX_TERMINAL_OUTPUT_CHARS: usize = 180_000;
@@ -123,6 +132,8 @@ pub fn terminal_start_session_cmd(
         command.args(candidate.args);
         command.cwd(cwd.as_os_str());
         command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+        command.env("TERM_PROGRAM", "Nexa");
         command.env("NEXA_TERMINAL", "1");
 
         let child = match pair.slave.spawn_command(command) {
@@ -291,11 +302,18 @@ fn spawn_terminal_reader(
 ) {
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
+        let mut decoder = TerminalTextDecoder::default();
         loop {
             match reader.read(&mut buffer) {
-                Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                    let data = decoder.decode(&buffer[..n], n == 0);
+                    if data.is_empty() {
+                        if n == 0 {
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
                     if let Ok(mut output) = output.lock() {
                         append_terminal_output(&mut output, &data);
                     }
@@ -310,6 +328,9 @@ fn spawn_terminal_reader(
                             signal: None,
                         },
                     );
+                    if n == 0 {
+                        break;
+                    }
                 }
                 Err(err) => {
                     let still_running = sessions

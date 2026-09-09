@@ -677,6 +677,9 @@ export function ChatMessages(props: ChatMessagesProps) {
   } = props;
   const completedFileTools = toolCalls.filter(call => call.status === 'done' || call.status === 'error').map(call => `${call.callId}:${call.status}`).join('|');
   const recordedFileChanges = useConversationFileChanges(props.conversationId, isStreaming, `${completedFileTools}:${props.messages.length}:${turns.length}`);
+  const dockedFileChanges = (taskRun?.turnId ? recordedFileChanges.get(taskRun.turnId) : undefined)
+    ?? [...turns].reverse().map(turn => recordedFileChanges.get(turn.id)).find(Boolean)
+    ?? [...recordedFileChanges.values()].slice(-1)[0];
   const [developerMode] = useDeveloperMode();
   const streamingVisibility = useMemo(
     () => projectChatStreamingVisibility({
@@ -1982,6 +1985,7 @@ export function ChatMessages(props: ChatMessagesProps) {
   }
 
   return (
+    <>
     <div
       ref={scrollContainerRef}
       onScroll={handleScroll}
@@ -2130,7 +2134,7 @@ export function ChatMessages(props: ChatMessagesProps) {
                   )}
 
                 {props.conversationId && recordedFileChanges.has(turnRender.turn.id) ? (
-                  !(isStreaming && idx === latestUserIdx) && <TurnFileChanges conversationId={props.conversationId} summary={recordedFileChanges.get(turnRender.turn.id)!} />
+                  turnRender.turn.id !== dockedFileChanges?.turnId && !(isStreaming && idx === latestUserIdx) && <TurnFileChanges conversationId={props.conversationId} summary={recordedFileChanges.get(turnRender.turn.id)!} />
                 ) : renderFileDiffPreviews(
                   turnDiffs,
                   `turn-diff-${turnRender.turn.id}`,
@@ -2394,10 +2398,6 @@ export function ChatMessages(props: ChatMessagesProps) {
           </motion.div>
         )}
 
-      {props.conversationId && taskRun?.turnId && recordedFileChanges.has(taskRun.turnId) &&
-        (isStreaming || !turns.some(turn => turn.id === taskRun.turnId)) &&
-        <TurnFileChanges key={taskRun.turnId} conversationId={props.conversationId} summary={recordedFileChanges.get(taskRun.turnId)!} />}
-
       {taskRun?.status === 'paused' && onResumePaused && (
         <div
           className="mb-3 flex justify-start"
@@ -2495,5 +2495,9 @@ export function ChatMessages(props: ChatMessagesProps) {
         )}
       </AnimatePresence>
     </div>
+    {props.conversationId && dockedFileChanges && <div className="relative z-30 flex shrink-0 justify-center px-4 pb-2 pt-1" data-testid="file-changes-dock">
+      <TurnFileChanges key={`${props.conversationId}:${dockedFileChanges.turnId}`} conversationId={props.conversationId} summary={dockedFileChanges} docked />
+    </div>}
+    </>
   );
 }

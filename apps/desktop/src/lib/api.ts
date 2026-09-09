@@ -404,6 +404,18 @@ export const showInFileExplorer = (path: string) =>
 
 export type TerminalShell = 'default' | 'powershell' | 'cmd' | 'bash';
 
+export interface TerminalAppearance {
+  source?: string | null;
+  fontFamily?: string | null;
+  fontSize?: number | null;
+  fontWeight?: number | null;
+  cursorStyle?: 'block' | 'underline' | 'bar' | null;
+  theme?: Record<string, string>;
+}
+
+export const getTerminalAppearance = (shell: string, light: boolean) =>
+  invoke<TerminalAppearance>('terminal_appearance_cmd', { shell, light });
+
 export interface TerminalStartInput {
   cwd?: string | null;
   shell?: TerminalShell | string | null;

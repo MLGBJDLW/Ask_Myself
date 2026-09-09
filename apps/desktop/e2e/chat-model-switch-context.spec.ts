@@ -189,7 +189,7 @@ test.beforeEach(async ({ page }) => {
         case 'get_conversation_cmd': {
           const id = String(args.id ?? '');
           if (localStorage.getItem('e2e-change-fixture')) return [clone(conversations[id]), ['user', 'assistant'].map((role, index) => ({
-            id: `changes-${role}`, conversationId: id, role, content: role === 'user' ? 'Update the workspace files.' : 'The file edits are complete.', toolCalls: [], toolCallId: null, artifacts: null, tokenCount: 0, createdAt: nowIso, sortOrder: index, thinking: null, imageAttachments: null,
+            id: `changes-${role}`, conversationId: id, role, content: role === 'user' ? 'Update the workspace files.' : localStorage.getItem('e2e-render-content') ?? 'The file edits are complete.', toolCalls: [], toolCallId: null, artifacts: null, tokenCount: 0, createdAt: nowIso, sortOrder: index, thinking: null, imageAttachments: null,
           }))];
           return [clone(conversations[id]), []];
         }
@@ -269,6 +269,65 @@ test('a remounted completed turn fetches fresh changes after an older query sett
   await expect.poll(() => page.evaluate(() => (window as unknown as { __changeQueries?: number }).__changeQueries ?? 0)).toBeGreaterThanOrEqual(2);
 });
 
+test('file change capsule stays centered above the composer with a compact hover preview', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-change-fixture', '1');
+    localStorage.setItem('e2e-render-content', Array.from({ length: 80 }, (_, index) => `Paragraph ${index}.\n`).join('\n'));
+  });
+  await page.goto('/chat/conv-model-switch');
+  const capsule = page.getByTestId('turn-file-changes').last();
+  const trigger = capsule.getByRole('button', { name: /Changed 12 files/ });
+  await expect(trigger).toBeVisible();
+  const reading = await page.getByTestId('chat-reading-surface').boundingBox();
+  const initial = await trigger.boundingBox();
+  expect(Math.abs(initial!.x + initial!.width / 2 - reading!.x - reading!.width / 2)).toBeLessThan(3);
+  await page.locator('[data-chat-scroll-root]').evaluate(element => { element.scrollTop = 0; });
+  await expect.poll(async () => (await trigger.boundingBox())!.y).toBeCloseTo(initial!.y, 0);
+  await trigger.hover();
+  const preview = capsule.getByTestId('file-changes-hover-preview');
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText('src/file-0.txt');
+  await expect(preview).toContainText('+1');
+  await expect(preview).toContainText('−1');
+  expect(await page.evaluate(() => (window as unknown as { __diffRequests?: string[] }).__diffRequests ?? [])).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath('file-changes-hover.png') });
+  await trigger.click();
+  await expect(capsule.getByTestId('file-changes-panel')).toBeVisible();
+  await expect(preview).toHaveCount(0);
+  await expect(capsule).not.toContainText('baseline');
+  await page.keyboard.press('Escape');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(capsule.getByTestId('file-changes-panel')).toHaveCount(0);
+  await page.setViewportSize({ width: 720, height: 900 });
+  await expect(trigger).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('chat renders dollar and LaTeX delimiters, matrices and accessible math without altering code', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-change-fixture', '1');
+    localStorage.setItem('e2e-render-content', String.raw`Inline $E=mc^2$ and \(a^2+b^2=c^2\).
+
+\[
+\begin{bmatrix}1 & 2 \\ 3 & 4\end{bmatrix}
+\]
+
+$$
+\int_0^1 x^2\,dx=\frac{1}{3}
+$$
+
+Literal: ` + '`\\(unchanged\\)`' + '\n\n' + '```latex\n\\sum_{i=1}^n i=\\frac{n(n+1)}{2}\n```' + '\n\n' + '```js\nconst formula = "\\(unchanged\\)";\n```');
+  });
+  await page.goto('/chat/conv-model-switch');
+  const markdown = page.locator('.chat-assistant-reply .prose-chat').last();
+  await expect(markdown.locator('.katex')).toHaveCount(5);
+  await expect(markdown.locator('math')).toHaveCount(5);
+  await expect(markdown.locator('.katex-display')).toHaveCount(3);
+  await expect(markdown.locator('.katex-error')).toHaveCount(0);
+  await expect(markdown).toContainText('\\(unchanged\\)');
+  await markdown.screenshot({ path: testInfo.outputPath('chat-math.png') });
+});
+
 test('turn file changes stay collapsed, load saved details on demand and survive reload', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('e2e-change-fixture', '1'));
   await page.goto('/chat/conv-model-switch');
@@ -293,6 +352,20 @@ test('turn file changes stay collapsed, load saved details on demand and survive
   await expect(capsule.getByRole('button', { name: /Changed 2 files/ })).toBeVisible();
   await expect(capsule.getByText('+2', { exact: true })).toBeVisible();
   await expect(capsule.getByText('+11', { exact: true })).toHaveCount(0);
+});
+
+test('chat renders simple pie and bar charts through the existing Mermaid renderer', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('e2e-change-fixture', '1');
+    localStorage.setItem('e2e-render-content', '```mermaid\npie title Release checks\n  "Passed" : 8\n  "Pending" : 2\n```\n\n```mermaid\nxychart-beta\n  x-axis [Mon, Tue, Wed]\n  y-axis "Builds" 0 --> 10\n  bar [3, 6, 8]\n```');
+  });
+  await page.goto('/chat/conv-model-switch');
+  await expect(page.getByText('Rendering diagram...')).toHaveCount(0);
+  const diagrams = page.getByTestId('mermaid-surface');
+  await expect(diagrams).toHaveCount(2);
+  await expect(diagrams.first().locator('svg')).toBeVisible();
+  await expect(diagrams.last().locator('svg')).toBeVisible();
+  await page.getByTestId('chat-reading-surface').screenshot({ path: testInfo.outputPath('chat-simple-charts.png') });
 });
 
 test('appearance fonts and streaming preferences apply, import, survive reload and remove', async ({ page }, testInfo) => {

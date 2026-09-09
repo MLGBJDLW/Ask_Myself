@@ -255,7 +255,51 @@ fn account_enablement_is_never_an_implicit_default() {
 fn builtin_presets_project_every_surface_into_catalog_v2() {
     let catalog = load_builtin_catalog().expect("all built-in preset files should project");
 
-    assert_eq!(catalog.endpoints.len(), 51);
+    let xai_images = catalog
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "image:xai")
+        .expect("xAI image adapter must be projected independently of the text endpoint");
+    assert_eq!(xai_images.api_style, "xai_images");
+    assert!(catalog
+        .models
+        .iter()
+        .any(|model| model.id == "grok-imagine-image-2.0"
+            && model
+                .endpoint_ids
+                .iter()
+                .any(|endpoint| endpoint == "image:xai")));
+    for (model_id, supports_4k) in [
+        ("gpt-image-2.5-flare", true),
+        ("gpt-image-1.5", false),
+        ("gpt-image-1", false),
+        ("gpt-image-1-mini", false),
+    ] {
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| {
+                model.id == model_id
+                    && model
+                        .endpoint_ids
+                        .iter()
+                        .any(|endpoint| endpoint == "image:openai")
+            })
+            .expect("OpenAI image model should remain available");
+        assert_eq!(
+            model
+                .limits
+                .supported_sizes
+                .iter()
+                .any(|size| size == "3840x2160"),
+            supports_4k
+        );
+        assert!(model
+            .limits
+            .supported_sizes
+            .iter()
+            .any(|size| size == "1024x1024"));
+    }
     assert!(catalog.models.iter().all(|model| model.schema_version == 2));
     assert!(catalog
         .models

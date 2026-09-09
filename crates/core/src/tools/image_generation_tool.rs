@@ -69,6 +69,12 @@ struct GenerateImageArgs {
     size: Option<String>,
     #[serde(default)]
     quality: Option<String>,
+    #[serde(default, alias = "aspectRatio")]
+    aspect_ratio: Option<String>,
+    #[serde(default)]
+    resolution: Option<String>,
+    #[serde(default, alias = "outputCompression")]
+    output_compression: Option<u8>,
     #[serde(default)]
     background: Option<String>,
     #[serde(default, alias = "outputFormat")]
@@ -153,6 +159,13 @@ impl Tool for GenerateImageTool {
 
         let runtime =
             crate::plugins::image_generation::resolve_runtime(db, &args.runtime_request())?;
+        validate_image_options(
+            &runtime.config,
+            &args,
+            &runtime.model,
+            runtime.provider,
+            runtime.output_format,
+        )?;
         let prompt_mode = args.effective_prompt_mode();
         let provider_enhancement_requested = prompt_mode.provider_enhancement_enabled();
         let provider_enhancement_supported = supports_explicit_prompt_enhancement(runtime.provider);
@@ -172,13 +185,14 @@ impl Tool for GenerateImageTool {
             .map_err(|e| CoreError::InvalidInput(format!("Failed to build HTTP client: {e}")))?;
 
         let generated = match runtime.provider {
-            ImageProvider::OpenAi => {
+            ImageProvider::OpenAi | ImageProvider::Xai => {
                 generate_openai_image(
                     &client,
                     &runtime.config,
                     &args,
                     &runtime.model,
                     runtime.output_format,
+                    runtime.provider,
                 )
                 .await?
             }
@@ -283,6 +297,34 @@ fn selected_optional<'a>(arg: Option<&'a str>, configured: Option<&'a str>) -> O
         .find(|value| !value.is_empty())
 }
 
+fn selected_image_quality<'a>(
+    config: &'a ResolvedImageConfig,
+    args: &'a GenerateImageArgs,
+    model: &str,
+) -> Option<&'a str> {
+    let configured = config
+        .model
+        .as_deref()
+        .is_none_or(|configured| configured.trim() == model.trim())
+        .then_some(config.quality.as_deref())
+        .flatten();
+    selected_optional(args.quality.as_deref(), configured)
+}
+
+fn selected_image_size(
+    config: &ResolvedImageConfig,
+    args: &GenerateImageArgs,
+    model: &str,
+) -> String {
+    let configured = config
+        .model
+        .as_deref()
+        .is_none_or(|configured| configured.trim() == model.trim())
+        .then_some(config.size.as_deref())
+        .flatten();
+    selected_text(args.size.as_deref(), configured, "1024x1024")
+}
+
 fn supports_explicit_prompt_enhancement(provider: ImageProvider) -> bool {
     matches!(provider, ImageProvider::Qwen)
 }
@@ -331,11 +373,26 @@ async fn generate_openai_image(
     args: &GenerateImageArgs,
     model: &str,
     output_format: &str,
+    provider: ImageProvider,
 ) -> Result<GeneratedImage, CoreError> {
-    let base_url = config.endpoint_base_url("https://api.openai.com/v1");
+    let is_xai = provider == ImageProvider::Xai;
+    let provider_label = if is_xai {
+        "xAI image API"
+    } else {
+        "OpenAI image API"
+    };
+    let base_url = config.endpoint_base_url(if is_xai {
+        "https://api.x.ai/v1"
+    } else {
+        "https://api.openai.com/v1"
+    });
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/images/generations");
-    let body = build_openai_images_body(config, args, model, output_format);
+    let body = if is_xai {
+        build_xai_images_body(config, args, model)?
+    } else {
+        build_openai_images_body(config, args, model, output_format)
+    };
 
     let response = client
         .post(url)
@@ -343,12 +400,12 @@ async fn generate_openai_image(
         .json(&body)
         .send()
         .await
-        .map_err(|e| CoreError::TransientLlm(format!("OpenAI image request failed: {e}")))?;
+        .map_err(|e| CoreError::TransientLlm(format!("{provider_label} request failed: {e}")))?;
 
-    let (status, content_type, bytes) = read_provider_body(response, "OpenAI image API").await?;
+    let (status, content_type, bytes) = read_provider_body(response, provider_label).await?;
     if !status.is_success() {
         return Err(CoreError::Llm(provider_error_from_body(
-            "OpenAI image API",
+            provider_label,
             status,
             &bytes,
         )));
@@ -364,10 +421,11 @@ async fn generate_openai_image(
         });
     }
 
-    let value = parse_json_body("OpenAI image API", &bytes)?;
+    let value = parse_json_body(provider_label, &bytes)?;
     let parsed = parse_openai_image_response(&value, output_format)?;
     let materialized =
-        materialize_image_payload(client, &parsed.payload, &parsed.media_type, "OpenAI").await?;
+        materialize_image_payload(client, &parsed.payload, &parsed.media_type, provider_label)
+            .await?;
     Ok(GeneratedImage {
         bytes: materialized.bytes,
         media_type: materialized.media_type,
@@ -387,16 +445,19 @@ fn build_openai_images_body(
         "model": model,
         "prompt": args.prompt.as_str(),
         "n": 1,
-        "size": selected_text(args.size.as_deref(), config.size.as_deref(), "1024x1024"),
+        "size": selected_image_size(config, args, model),
     });
 
     if should_send_openai_output_format(config, model) {
         body["output_format"] = json!(output_format);
+        if let Some(compression) = args.output_compression {
+            body["output_compression"] = json!(compression);
+        }
     } else if is_dalle_model(model) {
         body["response_format"] = json!("b64_json");
     }
 
-    if let Some(quality) = selected_optional(args.quality.as_deref(), config.quality.as_deref()) {
+    if let Some(quality) = selected_image_quality(config, args, model) {
         body["quality"] = json!(quality);
     }
     if !is_dalle_model(model) {
@@ -409,6 +470,134 @@ fn build_openai_images_body(
         }
     }
     body
+}
+
+fn is_gpt_image_25(model: &str) -> bool {
+    matches!(model, "gpt-image-2.5-flare" | "gpt-image-2.5-sunburst")
+}
+
+fn validate_image_options(
+    config: &ResolvedImageConfig,
+    args: &GenerateImageArgs,
+    model: &str,
+    provider: ImageProvider,
+    output_format: &str,
+) -> Result<(), CoreError> {
+    let invalid = |message: &str| CoreError::InvalidInput(message.to_string());
+    if provider == ImageProvider::Xai {
+        build_xai_images_body(config, args, model)?;
+        if args
+            .background
+            .as_deref()
+            .is_some_and(|value| value != "auto")
+            || args.output_compression.is_some()
+        {
+            return Err(invalid(
+                "xAI image generation does not accept background or output_compression.",
+            ));
+        }
+        return Ok(());
+    }
+    if !model.starts_with("gpt-image-") {
+        return Ok(());
+    }
+    if let Some(quality) = selected_image_quality(config, args, model) {
+        let supported = matches!(quality, "auto" | "low" | "medium" | "high")
+            || (is_gpt_image_25(model) && matches!(quality, "xhigh" | "max"));
+        if !supported {
+            return Err(invalid(
+                "Unsupported GPT Image quality. xhigh and max require GPT Image 2.5.",
+            ));
+        }
+    }
+    if args
+        .output_compression
+        .is_some_and(|compression| compression > 100)
+        || (args.output_compression.is_some() && !matches!(output_format, "jpeg" | "webp"))
+    {
+        return Err(invalid(
+            "output_compression must be 0-100 and requires jpeg or webp.",
+        ));
+    }
+    if args.background.as_deref() == Some("transparent") && output_format == "jpeg" {
+        return Err(invalid("Transparent backgrounds require png or webp."));
+    }
+    let size = selected_image_size(config, args, model);
+    if matches!(model, "gpt-image-1.5" | "gpt-image-1" | "gpt-image-1-mini")
+        && !matches!(
+            size.as_str(),
+            "auto" | "1024x1024" | "1024x1536" | "1536x1024"
+        )
+    {
+        return Err(invalid(
+            "This GPT Image model supports only auto, 1024x1024, 1024x1536 or 1536x1024.",
+        ));
+    }
+    if (is_gpt_image_25(model) || model == "gpt-image-2") && size != "auto" {
+        let valid = size
+            .split_once('x')
+            .and_then(|(width, height)| {
+                Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
+            })
+            .is_some_and(|(width, height)| {
+                width > 0
+                    && height > 0
+                    && width <= 3840
+                    && height <= 3840
+                    && width % 16 == 0
+                    && height % 16 == 0
+                    && width <= height * 3
+                    && height <= width * 3
+                    && (655_360..=8_294_400).contains(&(width * height))
+            });
+        if !valid {
+            return Err(invalid("GPT Image size must use multiples of 16, at most 3840 per edge, a 1:3 to 3:1 ratio, and 655360-8294400 total pixels."));
+        }
+    }
+    Ok(())
+}
+
+fn build_xai_images_body(
+    config: &ResolvedImageConfig,
+    args: &GenerateImageArgs,
+    model: &str,
+) -> Result<Value, CoreError> {
+    let size = selected_text(args.size.as_deref(), config.size.as_deref(), "auto|1k");
+    let (size_ratio, size_resolution) = size.split_once('|').unwrap_or((&size, "1k"));
+    let ratio = args.aspect_ratio.as_deref().unwrap_or(size_ratio).trim();
+    let resolution = args
+        .resolution
+        .as_deref()
+        .unwrap_or(size_resolution)
+        .trim()
+        .to_ascii_lowercase();
+    if ![
+        "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9",
+        "9:19.5", "20:9", "9:20", "21:9", "5:2",
+    ]
+    .contains(&ratio)
+    {
+        return Err(CoreError::InvalidInput(
+            "Unsupported xAI aspect ratio. Use size like 16:9|2k or aspect_ratio and resolution."
+                .to_string(),
+        ));
+    }
+    if !matches!(resolution.as_str(), "1k" | "2k") {
+        return Err(CoreError::InvalidInput(
+            "xAI resolution must be 1k or 2k.".to_string(),
+        ));
+    }
+    let mut body = json!({ "model": model, "prompt": args.prompt, "n": 1, "aspect_ratio": ratio, "resolution": resolution, "response_format": "b64_json" });
+    if let Some(quality) = selected_image_quality(config, args, model) {
+        if model != "grok-imagine-image-2.0" || !matches!(quality, "auto" | "low" | "medium") {
+            return Err(CoreError::InvalidInput(
+                "xAI quality accepts auto, low or medium on grok-imagine-image-2.0 only."
+                    .to_string(),
+            ));
+        }
+        body["quality"] = json!(quality);
+    }
+    Ok(body)
 }
 
 fn should_send_openai_output_format(config: &ResolvedImageConfig, model: &str) -> bool {
@@ -1031,6 +1220,9 @@ mod tests {
             model: None,
             size: None,
             quality: None,
+            aspect_ratio: None,
+            resolution: None,
+            output_compression: None,
             background: None,
             output_format: None,
             negative_prompt: None,
@@ -1049,6 +1241,209 @@ mod tests {
             size: None,
             quality: None,
             output_format: None,
+        }
+    }
+
+    #[test]
+    fn image_25_transmits_extended_quality_and_transparent_output() {
+        let config = test_config("open_ai", Some("https://api.openai.com/v1"));
+        let mut args = test_args();
+        args.size = Some("3840x2160".to_string());
+        args.quality = Some("max".to_string());
+        args.background = Some("transparent".to_string());
+        args.output_compression = Some(85);
+        for model in ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"] {
+            validate_image_options(&config, &args, model, ImageProvider::OpenAi, "webp").unwrap();
+            let body = build_openai_images_body(&config, &args, model, "webp");
+            assert_eq!(body["model"], model);
+            assert_eq!(body["quality"], "max");
+            assert_eq!(body["size"], "3840x2160");
+            assert_eq!(body["background"], "transparent");
+            assert_eq!(body["output_compression"], 85);
+        }
+        assert!(validate_image_options(
+            &config,
+            &args,
+            "gpt-image-2",
+            ImageProvider::OpenAi,
+            "webp"
+        )
+        .is_err());
+        assert!(validate_image_options(
+            &config,
+            &args,
+            "gpt-image-2.5-flare",
+            ImageProvider::OpenAi,
+            "jpeg"
+        )
+        .is_err());
+        args.size = Some("3840x3840".to_string());
+        assert!(validate_image_options(
+            &config,
+            &args,
+            "gpt-image-2.5-flare",
+            ImageProvider::OpenAi,
+            "webp"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn xai_image_2_uses_its_own_wire_contract() {
+        let config = test_config("open_ai", Some("https://api.x.ai/v1"));
+        let mut args = test_args();
+        args.size = Some("16:9|2k".to_string());
+        args.quality = Some("medium".to_string());
+        let body = build_xai_images_body(&config, &args, "grok-imagine-image-2.0").unwrap();
+        assert_eq!(
+            body,
+            json!({ "model":"grok-imagine-image-2.0", "prompt":args.prompt, "n":1, "aspect_ratio":"16:9", "resolution":"2k", "quality":"medium", "response_format":"b64_json" })
+        );
+        args.quality = Some("high".to_string());
+        assert!(build_xai_images_body(&config, &args, "grok-imagine-image-2.0").is_err());
+        args.quality = None;
+        args.aspect_ratio = Some("9:20".to_string());
+        args.resolution = Some("1k".to_string());
+        let body = build_xai_images_body(&config, &args, "grok-imagine-image").unwrap();
+        assert_eq!(body["aspect_ratio"], "9:20");
+        assert_eq!(body["resolution"], "1k");
+        assert!(body.get("quality").is_none());
+        args.resolution = Some("4k".to_string());
+        assert!(build_xai_images_body(&config, &args, "grok-imagine-image-2.0").is_err());
+    }
+
+    #[test]
+    fn image_model_override_does_not_inherit_another_models_options() {
+        let mut config = test_config("open_ai", Some("https://api.x.ai/v1"));
+        config.model = Some("grok-imagine-image-2.0".to_string());
+        config.quality = Some("medium".to_string());
+        let mut args = test_args();
+        let legacy = build_xai_images_body(&config, &args, "grok-imagine-image").unwrap();
+        assert!(legacy.get("quality").is_none());
+        assert_eq!(
+            build_xai_images_body(&config, &args, "grok-imagine-image-2.0").unwrap()["quality"],
+            "medium"
+        );
+        args.quality = Some("medium".to_string());
+        assert!(build_xai_images_body(&config, &args, "grok-imagine-image").is_err());
+
+        args.quality = None;
+        config.model = Some("gpt-image-2.5-flare".to_string());
+        config.quality = Some("max".to_string());
+        validate_image_options(&config, &args, "gpt-image-2", ImageProvider::OpenAi, "png")
+            .unwrap();
+        assert!(
+            build_openai_images_body(&config, &args, "gpt-image-2", "png")
+                .get("quality")
+                .is_none()
+        );
+        assert_eq!(
+            build_openai_images_body(&config, &args, "gpt-image-2.5-flare", "png")["quality"],
+            "max"
+        );
+        config.size = Some("3840x2160".to_string());
+        assert_eq!(
+            build_openai_images_body(&config, &args, "gpt-image-2.5-flare", "png")["size"],
+            "3840x2160"
+        );
+        for model in ["gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"] {
+            assert_eq!(
+                build_openai_images_body(&config, &args, model, "png")["size"],
+                "1024x1024"
+            );
+            validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png").unwrap();
+            args.size = Some("3840x2160".to_string());
+            assert!(
+                validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png")
+                    .is_err()
+            );
+            args.size = Some("1536x1024".to_string());
+            validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png").unwrap();
+            assert_eq!(
+                build_openai_images_body(&config, &args, model, "png")["size"],
+                "1536x1024"
+            );
+            args.size = None;
+        }
+    }
+
+    #[tokio::test]
+    async fn image_adapters_send_the_selected_model_and_decode_the_http_result() {
+        use std::io::{Read, Write};
+        for (provider, model, quality) in [
+            (ImageProvider::OpenAi, "gpt-image-2.5-flare", "xhigh"),
+            (ImageProvider::OpenAi, "gpt-image-2.5-sunburst", "max"),
+            (ImageProvider::Xai, "grok-imagine-image-2.0", "medium"),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let (header_end, length) = loop {
+                    let mut chunk = [0u8; 2048];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    if let Some(offset) =
+                        request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&request[..offset]).to_lowercase();
+                        assert!(headers.starts_with("post /v1/images/generations "));
+                        assert!(headers.contains("authorization: bearer test-key"));
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap();
+                        break (offset + 4, length);
+                    }
+                };
+                while request.len() < header_end + length {
+                    let mut chunk = [0u8; 2048];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let body: Value =
+                    serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+                let response =
+                    json!({ "data": [{ "b64_json": STANDARD.encode(b"test-image-bytes") }] })
+                        .to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+                body
+            });
+            let config = test_config("open_ai", Some(&format!("http://{address}/v1")));
+            let mut args = test_args();
+            args.quality = Some(quality.to_string());
+            if provider == ImageProvider::Xai {
+                args.size = Some("9:16|2k".to_string());
+            }
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let result = generate_openai_image(&client, &config, &args, model, "jpeg", provider)
+                .await
+                .unwrap();
+            assert_eq!(result.bytes, b"test-image-bytes");
+            assert_eq!(result.media_type, "image/jpeg");
+            let body = server.join().unwrap();
+            assert_eq!(body["model"], model);
+            assert_eq!(body["quality"], quality);
+            if provider == ImageProvider::Xai {
+                assert_eq!(body["aspect_ratio"], "9:16");
+                assert!(body.get("size").is_none());
+                assert!(body.get("output_format").is_none());
+            } else {
+                assert_eq!(body["output_format"], "jpeg");
+            }
         }
     }
 

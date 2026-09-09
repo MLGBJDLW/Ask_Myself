@@ -6,6 +6,7 @@ import { open } from '@tauri-apps/plugin-shell';
 import DOMPurify from 'dompurify';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { remarkLatex } from '../../lib/remarkLatex';
 import rehypeRaw from 'rehype-raw';
 import rehypeKatex from 'rehype-katex';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
@@ -1013,8 +1014,8 @@ export const sanitizeSchema = {
   attributes: {
     ...defaultSchema.attributes,
     code: [
-      ...(defaultSchema.attributes?.code || []),
-      ['className', 'language-math', 'math-inline', 'math-display'],
+      ...(defaultSchema.attributes?.code || []).filter(attribute => (Array.isArray(attribute) ? attribute[0] : attribute) !== 'className'),
+      ['className', /^language-./, 'math-inline', 'math-display'],
     ],
   },
   protocols: {
@@ -1026,14 +1027,14 @@ export const sanitizeSchema = {
 
 /** Pre-built remark plugin list for ReactMarkdown */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const markdownRemarkPlugins: any[] = [remarkGfm, remarkMath];
+export const markdownRemarkPlugins: any[] = [remarkGfm, remarkMath, remarkLatex];
 
 /** Pre-built rehype plugin list for ReactMarkdown */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const rehypePlugins: any[] = [
   rehypeRaw,
   [rehypeSanitize, sanitizeSchema],
-  [rehypeKatex, { throwOnError: false, strict: 'warn', trust: false, output: 'html' }],
+  [rehypeKatex, { throwOnError: false, strict: 'ignore', trust: false, output: 'htmlAndMathml', maxExpand: 1000 }],
 ];
 
 /** Shared markdown component map for ReactMarkdown */
