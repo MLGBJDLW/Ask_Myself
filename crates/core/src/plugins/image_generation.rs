@@ -186,9 +186,25 @@ fn resolve_config(
         }
     }
 
-    db.get_default_agent_config()?
-        .map(agent_config_to_resolved)
-        .ok_or_else(|| CoreError::InvalidInput("No default provider config is available.".into()))
+    let default = db.get_default_agent_config()?.ok_or_else(|| {
+        CoreError::InvalidInput("No default provider config is available.".into())
+    })?;
+    if requested_provider_hint(request) == Some(ImageProvider::OpenAi)
+        && is_xai_identity(
+            &format!(
+                "{} {}",
+                default.provider,
+                default.base_url.as_deref().unwrap_or("")
+            )
+            .to_lowercase(),
+        )
+    {
+        return Err(CoreError::InvalidInput(
+            "Configure an OpenAI image provider or select a matching provider_config_id first."
+                .into(),
+        ));
+    }
+    Ok(agent_config_to_resolved(default))
 }
 
 fn image_config_to_resolved(config: ImageGenerationConfig) -> ResolvedImageConfig {
@@ -251,6 +267,7 @@ fn provider_hint_from_text(haystack: &str) -> Option<ImageProvider> {
     {
         Some(ImageProvider::Google)
     } else if haystack.contains("openai")
+        || haystack.contains("open_ai")
         || haystack.contains("openai_images")
         || haystack.contains("images_generation")
         || haystack.contains("gpt-image")
@@ -293,7 +310,15 @@ fn image_config_matches_provider(config: &ImageGenerationConfig, provider: Image
                     .is_some_and(|url| url.host_str() == Some("api.x.ai"))
         }
         ImageProvider::OpenAi => {
-            haystack.contains("openai")
+            !is_xai_identity(
+                &format!(
+                    "{} {} {}",
+                    config.provider,
+                    config.api_style,
+                    config.base_url.as_deref().unwrap_or("")
+                )
+                .to_lowercase(),
+            ) && (haystack.contains("openai")
                 || haystack.contains("openai_images")
                 || haystack.contains("compatible")
                 || haystack.contains("gpt-image")
@@ -301,7 +326,7 @@ fn image_config_matches_provider(config: &ImageGenerationConfig, provider: Image
                 || haystack.contains("bigmodel")
                 || haystack.contains("cogview")
                 || haystack.contains("glm-image")
-                || is_image_generation_model(&haystack)
+                || is_image_generation_model(&haystack))
         }
         ImageProvider::Google => {
             haystack.contains("google")
@@ -334,7 +359,14 @@ fn config_matches_provider(config: &AgentConfig, provider: ImageProvider) -> boo
             .and_then(|url| Url::parse(url).ok())
             .is_some_and(|url| url.host_str() == Some("api.x.ai")),
         ImageProvider::OpenAi => {
-            haystack.contains("openai")
+            !is_xai_identity(
+                &format!(
+                    "{} {}",
+                    config.provider,
+                    config.base_url.as_deref().unwrap_or("")
+                )
+                .to_lowercase(),
+            ) && (haystack.contains("openai")
                 || haystack.contains("compatible")
                 || haystack.contains("gpt-image")
                 || haystack.contains("api.openai.com")
@@ -342,7 +374,7 @@ fn config_matches_provider(config: &AgentConfig, provider: ImageProvider) -> boo
                 || haystack.contains("bigmodel")
                 || haystack.contains("cogview")
                 || haystack.contains("glm-image")
-                || is_image_generation_model(&haystack)
+                || is_image_generation_model(&haystack))
         }
         ImageProvider::Google => {
             haystack.contains("google")
@@ -382,7 +414,9 @@ fn infer_provider(
         .or(config.model.as_deref())
         .unwrap_or("")
         .to_lowercase();
-    provider_hint_from_text(&model).unwrap_or(ImageProvider::OpenAi)
+    provider_hint_from_text(&model)
+        .filter(|provider| *provider != ImageProvider::Xai)
+        .unwrap_or(ImageProvider::OpenAi)
 }
 
 fn is_image_generation_model(model: &str) -> bool {
@@ -761,6 +795,120 @@ mod tests {
             "https://api.x.ai/v1"
         );
         assert_eq!(runtime.output_format, "jpeg");
+
+        let mut agent_input = SaveAgentConfigInput {
+            id: None,
+            name: "xAI".to_string(),
+            provider: "xai".to_string(),
+            api_key: "xai-agent-key".to_string(),
+            base_url: Some("https://api.x.ai/v1".to_string()),
+            model: "grok-4.6".to_string(),
+            provider_endpoint_id: None,
+            model_id: None,
+            temperature: None,
+            max_tokens: None,
+            context_window: None,
+            is_default: true,
+            reasoning_enabled: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_iterations: None,
+            summarization_model: None,
+            summarization_provider: None,
+            image_generation_model: Some("grok-imagine-image-2.0".to_string()),
+            subagent_allowed_tools: None,
+            subagent_allowed_skill_ids: None,
+            subagent_max_parallel: None,
+            subagent_max_calls_per_turn: None,
+            subagent_token_budget: None,
+            delegation_limits_v2: None,
+            tool_timeout_secs: None,
+            agent_timeout_secs: None,
+            provider_streaming: Default::default(),
+        };
+        db.save_agent_config(&agent_input).unwrap();
+        agent_input.name = "OpenAI".to_string();
+        agent_input.provider = "open_ai".to_string();
+        agent_input.api_key = "openai-agent-key".to_string();
+        agent_input.base_url = Some("https://api.openai.com/v1".to_string());
+        agent_input.model = "gpt-6-astra".to_string();
+        agent_input.image_generation_model = Some("gpt-image-2.5-sunburst".to_string());
+        agent_input.is_default = false;
+        let openai = db.save_agent_config(&agent_input).unwrap();
+        for (provider, api_style) in [
+            (Some("openai"), None),
+            (Some("open_ai"), None),
+            (None, Some("openai_images")),
+        ] {
+            let request = ImageGenerationRequest {
+                provider_config_id: None,
+                provider,
+                api_style,
+                model: None,
+                output_format: None,
+            };
+            let runtime = resolve_runtime(&db, &request).unwrap();
+            assert_eq!(runtime.provider, ImageProvider::OpenAi);
+            assert_eq!(runtime.config.api_key, "openai-agent-key");
+            assert_eq!(
+                runtime.config.base_url.as_deref(),
+                Some("https://api.openai.com/v1")
+            );
+            assert_eq!(runtime.model, "gpt-image-2.5-sunburst");
+            assert!(runtime.config.size.is_none());
+            assert!(runtime.config.quality.is_none());
+        }
+        db.delete_agent_config(&openai.id).unwrap();
+        assert!(resolve_runtime(
+            &db,
+            &ImageGenerationRequest {
+                provider_config_id: None,
+                provider: Some("openai"),
+                api_style: None,
+                model: None,
+                output_format: None,
+            }
+        )
+        .is_err());
+
+        config.image_generation.provider = "custom".to_string();
+        config.image_generation.api_style = "openai_images".to_string();
+        config.image_generation.base_url = Some("https://images.example.com/v1".to_string());
+        config.image_generation.api_key = "private-image-key".to_string();
+        db.save_app_config(&config).unwrap();
+        let private = resolve_runtime(
+            &db,
+            &ImageGenerationRequest {
+                provider_config_id: None,
+                provider: Some("openai"),
+                api_style: None,
+                model: None,
+                output_format: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(private.provider, ImageProvider::OpenAi);
+        assert_eq!(private.model, "grok-imagine-image-2.0");
+        assert_eq!(private.config.api_key, "private-image-key");
+        assert_eq!(
+            private.config.base_url.as_deref(),
+            Some("https://images.example.com/v1")
+        );
+        let mut private_config = private.config;
+        private_config.api_style = None;
+        assert_eq!(
+            infer_provider(
+                &ImageGenerationRequest {
+                    provider_config_id: None,
+                    provider: None,
+                    api_style: None,
+                    model: None,
+                    output_format: None,
+                },
+                &private_config
+            ),
+            ImageProvider::OpenAi
+        );
     }
 
     #[test]
