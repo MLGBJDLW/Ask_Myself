@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.13](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.12...nexa-monorepo-v0.13.13) (2026-09-09)
+
+
+### Features
+
+* **chat:** render TeX formulas and center animated file changes ([d530f21](https://github.com/MLGBJDLW/Nexa/commit/d530f2141f227fbc754d27ee657949239ac9f6cd))
+* **desktop:** polish chat rendering and support new image models ([17152d8](https://github.com/MLGBJDLW/Nexa/commit/17152d84d6cf5fd310fdc2f9db0aded5b579b4c1))
+* **images:** support GPT Image 2.5 and Grok Imagine Image 2 ([bdaddf9](https://github.com/MLGBJDLW/Nexa/commit/bdaddf900c7a7b811aff23c2dcf12d8ff37d99a6))
+
+
+### Bug Fixes
+
+* **images:** isolate OpenAI and xAI configuration matching ([4934c44](https://github.com/MLGBJDLW/Nexa/commit/4934c44285042eb1ce2c9c3de3b0f9ff2ed99a3b))
+* **images:** scope image dimensions to the selected model ([e5cb808](https://github.com/MLGBJDLW/Nexa/commit/e5cb808fa6019d5825130543bcd89120403b540e))
+* **images:** scope inherited quality to the configured model ([0752659](https://github.com/MLGBJDLW/Nexa/commit/0752659feab8045ad5b86d5731296d570f9e17da))
+* **terminal:** inherit native appearance and preserve Unicode output ([df41661](https://github.com/MLGBJDLW/Nexa/commit/df416613f40d96b830c18c27f1a85f5d87e382f8))
+
 ## [0.13.12](https://github.com/MLGBJDLW/Nexa/compare/nexa-monorepo-v0.13.11...nexa-monorepo-v0.13.12) (2026-09-08)
 
 
