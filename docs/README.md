@@ -26,16 +26,6 @@ canonical architecture entry point is [ARCHITECTURE.md](./ARCHITECTURE.md).
 - [SCHEDULED_TASKS.md](./SCHEDULED_TASKS.md) defines recurrence, occurrence
   claiming, execution policy, permissions, migration, and operator guidance for
   unattended workflows.
-- [computer-use-integration.md](./computer-use-integration.md) defines the
-  desktop automation boundary.
-- [computer-use-landscape-2026-08-23.md](./computer-use-landscape-2026-08-23.md)
-  compares 28 primary-source computer-use systems and records the upgrade
-  rationale, licenses, risks, evaluation ladder, and verified source links.
-- [agent-liveness-and-tool-progress-2026-08-23.md](./agent-liveness-and-tool-progress-2026-08-23.md)
-  compares 22 agent/runtime families and records the long-reasoning,
-  browser/computer handoff, subagent, cancellation, and deadlock findings.
-- [security-and-architecture-audit-2026-07.md](./security-and-architecture-audit-2026-07.md)
-  records the retained constraints from the July 2026 audit.
 
 ## Ecosystem and tools
 
