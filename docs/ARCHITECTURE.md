@@ -101,8 +101,6 @@ batching, failure, recovery, and wire rules are normative in the
   claiming, unattended execution policy, and compatibility boundaries.
 - [Ecosystem Architecture](./ECOSYSTEM_ARCHITECTURE.md) defines capability,
   connector, skill, workflow, adapter, and native-plugin lanes.
-- [Computer Use Integration](./computer-use-integration.md) defines the desktop
-  automation trust boundary.
 
 ## Change discipline
 

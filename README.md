@@ -206,9 +206,7 @@ The runtime exposes a catalog of built-in tools, with additional tools available
   approvals, post-action verification, and ephemeral screen evidence
 - MCP connector tools exposed by enabled connectors
 
-See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference and
-[Computer Use Integration](docs/computer-use-integration.md) for the desktop
-security boundary.
+See [docs/TOOLS.md](docs/TOOLS.md) for the tool reference.
 
 ## Getting Started
 
