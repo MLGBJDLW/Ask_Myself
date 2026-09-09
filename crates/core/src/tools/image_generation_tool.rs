@@ -297,6 +297,20 @@ fn selected_optional<'a>(arg: Option<&'a str>, configured: Option<&'a str>) -> O
         .find(|value| !value.is_empty())
 }
 
+fn selected_image_quality<'a>(
+    config: &'a ResolvedImageConfig,
+    args: &'a GenerateImageArgs,
+    model: &str,
+) -> Option<&'a str> {
+    let configured = config
+        .model
+        .as_deref()
+        .is_none_or(|configured| configured.trim() == model.trim())
+        .then_some(config.quality.as_deref())
+        .flatten();
+    selected_optional(args.quality.as_deref(), configured)
+}
+
 fn supports_explicit_prompt_enhancement(provider: ImageProvider) -> bool {
     matches!(provider, ImageProvider::Qwen)
 }
@@ -429,7 +443,7 @@ fn build_openai_images_body(
         body["response_format"] = json!("b64_json");
     }
 
-    if let Some(quality) = selected_optional(args.quality.as_deref(), config.quality.as_deref()) {
+    if let Some(quality) = selected_image_quality(config, args, model) {
         body["quality"] = json!(quality);
     }
     if !is_dalle_model(model) {
@@ -473,7 +487,7 @@ fn validate_image_options(
     if !model.starts_with("gpt-image-") {
         return Ok(());
     }
-    if let Some(quality) = selected_optional(args.quality.as_deref(), config.quality.as_deref()) {
+    if let Some(quality) = selected_image_quality(config, args, model) {
         let supported = matches!(quality, "auto" | "low" | "medium" | "high")
             || (is_gpt_image_25(model) && matches!(quality, "xhigh" | "max"));
         if !supported {
@@ -552,7 +566,7 @@ fn build_xai_images_body(
         ));
     }
     let mut body = json!({ "model": model, "prompt": args.prompt, "n": 1, "aspect_ratio": ratio, "resolution": resolution, "response_format": "b64_json" });
-    if let Some(quality) = selected_optional(args.quality.as_deref(), config.quality.as_deref()) {
+    if let Some(quality) = selected_image_quality(config, args, model) {
         if model != "grok-imagine-image-2.0" || !matches!(quality, "auto" | "low" | "medium") {
             return Err(CoreError::InvalidInput(
                 "xAI quality accepts auto, low or medium on grok-imagine-image-2.0 only."
@@ -1274,6 +1288,37 @@ mod tests {
         assert!(body.get("quality").is_none());
         args.resolution = Some("4k".to_string());
         assert!(build_xai_images_body(&config, &args, "grok-imagine-image-2.0").is_err());
+    }
+
+    #[test]
+    fn image_model_override_does_not_inherit_another_models_quality() {
+        let mut config = test_config("open_ai", Some("https://api.x.ai/v1"));
+        config.model = Some("grok-imagine-image-2.0".to_string());
+        config.quality = Some("medium".to_string());
+        let mut args = test_args();
+        let legacy = build_xai_images_body(&config, &args, "grok-imagine-image").unwrap();
+        assert!(legacy.get("quality").is_none());
+        assert_eq!(
+            build_xai_images_body(&config, &args, "grok-imagine-image-2.0").unwrap()["quality"],
+            "medium"
+        );
+        args.quality = Some("medium".to_string());
+        assert!(build_xai_images_body(&config, &args, "grok-imagine-image").is_err());
+
+        args.quality = None;
+        config.model = Some("gpt-image-2.5-flare".to_string());
+        config.quality = Some("max".to_string());
+        validate_image_options(&config, &args, "gpt-image-2", ImageProvider::OpenAi, "png")
+            .unwrap();
+        assert!(
+            build_openai_images_body(&config, &args, "gpt-image-2", "png")
+                .get("quality")
+                .is_none()
+        );
+        assert_eq!(
+            build_openai_images_body(&config, &args, "gpt-image-2.5-flare", "png")["quality"],
+            "max"
+        );
     }
 
     #[tokio::test]
