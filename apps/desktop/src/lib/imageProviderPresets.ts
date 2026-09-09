@@ -20,6 +20,7 @@ export interface ImageModelPreset {
   name: string;
   recommended?: boolean;
   qualityOptions?: string[];
+  sizeOptions?: ImageSizeOption[];
   descriptor: ModelDescriptor;
 }
 
@@ -82,4 +83,8 @@ export function getDefaultImageModel(preset: ImageProviderPreset | null): string
 
 export function getImageQualityOptions(preset: ImageProviderPreset, model: string): string[] {
   return preset.models.find(candidate => candidate.id === model)?.qualityOptions ?? preset.qualityOptions;
+}
+
+export function getImageSizeOptions(preset: ImageProviderPreset, model: string): ImageSizeOption[] {
+  return preset.models.find(candidate => candidate.id === model)?.sizeOptions ?? preset.sizeOptions;
 }

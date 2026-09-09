@@ -11,9 +11,9 @@
       { "id": "gpt-image-2.5-flare", "name": "GPT Image 2.5 Flare", "source": "official", "productReadiness": "product_ready", "recommended": true, "lastVerifiedAt": "2026-09-09", "qualityOptions": ["auto", "low", "medium", "high", "xhigh", "max"] },
       { "id": "gpt-image-2.5-sunburst", "name": "GPT Image 2.5 Sunburst", "source": "official", "productReadiness": "product_ready", "lastVerifiedAt": "2026-09-09", "qualityOptions": ["auto", "low", "medium", "high", "xhigh", "max"] },
       { "id": "gpt-image-2", "name": "GPT Image 2", "source": "curated", "productReadiness": "known" },
-      { "id": "gpt-image-1.5", "name": "GPT Image 1.5" },
-      { "id": "gpt-image-1", "name": "GPT Image 1" },
-      { "id": "gpt-image-1-mini", "name": "GPT Image 1 Mini" }
+      { "id": "gpt-image-1.5", "name": "GPT Image 1.5", "sizeOptions": [{ "value": "auto", "label": "Auto" }, { "value": "1024x1024", "label": "Square 1024" }, { "value": "1024x1536", "label": "Portrait 1024x1536" }, { "value": "1536x1024", "label": "Landscape 1536x1024" }] },
+      { "id": "gpt-image-1", "name": "GPT Image 1", "sizeOptions": [{ "value": "auto", "label": "Auto" }, { "value": "1024x1024", "label": "Square 1024" }, { "value": "1024x1536", "label": "Portrait 1024x1536" }, { "value": "1536x1024", "label": "Landscape 1536x1024" }] },
+      { "id": "gpt-image-1-mini", "name": "GPT Image 1 Mini", "sizeOptions": [{ "value": "auto", "label": "Auto" }, { "value": "1024x1024", "label": "Square 1024" }, { "value": "1024x1536", "label": "Portrait 1024x1536" }, { "value": "1536x1024", "label": "Landscape 1536x1024" }] }
     ],
     "sizeOptions": [
       { "value": "auto", "label": "Auto" },

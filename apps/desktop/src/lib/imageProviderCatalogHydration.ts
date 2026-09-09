@@ -13,7 +13,7 @@ import {
 } from './modelCatalog.ts';
 
 export type RuntimeImageProviderPreset = Omit<ImageProviderPreset, 'models'> & {
-  models: (LegacyCatalogModel & { qualityOptions?: string[] })[];
+  models: (LegacyCatalogModel & { qualityOptions?: string[]; sizeOptions?: ImageSizeOption[] })[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,6 +99,8 @@ export function hydrateImageProviderPreset(
   const models = preset.models.map((model) => ({
     ...model,
     qualityOptions: isStringArray(model.qualityOptions) ? model.qualityOptions : undefined,
+    sizeOptions: Array.isArray(model.sizeOptions) && model.sizeOptions.every(isImageSizeOption)
+      ? model.sizeOptions : undefined,
     descriptor: isPickerSafeModelDescriptor(model.descriptor)
       ? model.descriptor
       : undefined,
@@ -106,14 +108,14 @@ export function hydrateImageProviderPreset(
 
   return {
     ...preset,
-    models: attachModelDescriptors(models, {
+    models: models.flatMap(model => attachModelDescriptors([model], {
       surface: 'image',
       providerId: canonicalModelProviderId(preset.id, preset.provider),
       endpointId: modelEndpointId('image', preset.id),
       region: inferModelCatalogRegion(preset.baseUrl),
       apiStyle: preset.apiStyle,
-      supportedSizes: preset.sizeOptions.map((option) => option.value),
+      supportedSizes: (model.sizeOptions ?? preset.sizeOptions).map((option) => option.value),
       outputFormats: preset.outputFormats,
-    }),
+    })),
   };
 }

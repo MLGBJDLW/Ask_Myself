@@ -360,8 +360,9 @@ fn limits(surface: CatalogSurface, preset: &Value, model: &Value) -> super::Mode
         } else {
             None
         },
-        supported_sizes: preset
+        supported_sizes: model
             .get("sizeOptions")
+            .or_else(|| preset.get("sizeOptions"))
             .and_then(Value::as_array)
             .into_iter()
             .flatten()

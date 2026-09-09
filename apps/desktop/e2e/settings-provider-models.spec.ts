@@ -5,7 +5,8 @@ const imageProviderPresets = JSON.parse(
   readFileSync(new URL("../../../shared/image-provider-presets.json", import.meta.url), "utf8"),
 ) as unknown[];
 
-test('image settings select GPT Image 2.5 and Grok Image 2 with model-specific quality', async ({ page }, testInfo) => {
+test('image settings select GPT Image 2.5 and Grok Image 2 with model-specific options', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   await page.goto('/settings');
   await page.getByRole('button', { name: 'AI Providers' }).click();
   const panel = page.getByTestId('image-generation-settings-panel');
@@ -25,6 +26,15 @@ test('image settings select GPT Image 2.5 and Grok Image 2 with model-specific q
   await quality.click();
   await expect(page.locator('[role="option"][data-value="max"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await selectNexaOption(selects.nth(1), 'gpt-image-2.5-flare');
+  await selectNexaOption(selects.nth(2), '3840x2160');
+  await selectNexaOption(selects.nth(1), 'gpt-image-1-mini');
+  await expectNexaValue(selects.nth(2), 'auto');
+  await selects.nth(2).click();
+  await expect(page.locator('[role="option"][data-value="3840x2160"]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await panel.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAppConfig?: { imageGeneration: unknown } }).__savedAppConfig?.imageGeneration)).toMatchObject({ model: 'gpt-image-1-mini', size: 'auto' });
   await selectNexaOption(selects.nth(0), 'xai');
   await expect(panel.locator('input[type="password"]')).toHaveValue('');
   await panel.locator('input[type="password"]').fill('xai-image-test-key');

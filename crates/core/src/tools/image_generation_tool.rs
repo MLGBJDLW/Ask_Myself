@@ -311,6 +311,20 @@ fn selected_image_quality<'a>(
     selected_optional(args.quality.as_deref(), configured)
 }
 
+fn selected_image_size(
+    config: &ResolvedImageConfig,
+    args: &GenerateImageArgs,
+    model: &str,
+) -> String {
+    let configured = config
+        .model
+        .as_deref()
+        .is_none_or(|configured| configured.trim() == model.trim())
+        .then_some(config.size.as_deref())
+        .flatten();
+    selected_text(args.size.as_deref(), configured, "1024x1024")
+}
+
 fn supports_explicit_prompt_enhancement(provider: ImageProvider) -> bool {
     matches!(provider, ImageProvider::Qwen)
 }
@@ -431,7 +445,7 @@ fn build_openai_images_body(
         "model": model,
         "prompt": args.prompt.as_str(),
         "n": 1,
-        "size": selected_text(args.size.as_deref(), config.size.as_deref(), "1024x1024"),
+        "size": selected_image_size(config, args, model),
     });
 
     if should_send_openai_output_format(config, model) {
@@ -508,28 +522,36 @@ fn validate_image_options(
     if args.background.as_deref() == Some("transparent") && output_format == "jpeg" {
         return Err(invalid("Transparent backgrounds require png or webp."));
     }
-    if is_gpt_image_25(model) || model == "gpt-image-2" {
-        let size = selected_text(args.size.as_deref(), config.size.as_deref(), "auto");
-        if size != "auto" {
-            let valid = size
-                .split_once('x')
-                .and_then(|(width, height)| {
-                    Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
-                })
-                .is_some_and(|(width, height)| {
-                    width > 0
-                        && height > 0
-                        && width <= 3840
-                        && height <= 3840
-                        && width % 16 == 0
-                        && height % 16 == 0
-                        && width <= height * 3
-                        && height <= width * 3
-                        && (655_360..=8_294_400).contains(&(width * height))
-                });
-            if !valid {
-                return Err(invalid("GPT Image size must use multiples of 16, at most 3840 per edge, a 1:3 to 3:1 ratio, and 655360-8294400 total pixels."));
-            }
+    let size = selected_image_size(config, args, model);
+    if matches!(model, "gpt-image-1.5" | "gpt-image-1" | "gpt-image-1-mini")
+        && !matches!(
+            size.as_str(),
+            "auto" | "1024x1024" | "1024x1536" | "1536x1024"
+        )
+    {
+        return Err(invalid(
+            "This GPT Image model supports only auto, 1024x1024, 1024x1536 or 1536x1024.",
+        ));
+    }
+    if (is_gpt_image_25(model) || model == "gpt-image-2") && size != "auto" {
+        let valid = size
+            .split_once('x')
+            .and_then(|(width, height)| {
+                Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
+            })
+            .is_some_and(|(width, height)| {
+                width > 0
+                    && height > 0
+                    && width <= 3840
+                    && height <= 3840
+                    && width % 16 == 0
+                    && height % 16 == 0
+                    && width <= height * 3
+                    && height <= width * 3
+                    && (655_360..=8_294_400).contains(&(width * height))
+            });
+        if !valid {
+            return Err(invalid("GPT Image size must use multiples of 16, at most 3840 per edge, a 1:3 to 3:1 ratio, and 655360-8294400 total pixels."));
         }
     }
     Ok(())
@@ -1291,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn image_model_override_does_not_inherit_another_models_quality() {
+    fn image_model_override_does_not_inherit_another_models_options() {
         let mut config = test_config("open_ai", Some("https://api.x.ai/v1"));
         config.model = Some("grok-imagine-image-2.0".to_string());
         config.quality = Some("medium".to_string());
@@ -1319,6 +1341,30 @@ mod tests {
             build_openai_images_body(&config, &args, "gpt-image-2.5-flare", "png")["quality"],
             "max"
         );
+        config.size = Some("3840x2160".to_string());
+        assert_eq!(
+            build_openai_images_body(&config, &args, "gpt-image-2.5-flare", "png")["size"],
+            "3840x2160"
+        );
+        for model in ["gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"] {
+            assert_eq!(
+                build_openai_images_body(&config, &args, model, "png")["size"],
+                "1024x1024"
+            );
+            validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png").unwrap();
+            args.size = Some("3840x2160".to_string());
+            assert!(
+                validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png")
+                    .is_err()
+            );
+            args.size = Some("1536x1024".to_string());
+            validate_image_options(&config, &args, model, ImageProvider::OpenAi, "png").unwrap();
+            assert_eq!(
+                build_openai_images_body(&config, &args, model, "png")["size"],
+                "1536x1024"
+            );
+            args.size = None;
+        }
     }
 
     #[tokio::test]

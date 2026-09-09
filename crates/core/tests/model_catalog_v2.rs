@@ -269,6 +269,37 @@ fn builtin_presets_project_every_surface_into_catalog_v2() {
                 .endpoint_ids
                 .iter()
                 .any(|endpoint| endpoint == "image:xai")));
+    for (model_id, supports_4k) in [
+        ("gpt-image-2.5-flare", true),
+        ("gpt-image-1.5", false),
+        ("gpt-image-1", false),
+        ("gpt-image-1-mini", false),
+    ] {
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| {
+                model.id == model_id
+                    && model
+                        .endpoint_ids
+                        .iter()
+                        .any(|endpoint| endpoint == "image:openai")
+            })
+            .expect("OpenAI image model should remain available");
+        assert_eq!(
+            model
+                .limits
+                .supported_sizes
+                .iter()
+                .any(|size| size == "3840x2160"),
+            supports_4k
+        );
+        assert!(model
+            .limits
+            .supported_sizes
+            .iter()
+            .any(|size| size == "1024x1024"));
+    }
     assert!(catalog.models.iter().all(|model| model.schema_version == 2));
     assert!(catalog
         .models
