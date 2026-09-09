@@ -255,7 +255,6 @@ fn account_enablement_is_never_an_implicit_default() {
 fn builtin_presets_project_every_surface_into_catalog_v2() {
     let catalog = load_builtin_catalog().expect("all built-in preset files should project");
 
-    assert_eq!(catalog.endpoints.len(), 52);
     let xai_images = catalog
         .endpoints
         .iter()

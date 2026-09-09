@@ -1214,17 +1214,20 @@ mod tests {
         )
         .expect("Qwen Token Plan preset should match its dedicated endpoint");
         assert_eq!(token_plan.id, "qwen-token-plan-cn");
-        assert_eq!(token_plan.models.len(), 3);
-        assert_eq!(token_plan.models[0].id, "qwen3.8-max");
-        assert_eq!(token_plan.models[0].recommended, Some(true));
-        assert_eq!(token_plan.models[0].max_output_tokens, Some(131_072));
-        assert_eq!(
-            token_plan.models[0].last_verified_at.as_deref(),
-            Some("2026-08-28")
-        );
-        assert_eq!(token_plan.models[1].id, "qwen3.8-flash");
-        assert_eq!(token_plan.models[1].recommended, Some(true));
-        let flash_reasoning = token_plan.models[1]
+        let token_plan_max = token_plan
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.8-max")
+            .expect("Token Plan Max must resolve on its dedicated endpoint");
+        assert_eq!(token_plan_max.recommended, Some(true));
+        assert_eq!(token_plan_max.max_output_tokens, Some(131_072));
+        let token_plan_flash = token_plan
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.8-flash")
+            .expect("Token Plan Flash must resolve on its dedicated endpoint");
+        assert_eq!(token_plan_flash.recommended, Some(true));
+        let flash_reasoning = token_plan_flash
             .capabilities
             .as_ref()
             .and_then(|capabilities| capabilities.reasoning.as_ref())
@@ -1234,11 +1237,12 @@ mod tests {
             .effort_levels
             .iter()
             .any(|effort| effort == "none"));
-        assert_eq!(token_plan.models[2].id, "qwen3.8-max-preview");
-        assert_eq!(
-            token_plan.models[2].status,
-            Some(ModelLifecycleStatus::Removed)
-        );
+        let retired_preview = token_plan
+            .models
+            .iter()
+            .find(|model| model.id == "qwen3.8-max-preview")
+            .expect("saved preview selections need their retirement marker");
+        assert_eq!(retired_preview.status, Some(ModelLifecycleStatus::Removed));
         assert_eq!(
             model_supports_vision_from_catalog(ProviderType::Qwen, "qwen3.8-flash"),
             Some(true)

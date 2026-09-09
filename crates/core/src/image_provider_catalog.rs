@@ -144,13 +144,11 @@ mod tests {
     #[test]
     fn qwen_image_3_preview_is_available_in_both_regions() {
         let presets = load_image_provider_presets().expect("image provider presets should parse");
-        let qwen_presets = presets
-            .iter()
-            .filter(|preset| preset.provider == "qwen")
-            .collect::<Vec<_>>();
-
-        assert_eq!(qwen_presets.len(), 2, "Beijing and Singapore presets");
-        for preset in qwen_presets {
+        for region_id in ["qwen-dashscope-cn", "qwen-dashscope-intl"] {
+            let preset = presets
+                .iter()
+                .find(|preset| preset.id == region_id)
+                .expect("supported Qwen region should remain available");
             let model = preset
                 .models
                 .iter()

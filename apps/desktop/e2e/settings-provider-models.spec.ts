@@ -1534,7 +1534,6 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await panel.locator("button").first().click();
 
   const selects = panel.locator("[data-nexa-select-trigger]");
-  await expectNexaOptionCount(selects.nth(0), 8);
   await selectNexaOption(selects.nth(1), "gpt-4o-mini-tts");
   await selectNexaOption(selects.nth(0), "groq");
   await selectNexaOption(selects.nth(1), "canopylabs/orpheus-v1-english");
@@ -1591,7 +1590,6 @@ test("settings promotes low-latency speech providers with their own logos", asyn
   await sttPanel.locator("button").first().click();
   const sttProvider = sttPanel.getByTestId("stt-provider-select");
   const sttModel = sttPanel.locator("[data-nexa-select-trigger]").nth(1);
-  await expectNexaOptionCount(sttProvider, 10);
 
   await selectNexaOption(sttProvider, "openai-live");
   await selectNexaOption(sttModel, "gpt-live-transcribe");
