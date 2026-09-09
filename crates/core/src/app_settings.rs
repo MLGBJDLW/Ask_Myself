@@ -928,7 +928,7 @@ fn default_image_base_url_option() -> Option<String> {
     Some("https://api.openai.com/v1".to_string())
 }
 fn default_image_model() -> String {
-    "gpt-image-2".to_string()
+    "gpt-image-2.5-flare".to_string()
 }
 fn default_image_size_option() -> Option<String> {
     Some("1024x1024".to_string())

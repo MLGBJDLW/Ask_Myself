@@ -8,7 +8,9 @@
     "requiresApiKey": true,
     "description": "GPT Image models through the OpenAI Image API.",
     "models": [
-      { "id": "gpt-image-2", "name": "GPT Image 2", "source": "curated", "productReadiness": "known", "recommended": true },
+      { "id": "gpt-image-2.5-flare", "name": "GPT Image 2.5 Flare", "source": "official", "productReadiness": "product_ready", "recommended": true, "lastVerifiedAt": "2026-09-09", "qualityOptions": ["auto", "low", "medium", "high", "xhigh", "max"] },
+      { "id": "gpt-image-2.5-sunburst", "name": "GPT Image 2.5 Sunburst", "source": "official", "productReadiness": "product_ready", "lastVerifiedAt": "2026-09-09", "qualityOptions": ["auto", "low", "medium", "high", "xhigh", "max"] },
+      { "id": "gpt-image-2", "name": "GPT Image 2", "source": "curated", "productReadiness": "known" },
       { "id": "gpt-image-1.5", "name": "GPT Image 1.5" },
       { "id": "gpt-image-1", "name": "GPT Image 1" },
       { "id": "gpt-image-1-mini", "name": "GPT Image 1 Mini" }
@@ -25,6 +27,41 @@
     ],
     "qualityOptions": ["auto", "low", "medium", "high"],
     "outputFormats": ["png", "jpeg", "webp"]
+  },
+  {
+    "id": "xai",
+    "name": "xAI Grok Images",
+    "provider": "open_ai",
+    "apiStyle": "xai_images",
+    "baseUrl": "https://api.x.ai/v1",
+    "requiresApiKey": true,
+    "description": "Grok Imagine through the xAI Image API.",
+    "models": [
+      { "id": "grok-imagine-image-2.0", "name": "Grok Imagine Image 2.0", "source": "official", "productReadiness": "product_ready", "recommended": true, "lastVerifiedAt": "2026-09-09", "qualityOptions": ["auto", "low", "medium"] },
+      { "id": "grok-imagine-image", "name": "Grok Imagine Image 1.0", "qualityOptions": [] }
+    ],
+    "sizeOptions": [
+      { "value": "auto|1k", "label": "Auto 1K" },
+      { "value": "auto|2k", "label": "Auto 2K" },
+      { "value": "1:1|1k", "label": "Square 1K" },
+      { "value": "1:1|2k", "label": "Square 2K" },
+      { "value": "16:9|2k", "label": "Landscape 2K" },
+      { "value": "9:16|2k", "label": "Portrait 2K" },
+      { "value": "4:3|2k", "label": "Wide 4:3 2K" },
+      { "value": "3:4|2k", "label": "Tall 3:4 2K" },
+      { "value": "3:2|2k", "label": "Wide 3:2 2K" },
+      { "value": "2:3|2k", "label": "Tall 2:3 2K" },
+      { "value": "2:1|2k", "label": "Banner 2K" },
+      { "value": "1:2|2k", "label": "Tall banner 2K" },
+      { "value": "21:9|2k", "label": "Ultrawide 2K" },
+      { "value": "5:2|2k", "label": "Wide banner 2K" },
+      { "value": "19.5:9|2k", "label": "Phone landscape 2K" },
+      { "value": "9:19.5|2k", "label": "Phone portrait 2K" },
+      { "value": "20:9|2k", "label": "Phone wide 2K" },
+      { "value": "9:20|2k", "label": "Phone tall 2K" }
+    ],
+    "qualityOptions": [],
+    "outputFormats": ["jpeg"]
   },
   {
     "id": "google-gemini",

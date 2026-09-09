@@ -13,7 +13,7 @@ import {
 } from './modelCatalog.ts';
 
 export type RuntimeImageProviderPreset = Omit<ImageProviderPreset, 'models'> & {
-  models: LegacyCatalogModel[];
+  models: (LegacyCatalogModel & { qualityOptions?: string[] })[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,6 +30,7 @@ function isNullableString(value: unknown): value is string | null {
 
 function isImageApiStyle(value: unknown): value is ImageApiStyle {
   return value === 'openai_images'
+    || value === 'xai_images'
     || value === 'gemini_generate_content'
     || value === 'dashscope_multimodal';
 }
@@ -97,6 +98,7 @@ export function hydrateImageProviderPreset(
 ): ImageProviderPreset {
   const models = preset.models.map((model) => ({
     ...model,
+    qualityOptions: isStringArray(model.qualityOptions) ? model.qualityOptions : undefined,
     descriptor: isPickerSafeModelDescriptor(model.descriptor)
       ? model.descriptor
       : undefined,

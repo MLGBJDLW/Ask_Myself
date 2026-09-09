@@ -13,6 +13,7 @@ import * as api from "../../lib/api";
 import {
   findImageProviderPreset,
   getDefaultImageModel,
+  getImageQualityOptions,
   IMAGE_PROVIDER_PRESETS,
   type ImageProviderPreset,
 } from "../../lib/imageProviderPresets";
@@ -44,7 +45,7 @@ const DEFAULT_IMAGE_CONFIG: ImageGenerationConfig = {
   apiStyle: "openai_images",
   apiKey: "",
   baseUrl: "https://api.openai.com/v1",
-  model: "gpt-image-2",
+  model: "gpt-image-2.5-flare",
   size: "1024x1024",
   quality: null,
   outputFormat: "png",
@@ -68,7 +69,7 @@ function isDefaultImageConfig(config: ImageGenerationConfig): boolean {
     config.provider === DEFAULT_IMAGE_CONFIG.provider &&
     config.apiStyle === DEFAULT_IMAGE_CONFIG.apiStyle &&
     normalizeUrl(config.baseUrl) === normalizeUrl(DEFAULT_IMAGE_CONFIG.baseUrl) &&
-    config.model === DEFAULT_IMAGE_CONFIG.model
+    (config.model === DEFAULT_IMAGE_CONFIG.model || config.model === 'gpt-image-2')
   );
 }
 
@@ -197,6 +198,7 @@ export function ImageGenerationSettingsPanel({
   const selectedModelDescriptor = activePreset.models.find(
     (model) => model.id === imageConfig.model,
   )?.descriptor;
+  const qualityOptions = getImageQualityOptions(activePreset, imageConfig.model);
   const sharedKeySource = useMemo(
     () => findSharedProviderCredential(agentConfigs, imageConfig.provider, imageConfig.baseUrl),
     [agentConfigs, imageConfig.baseUrl, imageConfig.provider],
@@ -231,6 +233,11 @@ export function ImageGenerationSettingsPanel({
       providerPresets[0] ??
       IMAGE_PROVIDER_PRESETS[0];
     updateImageConfig(configFromPreset(imageConfig, preset));
+  };
+
+  const changeModel = (model: string) => {
+    const options = getImageQualityOptions(activePreset, model);
+    updateImageConfig({ ...imageConfig, model, quality: options.includes(imageConfig.quality ?? '') ? imageConfig.quality : firstOption(options) });
   };
 
   const currentPresetId = activePreset.id;
@@ -392,9 +399,7 @@ export function ImageGenerationSettingsPanel({
             {shouldUseCatalogModelSelect(imageConfig.model, activePreset.models) ? (
               <CatalogModelPicker
                 value={imageConfig.model}
-                onValueChange={(model) =>
-                  updateImageConfig({ ...imageConfig, model })
-                }
+                onValueChange={changeModel}
                 models={activePreset.models}
                 surface="image"
               />
@@ -402,7 +407,7 @@ export function ImageGenerationSettingsPanel({
               <Input
                 value={imageConfig.model}
                 onChange={(event) =>
-                  updateImageConfig({ ...imageConfig, model: event.target.value })
+                  changeModel(event.target.value)
                 }
                 placeholder={getDefaultImageModel(activePreset) || "model-name"}
               />
@@ -429,17 +434,18 @@ export function ImageGenerationSettingsPanel({
             </div>
           )}
 
-          {activePreset.qualityOptions.length > 0 && (
+          {qualityOptions.length > 0 && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-text-primary">{t('settings.quality')}</label>
               <NexaSelect
                 value={imageConfig.quality ?? ""}
+                aria-label={t('settings.quality')}
                 onChange={(event) =>
                   updateImageConfig({ ...imageConfig, quality: event.target.value || null })
                 }
                 className="h-10 w-full cursor-pointer rounded-md border border-border bg-surface-1 px-3.5 text-sm text-text-primary transition-colors hover:border-border-hover focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
               >
-                {activePreset.qualityOptions.map((quality) => (
+                {qualityOptions.map((quality) => (
                   <option key={quality} value={quality}>
                     {quality}
                   </option>

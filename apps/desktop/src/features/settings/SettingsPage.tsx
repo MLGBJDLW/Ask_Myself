@@ -442,7 +442,7 @@ export function SettingsPage() {
           apiStyle: 'openai_images',
           apiKey: '',
           baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-image-2',
+          model: 'gpt-image-2.5-flare',
           size: '1024x1024',
           quality: null,
           outputFormat: 'png',

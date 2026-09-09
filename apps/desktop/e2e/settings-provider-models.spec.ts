@@ -5,6 +5,37 @@ const imageProviderPresets = JSON.parse(
   readFileSync(new URL("../../../shared/image-provider-presets.json", import.meta.url), "utf8"),
 ) as unknown[];
 
+test('image settings select GPT Image 2.5 and Grok Image 2 with model-specific quality', async ({ page }, testInfo) => {
+  await page.goto('/settings');
+  await page.getByRole('button', { name: 'AI Providers' }).click();
+  const panel = page.getByTestId('image-generation-settings-panel');
+  await panel.getByRole('button', { name: 'Expand image generation settings' }).click();
+  const selects = panel.locator('[data-nexa-select-trigger]');
+  await selectNexaOption(selects.nth(0), 'openai');
+  await panel.locator('input[type="password"]').fill('openai-image-test-key');
+  await expectNexaValue(selects.nth(1), 'gpt-image-2.5-flare');
+  const quality = panel.getByRole('combobox', { name: 'Quality', exact: true });
+  await selectNexaOption(quality, 'max');
+  await selectNexaOption(selects.nth(1), 'gpt-image-2.5-sunburst');
+  await expectNexaValue(quality, 'max');
+  await panel.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAppConfig?: { imageGeneration: unknown } }).__savedAppConfig?.imageGeneration)).toMatchObject({ model: 'gpt-image-2.5-sunburst', quality: 'max', apiStyle: 'openai_images' });
+  await selectNexaOption(selects.nth(1), 'gpt-image-2');
+  await expectNexaValue(quality, 'auto');
+  await quality.click();
+  await expect(page.locator('[role="option"][data-value="max"]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await selectNexaOption(selects.nth(0), 'xai');
+  await expect(panel.locator('input[type="password"]')).toHaveValue('');
+  await panel.locator('input[type="password"]').fill('xai-image-test-key');
+  await expectNexaValue(selects.nth(1), 'grok-imagine-image-2.0');
+  await selectNexaOption(selects.nth(2), '16:9|2k');
+  await selectNexaOption(quality, 'medium');
+  await panel.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __savedAppConfig?: { imageGeneration: unknown } }).__savedAppConfig?.imageGeneration)).toMatchObject({ model: 'grok-imagine-image-2.0', apiStyle: 'xai_images', baseUrl: 'https://api.x.ai/v1', size: '16:9|2k', quality: 'medium', outputFormat: 'jpeg' });
+  await panel.screenshot({ path: testInfo.outputPath('image-model-settings.png') });
+});
+
 async function selectNexaOption(trigger: Locator, value: string) {
   await trigger.click();
   await trigger.page().locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();

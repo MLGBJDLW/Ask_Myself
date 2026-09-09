@@ -71,3 +71,13 @@ test('malformed runtime descriptors are reprojected instead of reaching the pick
   assert.deepEqual(descriptor.inputModalities, ['text']);
   assert.deepEqual(descriptor.outputModalities, ['image']);
 });
+
+test('native image catalog preserves per-model quality and the xAI protocol', () => {
+  const presets = extractImageProviderPresets({ providerCatalogs: [{ id: 'imageProviders', items: [{
+    ...rawRuntimePreset, id: 'xai', apiStyle: 'xai_images', baseUrl: 'https://api.x.ai/v1',
+    models: [{ id: 'grok-imagine-image-2.0', name: 'Grok Imagine Image 2.0', qualityOptions: ['auto', 'low', 'medium'] }],
+  }] }] } as unknown as CapabilityPackageView, []);
+  assert.equal(presets[0].apiStyle, 'xai_images');
+  assert.deepEqual(presets[0].models[0].qualityOptions, ['auto', 'low', 'medium']);
+  assert.deepEqual(presets[0].models[0].descriptor.outputModalities, ['image']);
+});

@@ -25,6 +25,10 @@ pub struct ImageModelPreset {
     pub name: String,
     #[serde(default)]
     pub recommended: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_options: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +58,7 @@ pub fn find_image_provider_preset(
     if !normalized_base_url.is_empty() {
         if let Some(preset) = presets.iter().find(|preset| {
             preset.provider == provider
-                && preset.api_style == api_style
+                && (api_style.is_empty() || preset.api_style == api_style)
                 && normalize_base_url(Some(&preset.base_url)) == normalized_base_url
         }) {
             return Some(preset.clone());
@@ -111,6 +115,31 @@ fn normalize_base_url(base_url: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_catalog_carries_model_quality_through_native_projection() {
+        let preset =
+            find_image_provider_preset("open_ai", None, Some("https://api.openai.com/v1")).unwrap();
+        assert_eq!(
+            default_image_model("open_ai", None, Some("https://api.openai.com/v1")).as_deref(),
+            Some("gpt-image-2.5-flare")
+        );
+        let sunburst = preset
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-image-2.5-sunburst")
+            .unwrap();
+        let wire = serde_json::to_value(sunburst).unwrap();
+        assert!(wire["qualityOptions"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("max")));
+        assert_eq!(wire["source"], "official");
+        assert_eq!(
+            default_image_model("open_ai", None, Some("https://api.x.ai/v1")).as_deref(),
+            Some("grok-imagine-image-2.0")
+        );
+    }
 
     #[test]
     fn qwen_image_3_preview_is_available_in_both_regions() {

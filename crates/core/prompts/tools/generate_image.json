@@ -20,11 +20,11 @@
       },
       "provider": {
         "type": "string",
-        "description": "Optional provider override: openai, openai_compatible, google, gemini, nano_banana, qwen, dashscope, aliyun, or alibaba."
+        "description": "Optional provider override: openai, openai_compatible, xai, grok, google, gemini, nano_banana, qwen, dashscope, aliyun, or alibaba."
       },
       "api_style": {
         "type": "string",
-        "description": "Optional API adapter override: openai_images, gemini_generate_content, or dashscope_multimodal. Use openai_images for any provider that exposes an OpenAI-compatible /images/generations endpoint."
+        "description": "Optional API adapter override: openai_images, xai_images, gemini_generate_content, or dashscope_multimodal. xAI requires xai_images for its aspect_ratio, resolution and quality contract."
       },
       "provider_config_id": {
         "type": "string",
@@ -36,11 +36,26 @@
       },
       "size": {
         "type": "string",
-        "description": "Optional output size. OpenAI style uses widthxheight, Google accepts aspect/image-size hints such as 16:9|2K, and Qwen accepts width*height with x converted to *."
+        "description": "Optional output size. GPT Image 2.5 accepts auto or widthxheight (multiples of 16, max edge 3840, ratio 1:3 to 3:1, total 655360-8294400 pixels). xAI uses aspect ratio and resolution such as 16:9|2k. Google accepts 16:9|2K. Qwen accepts width*height with x converted to *."
       },
       "quality": {
         "type": "string",
-        "description": "Optional quality hint for OpenAI-compatible models, for example low, medium, high, or auto."
+        "description": "GPT Image supports auto, low, medium or high; gpt-image-2.5-flare and gpt-image-2.5-sunburst also support xhigh and max. grok-imagine-image-2.0 supports auto, low or medium. Omit for older Grok image models."
+      },
+      "aspect_ratio": {
+        "type": "string",
+        "description": "Optional xAI aspect ratio overriding size: auto, 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9, 9:19.5, 20:9, 9:20, 21:9 or 5:2."
+      },
+      "resolution": {
+        "type": "string",
+        "enum": ["1k", "2k"],
+        "description": "Optional xAI output resolution overriding the resolution in size."
+      },
+      "output_compression": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Optional GPT Image JPEG/WebP compression value. Omit for PNG and xAI."
       },
       "background": {
         "type": "string",
